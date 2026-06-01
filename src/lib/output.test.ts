@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type StreamSinks, emit, outputOptionsFrom, resolveColor, resolveOutputMode } from "./output.ts";
+import { emit, outputOptionsFrom, resolveColor, resolveOutputMode } from "./output.ts";
+import { captureSinks } from "./test-support.ts";
 
 const defaultFlags: GlobalFlags = { agent: false, human: false, json: false, verbose: false };
 
@@ -59,31 +60,6 @@ describe("outputOptionsFrom", () => {
     expect(opts.mode).toBe("agent");
   });
 });
-
-interface CapturedStream {
-  buffer: string;
-  sink: NodeJS.WritableStream;
-}
-
-function captureStream(): CapturedStream {
-  const captured: CapturedStream = {
-    buffer: "",
-    sink: {
-      // biome-ignore lint/suspicious/noExplicitAny: minimal WritableStream stub for tests
-      write(chunk: any) {
-        captured.buffer += String(chunk);
-        return true;
-      },
-    } as NodeJS.WritableStream,
-  };
-  return captured;
-}
-
-function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; stderr: CapturedStream } {
-  const stdout = captureStream();
-  const stderr = captureStream();
-  return { sinks: { stdout: stdout.sink, stderr: stderr.sink }, stdout, stderr };
-}
 
 describe("emit", () => {
   test("agent mode emits a single JSON line for success", () => {

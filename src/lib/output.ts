@@ -13,20 +13,18 @@ export interface BlockedOn {
   reason: string;
 }
 
-export interface AgentEnvelope<T = unknown> {
-  ok: boolean;
-  data?: T;
-  error?: {
-    code: string;
-    message: string;
-    blocked_on?: BlockedOn[];
-    /** Raw API response body when the error came from a Gusto API call.
-     * Agents can read this to understand what specifically failed (e.g. field-level validation errors). */
-    details?: unknown;
-    /** Gusto API request_id from the X-Request-Id header, when present. Useful for support tickets. */
-    request_id?: string;
-  };
+export interface EnvelopeError {
+  code: string;
+  message: string;
+  blocked_on?: BlockedOn[];
+  /** Raw API response body when the error came from a Gusto API call.
+   * Agents can read this to understand what specifically failed (e.g. field-level validation errors). */
+  details?: unknown;
+  /** Gusto API request_id from the X-Request-Id header, when present. Useful for support tickets. */
+  request_id?: string;
 }
+
+export type AgentEnvelope<T = unknown> = { ok: true; data?: T } | { ok: false; error: EnvelopeError };
 
 export interface StreamSinks {
   stdout: NodeJS.WritableStream;
@@ -75,7 +73,6 @@ export function emit<T>(opts: OutputOptions, payload: AgentEnvelope<T>, sinks: S
     return;
   }
   const err = payload.error;
-  if (!err) return;
   sinks.stderr.write(`error: ${err.message}\n`);
   if (err.blocked_on && err.blocked_on.length > 0) {
     sinks.stderr.write("blocked on:\n");

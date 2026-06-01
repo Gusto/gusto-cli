@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { resolveApiContext } from "../lib/api-context.ts";
+import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -140,33 +140,11 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
             self_onboarding: true,
           };
 
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) {
-      if (opts.dryRun) {
-        return {
-          ok: true,
-          data: {
-            method: "POST",
-            path: "/v1/companies/{company_uuid}/contractors",
-            body,
-            note: "dry-run: token/company not required",
-          },
-        };
-      }
-      return ctx.result;
-    }
-
-    const path = `/v1/companies/${ctx.ctx.companyUuid}/contractors`;
-    if (opts.dryRun) {
-      return { ok: true, data: { method: "POST", path, body } };
-    }
-
-    try {
-      const response = await ctx.ctx.client.post(path, body);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
+    return createCompanyResource(globals, "contractors", body, {
+      token: opts.token,
+      companyUuid: opts.companyUuid,
+      dryRun: opts.dryRun,
+    });
   };
 }
 

@@ -1,35 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import type { StreamSinks } from "./output.ts";
 import { type CommandHandler, notImplementedHandler, runCommand } from "./runner.ts";
+import { captureSinks } from "./test-support.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
-
-interface CapturedStream {
-  buffer: string;
-  sink: NodeJS.WritableStream;
-}
-
-function captureStream(): CapturedStream {
-  const captured: CapturedStream = {
-    buffer: "",
-    sink: {
-      // biome-ignore lint/suspicious/noExplicitAny: minimal WritableStream stub for tests
-      write(chunk: any) {
-        captured.buffer += String(chunk);
-        return true;
-      },
-    } as NodeJS.WritableStream,
-  };
-  return captured;
-}
-
-function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; stderr: CapturedStream } {
-  const stdout = captureStream();
-  const stderr = captureStream();
-  return { sinks: { stdout: stdout.sink, stderr: stderr.sink }, stdout, stderr };
-}
 
 async function runWithExitCapture<T>(
   command: string,

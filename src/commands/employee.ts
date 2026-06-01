@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { resolveApiContext } from "../lib/api-context.ts";
+import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -129,33 +129,11 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
       self_onboarding: !opts.adminDriven,
     };
 
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) {
-      if (opts.dryRun) {
-        return {
-          ok: true,
-          data: {
-            method: "POST",
-            path: "/v1/companies/{company_uuid}/employees",
-            body,
-            note: "dry-run: token/company not required",
-          },
-        };
-      }
-      return ctx.result;
-    }
-
-    const path = `/v1/companies/${ctx.ctx.companyUuid}/employees`;
-    if (opts.dryRun) {
-      return { ok: true, data: { method: "POST", path, body } };
-    }
-
-    try {
-      const response = await ctx.ctx.client.post(path, body);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
+    return createCompanyResource(globals, "employees", body, {
+      token: opts.token,
+      companyUuid: opts.companyUuid,
+      dryRun: opts.dryRun,
+    });
   };
 }
 
@@ -187,11 +165,11 @@ function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
   };
 }
 
-type CompParseResult =
+export type CompParseResult =
   | { ok: true; comp: { annual_salary: number } | { hourly_rate: number } }
   | { ok: false; reason: string };
 
-function parseComp(raw: string): CompParseResult {
+export function parseComp(raw: string): CompParseResult {
   const num = Number(raw);
   if (!Number.isFinite(num) || num <= 0) {
     return { ok: false, reason: `must be a positive number, got: ${raw}` };

@@ -1,6 +1,6 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type BlockedOn, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
+import { type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
 
 export interface CommandContext {
   command: string;
@@ -12,7 +12,7 @@ export type CommandResult<T = unknown> =
   | {
       ok: false;
       exitCode: ExitCodeValue;
-      error: { code: string; message: string; blocked_on?: BlockedOn[] };
+      error: EnvelopeError;
     };
 
 export type CommandHandler<T = unknown> = (ctx: CommandContext) => Promise<CommandResult<T>>;

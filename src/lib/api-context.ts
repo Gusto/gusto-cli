@@ -2,6 +2,7 @@ import { ApiClient } from "./api-client.ts";
 import { getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
+import { toResult } from "./handle-api-error.ts";
 import type { CommandResult } from "./runner.ts";
 
 export interface ApiContext {
@@ -59,4 +60,47 @@ export function resolveApiContext(
   }
 
   return { ok: true, ctx: { client, companyUuid, baseUrl } };
+}
+
+export interface CreateResourceOpts {
+  token?: string;
+  companyUuid?: string;
+  dryRun?: boolean;
+}
+
+/** POST `body` to /v1/companies/{company_uuid}/{resource}. Resolves auth/company context,
+ * honors --dry-run (emits the request shape without sending), and maps API/network errors. */
+export async function createCompanyResource(
+  globals: GlobalFlags,
+  resource: string,
+  body: unknown,
+  opts: CreateResourceOpts,
+): Promise<CommandResult> {
+  const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
+  if (!ctx.ok) {
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: `/v1/companies/{company_uuid}/${resource}`,
+          body,
+          note: "dry-run: token/company not required",
+        },
+      };
+    }
+    return ctx.result;
+  }
+
+  const path = `/v1/companies/${ctx.ctx.companyUuid}/${resource}`;
+  if (opts.dryRun) {
+    return { ok: true, data: { method: "POST", path, body } };
+  }
+
+  try {
+    const response = await ctx.ctx.client.post(path, body);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
 }
