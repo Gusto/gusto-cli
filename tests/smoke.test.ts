@@ -132,6 +132,54 @@ describe("dry-run works without auth", () => {
   });
 });
 
+describe("validation returns structured blocked_on before auth (exit 7)", () => {
+  test("contractor add without --type blocks on type", async () => {
+    const result = await run(["contractor", "add", "--email", "sam@example.com"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "type" }));
+  });
+
+  test("contractor add --type individual blocks on missing names and email", async () => {
+    const result = await run(["contractor", "add", "--type", "individual"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "first-name" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "last-name" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "email" }));
+  });
+
+  test("contractor add --type business blocks on missing business-name", async () => {
+    const result = await run(["contractor", "add", "--type", "business", "--email", "billing@acme.example.com"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "business-name" }));
+  });
+
+  test("pay-schedule create with no args blocks on frequency and first-payday", async () => {
+    const result = await run(["pay-schedule", "create"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "frequency" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "first-payday" }));
+  });
+
+  test("pay-schedule create with an unknown frequency blocks on frequency", async () => {
+    const result = await run(["pay-schedule", "create", "--frequency", "fortnightly", "--first-payday", "2026-07-03"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    const freq = envelope.error.blocked_on.find((b: { field: string }) => b.field === "frequency");
+    expect(freq.reason).toMatch(/unknown frequency/);
+  });
+
+  test("api request with an unsupported method returns unsupported_method", async () => {
+    const result = await run(["api", "request", "BLAH", "/v1/me"]);
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("unsupported_method");
+  });
+});
+
 describe("--example prints canonical payloads without auth or args", () => {
   test("employee add --example", async () => {
     const result = await run(["employee", "add", "--example"]);
