@@ -2,9 +2,40 @@ import type { Command } from "commander";
 import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import type { BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
+
+export type ContractorValidation =
+  | { ok: true; type: ContractorType }
+  | { ok: false; message: string; blocked: BlockedOn[] };
+
+/** Validate contractor-add args. `--type` drives which fields are required:
+ * individual needs first/last name + email, business needs business-name + email. */
+export function validateContractorAdd(
+  opts: Pick<ContractorAddOpts, "type" | "firstName" | "lastName" | "businessName" | "email">,
+): ContractorValidation {
+  if (opts.type !== "individual" && opts.type !== "business") {
+    return {
+      ok: false,
+      message: "missing or invalid --type",
+      blocked: [{ field: "type", reason: "must be 'individual' or 'business'" }],
+    };
+  }
+
+  const blocked: BlockedOn[] = [];
+  if (!opts.email) blocked.push({ field: "email", reason: "required" });
+  if (opts.type === "individual") {
+    if (!opts.firstName) blocked.push({ field: "first-name", reason: "required for individual" });
+    if (!opts.lastName) blocked.push({ field: "last-name", reason: "required for individual" });
+  } else if (!opts.businessName) {
+    blocked.push({ field: "business-name", reason: "required for business" });
+  }
+  if (blocked.length > 0) return { ok: false, message: "missing required arguments", blocked };
+
+  return { ok: true, type: opts.type };
+}
 
 interface ContractorAddOpts {
   type?: ContractorType;
@@ -95,36 +126,17 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
       };
     }
 
-    if (opts.type !== "individual" && opts.type !== "business") {
+    const validation = validateContractorAdd(opts);
+    if (!validation.ok) {
       return {
         ok: false,
         exitCode: ExitCode.Validation,
-        error: {
-          code: "validation",
-          message: "missing or invalid --type",
-          blocked_on: [{ field: "type", reason: "must be 'individual' or 'business'" }],
-        },
-      };
-    }
-
-    const blocked = [];
-    if (!opts.email) blocked.push({ field: "email", reason: "required" });
-    if (opts.type === "individual") {
-      if (!opts.firstName) blocked.push({ field: "first-name", reason: "required for individual" });
-      if (!opts.lastName) blocked.push({ field: "last-name", reason: "required for individual" });
-    } else {
-      if (!opts.businessName) blocked.push({ field: "business-name", reason: "required for business" });
-    }
-    if (blocked.length > 0) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
+        error: { code: "validation", message: validation.message, blocked_on: validation.blocked },
       };
     }
 
     const body =
-      opts.type === "individual"
+      validation.type === "individual"
         ? {
             type: "Individual",
             first_name: opts.firstName,

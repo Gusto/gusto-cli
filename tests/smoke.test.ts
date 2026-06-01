@@ -116,20 +116,30 @@ describe("dry-run works without auth", () => {
     expect(envelope.data.body.email).toBe("j@example.com");
   });
 
-  test("pay-schedule create resolves frequency aliases to canonical Gusto values", async () => {
-    const result = await run([
-      "pay-schedule",
-      "create",
-      "--frequency",
-      "biweekly",
-      "--first-payday",
-      "2026-07-03",
-      "--dry-run",
-    ]);
-    expect(result.exitCode).toBe(0);
-    const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.data.body.frequency).toBe("Every other week");
-    expect(envelope.data.body.anchor_pay_date).toBe("2026-07-03");
+  test("pay-schedule create maps every frequency alias to its canonical Gusto value", async () => {
+    const cases: [string, string][] = [
+      ["weekly", "Every week"],
+      ["biweekly", "Every other week"],
+      ["bi-weekly", "Every other week"],
+      ["semi-monthly", "Twice per month"],
+      ["semimonthly", "Twice per month"],
+      ["monthly", "Monthly"],
+    ];
+    for (const [alias, canonical] of cases) {
+      const result = await run([
+        "pay-schedule",
+        "create",
+        "--frequency",
+        alias,
+        "--first-payday",
+        "2026-07-03",
+        "--dry-run",
+      ]);
+      expect(result.exitCode).toBe(0);
+      const body = JSON.parse(result.stdout.trim()).data.body;
+      expect(body.frequency).toBe(canonical);
+      expect(body.anchor_pay_date).toBe("2026-07-03");
+    }
   });
 
   test("pay-schedule create accepts --anchor-pay-date as an alias for --first-payday", async () => {
