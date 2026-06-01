@@ -71,6 +71,12 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       return (FORMAT_VALUES as readonly string[]).includes(value)
         ? null
         : `format must be one of: ${FORMAT_VALUES.join(", ")}`;
+    default: {
+      // Exhaustiveness guard: adding a ConfigKey without a case here is a compile error,
+      // not a silent validation bypass.
+      const unhandled: never = key;
+      throw new Error(`no validation for config key: ${String(unhandled)}`);
+    }
   }
 }
 

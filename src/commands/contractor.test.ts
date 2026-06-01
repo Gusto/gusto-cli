@@ -2,19 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { validateContractorAdd } from "./contractor.ts";
 
 describe("validateContractorAdd", () => {
-  test("individual with first/last name + email is valid", () => {
+  test("individual with first/last name + email returns the populated body", () => {
     const result = validateContractorAdd({
       type: "individual",
       firstName: "Sam",
       lastName: "Rivera",
       email: "s@x.com",
     });
-    expect(result).toEqual({ ok: true, type: "individual" });
+    expect(result).toEqual({
+      ok: true,
+      body: { type: "Individual", first_name: "Sam", last_name: "Rivera", email: "s@x.com", self_onboarding: true },
+    });
   });
 
-  test("business with business-name + email is valid", () => {
+  test("business with business-name + email returns the populated body", () => {
     const result = validateContractorAdd({ type: "business", businessName: "Acme LLC", email: "b@acme.com" });
-    expect(result).toEqual({ ok: true, type: "business" });
+    expect(result).toEqual({
+      ok: true,
+      body: { type: "Business", business_name: "Acme LLC", email: "b@acme.com", self_onboarding: true },
+    });
   });
 
   test("missing --type blocks on type with the type-specific message", () => {

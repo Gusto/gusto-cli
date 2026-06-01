@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import {
   CONFIG_KEYS,
+  type ConfigKey,
   type UserConfig,
   configPaths,
   readConfig,
@@ -11,7 +12,20 @@ import {
 } from "../lib/config.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+
+function requireValidKey(key: string): { ok: true; key: ConfigKey } | { ok: false; result: CommandResult } {
+  const validKey = validateKey(key);
+  if (validKey) return { ok: true, key: validKey };
+  return {
+    ok: false,
+    result: {
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: { code: "unknown_key", message: `Unknown config key: ${key}. Valid keys: ${CONFIG_KEYS.join(", ")}` },
+    },
+  };
+}
 
 export function registerConfigCommand(parent: Command): void {
   const cmd = parent.command("config").description("Get / set / list user-settable config + reset local state");
@@ -49,14 +63,9 @@ Examples:
 
 function configGetHandler(key: string): CommandHandler {
   return async () => {
-    const validKey = validateKey(key);
-    if (!validKey) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "unknown_key", message: `Unknown config key: ${key}. Valid keys: ${CONFIG_KEYS.join(", ")}` },
-      };
-    }
+    const checked = requireValidKey(key);
+    if (!checked.ok) return checked.result;
+    const validKey = checked.key;
     const cfg = await readConfig();
     return { ok: true, data: { key: validKey, value: cfg[validKey] ?? null } };
   };
@@ -64,14 +73,9 @@ function configGetHandler(key: string): CommandHandler {
 
 function configSetHandler(key: string, value: string): CommandHandler {
   return async () => {
-    const validKey = validateKey(key);
-    if (!validKey) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "unknown_key", message: `Unknown config key: ${key}. Valid keys: ${CONFIG_KEYS.join(", ")}` },
-      };
-    }
+    const checked = requireValidKey(key);
+    if (!checked.ok) return checked.result;
+    const validKey = checked.key;
     const valueError = validateValue(validKey, value);
     if (valueError) {
       return {

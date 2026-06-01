@@ -7,12 +7,17 @@ import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
 
+export type ContractorBody =
+  | { type: "Individual"; first_name: string; last_name: string; email: string; self_onboarding: true }
+  | { type: "Business"; business_name: string; email: string; self_onboarding: true };
+
 export type ContractorValidation =
-  | { ok: true; type: ContractorType }
+  | { ok: true; body: ContractorBody }
   | { ok: false; message: string; blocked: BlockedOn[] };
 
-/** Validate contractor-add args. `--type` drives which fields are required:
- * individual needs first/last name + email, business needs business-name + email. */
+/** Validate contractor-add args and, on success, return the fully-populated request body.
+ * `--type` drives which fields are required: individual needs first/last name + email,
+ * business needs business-name + email. Returning the body lets the compiler prove it's complete. */
 export function validateContractorAdd(
   opts: Pick<ContractorAddOpts, "type" | "firstName" | "lastName" | "businessName" | "email">,
 ): ContractorValidation {
@@ -24,17 +29,29 @@ export function validateContractorAdd(
     };
   }
 
-  const blocked: BlockedOn[] = [];
-  if (!opts.email) blocked.push({ field: "email", reason: "required" });
   if (opts.type === "individual") {
-    if (!opts.firstName) blocked.push({ field: "first-name", reason: "required for individual" });
-    if (!opts.lastName) blocked.push({ field: "last-name", reason: "required for individual" });
-  } else if (!opts.businessName) {
-    blocked.push({ field: "business-name", reason: "required for business" });
+    const { firstName, lastName, email } = opts;
+    if (!firstName || !lastName || !email) {
+      const blocked: BlockedOn[] = [];
+      if (!email) blocked.push({ field: "email", reason: "required" });
+      if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
+      if (!lastName) blocked.push({ field: "last-name", reason: "required for individual" });
+      return { ok: false, message: "missing required arguments", blocked };
+    }
+    return {
+      ok: true,
+      body: { type: "Individual", first_name: firstName, last_name: lastName, email, self_onboarding: true },
+    };
   }
-  if (blocked.length > 0) return { ok: false, message: "missing required arguments", blocked };
 
-  return { ok: true, type: opts.type };
+  const { businessName, email } = opts;
+  if (!businessName || !email) {
+    const blocked: BlockedOn[] = [];
+    if (!email) blocked.push({ field: "email", reason: "required" });
+    if (!businessName) blocked.push({ field: "business-name", reason: "required for business" });
+    return { ok: false, message: "missing required arguments", blocked };
+  }
+  return { ok: true, body: { type: "Business", business_name: businessName, email, self_onboarding: true } };
 }
 
 interface ContractorAddOpts {
@@ -135,23 +152,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
       };
     }
 
-    const body =
-      validation.type === "individual"
-        ? {
-            type: "Individual",
-            first_name: opts.firstName,
-            last_name: opts.lastName,
-            email: opts.email,
-            self_onboarding: true,
-          }
-        : {
-            type: "Business",
-            business_name: opts.businessName,
-            email: opts.email,
-            self_onboarding: true,
-          };
-
-    return createCompanyResource(globals, "contractors", body, {
+    return createCompanyResource(globals, "contractors", validation.body, {
       token: opts.token,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
