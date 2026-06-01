@@ -16,6 +16,7 @@ interface ContractorAddOpts {
   companyUuid?: string;
   token?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 interface ContractorListOpts {
@@ -41,6 +42,10 @@ export function registerContractorCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
+    .option(
+      "--example",
+      "Print a canned sample payload without calling the API (pass --type business for the business shape)",
+    )
     .action((opts: ContractorAddOpts) =>
       runCommand("gusto contractor add", readGlobalFlags(parent.opts()), contractorAddHandler(opts)),
     );
@@ -65,6 +70,32 @@ export function registerContractorCommand(parent: Command): void {
 
 function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
   return async ({ globals }) => {
+    if (opts.example) {
+      const isBusiness = opts.type === "business";
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/companies/{company_uuid}/contractors",
+          body: isBusiness
+            ? {
+                type: "Business",
+                business_name: "Acme LLC",
+                email: "billing@acme.example.com",
+                self_onboarding: true,
+              }
+            : {
+                type: "Individual",
+                first_name: "Sam",
+                last_name: "Rivera",
+                email: "sam@example.com",
+                self_onboarding: true,
+              },
+          note: "example: canonical request shape, no args or auth required",
+        },
+      };
+    }
+
     if (opts.type !== "individual" && opts.type !== "business") {
       return {
         ok: false,

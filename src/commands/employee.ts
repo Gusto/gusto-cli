@@ -15,6 +15,7 @@ interface EmployeeAddOpts {
   companyUuid?: string;
   token?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 interface EmployeeListOpts {
@@ -41,6 +42,7 @@ export function registerEmployeeCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
+    .option("--example", "Print a canned sample payload without calling the API")
     .addHelpText(
       "after",
       `
@@ -76,6 +78,25 @@ Required: --first-name, --last-name, --email. Missing args return a structured
 
 function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
   return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/companies/{company_uuid}/employees",
+          body: {
+            first_name: "Jane",
+            last_name: "Doe",
+            email: "jane@example.com",
+            job: { title: "Engineer" },
+            compensation: { annual_salary: 120000 },
+            self_onboarding: true,
+          },
+          note: "example: canonical request shape, no args or auth required",
+        },
+      };
+    }
+
     const blocked: { field: string; reason: string }[] = [];
     if (!opts.firstName) blocked.push({ field: "first-name", reason: "required" });
     if (!opts.lastName) blocked.push({ field: "last-name", reason: "required" });

@@ -24,6 +24,7 @@ interface PayScheduleCreateOpts {
   companyUuid?: string;
   token?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 interface PayScheduleShowOpts {
@@ -44,6 +45,7 @@ export function registerPayScheduleCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
+    .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: PayScheduleCreateOpts) =>
       runCommand("gusto pay-schedule create", readGlobalFlags(parent.opts()), payScheduleCreateHandler(opts)),
     );
@@ -60,6 +62,21 @@ export function registerPayScheduleCommand(parent: Command): void {
 
 function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
   return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/companies/{company_uuid}/pay_schedules",
+          body: {
+            frequency: "Every other week",
+            anchor_pay_date: "2026-07-03",
+          },
+          note: "example: canonical biweekly shape; --anchor-end-of-pay-period optional",
+        },
+      };
+    }
+
     const frequency = FREQUENCY_MAP[(opts.frequency ?? "").toLowerCase()];
     const anchorPayDate = opts.anchorPayDate ?? opts.firstPayday;
 

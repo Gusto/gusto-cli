@@ -132,6 +132,42 @@ describe("dry-run works without auth", () => {
   });
 });
 
+describe("--example prints canonical payloads without auth or args", () => {
+  test("employee add --example", async () => {
+    const result = await run(["employee", "add", "--example"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.method).toBe("POST");
+    expect(envelope.data.path).toBe("/v1/companies/{company_uuid}/employees");
+    expect(envelope.data.body.first_name).toBeTruthy();
+    expect(envelope.data.body.email).toMatch(/@/);
+  });
+
+  test("contractor add --example defaults to individual", async () => {
+    const result = await run(["contractor", "add", "--example"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.body.type).toBe("Individual");
+  });
+
+  test("contractor add --type business --example shows business shape", async () => {
+    const result = await run(["contractor", "add", "--type", "business", "--example"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.body.type).toBe("Business");
+    expect(envelope.data.body.business_name).toBeTruthy();
+  });
+
+  test("pay-schedule create --example", async () => {
+    const result = await run(["pay-schedule", "create", "--example"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.body.frequency).toBeTruthy();
+    expect(envelope.data.body.anchor_pay_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
 describe("config commands work without auth", () => {
   let scratchHome: string;
 
