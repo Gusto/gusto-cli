@@ -1,8 +1,7 @@
 import type { Command } from "commander";
-import { resolveApiContext } from "../lib/api-context.ts";
+import { fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 interface CompanyShowOpts {
@@ -45,31 +44,21 @@ export function registerCompanyCommand(parent: Command): void {
 }
 
 function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/companies/${ctx.ctx.companyUuid}`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}`,
+    );
 }
 
 function companyStatusHandler(opts: CompanyShowOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/companies/${ctx.ctx.companyUuid}/onboarding_status`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/onboarding_status`,
+    );
 }
 
 function companyProvisionHandler(): CommandHandler {

@@ -1,8 +1,7 @@
 import type { Command } from "commander";
-import { resolveApiContext } from "../lib/api-context.ts";
+import { fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 interface AuthOpts {
@@ -55,15 +54,6 @@ function authLogoutHandler(): CommandHandler {
 }
 
 function authWhoamiHandler(opts: AuthOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get("/v1/token_info");
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenOverride: opts.token, requireCompany: false }, () => "/v1/token_info");
 }

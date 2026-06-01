@@ -1,8 +1,7 @@
 import type { Command } from "commander";
-import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
@@ -149,29 +148,19 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
 }
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/contractors/${contractorUuid}`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenOverride: opts.token, requireCompany: false },
+      () => `/v1/contractors/${contractorUuid}`,
+    );
 }
 
 function contractorListHandler(opts: ContractorListOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/companies/${ctx.ctx.companyUuid}/contractors`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/contractors`,
+    );
 }

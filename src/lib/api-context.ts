@@ -104,3 +104,21 @@ export async function createCompanyResource(
     return toResult(err);
   }
 }
+
+/** Resolve auth/company context, GET the path from `buildPath`, and map API/network errors.
+ * `buildPath` receives the resolved context so company-scoped paths can use `companyUuid`. */
+export async function fetchResource(
+  globals: GlobalFlags,
+  ctxOpts: ApiContextOpts,
+  buildPath: (ctx: ApiContext) => string,
+): Promise<CommandResult> {
+  const resolved = resolveApiContext(globals, ctxOpts);
+  if (!resolved.ok) return resolved.result;
+
+  try {
+    const response = await resolved.ctx.client.get(buildPath(resolved.ctx));
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}

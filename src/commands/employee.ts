@@ -1,8 +1,7 @@
 import type { Command } from "commander";
-import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 interface EmployeeAddOpts {
@@ -138,31 +137,17 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
 }
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/employees/${employeeUuid}`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenOverride: opts.token, requireCompany: false }, () => `/v1/employees/${employeeUuid}`);
 }
 
 function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/companies/${ctx.ctx.companyUuid}/employees`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/employees`,
+    );
 }
 
 export type CompParseResult =

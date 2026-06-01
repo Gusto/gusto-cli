@@ -1,8 +1,7 @@
 import type { Command } from "commander";
-import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type PayFrequency = "Every week" | "Every other week" | "Twice per month" | "Monthly";
@@ -115,15 +114,10 @@ function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
 }
 
 function payScheduleShowHandler(opts: PayScheduleShowOpts): CommandHandler {
-  return async ({ globals }) => {
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
-    if (!ctx.ok) return ctx.result;
-
-    try {
-      const response = await ctx.ctx.client.get(`/v1/companies/${ctx.ctx.companyUuid}/pay_schedules`);
-      return { ok: true, data: response.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  };
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/pay_schedules`,
+    );
 }
