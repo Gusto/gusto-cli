@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ApiClient, ApiError, NetworkError } from "./api-client.ts";
+import { ApiClient, type ApiClientOptions, ApiError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 
 interface MockResponse {
@@ -21,16 +21,45 @@ function mockFetch(captured: { url?: string; init?: RequestInit }, response: Moc
   }) as unknown as typeof fetch;
 }
 
-function makeClient(fetchImpl: typeof fetch): ApiClient {
+/**
+ * Returns a fetch mock that replays a sequence of responses, one per call.
+ * After the sequence is exhausted, returns the last response forever.
+ * Lets retry tests assert "first call 503, second call 200" cleanly.
+ */
+function sequenceFetch(responses: MockResponse[]): { fetch: typeof fetch; calls: number } {
+  const state = { calls: 0 };
+  const impl = (async () => {
+    const idx = Math.min(state.calls, responses.length - 1);
+    state.calls += 1;
+    const response = responses[idx];
+    if (response === undefined) throw new Error("sequenceFetch: no response");
+    const text = response.text ?? (response.body !== undefined ? JSON.stringify(response.body) : "");
+    return new Response(text, {
+      status: response.status,
+      headers: response.headers ?? { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return Object.assign(state, { fetch: impl }) as { fetch: typeof fetch; calls: number };
+}
+
+/**
+ * Test defaults: no retry, no sleep, so tests run fast and the existing
+ * single-shot assertions still hold. Individual tests opt into retry by
+ * overriding maxRetries.
+ */
+function makeClient(fetchImpl: typeof fetch, overrides: Partial<ApiClientOptions> = {}): ApiClient {
   return new ApiClient({
     baseUrl: "https://api.example.test",
     token: "test-token",
     apiVersion: "2026-02-01",
     fetchImpl,
+    maxRetries: 0,
+    retrySleepMs: () => 0,
+    ...overrides,
   });
 }
 
-describe("ApiClient", () => {
+describe("ApiClient basics", () => {
   test("GET attaches bearer token + API version headers", async () => {
     const captured: { url?: string; init?: RequestInit } = {};
     const client = makeClient(mockFetch(captured, { status: 200, body: { ok: true } }));
@@ -76,7 +105,7 @@ describe("ApiClient", () => {
     }
   });
 
-  test("5xx throws ApiError with ApiServer exit code", async () => {
+  test("5xx throws ApiError with ApiServer exit code (no retry by default in tests)", async () => {
     const client = makeClient(mockFetch({}, { status: 503, body: { error: "down" } }));
     try {
       await client.get("/v1/x");
@@ -123,6 +152,26 @@ describe("ApiClient", () => {
     expect(result.requestId).toBe("req-123");
   });
 
+  test("ApiError carries the x-request-id from the failed response", async () => {
+    const client = makeClient(
+      mockFetch(
+        {},
+        {
+          status: 422,
+          body: { errors: ["bad input"] },
+          headers: { "content-type": "application/json", "x-request-id": "req-abc" },
+        },
+      ),
+    );
+    try {
+      await client.post("/v1/x", {});
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).requestId).toBe("req-abc");
+    }
+  });
+
   test("trailing slash in baseUrl is normalized", async () => {
     const captured: { url?: string; init?: RequestInit } = {};
     const client = new ApiClient({
@@ -130,8 +179,141 @@ describe("ApiClient", () => {
       token: "t",
       apiVersion: "2026-02-01",
       fetchImpl: mockFetch(captured, { status: 200, body: {} }),
+      maxRetries: 0,
     });
     await client.get("/v1/me");
     expect(captured.url).toBe("https://api.example.test/v1/me");
+  });
+});
+
+describe("ApiClient retries (idempotent verbs only)", () => {
+  test("GET retries on 5xx and succeeds on a later attempt", async () => {
+    const seq = sequenceFetch([
+      { status: 503, body: { err: "down" } },
+      { status: 502, body: { err: "still down" } },
+      { status: 200, body: { ok: true } },
+    ]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    const result = await client.get<{ ok: boolean }>("/v1/x");
+    expect(result.status).toBe(200);
+    expect(seq.calls).toBe(3);
+  });
+
+  test("GET retries on NetworkError and succeeds on a later attempt", async () => {
+    let calls = 0;
+    const flakyFetch = (async (url: string | URL | Request) => {
+      calls += 1;
+      if (calls === 1) throw new Error("ECONNREFUSED");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = makeClient(flakyFetch, { maxRetries: 3 });
+    const result = await client.get<{ ok: boolean }>("/v1/x");
+    expect(result.status).toBe(200);
+    expect(calls).toBe(2);
+  });
+
+  test("GET gives up after maxRetries + 1 attempts on persistent 5xx", async () => {
+    const seq = sequenceFetch([{ status: 503, body: { err: "down" } }]);
+    const client = makeClient(seq.fetch, { maxRetries: 2 });
+    try {
+      await client.get("/v1/x");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).status).toBe(503);
+      expect(seq.calls).toBe(3); // 1 initial + 2 retries
+    }
+  });
+
+  test("POST does NOT retry on 5xx (not idempotent)", async () => {
+    const seq = sequenceFetch([{ status: 503, body: { err: "down" } }]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    try {
+      await client.post("/v1/x", { foo: "bar" });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      expect(seq.calls).toBe(1);
+    }
+  });
+
+  test("PUT does NOT retry on 5xx (not idempotent in our policy)", async () => {
+    const seq = sequenceFetch([{ status: 503, body: { err: "down" } }]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    try {
+      await client.put("/v1/x", { foo: "bar" });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(seq.calls).toBe(1);
+    }
+  });
+
+  test("GET does NOT retry on 4xx (caller error - retrying won't help)", async () => {
+    const seq = sequenceFetch([{ status: 422, body: { err: "validation" } }]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    try {
+      await client.get("/v1/x");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).status).toBe(422);
+      expect(seq.calls).toBe(1);
+    }
+  });
+
+  test("DELETE retries on 5xx (idempotent)", async () => {
+    const seq = sequenceFetch([
+      { status: 503, body: {} },
+      { status: 204, text: "" },
+    ]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    const result = await client.delete("/v1/x");
+    expect(result.status).toBe(204);
+    expect(seq.calls).toBe(2);
+  });
+
+  test("uses the provided retrySleepMs hook (verifies backoff is plumbed)", async () => {
+    const seq = sequenceFetch([
+      { status: 503, body: {} },
+      { status: 503, body: {} },
+      { status: 200, body: { ok: true } },
+    ]);
+    const sleeps: number[] = [];
+    const client = makeClient(seq.fetch, {
+      maxRetries: 3,
+      retrySleepMs: (attempt) => {
+        sleeps.push(attempt);
+        return 0;
+      },
+    });
+    await client.get("/v1/x");
+    expect(sleeps).toEqual([0, 1]); // sleep before attempts 2 and 3 (zero-indexed)
+  });
+});
+
+describe("ApiClient timeout", () => {
+  test("times out after timeoutMs and throws NetworkError", async () => {
+    // Fetch that resolves only after the abort signal fires.
+    const hangingFetch = ((url: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const reason = init.signal?.reason;
+          if (reason instanceof Error) reject(reason);
+          else reject(new DOMException("timed out", "TimeoutError"));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const client = makeClient(hangingFetch, { timeoutMs: 20 });
+    try {
+      await client.get("/v1/x");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NetworkError);
+      expect((err as NetworkError).message).toContain("timed out");
+    }
   });
 });

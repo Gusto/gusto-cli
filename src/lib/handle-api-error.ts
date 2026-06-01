@@ -10,6 +10,8 @@ export function toResult(err: unknown): CommandResult<never> {
       error: {
         code: err.status >= 500 ? "api_server_error" : "api_client_error",
         message: err.message,
+        ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
+        ...(err.requestId ? { request_id: err.requestId } : {}),
       },
     };
   }

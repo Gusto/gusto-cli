@@ -76,15 +76,26 @@ Required: --first-name, --last-name, --email. Missing args return a structured
 
 function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
   return async ({ globals }) => {
-    if (!opts.firstName || !opts.lastName || !opts.email) {
-      const blocked = [];
-      if (!opts.firstName) blocked.push({ field: "first-name", reason: "required" });
-      if (!opts.lastName) blocked.push({ field: "last-name", reason: "required" });
-      if (!opts.email) blocked.push({ field: "email", reason: "required" });
+    const blocked: { field: string; reason: string }[] = [];
+    if (!opts.firstName) blocked.push({ field: "first-name", reason: "required" });
+    if (!opts.lastName) blocked.push({ field: "last-name", reason: "required" });
+    if (!opts.email) blocked.push({ field: "email", reason: "required" });
+
+    let compensation: { annual_salary: number } | { hourly_rate: number } | undefined;
+    if (opts.comp !== undefined) {
+      const parsed = parseComp(opts.comp);
+      if (parsed.ok) {
+        compensation = parsed.comp;
+      } else {
+        blocked.push({ field: "comp", reason: parsed.reason });
+      }
+    }
+
+    if (blocked.length > 0) {
       return {
         ok: false,
         exitCode: ExitCode.Validation,
-        error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
+        error: { code: "validation", message: "missing or invalid arguments", blocked_on: blocked },
       };
     }
 
@@ -93,7 +104,7 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
       last_name: opts.lastName,
       email: opts.email,
       ...(opts.role ? { job: { title: opts.role } } : {}),
-      ...(opts.comp ? { compensation: parseComp(opts.comp) } : {}),
+      ...(compensation ? { compensation } : {}),
       self_onboarding: !opts.adminDriven,
     };
 
@@ -155,8 +166,16 @@ function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
   };
 }
 
-function parseComp(raw: string): { annual_salary?: number; hourly_rate?: number } {
+type CompParseResult =
+  | { ok: true; comp: { annual_salary: number } | { hourly_rate: number } }
+  | { ok: false; reason: string };
+
+function parseComp(raw: string): CompParseResult {
   const num = Number(raw);
-  if (!Number.isFinite(num) || num <= 0) return { annual_salary: 0 };
-  return num >= 1000 ? { annual_salary: num } : { hourly_rate: num };
+  if (!Number.isFinite(num) || num <= 0) {
+    return { ok: false, reason: `must be a positive number, got: ${raw}` };
+  }
+  // Heuristic: values >= 1000 are interpreted as annual salary, smaller numbers as hourly rate.
+  // Document this in --help in a future polish pass; for V0.0.1 it matches Gusto's convention.
+  return { ok: true, comp: num >= 1000 ? { annual_salary: num } : { hourly_rate: num } };
 }

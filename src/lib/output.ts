@@ -20,6 +20,11 @@ export interface AgentEnvelope<T = unknown> {
     code: string;
     message: string;
     blocked_on?: BlockedOn[];
+    /** Raw API response body when the error came from a Gusto API call.
+     * Agents can read this to understand what specifically failed (e.g. field-level validation errors). */
+    details?: unknown;
+    /** Gusto API request_id from the X-Request-Id header, when present. Useful for support tickets. */
+    request_id?: string;
   };
 }
 

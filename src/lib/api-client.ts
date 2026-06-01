@@ -4,13 +4,15 @@ export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
   readonly exitCode: ExitCodeValue;
+  readonly requestId?: string;
 
-  constructor(status: number, body: unknown, exitCode: ExitCodeValue, message: string) {
+  constructor(status: number, body: unknown, exitCode: ExitCodeValue, message: string, requestId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
     this.exitCode = exitCode;
+    this.requestId = requestId;
   }
 }
 
@@ -22,11 +24,19 @@ export class NetworkError extends Error {
   }
 }
 
+export const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_MAX_RETRIES = 3;
+const IDEMPOTENT_METHODS = new Set(["GET", "DELETE"]);
+
 export interface ApiClientOptions {
   baseUrl: string;
   token: string;
   apiVersion: string;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  maxRetries?: number;
+  /** Sleep duration (ms) before retry attempt `n` (zero-indexed). Override in tests to skip waits. */
+  retrySleepMs?: (attempt: number) => number;
 }
 
 export interface ApiResponse<T = unknown> {
@@ -40,12 +50,19 @@ export class ApiClient {
   private readonly token: string;
   private readonly apiVersion: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+  private readonly maxRetries: number;
+  private readonly retrySleepMs: (attempt: number) => number;
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
     this.token = opts.token;
     this.apiVersion = opts.apiVersion;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+    // Exponential backoff: 1s, 2s, 4s, 8s. Tests override to skip waits.
+    this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
   }
 
   get<T = unknown>(path: string): Promise<ApiResponse<T>> {
@@ -65,13 +82,40 @@ export class ApiClient {
   }
 
   async request<T = unknown>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
+    const isIdempotent = IDEMPOTENT_METHODS.has(method.toUpperCase());
+    let lastError: ApiError | NetworkError | undefined;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0) {
+        await sleep(this.retrySleepMs(attempt - 1));
+      }
+
+      try {
+        return await this.sendOnce<T>(method, path, body);
+      } catch (err) {
+        if (err instanceof ApiError && err.status >= 500 && isIdempotent) {
+          lastError = err;
+          continue;
+        }
+        if (err instanceof NetworkError && isIdempotent) {
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastError ?? new NetworkError(`request failed after ${this.maxRetries + 1} attempts`);
+  }
+
+  private async sendOnce<T>(method: string, path: string, body: unknown): Promise<ApiResponse<T>> {
     const url = path.startsWith("http") ? path : `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: "application/json",
       "X-Gusto-API-Version": this.apiVersion,
     };
-    let init: RequestInit = { method, headers };
+    let init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       init = { ...init, body: JSON.stringify(body) };
@@ -82,6 +126,9 @@ export class ApiClient {
       response = await this.fetchImpl(url, init);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+        throw new NetworkError(`request timed out after ${this.timeoutMs}ms calling ${method} ${url}`);
+      }
       throw new NetworkError(`network error calling ${method} ${url}: ${msg}`);
     }
 
@@ -94,7 +141,7 @@ export class ApiClient {
     }
 
     const exitCode = response.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient;
-    throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`);
+    throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`, requestId);
   }
 }
 
@@ -104,4 +151,8 @@ function safeParseJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
