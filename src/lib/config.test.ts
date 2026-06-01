@@ -55,6 +55,12 @@ describe("read/write/reset", () => {
     expect(await readConfig(paths)).toEqual({ format: "agent" });
   });
 
+  test("readConfig throws an actionable error naming the file on malformed TOML", async () => {
+    await Bun.write(paths.file, `environment = "sandbox\nformat =`);
+    expect(readConfig(paths)).rejects.toThrow(/is not valid TOML.*gusto config reset/s);
+    expect(readConfig(paths)).rejects.toThrow(paths.file);
+  });
+
   test("writeConfig creates the directory if missing", async () => {
     const nested = { dir: path.join(scratch, "nested"), file: path.join(scratch, "nested", "config.toml") };
     await writeConfig({ environment: "sandbox" }, nested);

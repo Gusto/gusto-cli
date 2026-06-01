@@ -116,6 +116,38 @@ describe("dry-run works without auth", () => {
     expect(envelope.data.body.email).toBe("j@example.com");
   });
 
+  test("pay-schedule create resolves frequency aliases to canonical Gusto values", async () => {
+    const result = await run([
+      "pay-schedule",
+      "create",
+      "--frequency",
+      "biweekly",
+      "--first-payday",
+      "2026-07-03",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.body.frequency).toBe("Every other week");
+    expect(envelope.data.body.anchor_pay_date).toBe("2026-07-03");
+  });
+
+  test("pay-schedule create accepts --anchor-pay-date as an alias for --first-payday", async () => {
+    const result = await run([
+      "pay-schedule",
+      "create",
+      "--frequency",
+      "weekly",
+      "--anchor-pay-date",
+      "2026-07-03",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.body.frequency).toBe("Every week");
+    expect(envelope.data.body.anchor_pay_date).toBe("2026-07-03");
+  });
+
   test("employee add validates required args before auth", async () => {
     const result = await run(["employee", "add", "--first-name", "Jane"]);
     expect(result.exitCode).toBe(7);
