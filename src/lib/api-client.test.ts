@@ -297,7 +297,7 @@ describe("ApiClient retries (idempotent verbs only)", () => {
 describe("ApiClient timeout", () => {
   test("times out after timeoutMs and throws NetworkError", async () => {
     // Fetch that resolves only after the abort signal fires.
-    const hangingFetch = ((url: string | URL | Request, init?: RequestInit) => {
+    const hangingFetch = ((_url: string | URL | Request, init?: RequestInit) => {
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
           const reason = init.signal?.reason;
