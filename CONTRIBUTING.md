@@ -18,8 +18,9 @@ bun install
 ```sh
 bun run dev -- --help        # run from source
 bun run typecheck            # tsc --noEmit
-bun run lint                 # biome check
-bun run lint:fix             # biome --write
+bun run lint                 # eslint
+bun run lint:fix             # eslint --fix
+bun run format               # prettier --write
 bun run test                 # unit tests (fast)
 bun run test:smoke           # build binary + smoke tests against it
 bun run test:all             # full suite

@@ -100,7 +100,7 @@ bun run test:all
 - [Bun](https://bun.sh) + TypeScript, compiled to a single binary per OS/arch via `bun build --compile`
 - [Commander.js](https://github.com/tj/commander.js) for noun-verb command parsing
 - [smol-toml](https://github.com/squirrelchat/smol-toml) for `~/.config/gusto/config.toml`
-- [Biome](https://biomejs.dev) for lint + format
+- [ESLint](https://eslint.org) + [Prettier](https://prettier.io) for lint + format
 - Bun's built-in test runner
 
 ## License
