@@ -24,17 +24,22 @@
     "test:smoke": "bun run build && bun test tests/smoke.test.ts",
     "test:all": "bun run test && bun run test:smoke",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src tests",
-    "lint:fix": "biome check --write src tests",
-    "format": "biome format --write src tests"
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "format": "prettier --write src tests",
+    "format:check": "prettier --check src tests"
   },
   "dependencies": {
     "commander": "^12.1.0",
     "smol-toml": "^1.6.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
+    "@eslint/js": "^10.0.1",
     "@types/bun": "^1.1.13",
-    "typescript": "^5.7.2"
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.3",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.60.1"
   }
 }

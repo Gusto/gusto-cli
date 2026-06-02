@@ -9,7 +9,7 @@ export function captureStream(): CapturedStream {
   const captured: CapturedStream = {
     buffer: "",
     sink: {
-      // biome-ignore lint/suspicious/noExplicitAny: minimal WritableStream stub for tests
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal WritableStream stub for tests
       write(chunk: any) {
         captured.buffer += String(chunk);
         return true;

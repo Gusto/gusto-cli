@@ -201,7 +201,7 @@ describe("ApiClient retries (idempotent verbs only)", () => {
 
   test("GET retries on NetworkError and succeeds on a later attempt", async () => {
     let calls = 0;
-    const flakyFetch = (async (url: string | URL | Request) => {
+    const flakyFetch = (async (_url: string | URL | Request) => {
       calls += 1;
       if (calls === 1) throw new Error("ECONNREFUSED");
       return new Response(JSON.stringify({ ok: true }), {
@@ -246,7 +246,7 @@ describe("ApiClient retries (idempotent verbs only)", () => {
     try {
       await client.put("/v1/x", { foo: "bar" });
       throw new Error("should have thrown");
-    } catch (err) {
+    } catch {
       expect(seq.calls).toBe(1);
     }
   });

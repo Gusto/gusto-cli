@@ -40,6 +40,7 @@ export async function readConfig(paths: ConfigPaths = configPaths()): Promise<Us
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(
       `config file at ${paths.file} is not valid TOML (${detail}). Fix it by hand or run \`gusto config reset\`.`,
+      { cause: err },
     );
   }
   return pickValid(parsed);
