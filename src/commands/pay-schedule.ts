@@ -15,6 +15,12 @@ const FREQUENCY_MAP: Record<string, PayFrequency> = {
   monthly: "Monthly",
 };
 
+interface PayScheduleBody {
+  frequency: PayFrequency;
+  anchor_pay_date: string;
+  anchor_end_of_pay_period?: string;
+}
+
 interface PayScheduleCreateOpts {
   frequency?: string;
   firstPayday?: string;
@@ -91,7 +97,7 @@ function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
     if (!anchorPayDate) {
       blocked.push({ field: "first-payday", reason: "required (use --first-payday or --anchor-pay-date)" });
     }
-    if (blocked.length > 0) {
+    if (!frequency || !anchorPayDate || blocked.length > 0) {
       return {
         ok: false,
         exitCode: ExitCode.Validation,
@@ -99,7 +105,7 @@ function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
       };
     }
 
-    const body: Record<string, unknown> = {
+    const body: PayScheduleBody = {
       frequency,
       anchor_pay_date: anchorPayDate,
     };

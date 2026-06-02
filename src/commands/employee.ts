@@ -2,7 +2,17 @@ import type { Command } from "commander";
 import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import type { BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
+
+interface EmployeeBody {
+  first_name: string;
+  last_name: string;
+  email: string;
+  job?: { title: string };
+  compensation?: { annual_salary: number } | { hourly_rate: number };
+  self_onboarding: boolean;
+}
 
 interface EmployeeAddOpts {
   firstName?: string;
@@ -96,10 +106,11 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
       };
     }
 
-    const blocked: { field: string; reason: string }[] = [];
-    if (!opts.firstName) blocked.push({ field: "first-name", reason: "required" });
-    if (!opts.lastName) blocked.push({ field: "last-name", reason: "required" });
-    if (!opts.email) blocked.push({ field: "email", reason: "required" });
+    const { firstName, lastName, email } = opts;
+    const blocked: BlockedOn[] = [];
+    if (!firstName) blocked.push({ field: "first-name", reason: "required" });
+    if (!lastName) blocked.push({ field: "last-name", reason: "required" });
+    if (!email) blocked.push({ field: "email", reason: "required" });
 
     let compensation: { annual_salary: number } | { hourly_rate: number } | undefined;
     if (opts.comp !== undefined) {
@@ -111,7 +122,7 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
       }
     }
 
-    if (blocked.length > 0) {
+    if (!firstName || !lastName || !email || blocked.length > 0) {
       return {
         ok: false,
         exitCode: ExitCode.Validation,
@@ -119,10 +130,10 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
       };
     }
 
-    const body = {
-      first_name: opts.firstName,
-      last_name: opts.lastName,
-      email: opts.email,
+    const body: EmployeeBody = {
+      first_name: firstName,
+      last_name: lastName,
+      email,
       ...(opts.role ? { job: { title: opts.role } } : {}),
       ...(compensation ? { compensation } : {}),
       self_onboarding: !opts.adminDriven,
