@@ -5,11 +5,16 @@ import type { GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import type { CommandResult } from "./runner.ts";
 
-export interface ApiContext {
+interface ApiContextBase {
   client: ApiClient;
-  companyUuid: string;
   baseUrl: string;
 }
+
+export type ApiContext =
+  | (ApiContextBase & { hasCompany: true; companyUuid: string })
+  | (ApiContextBase & { hasCompany: false });
+
+export type CompanyApiContext = Extract<ApiContext, { hasCompany: true }>;
 
 export interface ApiContextOpts {
   requireCompany?: boolean;
@@ -17,10 +22,17 @@ export interface ApiContextOpts {
   companyOverride?: string;
 }
 
+type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
+
+export function resolveApiContext(
+  globals: GlobalFlags,
+  opts: ApiContextOpts & { requireCompany: false },
+): Resolved<Extract<ApiContext, { hasCompany: false }>>;
+export function resolveApiContext(globals: GlobalFlags, opts?: ApiContextOpts): Resolved<CompanyApiContext>;
 export function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
-): { ok: true; ctx: ApiContext } | { ok: false; result: CommandResult<never> } {
+): Resolved<ApiContext> {
   const token = getAccessToken(opts.tokenOverride);
   if (!token) {
     return {
@@ -40,7 +52,7 @@ export function resolveApiContext(
   const client = new ApiClient({ baseUrl, token, apiVersion: resolveApiVersion() });
 
   if (opts.requireCompany === false) {
-    return { ok: true, ctx: { client, companyUuid: "", baseUrl } };
+    return { ok: true, ctx: { client, baseUrl, hasCompany: false } };
   }
 
   const companyUuid = getCompanyUuid(opts.companyOverride);
@@ -59,10 +71,10 @@ export function resolveApiContext(
     };
   }
 
-  return { ok: true, ctx: { client, companyUuid, baseUrl } };
+  return { ok: true, ctx: { client, baseUrl, hasCompany: true, companyUuid } };
 }
 
-export interface CreateResourceOpts {
+export interface CompanyResourceOpts {
   token?: string;
   companyUuid?: string;
   dryRun?: boolean;
@@ -74,7 +86,7 @@ export async function createCompanyResource(
   globals: GlobalFlags,
   resource: string,
   body: unknown,
-  opts: CreateResourceOpts,
+  opts: CompanyResourceOpts,
 ): Promise<CommandResult> {
   const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
   if (!ctx.ok) {
@@ -106,17 +118,37 @@ export async function createCompanyResource(
 }
 
 /** Resolve auth/company context, GET the path from `buildPath`, and map API/network errors.
- * `buildPath` receives the resolved context so company-scoped paths can use `companyUuid`. */
-export async function fetchResource(
+ * `buildPath` receives a context narrowed to `hasCompany: true`, so accessing `companyUuid`
+ * is a compile-error-safe operation. */
+export async function fetchCompanyResource(
   globals: GlobalFlags,
-  ctxOpts: ApiContextOpts,
-  buildPath: (ctx: ApiContext) => string,
+  opts: CompanyResourceOpts,
+  buildPath: (ctx: CompanyApiContext) => string,
 ): Promise<CommandResult> {
-  const resolved = resolveApiContext(globals, ctxOpts);
+  const resolved = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
   if (!resolved.ok) return resolved.result;
 
   try {
     const response = await resolved.ctx.client.get(buildPath(resolved.ctx));
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
+/** Resolve auth context only (no company required), GET the path, and map API/network errors.
+ * Use for resource endpoints where the resource UUID is already in the path
+ * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
+export async function fetchResource(
+  globals: GlobalFlags,
+  opts: { token?: string },
+  buildPath: () => string,
+): Promise<CommandResult> {
+  const resolved = resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
+  if (!resolved.ok) return resolved.result;
+
+  try {
+    const response = await resolved.ctx.client.get(buildPath());
     return { ok: true, data: response.body };
   } catch (err) {
     return toResult(err);

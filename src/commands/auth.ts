@@ -54,6 +54,5 @@ function authLogoutHandler(): CommandHandler {
 }
 
 function authWhoamiHandler(opts: AuthOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenOverride: opts.token, requireCompany: false }, () => "/v1/token_info");
+  return async ({ globals }) => fetchResource(globals, { token: opts.token }, () => "/v1/token_info");
 }

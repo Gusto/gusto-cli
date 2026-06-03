@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { fetchResource } from "../lib/api-context.ts";
+import { fetchCompanyResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
@@ -45,18 +45,18 @@ export function registerCompanyCommand(parent: Command): void {
 
 function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(
+    fetchCompanyResource(
       globals,
-      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      { token: opts.token, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}`,
     );
 }
 
 function companyStatusHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(
+    fetchCompanyResource(
       globals,
-      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      { token: opts.token, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/onboarding_status`,
     );
 }

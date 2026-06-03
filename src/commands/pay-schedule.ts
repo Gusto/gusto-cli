@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { createCompanyResource, fetchCompanyResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
@@ -121,9 +121,9 @@ function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
 
 function payScheduleShowHandler(opts: PayScheduleShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(
+    fetchCompanyResource(
       globals,
-      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      { token: opts.token, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/pay_schedules`,
     );
 }

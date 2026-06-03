@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ApiClient } from "./api-client.ts";
-import { createCompanyResource, fetchResource, resolveApiContext } from "./api-context.ts";
+import { createCompanyResource, fetchCompanyResource, fetchResource, resolveApiContext } from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 
@@ -37,11 +37,11 @@ describe("resolveApiContext", () => {
     expect(result.result.error.code).toBe("no_access_token");
   });
 
-  test("requireCompany:false skips the company check and returns an empty companyUuid", () => {
+  test("requireCompany:false returns a context narrowed to hasCompany:false (companyUuid absent from the type)", () => {
     const result = resolveApiContext(flags, { requireCompany: false, tokenOverride: "tok" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    expect(result.ctx.companyUuid).toBe("");
+    expect(result.ctx.hasCompany).toBe(false);
     expect(result.ctx.client).toBeInstanceOf(ApiClient);
     expect(result.ctx.baseUrl).toBe("https://api.gusto-demo.com");
   });
@@ -59,6 +59,7 @@ describe("resolveApiContext", () => {
     const result = resolveApiContext(flags, { tokenOverride: "tok", companyOverride: "co-123" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
+    expect(result.ctx.hasCompany).toBe(true);
     expect(result.ctx.companyUuid).toBe("co-123");
   });
 
@@ -117,7 +118,7 @@ describe("createCompanyResource", () => {
 describe("fetchResource", () => {
   test("returns the context failure and never builds a path when auth is missing", async () => {
     let built = false;
-    const result = await fetchResource(flags, { requireCompany: false }, () => {
+    const result = await fetchResource(flags, {}, () => {
       built = true;
       return "/v1/token_info";
     });
@@ -127,10 +128,12 @@ describe("fetchResource", () => {
     expect(result.exitCode).toBe(ExitCode.Auth);
     expect(result.error.code).toBe("no_access_token");
   });
+});
 
+describe("fetchCompanyResource", () => {
   test("missing company surfaces a validation failure before the path builder runs", async () => {
     let built = false;
-    const result = await fetchResource(flags, { tokenOverride: "tok" }, (ctx) => {
+    const result = await fetchCompanyResource(flags, { token: "tok" }, (ctx) => {
       built = true;
       return `/v1/companies/${ctx.companyUuid}/employees`;
     });
@@ -139,5 +142,17 @@ describe("fetchResource", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(result.error.code).toBe("no_company_uuid");
+  });
+
+  test("missing token surfaces an auth failure before the path builder runs", async () => {
+    let built = false;
+    const result = await fetchCompanyResource(flags, {}, (ctx) => {
+      built = true;
+      return `/v1/companies/${ctx.companyUuid}/employees`;
+    });
+    expect(built).toBe(false);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
   });
 });

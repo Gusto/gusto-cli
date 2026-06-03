@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
@@ -148,15 +148,14 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
 }
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenOverride: opts.token, requireCompany: false }, () => `/v1/employees/${employeeUuid}`);
+  return async ({ globals }) => fetchResource(globals, { token: opts.token }, () => `/v1/employees/${employeeUuid}`);
 }
 
 function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(
+    fetchCompanyResource(
       globals,
-      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      { token: opts.token, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/employees`,
     );
 }

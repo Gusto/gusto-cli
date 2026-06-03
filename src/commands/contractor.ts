@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
@@ -162,18 +162,14 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(
-      globals,
-      { tokenOverride: opts.token, requireCompany: false },
-      () => `/v1/contractors/${contractorUuid}`,
-    );
+    fetchResource(globals, { token: opts.token }, () => `/v1/contractors/${contractorUuid}`);
 }
 
 function contractorListHandler(opts: ContractorListOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(
+    fetchCompanyResource(
       globals,
-      { tokenOverride: opts.token, companyOverride: opts.companyUuid },
+      { token: opts.token, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/contractors`,
     );
 }
