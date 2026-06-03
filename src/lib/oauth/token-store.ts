@@ -22,21 +22,16 @@ export class FileStore implements TokenStore {
   }
 
   async save(env: Environment, session: StoredSession): Promise<void> {
-    const { mkdir, chmod } = await import("node:fs/promises");
-    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
     const all = await this.readAll();
     all[env] = session;
-    await Bun.write(this.file, stringify(all as Record<string, unknown>));
-    await chmod(this.file, 0o600);
+    await this.writeAll(all);
   }
 
   async clear(env: Environment): Promise<void> {
     const all = await this.readAll();
     if (!(env in all)) return;
     delete all[env];
-    const { chmod } = await import("node:fs/promises");
-    await Bun.write(this.file, stringify(all as Record<string, unknown>));
-    await chmod(this.file, 0o600);
+    await this.writeAll(all);
   }
 
   private async readAll(): Promise<CredentialsFile> {
@@ -45,6 +40,16 @@ export class FileStore implements TokenStore {
     const text = await f.text();
     if (text.trim().length === 0) return {};
     return parse(text) as CredentialsFile;
+  }
+
+  // Write 0600 to a temp file then atomically rename over the target, so the
+  // credentials file is never briefly readable at the umask default (TOCTOU).
+  private async writeAll(all: CredentialsFile): Promise<void> {
+    const { mkdir, writeFile, rename } = await import("node:fs/promises");
+    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
+    const tmp = `${this.file}.${process.pid}.tmp`;
+    await writeFile(tmp, stringify(all as Record<string, unknown>), { mode: 0o600 });
+    await rename(tmp, this.file);
   }
 }
 
