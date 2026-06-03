@@ -5,6 +5,10 @@ import path from "node:path";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
+// Isolate the credential store so smoke runs never read the developer's real
+// ~/.config/gusto (and so token-dependent commands stay deterministic).
+const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
+
 interface Run {
   stdout: string;
   stderr: string;
@@ -16,7 +20,7 @@ async function run(args: string[], env: Record<string, string> = {}): Promise<Ru
   const proc = Bun.spawn([BIN_PATH, ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...baseEnv, ...env },
+    env: { ...baseEnv, XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env },
   });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   const exitCode = await proc.exited;
@@ -80,19 +84,22 @@ describe("auth required commands without a token", () => {
   });
 });
 
-describe("deferred commands return clear error codes", () => {
-  test("company provision returns deferred_to_kickoff", async () => {
+describe("company provision input handling (offline)", () => {
+  test("no --input/--example is a validation error", async () => {
     const result = await run(["company", "provision"]);
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.error.code).toBe("deferred_to_kickoff");
+    expect(envelope.error.code).toBe("invalid_input");
   });
 
-  test("auth login is deferred to AINT-561", async () => {
-    const result = await run(["auth", "login"]);
-    expect(result.exitCode).toBe(1);
+  test("--dry-run --example emits the unwrapped request without auth", async () => {
+    const result = await run(["company", "provision", "--dry-run", "--example"]);
+    expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.error.code).toBe("deferred_to_ticket");
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.path).toBe("/v1/provision");
+    expect(envelope.data.body.user).toBeDefined();
+    expect(envelope.data.body.company).toBeDefined();
   });
 });
 
