@@ -1,0 +1,45 @@
+{
+  "name": "gusto-cli",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Gusto CLI - agent-friendly developer interface for Gusto payroll",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gusto/gusto-cli-public.git"
+  },
+  "homepage": "https://cli.gusto.com",
+  "bin": {
+    "gusto": "./dist/gusto"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "bun build --compile --target=bun --outfile=dist/gusto src/index.ts",
+    "build:macos-arm64": "bun build --compile --target=bun-darwin-arm64 --outfile=dist/gusto-darwin-arm64 src/index.ts",
+    "build:macos-x64": "bun build --compile --target=bun-darwin-x64 --outfile=dist/gusto-darwin-x64 src/index.ts",
+    "build:linux-x64": "bun build --compile --target=bun-linux-x64 --outfile=dist/gusto-linux-x64 src/index.ts",
+    "build:all": "bun run build:macos-arm64 && bun run build:macos-x64 && bun run build:linux-x64",
+    "dev": "bun run src/index.ts",
+    "test": "bun test src",
+    "test:smoke": "bun run build && bun test tests/smoke.test.ts",
+    "test:all": "bun run test && bun run test:smoke",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "format": "prettier --write src tests",
+    "format:check": "prettier --check src tests"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "smol-toml": "^1.6.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "^1.1.13",
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.3",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.60.1"
+  }
+}
