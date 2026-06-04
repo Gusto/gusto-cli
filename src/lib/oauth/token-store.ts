@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { configPaths } from "../config.ts";
 import type { Environment } from "../global-flags.ts";
@@ -55,10 +56,6 @@ export class FileStore implements TokenStore {
 
 function credentialsFile(): string {
   return `${configPaths().dir}/credentials.toml`;
-}
-
-function dirname(p: string): string {
-  return p.slice(0, p.lastIndexOf("/")) || "/";
 }
 
 // 0600 file, like aws/gcloud. A native OS keychain is a future enhancement: the

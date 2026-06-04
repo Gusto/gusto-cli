@@ -11,14 +11,10 @@ import {
 } from "./pkce.ts";
 import { formOf, mockFetch } from "./test-support.ts";
 
-function base64Url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 describe("generatePkce", () => {
   test("challenge is the S256 of the verifier, URL-safe", () => {
     const { verifier, challenge } = generatePkce();
-    expect(challenge).toBe(base64Url(createHash("sha256").update(verifier).digest()));
+    expect(challenge).toBe(createHash("sha256").update(verifier).digest().toString("base64url"));
     expect(challenge).not.toMatch(/[+/=]/);
   });
 });

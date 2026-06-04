@@ -9,19 +9,15 @@ export interface PkcePair {
   challenge: string;
 }
 
-function base64Url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 /** RFC 7636 S256 verifier + challenge. */
 export function generatePkce(): PkcePair {
-  const verifier = base64Url(randomBytes(32));
-  const challenge = base64Url(createHash("sha256").update(verifier).digest());
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest().toString("base64url");
   return { verifier, challenge };
 }
 
 export function randomState(): string {
-  return base64Url(randomBytes(16));
+  return randomBytes(16).toString("base64url");
 }
 
 export function buildAuthorizeUrl(

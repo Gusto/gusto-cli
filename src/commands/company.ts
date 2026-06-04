@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { fetchCompanyResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
@@ -134,23 +135,15 @@ function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   };
 }
 
-function waitForEnter(): Promise<void> {
-  return new Promise((resolve) => {
-    process.stderr.write("Press Enter once you've finished claiming the account in your browser...");
-    const done = (): void => {
-      process.stdin.pause();
-      process.stdin.off("data", done);
-      process.stdin.off("end", done);
-      process.stdin.off("close", done);
-      resolve();
-    };
-    process.stdin.resume();
-    // Also resolve on end/close so a closed/EOF stdin (even a disconnected TTY)
-    // doesn't hang the flow waiting for a 'data' event that never comes.
-    process.stdin.once("data", done);
-    process.stdin.once("end", done);
-    process.stdin.once("close", done);
-  });
+async function waitForEnter(): Promise<void> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    await rl.question("Press Enter once you've finished claiming the account in your browser...");
+  } catch {
+    // stdin closed/EOF before Enter (disconnected TTY etc.) - treat as continue rather than hang.
+  } finally {
+    rl.close();
+  }
 }
 
 function companyFinishHandler(): CommandHandler {
