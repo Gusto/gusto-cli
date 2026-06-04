@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { ApiClient } from "../api-client.ts";
-import { resolveApiVersion } from "../env.ts";
+import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
 import { buildAuthorizeUrl, exchangeCode, generatePkce, randomState, startLoopbackServer } from "./pkce.ts";
 import { ensureClientCreds } from "./session.ts";
@@ -56,9 +55,9 @@ export async function login(env: Env, deps: LoginDeps): Promise<TokenInfo> {
     const info = await fetchTokenInfo(http, tokens.accessToken);
     const companyUuid = companyUuidFromTokenInfo(info);
 
-    const existing = await store.load(env);
+    // Rebuild from the new token; don't spread the prior session, or a stale
+    // companyUuid would survive a re-login that yields a non-company token.
     await store.save(env, {
-      ...(existing ?? {}),
       ...creds,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -72,14 +71,7 @@ export async function login(env: Env, deps: LoginDeps): Promise<TokenInfo> {
 }
 
 export async function fetchTokenInfo(http: OAuthHttpOptions, token: string): Promise<TokenInfo> {
-  const client = new ApiClient({
-    baseUrl: http.baseUrl,
-    token,
-    apiVersion: resolveApiVersion(),
-    fetchImpl: http.fetchImpl,
-    maxRetries: 0,
-  });
-  const res = await client.get<TokenInfo>("/v1/token_info");
+  const res = await oauthApiClient(http, token).get<TokenInfo>("/v1/token_info");
   return res.body;
 }
 
@@ -104,7 +96,9 @@ export function defaultOpenBrowser(url: string): Promise<void> {
     const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
     const child = spawn(cmd, [url], { stdio: "ignore", detached: true });
     child.on("error", reject);
-    child.unref();
-    resolve();
+    child.on("spawn", () => {
+      child.unref();
+      resolve();
+    });
   });
 }

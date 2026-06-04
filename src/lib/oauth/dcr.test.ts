@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LOOPBACK_REDIRECT_URI, registerCliClient } from "./dcr.ts";
+import { OAuthError } from "./endpoints.ts";
 import { mockFetch } from "./test-support.ts";
 
 describe("registerCliClient", () => {
@@ -19,5 +20,15 @@ describe("registerCliClient", () => {
     await expect(registerCliClient({ baseUrl: "https://api.test", fetchImpl: fetch })).rejects.toThrow(
       /missing client_id/,
     );
+  });
+
+  test("wraps a fetch/network failure in an OAuthError with status 0", async () => {
+    const throwingFetch = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
+    const err = await registerCliClient({ baseUrl: "https://api.test", fetchImpl: throwingFetch }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(OAuthError);
+    expect((err as OAuthError).status).toBe(0);
+    expect((err as OAuthError).message).toMatch(/network error/);
   });
 });

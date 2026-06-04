@@ -39,7 +39,7 @@ export async function getValidUserToken(
 
   const nearExpiry = session.expiresAt != null && now() + REFRESH_SKEW_MS >= session.expiresAt;
   if (nearExpiry && session.refreshToken && hasClientCreds(session)) {
-    return refreshAndStore(store, env, http, session, now());
+    return refreshAndStore(store, env, http, session, session.refreshToken, now());
   }
   return session.accessToken;
 }
@@ -59,7 +59,7 @@ export async function withUserToken<T>(
     if (!(err instanceof ApiError) || err.status !== 401) throw err;
     const session = await store.load(env);
     if (!session?.refreshToken || !hasClientCreds(session)) throw err;
-    const refreshed = await refreshAndStore(store, env, http, session, now());
+    const refreshed = await refreshAndStore(store, env, http, session, session.refreshToken, now());
     return fn(refreshed);
   }
 }
@@ -69,20 +69,18 @@ async function refreshAndStore(
   env: "sandbox" | "production",
   http: OAuthHttpOptions,
   session: StoredSession & ClientCreds,
+  refreshTokenValue: string,
   now: number,
 ): Promise<string> {
   const refreshed = await refreshToken(
     http,
-    {
-      refreshToken: session.refreshToken as string,
-      creds: { clientId: session.clientId, clientSecret: session.clientSecret },
-    },
+    { refreshToken: refreshTokenValue, creds: { clientId: session.clientId, clientSecret: session.clientSecret } },
     now,
   );
   await store.save(env, {
     ...session,
     accessToken: refreshed.accessToken,
-    refreshToken: refreshed.refreshToken ?? session.refreshToken,
+    refreshToken: refreshed.refreshToken ?? refreshTokenValue,
     expiresAt: refreshed.expiresAt,
   });
   return refreshed.accessToken;

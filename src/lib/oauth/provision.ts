@@ -1,5 +1,5 @@
-import { ApiClient, ApiError } from "../api-client.ts";
-import { resolveApiVersion } from "../env.ts";
+import { ApiError } from "../api-client.ts";
+import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
 import { type Env, type LoginDeps, type TokenInfo, login } from "./login.ts";
 import type { ProvisionPayload } from "./provision-input.ts";
@@ -37,20 +37,17 @@ export async function provision(env: Env, payload: ProvisionPayload, deps: Provi
 }
 
 /** POST /v1/provision with a freshly minted system_access token; re-mint once on 401. */
-async function callProvision(http: OAuthHttpOptions, creds: ClientCreds, payload: ProvisionPayload): Promise<string> {
+export async function callProvision(
+  http: OAuthHttpOptions,
+  creds: ClientCreds,
+  payload: ProvisionPayload,
+): Promise<string> {
   const run = async (): Promise<string> => {
     const token = (await mintSystemAccess(http, creds)).accessToken;
-    const client = new ApiClient({
-      baseUrl: http.baseUrl,
-      token,
-      apiVersion: resolveApiVersion(),
-      fetchImpl: http.fetchImpl,
-      maxRetries: 0,
-    });
     // The endpoint wraps the top-level body under `provision` itself
     // (wrap_params_in_root), so send {user, company} unwrapped - wrapping here
     // would double-nest it and the server would see no user/company.
-    const res = await client.post<ProvisionResponse>("/v1/provision", payload);
+    const res = await oauthApiClient(http, token).post<ProvisionResponse>("/v1/provision", payload);
     const url = res.body?.account_claim_url;
     if (typeof url !== "string") throw new Error("/v1/provision response missing account_claim_url");
     return url;

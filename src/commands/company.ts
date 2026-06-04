@@ -117,13 +117,19 @@ function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
 function waitForEnter(): Promise<void> {
   return new Promise((resolve) => {
     process.stderr.write("Press Enter once you've finished claiming the account in your browser...");
-    const onData = (): void => {
+    const done = (): void => {
       process.stdin.pause();
-      process.stdin.off("data", onData);
+      process.stdin.off("data", done);
+      process.stdin.off("end", done);
+      process.stdin.off("close", done);
       resolve();
     };
     process.stdin.resume();
-    process.stdin.once("data", onData);
+    // Also resolve on end/close so a closed/EOF stdin (even a disconnected TTY)
+    // doesn't hang the flow waiting for a 'data' event that never comes.
+    process.stdin.once("data", done);
+    process.stdin.once("end", done);
+    process.stdin.once("close", done);
   });
 }
 
