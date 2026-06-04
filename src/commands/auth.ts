@@ -1,11 +1,11 @@
 import type { Command } from "commander";
 import { fetchResource } from "../lib/api-context.ts";
 import { getAccessToken } from "../lib/env.ts";
-import { readGlobalFlags } from "../lib/global-flags.ts";
+import { type Environment, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import type { OAuthHttpOptions } from "../lib/oauth/endpoints.ts";
-import { type Env, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
+import { type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
 import { revokeToken } from "../lib/oauth/revoke.ts";
 import { getValidUserToken } from "../lib/oauth/session.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
@@ -52,7 +52,7 @@ export function loginResultData(info: TokenInfo): LoginData {
 export async function performLogout(
   http: OAuthHttpOptions,
   store: TokenStore,
-  env: Env,
+  env: Environment,
 ): Promise<{ revoked: boolean; note?: string }> {
   const session = await store.load(env);
   if (!session) return { revoked: false, note: "no stored session" };
@@ -71,7 +71,7 @@ export async function performLogout(
 export function resolveWhoamiToken(
   http: OAuthHttpOptions,
   store: TokenStore,
-  env: Env,
+  env: Environment,
   override: string | null,
 ): Promise<string | null> {
   if (override) return Promise.resolve(override);

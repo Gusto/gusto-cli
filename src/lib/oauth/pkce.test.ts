@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import {
   buildAuthorizeUrl,
   exchangeCode,
-  expiresAtFrom,
   generatePkce,
   parseCallback,
   redirectUriForPort,
@@ -49,13 +48,6 @@ describe("parseCallback", () => {
       state: undefined,
       error: "access_denied",
     });
-  });
-});
-
-describe("expiresAtFrom", () => {
-  test("adds expires_in seconds to now", () => {
-    expect(expiresAtFrom(3600, 1_000)).toBe(1_000 + 3_600_000);
-    expect(expiresAtFrom(undefined, 1_000)).toBeUndefined();
   });
 });
 

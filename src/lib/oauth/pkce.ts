@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { type Server, createServer } from "node:http";
-import { OAUTH_PATHS, type OAuthHttpOptions, basicAuth, postForm } from "./endpoints.ts";
+import { OAUTH_PATHS, type OAuthHttpOptions, basicAuth, postForm, toTokenSet } from "./endpoints.ts";
 import { CALLBACK_PATH } from "./dcr.ts";
 import type { ClientCreds, TokenSet } from "./types.ts";
 
@@ -54,17 +54,6 @@ export function parseCallback(requestUrl: string): CallbackResult {
   };
 }
 
-interface TokenResponse {
-  access_token?: unknown;
-  refresh_token?: unknown;
-  expires_in?: unknown;
-  scope?: unknown;
-}
-
-export function expiresAtFrom(expiresIn: unknown, now: number): number | undefined {
-  return typeof expiresIn === "number" ? now + expiresIn * 1000 : undefined;
-}
-
 export async function exchangeCode(
   opts: OAuthHttpOptions,
   args: { code: string; verifier: string; redirectUri: string; creds: ClientCreds },
@@ -101,19 +90,6 @@ export async function refreshToken(
     basicAuth(args.creds.clientId, args.creds.clientSecret),
   );
   return toTokenSet(body, now);
-}
-
-function toTokenSet(body: unknown, now: number): TokenSet {
-  const { access_token, refresh_token, expires_in, scope } = body as TokenResponse;
-  if (typeof access_token !== "string") {
-    throw new Error("token response missing access_token");
-  }
-  return {
-    accessToken: access_token,
-    refreshToken: typeof refresh_token === "string" ? refresh_token : undefined,
-    expiresAt: expiresAtFrom(expires_in, now),
-    scope: typeof scope === "string" ? scope : undefined,
-  };
 }
 
 /** The loopback redirect URI for the bound port (path must equal the registered path). */

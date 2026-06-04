@@ -1,6 +1,8 @@
 // OAuth/DCR endpoints aren't bearer-authenticated, so they can't use ApiClient
 // (which always sends Authorization: Bearer). fetch is injectable for tests.
 
+import type { TokenSet } from "./types.ts";
+
 export const OAUTH_PATHS = {
   register: "/v1/mcp/oauth/register",
   token: "/v1/mcp/oauth/token",
@@ -82,4 +84,29 @@ function safeJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+interface TokenResponse {
+  access_token?: unknown;
+  refresh_token?: unknown;
+  expires_in?: unknown;
+  scope?: unknown;
+}
+
+export function expiresAtFrom(expiresIn: unknown, now: number): number | undefined {
+  return typeof expiresIn === "number" ? now + expiresIn * 1000 : undefined;
+}
+
+/** Parse an OAuth token response into a TokenSet; missing refresh/expiry are left undefined. */
+export function toTokenSet(body: unknown, now: number): TokenSet {
+  const { access_token, refresh_token, expires_in, scope } = body as TokenResponse;
+  if (typeof access_token !== "string") {
+    throw new Error("token response missing access_token");
+  }
+  return {
+    accessToken: access_token,
+    refreshToken: typeof refresh_token === "string" ? refresh_token : undefined,
+    expiresAt: expiresAtFrom(expires_in, now),
+    scope: typeof scope === "string" ? scope : undefined,
+  };
 }

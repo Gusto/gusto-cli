@@ -1,10 +1,9 @@
 import { ApiClient } from "../api-client.ts";
 import { resolveApiVersion, resolveBaseUrl } from "../env.ts";
-import type { GlobalFlags } from "../global-flags.ts";
+import type { Environment, GlobalFlags } from "../global-flags.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
-import type { Env } from "./login.ts";
 
-export function resolveEnv(globals: GlobalFlags): Env {
+export function resolveEnv(globals: GlobalFlags): Environment {
   return globals.env === "production" ? "production" : "sandbox";
 }
 

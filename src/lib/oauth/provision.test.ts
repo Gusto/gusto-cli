@@ -21,17 +21,12 @@ describe("callProvision", () => {
     expect(JSON.parse(String(captured.inits[1]?.body))).toEqual(EXAMPLE_PAYLOAD); // unwrapped body
   });
 
-  test("re-mints and retries exactly once on a 401", async () => {
-    const { fetch, captured } = mockFetch([
-      SYSTEM_ACCESS,
-      { status: 401, body: { error: "invalid_token" } },
-      SYSTEM_ACCESS,
-      { status: 201, body: { account_claim_url: "https://claim/xyz" } },
-    ]);
-    const url = await callProvision({ baseUrl: "https://api.test", fetchImpl: fetch }, creds, EXAMPLE_PAYLOAD);
-
-    expect(url).toBe("https://claim/xyz");
-    expect(captured.urls.length).toBe(4); // mint, provision(401), mint, provision(201)
+  test("does not retry the non-idempotent create on a 401", async () => {
+    const { fetch, captured } = mockFetch([SYSTEM_ACCESS, { status: 401, body: { error: "invalid_token" } }]);
+    await expect(
+      callProvision({ baseUrl: "https://api.test", fetchImpl: fetch }, creds, EXAMPLE_PAYLOAD),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(captured.urls.length).toBe(2); // mint + a single provision POST, no retry
   });
 
   test("propagates a non-401 error without retrying", async () => {

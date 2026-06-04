@@ -1,11 +1,10 @@
 import { spawn } from "node:child_process";
+import type { Environment } from "../global-flags.ts";
 import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
 import { buildAuthorizeUrl, exchangeCode, generatePkce, randomState, startLoopbackServer } from "./pkce.ts";
 import { ensureClientCreds } from "./session.ts";
 import type { TokenStore } from "./token-store.ts";
-
-export type Env = "sandbox" | "production";
 
 export interface TokenInfo {
   scope?: string;
@@ -30,7 +29,7 @@ export interface LoginDeps {
   now?: () => number;
 }
 
-export async function login(env: Env, deps: LoginDeps): Promise<TokenInfo> {
+export async function login(env: Environment, deps: LoginDeps): Promise<TokenInfo> {
   const { store, http } = deps;
   const print = deps.print ?? ((l: string) => process.stderr.write(`${l}\n`));
   const now = deps.now ?? Date.now;
