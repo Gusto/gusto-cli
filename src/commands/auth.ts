@@ -39,12 +39,13 @@ export function registerAuthCommand(parent: Command): void {
 }
 
 export interface LoginData {
-  identity: TokenInfo["resource_owner"];
+  identity: NonNullable<TokenInfo["resource_owner"]>;
   company_uuid: string | null;
   scope?: string;
 }
 
 export function loginResultData(info: TokenInfo): LoginData {
+  if (!info.resource_owner) throw new Error("login succeeded but token_info returned no identity");
   return { identity: info.resource_owner, company_uuid: companyUuidFromTokenInfo(info) ?? null, scope: info.scope };
 }
 

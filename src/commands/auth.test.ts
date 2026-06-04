@@ -22,7 +22,16 @@ describe("loginResultData", () => {
   });
 
   test("company_uuid is null when the token is not company-scoped", () => {
-    expect(loginResultData({ resource: { type: "Employee", uuid: "e-1" } }).company_uuid).toBeNull();
+    expect(
+      loginResultData({
+        resource: { type: "Employee", uuid: "e-1" },
+        resource_owner: { type: "Employee", uuid: "e-1" },
+      }).company_uuid,
+    ).toBeNull();
+  });
+
+  test("throws when token_info carries no identity", () => {
+    expect(() => loginResultData({ resource: { type: "Company", uuid: "co-1" } })).toThrow(/no identity/);
   });
 });
 

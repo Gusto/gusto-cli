@@ -6,6 +6,7 @@ import {
   generatePkce,
   parseCallback,
   redirectUriForPort,
+  refreshToken,
   startLoopbackServer,
 } from "./pkce.ts";
 import { formOf, mockFetch } from "./test-support.ts";
@@ -72,6 +73,30 @@ describe("exchangeCode", () => {
     expect(form.get("grant_type")).toBe("authorization_code");
     expect(form.get("code_verifier")).toBe("ver");
     expect(form.get("code")).toBe("code1");
+  });
+});
+
+describe("refreshToken", () => {
+  test("sends the refresh_token grant + parses the new token set", async () => {
+    const { fetch, captured } = mockFetch({
+      status: 200,
+      body: { access_token: "new-at", refresh_token: "new-rt", expires_in: 7200 },
+    });
+    const tok = await refreshToken(
+      { baseUrl: "https://api.test", fetchImpl: fetch },
+      { refreshToken: "old-rt", creds: { clientId: "cid", clientSecret: "sec" } },
+      1_000,
+    );
+    expect(tok).toEqual({
+      accessToken: "new-at",
+      refreshToken: "new-rt",
+      expiresAt: 1_000 + 7_200_000,
+      scope: undefined,
+    });
+    const form = formOf(captured.inits[0] ?? {});
+    expect(form.get("grant_type")).toBe("refresh_token");
+    expect(form.get("refresh_token")).toBe("old-rt");
+    expect(form.get("client_id")).toBe("cid");
   });
 });
 

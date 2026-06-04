@@ -5,10 +5,10 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { companyUuidFromTokenInfo, defaultOpenBrowser } from "../lib/oauth/login.ts";
-import { provision } from "../lib/oauth/provision.ts";
+import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
 
 interface CompanyShowOpts {
   companyUuid?: string;
@@ -76,38 +76,58 @@ function companyStatusHandler(opts: CompanyShowOpts): CommandHandler {
     );
 }
 
+export interface ProvisionData {
+  account_claim_url: string;
+  company_uuid: string | null;
+}
+
+export function provisionResultData(result: ProvisionResult): ProvisionData {
+  return {
+    account_claim_url: result.accountClaimUrl,
+    company_uuid: companyUuidFromTokenInfo(result.tokenInfo) ?? null,
+  };
+}
+
+/** Map a payload-resolution failure: bad input is a validation error, anything else flows through toResult. */
+export function provisionPayloadError(err: unknown): CommandResult<never> {
+  if (err instanceof InputError) {
+    return { ok: false, exitCode: ExitCode.Validation, error: { code: "invalid_input", message: err.message } };
+  }
+  return toResult(err);
+}
+
+const NOT_INTERACTIVE: CommandResult<never> = {
+  ok: false,
+  exitCode: ExitCode.General,
+  error: {
+    code: "not_interactive",
+    message:
+      "`gusto company provision` is interactive - it opens a browser and waits for you to claim the account. Run it in a terminal, or use --dry-run to preview the request.",
+  },
+};
+
 function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   return async ({ globals }) => {
     let payload;
     try {
       payload = await resolveProvisionPayload({ input: opts.input, example: opts.example }, (p) => Bun.file(p).text());
     } catch (err) {
-      if (err instanceof InputError) {
-        return { ok: false, exitCode: ExitCode.Validation, error: { code: "invalid_input", message: err.message } };
-      }
-      return toResult(err);
+      return provisionPayloadError(err);
     }
 
     if (opts.dryRun) {
       return { ok: true, data: { method: "POST", path: "/v1/provision", body: payload } };
     }
+    if (!process.stdin.isTTY) return NOT_INTERACTIVE;
 
     try {
-      const env = resolveEnv(globals);
-      const store = resolveStore();
-      const result = await provision(env, payload, {
-        store,
+      const result = await provision(resolveEnv(globals), payload, {
+        store: resolveStore(),
         http: oauthHttp(globals),
         openBrowser: defaultOpenBrowser,
-        confirmClaim: process.stdin.isTTY ? waitForEnter : undefined,
+        confirmClaim: waitForEnter,
       });
-      return {
-        ok: true,
-        data: {
-          account_claim_url: result.accountClaimUrl,
-          company_uuid: companyUuidFromTokenInfo(result.tokenInfo) ?? null,
-        },
-      };
+      return { ok: true, data: provisionResultData(result) };
     } catch (err) {
       return toResult(err);
     }
