@@ -1,15 +1,16 @@
 import type { Command } from "commander";
 import { fetchResource } from "../lib/api-context.ts";
 import { getAccessToken } from "../lib/env.ts";
+import { readGlobalFlags } from "../lib/global-flags.ts";
+import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
-import { companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
+import type { OAuthHttpOptions } from "../lib/oauth/endpoints.ts";
+import { type Env, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
 import { revokeToken } from "../lib/oauth/revoke.ts";
 import { getValidUserToken } from "../lib/oauth/session.ts";
-import { resolveStore } from "../lib/oauth/token-store.ts";
+import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
 import { hasClientCreds } from "../lib/oauth/types.ts";
-import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
-import { toResult } from "../lib/handle-api-error.ts";
 
 interface AuthOpts {
   token?: string;
@@ -37,20 +38,51 @@ export function registerAuthCommand(parent: Command): void {
     );
 }
 
+export interface LoginData {
+  identity: TokenInfo["resource_owner"];
+  company_uuid: string | null;
+  scope?: string;
+}
+
+export function loginResultData(info: TokenInfo): LoginData {
+  return { identity: info.resource_owner, company_uuid: companyUuidFromTokenInfo(info) ?? null, scope: info.scope };
+}
+
+/** Best-effort revoke (only if a usable session exists), then always clear local state. */
+export async function performLogout(
+  http: OAuthHttpOptions,
+  store: TokenStore,
+  env: Env,
+): Promise<{ revoked: boolean; note?: string }> {
+  const session = await store.load(env);
+  if (!session) return { revoked: false, note: "no stored session" };
+  let revoked = false;
+  if (session.accessToken && hasClientCreds(session)) {
+    revoked = await revokeToken(http, session.accessToken, {
+      clientId: session.clientId,
+      clientSecret: session.clientSecret,
+    });
+  }
+  await store.clear(env);
+  return { revoked };
+}
+
+/** An explicit override (--token / GUSTO_ACCESS_TOKEN) wins; otherwise the stored user token. */
+export function resolveWhoamiToken(
+  http: OAuthHttpOptions,
+  store: TokenStore,
+  env: Env,
+  override: string | null,
+): Promise<string | null> {
+  if (override) return Promise.resolve(override);
+  return getValidUserToken(store, env, http);
+}
+
 function authLoginHandler(): CommandHandler {
   return async ({ globals }) => {
     try {
-      const env = resolveEnv(globals);
-      const store = resolveStore();
-      const info = await login(env, { store, http: oauthHttp(globals) });
-      return {
-        ok: true,
-        data: {
-          identity: info.resource_owner,
-          company_uuid: companyUuidFromTokenInfo(info) ?? null,
-          scope: info.scope,
-        },
-      };
+      const info = await login(resolveEnv(globals), { store: resolveStore(), http: oauthHttp(globals) });
+      return { ok: true, data: loginResultData(info) };
     } catch (err) {
       return toResult(err);
     }
@@ -60,21 +92,8 @@ function authLoginHandler(): CommandHandler {
 function authLogoutHandler(): CommandHandler {
   return async ({ globals }) => {
     try {
-      const env = resolveEnv(globals);
-      const store = resolveStore();
-      const session = await store.load(env);
-      if (!session) {
-        return { ok: true, data: { revoked: false, note: "no stored session" } };
-      }
-      let revoked = false;
-      if (session.accessToken && hasClientCreds(session)) {
-        revoked = await revokeToken(oauthHttp(globals), session.accessToken, {
-          clientId: session.clientId,
-          clientSecret: session.clientSecret,
-        });
-      }
-      await store.clear(env);
-      return { ok: true, data: { revoked } };
+      const data = await performLogout(oauthHttp(globals), resolveStore(), resolveEnv(globals));
+      return { ok: true, data };
     } catch (err) {
       return toResult(err);
     }
@@ -83,16 +102,17 @@ function authLogoutHandler(): CommandHandler {
 
 function authWhoamiHandler(opts: AuthOpts): CommandHandler {
   return async ({ globals }) => {
-    const override = getAccessToken(opts.token);
-    let token = override ?? undefined;
-    if (!token) {
-      try {
-        const env = resolveEnv(globals);
-        const store = resolveStore();
-        token = (await getValidUserToken(store, env, oauthHttp(globals))) ?? undefined;
-      } catch (err) {
-        return toResult(err);
-      }
+    let token: string | undefined;
+    try {
+      token =
+        (await resolveWhoamiToken(
+          oauthHttp(globals),
+          resolveStore(),
+          resolveEnv(globals),
+          getAccessToken(opts.token),
+        )) ?? undefined;
+    } catch (err) {
+      return toResult(err);
     }
     return fetchResource(globals, { token }, () => "/v1/token_info");
   };
