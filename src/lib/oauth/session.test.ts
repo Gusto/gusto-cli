@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "../api-client.ts";
 import { ExitCode } from "../exit-codes.ts";
-import { NoSessionError, getValidUserToken, withUserToken } from "./session.ts";
+import { NoSessionError, ensureClientCreds, getValidUserToken, withUserToken } from "./session.ts";
 import { type MockResponse, memoryStore, mockFetch } from "./test-support.ts";
 
 const http = (responses: MockResponse | MockResponse[]) => {
@@ -32,6 +32,50 @@ describe("getValidUserToken", () => {
     expect(token).toBe("new");
     expect(store.data.sandbox?.accessToken).toBe("new");
     expect(store.data.sandbox?.refreshToken).toBe("rt2");
+  });
+
+  test("falls back to the current token when proactive refresh fails but it isn't expired yet", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
+    });
+    // now=1_990: within skew (refresh attempted) but not past expiry; refresh 400s.
+    const token = await getValidUserToken(
+      store,
+      "sandbox",
+      http({ status: 400, body: { error: "invalid_grant" } }),
+      () => 1_990,
+    );
+    expect(token).toBe("old");
+  });
+
+  test("rethrows when refresh fails and the token is already expired", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 1_980 },
+    });
+    // now=1_990 is past expiry, so the stale token can't be used.
+    await expect(getValidUserToken(store, "sandbox", http({ status: 400 }), () => 1_990)).rejects.toBeDefined();
+  });
+});
+
+describe("ensureClientCreds", () => {
+  test("registers + persists creds on first run when none are stored", async () => {
+    const store = memoryStore();
+    const creds = await ensureClientCreds(
+      store,
+      "sandbox",
+      http({ status: 201, body: { client_id: "cid", client_secret: "sec" } }),
+    );
+    expect(creds).toEqual({ clientId: "cid", clientSecret: "sec" });
+    expect(store.data.sandbox).toMatchObject({ clientId: "cid", clientSecret: "sec" });
+  });
+
+  test("reuses stored creds without a DCR call", async () => {
+    const store = memoryStore({ sandbox: { clientId: "c", clientSecret: "s" } });
+    const noFetch = (() => {
+      throw new Error("should not DCR when creds are stored");
+    }) as unknown as typeof fetch;
+    const creds = await ensureClientCreds(store, "sandbox", { baseUrl: "https://api.test", fetchImpl: noFetch });
+    expect(creds).toEqual({ clientId: "c", clientSecret: "s" });
   });
 });
 

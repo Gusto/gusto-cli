@@ -39,7 +39,14 @@ export async function getValidUserToken(
 
   const nearExpiry = session.expiresAt != null && now() + REFRESH_SKEW_MS >= session.expiresAt;
   if (nearExpiry && session.refreshToken && hasClientCreds(session)) {
-    return refreshAndStore(store, env, http, session, session.refreshToken, now());
+    try {
+      return await refreshAndStore(store, env, http, session, session.refreshToken, now());
+    } catch (err) {
+      // Proactive (within-skew) refresh failed. If the current token hasn't
+      // actually expired, use it - the 401 path refreshes later if needed.
+      if (session.expiresAt != null && now() < session.expiresAt) return session.accessToken;
+      throw err;
+    }
   }
   return session.accessToken;
 }
