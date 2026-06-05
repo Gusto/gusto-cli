@@ -185,6 +185,21 @@ describe("validateContractorAdd", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hourly-rate" }));
   });
 
+  test("--hourly-rate passed with fixed wage-type is rejected, not silently dropped", () => {
+    const result = validateContractorAdd({
+      type: "individual",
+      firstName: "Sam",
+      lastName: "Rivera",
+      email: "s@x.com",
+      wageType: "fixed",
+      startDate: "2026-06-03",
+      hourlyRate: "50",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hourly-rate" }));
+  });
+
   test("individual missing names and email blocks on all three plus wage/start", () => {
     const result = validateContractorAdd({ type: "individual" });
     expect(result.ok).toBe(false);

@@ -9,15 +9,17 @@ import { type CommandHandler, runCommand } from "../lib/runner.ts";
 type ContractorType = "individual" | "business";
 type WageType = "Fixed" | "Hourly";
 
-/** Common fields the Gusto API requires on every contractor regardless of type:
- * `wage_type` (Fixed|Hourly), `start_date`, and `hourly_rate` only when Hourly. */
-interface ContractorCommon {
+/** Wage fields. The API requires `hourly_rate` iff `wage_type === "Hourly"`, so model it as a
+ * discriminated union — the compiler then rejects invalid states like a Fixed wage carrying an
+ * `hourly_rate`, or an Hourly wage with none. */
+type ContractorWage = { wage_type: "Fixed" } | { wage_type: "Hourly"; hourly_rate: string };
+
+/** Fields the Gusto API requires on every contractor regardless of type. */
+type ContractorCommon = {
   email: string;
-  wage_type: WageType;
   start_date: string;
   self_onboarding: boolean;
-  hourly_rate?: string;
-}
+} & ContractorWage;
 
 export type ContractorBody =
   | ({ type: "Individual"; first_name: string; last_name: string } & ContractorCommon)
@@ -81,7 +83,7 @@ export function validateContractorAdd(
     blocked.push({ field: "start-date", reason: `must be a valid YYYY-MM-DD date, got: ${startDate}` });
   }
 
-  let hourlyRate: string | undefined;
+  let wage: ContractorWage | undefined;
   if (wageType === "Hourly") {
     if (!opts.hourlyRate) {
       blocked.push({ field: "hourly-rate", reason: "required when --wage-type is hourly" });
@@ -90,8 +92,16 @@ export function validateContractorAdd(
       if (!parsed.ok) {
         blocked.push({ field: "hourly-rate", reason: parsed.reason });
       } else {
-        hourlyRate = opts.hourlyRate;
+        wage = { wage_type: "Hourly", hourly_rate: opts.hourlyRate };
       }
+    }
+  } else if (wageType === "Fixed") {
+    if (opts.hourlyRate) {
+      // Reject rather than silently drop: a fixed-wage contractor has no hourly rate, so
+      // accepting --hourly-rate would lose the user's input with no signal.
+      blocked.push({ field: "hourly-rate", reason: "not allowed when --wage-type is fixed" });
+    } else {
+      wage = { wage_type: "Fixed" };
     }
   }
 
@@ -106,7 +116,7 @@ export function validateContractorAdd(
     const { firstName, lastName } = opts;
     if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
     if (!lastName) blocked.push({ field: "last-name", reason: "required for individual" });
-    if (blocked.length > 0 || !firstName || !lastName || !email || !wageType || !startDate) {
+    if (blocked.length > 0 || !firstName || !lastName || !email || !wage || !startDate) {
       return { ok: false, message: "missing or invalid arguments", blocked };
     }
     return {
@@ -116,17 +126,16 @@ export function validateContractorAdd(
         first_name: firstName,
         last_name: lastName,
         email,
-        wage_type: wageType,
         start_date: startDate,
         self_onboarding: selfOnboarding,
-        ...(hourlyRate ? { hourly_rate: hourlyRate } : {}),
+        ...wage,
       },
     };
   }
 
   const { businessName } = opts;
   if (!businessName) blocked.push({ field: "business-name", reason: "required for business" });
-  if (blocked.length > 0 || !businessName || !email || !wageType || !startDate) {
+  if (blocked.length > 0 || !businessName || !email || !wage || !startDate) {
     return { ok: false, message: "missing or invalid arguments", blocked };
   }
   return {
@@ -135,10 +144,9 @@ export function validateContractorAdd(
       type: "Business",
       business_name: businessName,
       email,
-      wage_type: wageType,
       start_date: startDate,
       self_onboarding: selfOnboarding,
-      ...(hourlyRate ? { hourly_rate: hourlyRate } : {}),
+      ...wage,
     },
   };
 }
