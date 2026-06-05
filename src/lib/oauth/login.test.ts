@@ -37,7 +37,7 @@ describe("openOrPrint", () => {
 });
 
 describe("login", () => {
-  test("runs PKCE, reads token_info, and persists the token", async () => {
+  test("runs PKCE, reads token_info, and persists the token + company_uuid", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } }); // creds present -> no DCR
     // Mock only the api.test calls (code exchange, then token_info). The loopback
     // redirect is hit with the REAL fetch so the local server actually responds.
@@ -71,5 +71,6 @@ describe("login", () => {
     expect(info.resource?.uuid).toBe("comp-9");
     expect(store.data.sandbox?.accessToken).toBe("user-at");
     expect(store.data.sandbox?.refreshToken).toBe("rt");
+    expect(store.data.sandbox?.companyUuid).toBe("comp-9");
   });
 });

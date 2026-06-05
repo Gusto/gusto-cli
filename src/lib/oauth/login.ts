@@ -52,12 +52,16 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
     const code = await server.waitForCode();
     const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
     const info = await fetchTokenInfo(http, tokens.accessToken);
+    const companyUuid = companyUuidFromTokenInfo(info);
 
+    // Rebuild from the new token (don't spread the prior session) so a stale
+    // companyUuid can't survive a re-login that yields a non-company token.
     await store.save(env, {
       ...creds,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
+      ...(companyUuid ? { companyUuid } : {}),
     });
     return info;
   } finally {

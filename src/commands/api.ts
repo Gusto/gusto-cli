@@ -67,7 +67,7 @@ function apiRequestHandler(rawMethod: string, path: string, opts: ApiRequestOpts
       return { ok: true, data: { method, path, body } };
     }
 
-    const ctx = resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
+    const ctx = await resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
     if (!ctx.ok) return ctx.result;
 
     try {
