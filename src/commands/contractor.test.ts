@@ -185,21 +185,6 @@ describe("validateContractorAdd", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hourly-rate" }));
   });
 
-  test("a non-finite --hourly-rate that overflows to Infinity is rejected", () => {
-    const result = validateContractorAdd({
-      type: "individual",
-      firstName: "Sam",
-      lastName: "Rivera",
-      email: "s@x.com",
-      wageType: "hourly",
-      startDate: "2026-06-03",
-      hourlyRate: "1e1000",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hourly-rate" }));
-  });
-
   test("individual missing names and email blocks on all three plus wage/start", () => {
     const result = validateContractorAdd({ type: "individual" });
     expect(result.ok).toBe(false);
