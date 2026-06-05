@@ -2,12 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ApiError } from "../api-client.ts";
 import { ExitCode } from "../exit-codes.ts";
 import { NoSessionError, ensureClientCreds, getValidUserToken, withUserToken } from "./session.ts";
-import { type MockResponse, memoryStore, mockFetch } from "./test-support.ts";
-
-const http = (responses: MockResponse | MockResponse[]) => {
-  const { fetch } = mockFetch(responses);
-  return { baseUrl: "https://api.test", fetchImpl: fetch };
-};
+import { memoryStore, mockHttp as http } from "./test-support.ts";
 
 describe("getValidUserToken", () => {
   test("returns the stored token when not near expiry", async () => {

@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { type MockResponse, memoryStore, mockFetch } from "../lib/oauth/test-support.ts";
+import { memoryStore, mockHttp as http } from "../lib/oauth/test-support.ts";
 import { loginResultData, performLogout, resolveWhoamiToken } from "./auth.ts";
 
-const http = (responses: MockResponse | MockResponse[]) => ({
-  baseUrl: "https://api.test",
-  fetchImpl: mockFetch(responses).fetch,
-});
 const noFetch = (() => {
   throw new Error("network must not be hit");
 }) as unknown as typeof fetch;

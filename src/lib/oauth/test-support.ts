@@ -1,4 +1,5 @@
 import type { Environment } from "../global-flags.ts";
+import type { OAuthHttpOptions } from "./endpoints.ts";
 import type { TokenStore } from "./token-store.ts";
 import type { StoredSession } from "./types.ts";
 
@@ -29,6 +30,11 @@ export function mockFetch(responses: MockResponse | MockResponse[]): { fetch: ty
 
 export function formOf(init: RequestInit): URLSearchParams {
   return new URLSearchParams(String(init.body));
+}
+
+/** OAuthHttpOptions backed by a mockFetch that replays the given responses. */
+export function mockHttp(responses: MockResponse | MockResponse[]): OAuthHttpOptions {
+  return { baseUrl: "https://api.test", fetchImpl: mockFetch(responses).fetch };
 }
 
 export interface MemoryStore extends TokenStore {
