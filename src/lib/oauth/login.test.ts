@@ -37,7 +37,7 @@ describe("openOrPrint", () => {
 });
 
 describe("login", () => {
-  test("runs PKCE, reads token_info, and persists token + company_uuid", async () => {
+  test("runs PKCE, reads token_info, and persists the token", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } }); // creds present -> no DCR
     // Mock only the api.test calls (code exchange, then token_info). The loopback
     // redirect is hit with the REAL fetch so the local server actually responds.
