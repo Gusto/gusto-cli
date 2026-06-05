@@ -118,4 +118,22 @@ describe("startLoopbackServer", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toMatch(/state mismatch/);
   });
+
+  test("rejects when the callback carries an error param", async () => {
+    const server = await startLoopbackServer("good-state", { timeoutMs: 5_000 });
+    const settled = server.waitForCode().then(
+      () => null,
+      (e: Error) => e,
+    );
+    const res = await fetch(`${server.redirectUri}?error=access_denied&state=good-state`);
+    expect(res.status).toBe(400);
+    const err = await settled;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/authorization failed: access_denied/);
+  });
+
+  test("rejects with a timeout when no callback arrives", async () => {
+    const server = await startLoopbackServer("good-state", { timeoutMs: 10 });
+    await expect(server.waitForCode()).rejects.toThrow(/timed out waiting for browser callback/);
+  });
 });

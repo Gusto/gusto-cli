@@ -97,7 +97,7 @@ export function provisionPayloadError(err: unknown): CommandResult<never> {
   return toResult(err);
 }
 
-const NOT_INTERACTIVE: CommandResult<never> = {
+export const NOT_INTERACTIVE: CommandResult<never> = {
   ok: false,
   exitCode: ExitCode.General,
   error: {
@@ -107,7 +107,7 @@ const NOT_INTERACTIVE: CommandResult<never> = {
   },
 };
 
-function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
+export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   return async ({ globals }) => {
     let payload;
     try {

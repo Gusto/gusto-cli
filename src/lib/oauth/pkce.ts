@@ -126,29 +126,36 @@ export function startLoopbackServer(
       res.end(
         ok ? "Gusto CLI: login complete. You can close this tab." : "Gusto CLI: login failed. Return to your terminal.",
       );
-      if (parsed.error) return finish(new Error(`authorization failed: ${parsed.error}`));
-      if (parsed.state !== expectedState) return finish(new Error("state mismatch on callback (possible CSRF)"));
-      if (!parsed.code) return finish(new Error("callback missing authorization code"));
-      finish(null, parsed.code);
+      if (parsed.error) return fail(new Error(`authorization failed: ${parsed.error}`));
+      if (parsed.state !== expectedState) return fail(new Error("state mismatch on callback (possible CSRF)"));
+      if (!parsed.code) return fail(new Error("callback missing authorization code"));
+      succeed(parsed.code);
     });
 
     const timer = setTimeout(
-      () => finish(new Error(`timed out waiting for browser callback after ${timeoutMs}ms`)),
+      () => fail(new Error(`timed out waiting for browser callback after ${timeoutMs}ms`)),
       timeoutMs,
     );
 
-    function finish(err: Error | null, code?: string): void {
-      if (settled) return;
+    function settle(): boolean {
+      if (settled) return false;
       settled = true;
       clearTimeout(timer);
       server.close();
-      if (err) rejectCode(err);
-      else resolveCode(code as string);
+      return true;
+    }
+
+    function fail(err: Error): void {
+      if (settle()) rejectCode(err);
+    }
+
+    function succeed(code: string): void {
+      if (settle()) resolveCode(code);
     }
 
     server.on("error", (err) => {
       if (!listening) rejectServer(err);
-      else finish(err);
+      else fail(err);
     });
 
     server.listen(0, host, () => {
@@ -159,7 +166,7 @@ export function startLoopbackServer(
         redirectUri: redirectUriForPort(port, host),
         port,
         waitForCode: () => codePromise,
-        close: () => finish(new Error("login cancelled")),
+        close: () => fail(new Error("login cancelled")),
       });
     });
   });

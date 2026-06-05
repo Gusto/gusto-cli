@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { companyUuidFromTokenInfo, login } from "./login.ts";
+import { companyUuidFromTokenInfo, login, openOrPrint } from "./login.ts";
 import { memoryStore, mockFetch } from "./test-support.ts";
 
 describe("companyUuidFromTokenInfo", () => {
@@ -9,6 +9,30 @@ describe("companyUuidFromTokenInfo", () => {
   test("undefined when the resource is not a Company", () => {
     expect(companyUuidFromTokenInfo({ resource: { type: "Employee", uuid: "e-1" } })).toBeUndefined();
     expect(companyUuidFromTokenInfo({})).toBeUndefined();
+  });
+});
+
+describe("openOrPrint", () => {
+  test("prints the opened-browser hint when the opener succeeds", async () => {
+    const lines: string[] = [];
+    await openOrPrint(
+      "https://auth.test/go",
+      () => Promise.resolve(),
+      (l) => lines.push(l),
+    );
+    expect(lines[0]).toMatch(/Opened your browser/);
+    expect(lines.join("\n")).toContain("https://auth.test/go");
+  });
+
+  test("falls back to a manual-URL prompt when the opener rejects", async () => {
+    const lines: string[] = [];
+    await openOrPrint(
+      "https://auth.test/go",
+      () => Promise.reject(new Error("no opener")),
+      (l) => lines.push(l),
+    );
+    expect(lines[0]).toMatch(/Open this URL in your browser/);
+    expect(lines.join("\n")).toContain("https://auth.test/go");
   });
 });
 
@@ -47,6 +71,5 @@ describe("login", () => {
     expect(info.resource?.uuid).toBe("comp-9");
     expect(store.data.sandbox?.accessToken).toBe("user-at");
     expect(store.data.sandbox?.refreshToken).toBe("rt");
-    expect(store.data.sandbox?.companyUuid).toBe("comp-9");
   });
 });

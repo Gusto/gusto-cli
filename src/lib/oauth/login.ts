@@ -52,16 +52,12 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
     const code = await server.waitForCode();
     const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
     const info = await fetchTokenInfo(http, tokens.accessToken);
-    const companyUuid = companyUuidFromTokenInfo(info);
 
-    // Rebuild from the new token; don't spread the prior session, or a stale
-    // companyUuid would survive a re-login that yields a non-company token.
     await store.save(env, {
       ...creds,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
-      ...(companyUuid ? { companyUuid } : {}),
     });
     return info;
   } finally {
@@ -74,7 +70,7 @@ export async function fetchTokenInfo(http: OAuthHttpOptions, token: string): Pro
   return res.body;
 }
 
-async function openOrPrint(
+export async function openOrPrint(
   url: string,
   openBrowser: ((url: string) => Promise<void>) | undefined,
   print: (line: string) => void,

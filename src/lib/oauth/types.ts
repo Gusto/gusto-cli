@@ -16,7 +16,6 @@ export interface StoredSession {
   accessToken?: string;
   refreshToken?: string;
   expiresAt?: number;
-  companyUuid?: string;
 }
 
 export function hasClientCreds(s: StoredSession | null): s is StoredSession & ClientCreds {

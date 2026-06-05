@@ -74,6 +74,5 @@ describe("provision", () => {
     expect(result.accountClaimUrl).toBe("https://claim/co-1");
     expect(result.tokenInfo.resource?.uuid).toBe("comp-1");
     expect(store.data.sandbox?.accessToken).toBe("user-at");
-    expect(store.data.sandbox?.companyUuid).toBe("comp-1");
   });
 });

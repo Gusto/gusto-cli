@@ -109,4 +109,55 @@ describe("withUserToken", () => {
     expect(result).toBe("ok");
     expect(calls).toBe(2);
   });
+
+  test("rethrows a non-401 ApiError without refreshing", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", refreshToken: "rt", expiresAt: 9_999_999_999 },
+    });
+    await expect(
+      withUserToken(
+        store,
+        "sandbox",
+        http({ status: 200 }),
+        () => {
+          throw new ApiError(500, null, ExitCode.General, "server error");
+        },
+        () => 1_000,
+      ),
+    ).rejects.toThrow("server error");
+  });
+
+  test("rethrows the 401 when the session has no refresh token", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", expiresAt: 9_999_999_999 },
+    });
+    await expect(
+      withUserToken(
+        store,
+        "sandbox",
+        http({ status: 200 }),
+        () => {
+          throw new ApiError(401, null, ExitCode.Auth, "unauthorized");
+        },
+        () => 1_000,
+      ),
+    ).rejects.toThrow("unauthorized");
+  });
+
+  test("propagates when the post-401 refresh itself fails", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", refreshToken: "rt", expiresAt: 9_999_999_999 },
+    });
+    await expect(
+      withUserToken(
+        store,
+        "sandbox",
+        http({ status: 400, body: { error: "invalid_grant" } }), // refresh call fails
+        () => {
+          throw new ApiError(401, null, ExitCode.Auth, "unauthorized");
+        },
+        () => 1_000,
+      ),
+    ).rejects.toBeDefined();
+  });
 });
