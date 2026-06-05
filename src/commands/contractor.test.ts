@@ -20,9 +20,24 @@ describe("validateContractorAdd", () => {
         email: "s@x.com",
         wage_type: "Fixed",
         start_date: "2026-06-03",
-        self_onboarding: true,
+        self_onboarding: false,
       },
     });
+  });
+
+  test("self_onboarding defaults to false and is true only when opted in", () => {
+    const result = validateContractorAdd({
+      type: "individual",
+      firstName: "Sam",
+      lastName: "Rivera",
+      email: "s@x.com",
+      wageType: "fixed",
+      startDate: "2026-06-03",
+      selfOnboarding: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.body.self_onboarding).toBe(true);
   });
 
   test("hourly individual includes the hourly_rate", () => {
@@ -45,7 +60,7 @@ describe("validateContractorAdd", () => {
         wage_type: "Hourly",
         start_date: "2026-06-03",
         hourly_rate: "45",
-        self_onboarding: true,
+        self_onboarding: false,
       },
     });
   });
@@ -66,7 +81,7 @@ describe("validateContractorAdd", () => {
         email: "b@acme.com",
         wage_type: "Fixed",
         start_date: "2026-06-03",
-        self_onboarding: true,
+        self_onboarding: false,
       },
     });
   });

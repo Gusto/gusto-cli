@@ -14,7 +14,7 @@ interface ContractorCommon {
   email: string;
   wage_type: WageType;
   start_date: string;
-  self_onboarding: true;
+  self_onboarding: boolean;
   hourly_rate?: string;
 }
 
@@ -41,7 +41,15 @@ function isValidStartDate(raw: string): boolean {
 export function validateContractorAdd(
   opts: Pick<
     ContractorAddOpts,
-    "type" | "firstName" | "lastName" | "businessName" | "email" | "wageType" | "startDate" | "hourlyRate"
+    | "type"
+    | "firstName"
+    | "lastName"
+    | "businessName"
+    | "email"
+    | "wageType"
+    | "startDate"
+    | "hourlyRate"
+    | "selfOnboarding"
   >,
 ): ContractorValidation {
   if (opts.type !== "individual" && opts.type !== "business") {
@@ -86,6 +94,10 @@ export function validateContractorAdd(
   const { email } = opts;
   if (!email) blocked.push({ field: "email", reason: "required" });
 
+  // Default to admin-driven: the caller supplies the contractor's details rather than
+  // emailing them a self-onboarding invite. Opt in with --self-onboarding.
+  const selfOnboarding = opts.selfOnboarding ?? false;
+
   if (opts.type === "individual") {
     const { firstName, lastName } = opts;
     if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
@@ -102,7 +114,7 @@ export function validateContractorAdd(
         email,
         wage_type: wageType,
         start_date: startDate,
-        self_onboarding: true,
+        self_onboarding: selfOnboarding,
         ...(hourlyRate ? { hourly_rate: hourlyRate } : {}),
       },
     };
@@ -121,7 +133,7 @@ export function validateContractorAdd(
       email,
       wage_type: wageType,
       start_date: startDate,
-      self_onboarding: true,
+      self_onboarding: selfOnboarding,
       ...(hourlyRate ? { hourly_rate: hourlyRate } : {}),
     },
   };
@@ -136,6 +148,7 @@ interface ContractorAddOpts {
   wageType?: string;
   startDate?: string;
   hourlyRate?: string;
+  selfOnboarding?: boolean;
   companyUuid?: string;
   token?: string;
   dryRun?: boolean;
@@ -156,15 +169,16 @@ export function registerContractorCommand(parent: Command): void {
 
   cmd
     .command("add")
-    .description("One-call 1099 onboarding with auto-invite (Individual or Business)")
+    .description("Add a 1099 contractor (Individual or Business); admin-driven by default")
     .option("--type <type>", "Contractor type: individual or business")
     .option("--first-name <name>", "First name (required for individual)")
     .option("--last-name <name>", "Last name (required for individual)")
     .option("--business-name <name>", "Business name (required for business)")
-    .option("--email <email>", "Email - also where the invite is sent")
+    .option("--email <email>", "Email - also where the self-onboarding invite is sent, if enabled")
     .option("--wage-type <type>", "Wage type: fixed or hourly (required)")
     .option("--start-date <date>", "Start date YYYY-MM-DD (required)")
     .option("--hourly-rate <amount>", "Hourly rate (required when --wage-type is hourly)")
+    .option("--self-onboarding", "Email the contractor a self-onboarding invite (default: admin-driven)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
@@ -210,7 +224,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
                 email: "billing@acme.example.com",
                 wage_type: "Fixed",
                 start_date: "2026-06-03",
-                self_onboarding: true,
+                self_onboarding: false,
               }
             : {
                 type: "Individual",
@@ -219,7 +233,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
                 email: "sam@example.com",
                 wage_type: "Fixed",
                 start_date: "2026-06-03",
-                self_onboarding: true,
+                self_onboarding: false,
               },
           note: "example: canonical request shape, no args or auth required",
         },
