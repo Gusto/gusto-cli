@@ -3,6 +3,10 @@ import { getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } fro
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
+import { oauthHttp, resolveEnv } from "./oauth/context.ts";
+import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
+import { getValidUserToken } from "./oauth/session.ts";
+import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import type { CommandResult } from "./runner.ts";
 
 interface ApiContextBase {
@@ -20,6 +24,9 @@ export interface ApiContextOpts {
   requireCompany?: boolean;
   tokenOverride?: string;
   companyOverride?: string;
+  store?: TokenStore;
+  http?: OAuthHttpOptions;
+  now?: () => number;
 }
 
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
@@ -27,13 +34,15 @@ type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<nev
 export function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts & { requireCompany: false },
-): Resolved<Extract<ApiContext, { hasCompany: false }>>;
-export function resolveApiContext(globals: GlobalFlags, opts?: ApiContextOpts): Resolved<CompanyApiContext>;
-export function resolveApiContext(
+): Promise<Resolved<Extract<ApiContext, { hasCompany: false }>>>;
+export function resolveApiContext(globals: GlobalFlags, opts?: ApiContextOpts): Promise<Resolved<CompanyApiContext>>;
+export async function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
-): Resolved<ApiContext> {
-  const token = getAccessToken(opts.tokenOverride);
+): Promise<Resolved<ApiContext>> {
+  // Token precedence: --token flag > GUSTO_ACCESS_TOKEN env > stored login session.
+  const override = getAccessToken(opts.tokenOverride);
+  const token = override ?? (await sessionToken(globals, opts));
   if (!token) {
     return {
       ok: false,
@@ -42,7 +51,7 @@ export function resolveApiContext(
         exitCode: ExitCode.Auth,
         error: {
           code: "no_access_token",
-          message: "no access token. Set GUSTO_ACCESS_TOKEN, pass --token, or wait for `gusto auth login` (AINT-561).",
+          message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pass --token.",
         },
       },
     };
@@ -55,7 +64,10 @@ export function resolveApiContext(
     return { ok: true, ctx: { client, baseUrl, hasCompany: false } };
   }
 
-  const companyUuid = getCompanyUuid(opts.companyOverride);
+  // Only borrow the session's company when the token also came from the session;
+  // an override token must not silently target an unrelated login's company.
+  const fallbackCompany = override ? null : await sessionCompanyUuid(globals, opts);
+  const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
     return {
       ok: false,
@@ -65,7 +77,7 @@ export function resolveApiContext(
         error: {
           code: "no_company_uuid",
           message:
-            "no company UUID. Pass --company-uuid <uuid> or set GUSTO_COMPANY_UUID. Look it up via `gusto auth whoami`.",
+            "no company UUID. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via `gusto auth whoami`.",
         },
       },
     };
@@ -74,10 +86,35 @@ export function resolveApiContext(
   return { ok: true, ctx: { client, baseUrl, hasCompany: true, companyUuid } };
 }
 
+/** The token from the stored login session, refreshed on near-expiry; null if none. */
+async function sessionToken(globals: GlobalFlags, opts: ApiContextOpts): Promise<string | null> {
+  const store = opts.store ?? resolveStore();
+  const http = opts.http ?? oauthHttp(globals);
+  try {
+    return await getValidUserToken(store, resolveEnv(globals), http, opts.now);
+  } catch (err) {
+    // A failed token refresh means re-login - report "no token". Anything else
+    // (unreadable/corrupt session file, etc.) is a real error; let it surface.
+    if (err instanceof OAuthError) return null;
+    throw err;
+  }
+}
+
+/** Company fallback after --company-uuid/env: the companyUuid persisted from a
+ * company-scoped login token. */
+async function sessionCompanyUuid(globals: GlobalFlags, opts: ApiContextOpts): Promise<string | null> {
+  const store = opts.store ?? resolveStore();
+  const session = await store.load(resolveEnv(globals));
+  return session?.companyUuid ?? null;
+}
+
 export interface CompanyResourceOpts {
   token?: string;
   companyUuid?: string;
   dryRun?: boolean;
+  store?: TokenStore;
+  http?: OAuthHttpOptions;
+  now?: () => number;
 }
 
 /** POST `body` to /v1/companies/{company_uuid}/{resource}. Resolves auth/company context,
@@ -88,7 +125,13 @@ export async function createCompanyResource(
   body: unknown,
   opts: CompanyResourceOpts,
 ): Promise<CommandResult> {
-  const ctx = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
+  const ctx = await resolveApiContext(globals, {
+    tokenOverride: opts.token,
+    companyOverride: opts.companyUuid,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
   if (!ctx.ok) {
     if (opts.dryRun) {
       return {
@@ -125,7 +168,13 @@ export async function fetchCompanyResource(
   opts: CompanyResourceOpts,
   buildPath: (ctx: CompanyApiContext) => string,
 ): Promise<CommandResult> {
-  const resolved = resolveApiContext(globals, { tokenOverride: opts.token, companyOverride: opts.companyUuid });
+  const resolved = await resolveApiContext(globals, {
+    tokenOverride: opts.token,
+    companyOverride: opts.companyUuid,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
   if (!resolved.ok) return resolved.result;
 
   try {
@@ -141,10 +190,16 @@ export async function fetchCompanyResource(
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
 export async function fetchResource(
   globals: GlobalFlags,
-  opts: { token?: string },
+  opts: { token?: string; store?: TokenStore; http?: OAuthHttpOptions; now?: () => number },
   buildPath: () => string,
 ): Promise<CommandResult> {
-  const resolved = resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
+  const resolved = await resolveApiContext(globals, {
+    tokenOverride: opts.token,
+    requireCompany: false,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
   if (!resolved.ok) return resolved.result;
 
   try {

@@ -16,6 +16,8 @@ export interface StoredSession {
   accessToken?: string;
   refreshToken?: string;
   expiresAt?: number;
+  // Persisted from a company-scoped login so resource commands resolve a company without --company-uuid/env.
+  companyUuid?: string;
 }
 
 export function hasClientCreds(s: StoredSession | null): s is StoredSession & ClientCreds {
