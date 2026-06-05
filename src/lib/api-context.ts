@@ -4,7 +4,7 @@ import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "./oauth/context.ts";
-import type { OAuthHttpOptions } from "./oauth/endpoints.ts";
+import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
 import { getValidUserToken } from "./oauth/session.ts";
 import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import type { CommandResult } from "./runner.ts";
@@ -90,9 +90,11 @@ async function resolveToken(globals: GlobalFlags, opts: ApiContextOpts): Promise
   const http = opts.http ?? oauthHttp(globals);
   try {
     return await getValidUserToken(store, resolveEnv(globals), http, opts.now);
-  } catch {
-    // Expired session whose refresh failed - surface as "no token" (re-login) rather than a crash.
-    return null;
+  } catch (err) {
+    // A failed token refresh means re-login - report "no token". Anything else
+    // (unreadable/corrupt session file, etc.) is a real error; let it surface.
+    if (err instanceof OAuthError) return null;
+    throw err;
   }
 }
 

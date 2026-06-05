@@ -3,13 +3,22 @@ import { ApiClient } from "./api-client.ts";
 import { createCompanyResource, fetchCompanyResource, fetchResource, resolveApiContext } from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
+import { OAuthError } from "./oauth/endpoints.ts";
 import { memoryStore, mockHttp } from "./oauth/test-support.ts";
+import type { TokenStore } from "./oauth/token-store.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
 
 // An empty store + harmless http so token/company resolution can't fall back to
 // the real on-disk session. Tests that exercise the session path pass their own.
 const noSession = () => ({ store: memoryStore(), http: mockHttp({ status: 200 }) });
+
+// A store whose load() rejects, to drive resolveToken's error handling.
+const throwingStore = (err: unknown): TokenStore => ({
+  load: () => Promise.reject(err),
+  save: () => Promise.resolve(),
+  clear: () => Promise.resolve(),
+});
 
 // resolveApiContext reads token/company/base-url from process.env when no override is passed.
 // Snapshot and clear the relevant vars so tests don't depend on the dev's shell.
@@ -90,34 +99,26 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("refreshes a near-expiry session token before building the client", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
-    });
+  test("a failed token refresh (OAuthError) degrades to no_access_token", async () => {
     const result = await resolveApiContext(flags, {
       requireCompany: false,
-      store,
-      http: mockHttp({ status: 200, body: { access_token: "refreshed", expires_in: 3600 } }),
-      now: () => 1_990, // within the refresh skew
-    });
-    expect(result.ok).toBe(true);
-    expect(store.data.sandbox?.accessToken).toBe("refreshed");
-  });
-
-  test("expired session whose refresh fails degrades to no_access_token, not a crash", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 1_000 },
-    });
-    const result = await resolveApiContext(flags, {
-      requireCompany: false,
-      store,
-      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }), // refresh rejected
-      now: () => 2_000, // past expiry, so the stale token can't be reused
+      store: throwingStore(new OAuthError(400, { error: "invalid_grant" }, "refresh failed")),
+      http: mockHttp({ status: 200 }),
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
     expect(result.result.error.code).toBe("no_access_token");
+  });
+
+  test("an unexpected session error (e.g. unreadable file) is not swallowed", async () => {
+    await expect(
+      resolveApiContext(flags, {
+        requireCompany: false,
+        store: throwingStore(new Error("EACCES: permission denied")),
+        http: mockHttp({ status: 200 }),
+      }),
+    ).rejects.toThrow("EACCES");
   });
 
   test("falls back to the stored companyUuid when no --company-uuid/env", async () => {

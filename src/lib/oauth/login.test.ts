@@ -73,4 +73,31 @@ describe("login", () => {
     expect(store.data.sandbox?.refreshToken).toBe("rt");
     expect(store.data.sandbox?.companyUuid).toBe("comp-9");
   });
+
+  test("clears a stale companyUuid when re-login yields a non-company token", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "cid", clientSecret: "sec", accessToken: "prev", companyUuid: "old-co" },
+    });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "new-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange
+      { status: 200, body: { resource: { type: "Employee", uuid: "emp-1" } } }, // token_info: not Company-scoped
+    ]);
+    const openBrowser = async (authorizeUrl: string): Promise<void> => {
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      await globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+    };
+
+    await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      openBrowser,
+      print: () => {},
+      timeoutMs: 5_000,
+    });
+
+    expect(store.data.sandbox?.accessToken).toBe("new-at");
+    expect(store.data.sandbox?.companyUuid).toBeUndefined();
+  });
 });
