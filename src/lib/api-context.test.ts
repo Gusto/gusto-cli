@@ -104,6 +104,22 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(store.data.sandbox?.accessToken).toBe("refreshed");
   });
 
+  test("expired session whose refresh fails degrades to no_access_token, not a crash", async () => {
+    const store = memoryStore({
+      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 1_000 },
+    });
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store,
+      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }), // refresh rejected
+      now: () => 2_000, // past expiry, so the stale token can't be reused
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.code).toBe("no_access_token");
+  });
+
   test("falls back to the stored companyUuid when no --company-uuid/env", async () => {
     const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
     const result = await resolveApiContext(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
@@ -144,7 +160,12 @@ describe("resolveApiContext - stored session fallback", () => {
 
 describe("createCompanyResource", () => {
   test("dry-run without auth emits the placeholder path and a note, never calls the API", async () => {
-    const result = await createCompanyResource(flags, "employees", { first_name: "Jane" }, { dryRun: true });
+    const result = await createCompanyResource(
+      flags,
+      "employees",
+      { first_name: "Jane" },
+      { dryRun: true, ...noSession() },
+    );
     expect(result).toEqual({
       ok: true,
       data: {

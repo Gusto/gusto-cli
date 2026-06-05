@@ -24,7 +24,6 @@ export interface ApiContextOpts {
   requireCompany?: boolean;
   tokenOverride?: string;
   companyOverride?: string;
-  // Session-resolution deps; default to the real store/http. Injected in tests.
   store?: TokenStore;
   http?: OAuthHttpOptions;
   now?: () => number;
@@ -89,7 +88,12 @@ async function resolveToken(globals: GlobalFlags, opts: ApiContextOpts): Promise
   if (direct) return direct;
   const store = opts.store ?? resolveStore();
   const http = opts.http ?? oauthHttp(globals);
-  return getValidUserToken(store, resolveEnv(globals), http, opts.now);
+  try {
+    return await getValidUserToken(store, resolveEnv(globals), http, opts.now);
+  } catch {
+    // Expired session whose refresh failed - surface as "no token" (re-login) rather than a crash.
+    return null;
+  }
 }
 
 /** Company fallback after --company-uuid/env: the companyUuid persisted from a
@@ -104,7 +108,6 @@ export interface CompanyResourceOpts {
   token?: string;
   companyUuid?: string;
   dryRun?: boolean;
-  // Session-resolution deps; default to the real store/http. Injected in tests.
   store?: TokenStore;
   http?: OAuthHttpOptions;
   now?: () => number;
