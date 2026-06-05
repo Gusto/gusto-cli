@@ -3,6 +3,7 @@ import { createCompanyResource, fetchCompanyResource, fetchResource } from "../l
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { parsePositiveNumber } from "../lib/parse.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
@@ -84,10 +85,13 @@ export function validateContractorAdd(
   if (wageType === "Hourly") {
     if (!opts.hourlyRate) {
       blocked.push({ field: "hourly-rate", reason: "required when --wage-type is hourly" });
-    } else if (!(Number(opts.hourlyRate) > 0)) {
-      blocked.push({ field: "hourly-rate", reason: `must be a positive number, got: ${opts.hourlyRate}` });
     } else {
-      hourlyRate = opts.hourlyRate;
+      const parsed = parsePositiveNumber(opts.hourlyRate);
+      if (!parsed.ok) {
+        blocked.push({ field: "hourly-rate", reason: parsed.reason });
+      } else {
+        hourlyRate = opts.hourlyRate;
+      }
     }
   }
 

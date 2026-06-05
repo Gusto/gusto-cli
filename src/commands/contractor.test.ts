@@ -142,6 +142,20 @@ describe("validateContractorAdd", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
   });
 
+  test("a regex-valid but calendar-impossible --start-date is rejected", () => {
+    const result = validateContractorAdd({
+      type: "individual",
+      firstName: "Sam",
+      lastName: "Rivera",
+      email: "s@x.com",
+      wageType: "fixed",
+      startDate: "2026-02-30",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+  });
+
   test("hourly wage-type without --hourly-rate blocks on hourly-rate", () => {
     const result = validateContractorAdd({
       type: "individual",
@@ -165,6 +179,21 @@ describe("validateContractorAdd", () => {
       wageType: "hourly",
       startDate: "2026-06-03",
       hourlyRate: "0",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hourly-rate" }));
+  });
+
+  test("a non-finite --hourly-rate that overflows to Infinity is rejected", () => {
+    const result = validateContractorAdd({
+      type: "individual",
+      firstName: "Sam",
+      lastName: "Rivera",
+      email: "s@x.com",
+      wageType: "hourly",
+      startDate: "2026-06-03",
+      hourlyRate: "1e1000",
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");

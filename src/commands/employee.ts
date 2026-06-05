@@ -3,6 +3,7 @@ import { createCompanyResource, fetchCompanyResource, fetchResource } from "../l
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { parsePositiveNumber } from "../lib/parse.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 interface EmployeeBody {
@@ -165,10 +166,9 @@ export type CompParseResult =
   | { ok: false; reason: string };
 
 export function parseComp(raw: string): CompParseResult {
-  const num = Number(raw);
-  if (!Number.isFinite(num) || num <= 0) {
-    return { ok: false, reason: `must be a positive number, got: ${raw}` };
-  }
+  const parsed = parsePositiveNumber(raw);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  const num = parsed.value;
   // Heuristic: values >= 1000 are interpreted as annual salary, smaller numbers as hourly rate.
   // Document this in --help in a future polish pass; for V0.0.1 it matches Gusto's convention.
   return { ok: true, comp: num >= 1000 ? { annual_salary: num } : { hourly_rate: num } };
