@@ -142,6 +142,20 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.ctx.companyUuid).toBe("co-flag");
   });
 
+  test("an override token does not borrow the session's company (must be given explicitly)", async () => {
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
+    const result = await resolveApiContext(flags, {
+      tokenOverride: "override-tok",
+      store,
+      http: mockHttp({ status: 200 }),
+      now: () => 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.code).toBe("no_company_uuid");
+  });
+
   test("env/override token wins over the session - the session is never touched", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
     // Near-expiry session whose refresh would throw if consulted.

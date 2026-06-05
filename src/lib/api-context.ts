@@ -40,7 +40,9 @@ export async function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
 ): Promise<Resolved<ApiContext>> {
-  const token = await resolveToken(globals, opts);
+  // Token precedence: --token flag > GUSTO_ACCESS_TOKEN env > stored login session.
+  const override = getAccessToken(opts.tokenOverride);
+  const token = override ?? (await sessionToken(globals, opts));
   if (!token) {
     return {
       ok: false,
@@ -62,7 +64,10 @@ export async function resolveApiContext(
     return { ok: true, ctx: { client, baseUrl, hasCompany: false } };
   }
 
-  const companyUuid = getCompanyUuid(opts.companyOverride) ?? (await sessionCompanyUuid(globals, opts));
+  // Only borrow the session's company when the token also came from the session;
+  // an override token must not silently target an unrelated login's company.
+  const fallbackCompany = override ? null : await sessionCompanyUuid(globals, opts);
+  const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
     return {
       ok: false,
@@ -81,11 +86,8 @@ export async function resolveApiContext(
   return { ok: true, ctx: { client, baseUrl, hasCompany: true, companyUuid } };
 }
 
-/** Token precedence: --token flag > GUSTO_ACCESS_TOKEN env > stored login session
- * (refreshed on near-expiry via getValidUserToken). */
-async function resolveToken(globals: GlobalFlags, opts: ApiContextOpts): Promise<string | null> {
-  const direct = getAccessToken(opts.tokenOverride);
-  if (direct) return direct;
+/** The token from the stored login session, refreshed on near-expiry; null if none. */
+async function sessionToken(globals: GlobalFlags, opts: ApiContextOpts): Promise<string | null> {
   const store = opts.store ?? resolveStore();
   const http = opts.http ?? oauthHttp(globals);
   try {
