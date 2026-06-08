@@ -200,14 +200,64 @@ describe("validateContractorAdd", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hourly-rate" }));
   });
 
-  test("individual missing names and email blocks on all three plus wage/start", () => {
+  test("individual missing names blocks on names plus wage/start (email is admin-driven optional)", () => {
     const result = validateContractorAdd({ type: "individual" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.message).toBe("missing or invalid arguments");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "first-name" }));
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "last-name" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "wage-type" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    // Admin-driven is the default, so email is not required.
+    expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "email" }));
+  });
+
+  test("admin-driven contractor without --email succeeds and omits email from the body", () => {
+    const result = validateContractorAdd({
+      type: "business",
+      businessName: "Acme LLC",
+      wageType: "fixed",
+      startDate: "2026-06-03",
+    });
+    expect(result).toEqual({
+      ok: true,
+      body: {
+        type: "Business",
+        business_name: "Acme LLC",
+        wage_type: "Fixed",
+        start_date: "2026-06-03",
+        self_onboarding: false,
+      },
+    });
+  });
+
+  test("--self-onboarding requires --email", () => {
+    const result = validateContractorAdd({
+      type: "business",
+      businessName: "Acme LLC",
+      wageType: "fixed",
+      startDate: "2026-06-03",
+      selfOnboarding: true,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "email" }));
+  });
+
+  test("hourly_rate is normalized to the validated value, not the raw input", () => {
+    const result = validateContractorAdd({
+      type: "individual",
+      firstName: "Sam",
+      lastName: "Rivera",
+      email: "s@x.com",
+      wageType: "hourly",
+      startDate: "2026-06-03",
+      hourlyRate: "1e3",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.body).toEqual(expect.objectContaining({ wage_type: "Hourly", hourly_rate: "1000" }));
   });
 
   test("business does not require first/last name, only business-name + email + wage/start", () => {
