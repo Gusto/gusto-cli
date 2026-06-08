@@ -62,21 +62,21 @@ interface Run {
   exitCode: number;
 }
 
-async function runInstall(fixture: Fixture, env: Record<string, string> = {}): Promise<Run> {
+// Single launch path for install.sh. `env` is merged over a base PATH; callers
+// supply HOME/SHELL/GUSTO_CLI_* as needed.
+async function runScript(env: Record<string, string>): Promise<Run> {
   const proc = Bun.spawn(["sh", INSTALL_SH], {
     stdout: "pipe",
     stderr: "pipe",
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: fixture.home,
-      SHELL: "/bin/bash",
-      GUSTO_CLI_BASE_URL: fixture.baseUrl,
-      ...env,
-    },
+    env: { PATH: process.env.PATH ?? "", ...env },
   });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   const exitCode = await proc.exited;
   return { stdout, stderr, exitCode };
+}
+
+async function runInstall(fixture: Fixture, env: Record<string, string> = {}): Promise<Run> {
+  return runScript({ HOME: fixture.home, SHELL: "/bin/bash", GUSTO_CLI_BASE_URL: fixture.baseUrl, ...env });
 }
 
 // Write an executable shim into its own dir (kept out of $HOME so it doesn't
@@ -101,14 +101,14 @@ function linkTools(names: string[]): string {
 }
 
 let fixture: Fixture | undefined;
-const shimDirs: string[] = [];
+const tempDirs: string[] = [];
 afterEach(() => {
   fixture?.server.stop(true);
   if (fixture?.home) rmSync(fixture.home, { recursive: true, force: true });
   // Reset so a test that doesn't create a fixture (e.g. the URL-construction tests)
   // doesn't make afterEach re-stop a stale, already-stopped server.
   fixture = undefined;
-  while (shimDirs.length) rmSync(shimDirs.pop()!, { recursive: true, force: true });
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 describe("install.sh", () => {
@@ -162,7 +162,7 @@ describe("install.sh", () => {
     fixture = startFixture();
     // Shadow `uname` with a fake reporting an unsupported arch on a supported OS.
     const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo riscv64; else echo Linux; fi\n');
-    shimDirs.push(shim);
+    tempDirs.push(shim);
 
     const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
     expect(result.exitCode).toBe(1);
@@ -173,11 +173,22 @@ describe("install.sh", () => {
   test("errors clearly on an unsupported OS, installing nothing", async () => {
     fixture = startFixture();
     const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo x86_64; else echo SunOS; fi\n');
-    shimDirs.push(shim);
+    tempDirs.push(shim);
 
     const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("unsupported OS: SunOS");
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
+  });
+
+  test("errors clearly on linux arm64, which has no prebuilt binary", async () => {
+    fixture = startFixture();
+    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo aarch64; else echo Linux; fi\n');
+    tempDirs.push(shim);
+
+    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toLowerCase()).toContain("linux arm64");
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
   });
 
@@ -249,51 +260,54 @@ describe("install.sh", () => {
     fixture = startFixture();
     // PATH without sha256sum forces install.sh down the `shasum -a 256` branch.
     const toolDir = linkTools(["sh", "uname", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm", "shasum"]);
-    shimDirs.push(toolDir);
+    tempDirs.push(toolDir);
 
     const result = await runInstall(fixture, { PATH: toolDir });
     expect(result.exitCode).toBe(0);
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
   });
+
+  test("errors clearly on Linux arm64, which has no published binary", async () => {
+    fixture = startFixture();
+    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo aarch64; else echo Linux; fi\n');
+    tempDirs.push(shim);
+
+    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toLowerCase()).toContain("unsupported platform");
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
+  });
 });
 
 describe("install.sh URL construction", () => {
-  // Shadow `curl` with a shim that records its arguments and fails, so the
-  // GitHub release URL the script builds (no GUSTO_CLI_BASE_URL) is observable
-  // without a network call.
-  function runWithCurlShim(env: Record<string, string>): { log: string; exitCode: Promise<number> } {
+  // Shadow `curl` with a shim that records its first URL arg and fails, so the
+  // GitHub release URL install.sh builds (no GUSTO_CLI_BASE_URL) is observable
+  // without a network call. Reuses runScript so there's one launch path.
+  async function recordCurlUrl(env: Record<string, string>): Promise<string> {
     const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-url-"));
-    shimDirs.push(home);
+    tempDirs.push(home);
     const log = path.join(home, "curl.log");
     const shim = writeShim("curl", `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`);
-    shimDirs.push(shim);
-    const proc = Bun.spawn(["sh", INSTALL_SH], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { PATH: `${shim}:${process.env.PATH ?? ""}`, HOME: home, SHELL: "/bin/bash", ...env },
-    });
-    return { log, exitCode: proc.exited };
+    tempDirs.push(shim);
+    await runScript({ PATH: `${shim}:${process.env.PATH ?? ""}`, HOME: home, SHELL: "/bin/bash", ...env });
+    return readFileSync(log, "utf8");
   }
 
   test("builds the latest-release URL by default", async () => {
-    const { log, exitCode } = runWithCurlShim({});
-    await exitCode;
-    expect(readFileSync(log, "utf8")).toContain(
+    expect(await recordCurlUrl({})).toContain(
       "https://github.com/Gusto/gusto-cli-public/releases/latest/download/gusto-",
     );
   });
 
   test("builds a pinned-version URL when GUSTO_CLI_VERSION is set", async () => {
-    const { log, exitCode } = runWithCurlShim({ GUSTO_CLI_VERSION: "v1.2.3" });
-    await exitCode;
-    expect(readFileSync(log, "utf8")).toContain(
+    expect(await recordCurlUrl({ GUSTO_CLI_VERSION: "v1.2.3" })).toContain(
       "https://github.com/Gusto/gusto-cli-public/releases/download/v1.2.3/gusto-",
     );
   });
 
   test("builds the URL from GUSTO_CLI_REPO when set", async () => {
-    const { log, exitCode } = runWithCurlShim({ GUSTO_CLI_REPO: "acme/widget" });
-    await exitCode;
-    expect(readFileSync(log, "utf8")).toContain("https://github.com/acme/widget/releases/latest/download/gusto-");
+    expect(await recordCurlUrl({ GUSTO_CLI_REPO: "acme/widget" })).toContain(
+      "https://github.com/acme/widget/releases/latest/download/gusto-",
+    );
   });
 });

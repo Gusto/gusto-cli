@@ -29,7 +29,20 @@ case "$arch" in
   x86_64 | amd64) arch="x64" ;;
   *) echo "gusto: unsupported architecture: $arch" >&2; exit 1 ;;
 esac
+# Releases ship darwin arm64/x64 and linux x64 only - there's no linux arm64
+# binary, so fail clearly here instead of 404ing on the download.
+if [ "$os" = "linux" ] && [ "$arch" = "arm64" ]; then
+  echo "gusto: unsupported platform: linux arm64 (no prebuilt binary available)" >&2
+  exit 1
+fi
 asset="gusto-$os-$arch"
+
+# Only macOS (arm64/x64) and Linux x64 are published. Reject other detected combos
+# (notably Linux arm64) up front instead of failing later with a confusing 404.
+if [ "$os" = "linux" ] && [ "$arch" = "arm64" ]; then
+  echo "gusto: unsupported platform: Linux arm64 (supported: macOS arm64/x64, Linux x64)" >&2
+  exit 1
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
