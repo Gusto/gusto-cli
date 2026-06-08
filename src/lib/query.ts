@@ -9,6 +9,12 @@ export type QueryParams = Record<string, QueryValue>;
  * Returns "" when nothing survives, otherwise a string beginning with "?".
  * Key order follows the insertion order of `params`. */
 export function toQueryString(params: QueryParams): string {
-  void params;
-  throw new Error("not implemented: toQueryString");
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    const joined = Array.isArray(value) ? value.join(",") : value;
+    if (joined === "") continue;
+    parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(joined)}`);
+  }
+  return parts.length === 0 ? "" : `?${parts.join("&")}`;
 }

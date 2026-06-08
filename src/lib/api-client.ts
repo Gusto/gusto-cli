@@ -70,6 +70,8 @@ export interface PollOptions<T> {
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_RETRIES = 3;
+export const DEFAULT_POLL_INTERVAL_MS = 2_000;
+export const DEFAULT_POLL_TIMEOUT_MS = 120_000;
 const IDEMPOTENT_METHODS = new Set(["GET", "DELETE"]);
 
 export interface ApiClientOptions {
@@ -129,10 +131,35 @@ export class ApiClient {
    * `isFailure` holds (rejects with `PollFailedError`), or the time / attempt
    * budget is exhausted (rejects with `PollTimeoutError`). Sleeps `intervalMs`
    * between attempts. Used for async report generation (general ledger). */
-  poll<T = unknown>(path: string, options: PollOptions<T>): Promise<ApiResponse<T>> {
-    void path;
-    void options;
-    throw new Error("not implemented: poll");
+  async poll<T = unknown>(path: string, options: PollOptions<T>): Promise<ApiResponse<T>> {
+    const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
+    const sleepMs = options.sleepMs ?? (() => intervalMs);
+    const now = options.now ?? (() => Date.now());
+
+    const start = now();
+    let attempt = 0;
+    let lastBody: unknown;
+
+    for (;;) {
+      const response = await this.get<T>(path);
+      attempt += 1;
+      lastBody = response.body;
+
+      if (options.isFailure?.(response.body)) {
+        throw new PollFailedError(`poll: ${path} reached a terminal failed state`, response.body);
+      }
+      if (options.until(response.body)) {
+        return response;
+      }
+      if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) {
+        throw new PollTimeoutError(`poll: ${path} did not succeed within ${attempt} attempts`, attempt, lastBody);
+      }
+      if (now() - start >= timeoutMs) {
+        throw new PollTimeoutError(`poll: ${path} did not succeed within ${timeoutMs}ms`, attempt, lastBody);
+      }
+      await sleep(sleepMs(attempt - 1));
+    }
   }
 
   async request<T = unknown>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {

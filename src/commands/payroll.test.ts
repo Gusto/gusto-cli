@@ -15,6 +15,8 @@ describe("buildPayrollListQuery", () => {
       dateFilterBy: "check_date",
       include: "taxes",
       sortOrder: "desc",
+      page: "2",
+      per: "50",
     });
     expect(result).toEqual({
       ok: true,
@@ -26,8 +28,18 @@ describe("buildPayrollListQuery", () => {
         date_filter_by: "check_date",
         include: "taxes",
         sort_order: "desc",
+        page: "2",
+        per: "50",
       },
     });
+  });
+
+  test("rejects a non-integer page or per", () => {
+    const result = buildPayrollListQuery({ page: "abc", per: "-1" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "page" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "per" }));
   });
 
   test("omits flags that were not supplied", () => {
