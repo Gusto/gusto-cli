@@ -15,6 +15,11 @@ const FREQUENCY_MAP: Record<string, PayFrequency> = {
   monthly: "Monthly",
 };
 
+// Week-based schedules are anchored by a pay-period window, so the API requires
+// anchor_end_of_pay_period for them. Month-based ones (Twice per month, Monthly)
+// are defined by day-of-month instead and don't need it.
+const ANCHOR_END_REQUIRED: readonly PayFrequency[] = ["Every week", "Every other week"];
+
 interface PayScheduleBody {
   frequency: PayFrequency;
   anchor_pay_date: string;
@@ -96,6 +101,12 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
     }
     if (!anchorPayDate) {
       blocked.push({ field: "first-payday", reason: "required (use --first-payday or --anchor-pay-date)" });
+    }
+    if (frequency && ANCHOR_END_REQUIRED.includes(frequency) && !opts.anchorEndOfPayPeriod) {
+      blocked.push({
+        field: "anchor-end-of-pay-period",
+        reason: `required for ${frequency.toLowerCase()} schedules (YYYY-MM-DD, end of the first pay period)`,
+      });
     }
     if (!frequency || !anchorPayDate || blocked.length > 0) {
       return {
