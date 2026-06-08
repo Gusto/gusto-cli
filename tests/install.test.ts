@@ -192,6 +192,16 @@ describe("install.sh", () => {
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
   });
 
+  test("maps the amd64 arch alias to x64", async () => {
+    fixture = startFixture();
+    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo amd64; else echo Linux; fi\n');
+    tempDirs.push(shim);
+
+    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
+  });
+
   test("aborts when SHA256SUMS has no line for the asset", async () => {
     // SHA256SUMS lists a different asset only, so there's no line for this host's target.
     fixture = startFixture({ sha256sumsBody: `${FAKE_SHA256}  gusto-some-other-target\n` });
@@ -258,24 +268,15 @@ describe("install.sh", () => {
 
   test("verifies the checksum with shasum when sha256sum is unavailable", async () => {
     fixture = startFixture();
-    // PATH without sha256sum forces install.sh down the `shasum -a 256` branch.
-    const toolDir = linkTools(["sh", "uname", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm", "shasum"]);
+    // PATH without sha256sum forces the `shasum -a 256` branch. A fake shasum keeps
+    // the test independent of whether the runner ships a real one (ubuntu may not).
+    const toolDir = linkTools(["sh", "uname", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
+    writeFileSync(path.join(toolDir, "shasum"), `#!/bin/sh\necho "${FAKE_SHA256}  $3"\n`, { mode: 0o755 });
     tempDirs.push(toolDir);
 
     const result = await runInstall(fixture, { PATH: toolDir });
     expect(result.exitCode).toBe(0);
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
-  });
-
-  test("errors clearly on Linux arm64, which has no published binary", async () => {
-    fixture = startFixture();
-    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo aarch64; else echo Linux; fi\n');
-    tempDirs.push(shim);
-
-    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toLowerCase()).toContain("unsupported platform");
-    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
   });
 });
 
@@ -287,9 +288,15 @@ describe("install.sh URL construction", () => {
     const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-url-"));
     tempDirs.push(home);
     const log = path.join(home, "curl.log");
-    const shim = writeShim("curl", `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`);
-    tempDirs.push(shim);
-    await runScript({ PATH: `${shim}:${process.env.PATH ?? ""}`, HOME: home, SHELL: "/bin/bash", ...env });
+    const bin = mkdtempSync(path.join(tmpdir(), "gusto-cli-urlbin-"));
+    tempDirs.push(bin);
+    writeFileSync(path.join(bin, "curl"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
+    // Force a supported platform so the OS/arch guard never short-circuits before
+    // curl runs - otherwise the log is never created (e.g. on a linux arm64 host).
+    writeFileSync(path.join(bin, "uname"), '#!/bin/sh\nif [ "$1" = "-m" ]; then echo x86_64; else echo Linux; fi\n', {
+      mode: 0o755,
+    });
+    await runScript({ PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home, SHELL: "/bin/bash", ...env });
     return readFileSync(log, "utf8");
   }
 
