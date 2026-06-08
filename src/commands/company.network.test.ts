@@ -66,6 +66,23 @@ describe("companyOnboardingStatusHandler", () => {
     expect(d.ready_to_finish).toBe(false);
   });
 
+  test("ready_to_finish when blockers are clear but onboarding isn't marked complete", async () => {
+    routeFetch([
+      {
+        match: "/onboarding_status",
+        status: 200,
+        body: {
+          onboarding_completed: false,
+          onboarding_steps: [{ id: "federal_tax_setup", required: true, completed: true }],
+        },
+      },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("ready_to_finish");
+    expect(d.ready_to_finish).toBe(true);
+    expect(d.blocked_on).toEqual([]);
+  });
+
   test("onboarding_completed yields stage done with no blockers", async () => {
     routeFetch([
       { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },

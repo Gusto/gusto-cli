@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { type CompanyApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { ApiError } from "../lib/api-client.ts";
+import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { defaultOpenBrowser } from "../lib/oauth/login.ts";
@@ -377,10 +378,6 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
 type PartialError = { label: string; error: string };
 type StateResult = { state: string; status: StateTaxBuildStatus | "error"; reason?: string; error?: string };
 type StateStatuses = Record<string, { setup_complete?: boolean; ready_to_run_payroll?: boolean }>;
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** Discover the states to set up from employee work addresses, back-filling a
  * missing work address from the primary location. Per-employee failures are

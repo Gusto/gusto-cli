@@ -89,6 +89,12 @@ describe("bankAccountBlockers + handler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
   });
+
+  test("--example returns a canned payload", async () => {
+    const d = data(await bankAccountHandler({ example: true })(ctx));
+    expect(d.method).toBe("POST");
+    expect(d.path).toContain("/bank_accounts");
+  });
 });
 
 describe("stateTaxHandler", () => {

@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { withCompanyContext } from "../lib/api-context.ts";
+import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -93,7 +94,7 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         try {
           return { ok: true, data: await fn() };
         } catch (err) {
-          return { ok: false, label, error: err instanceof Error ? err.message : String(err) };
+          return { ok: false, label, error: errMsg(err) };
         }
       };
 

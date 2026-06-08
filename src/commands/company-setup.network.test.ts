@@ -250,6 +250,12 @@ describe("formsHandler", () => {
     });
   });
 
+  test("--demo-sign reports nothing to do when all forms are already signed", async () => {
+    stubFetch([{ status: 200, body: [{ uuid: "f1", requires_signing: true, signed_at: "2026-01-01T00:00:00Z" }] }]);
+    const d = data(await formsHandler({ ...auth, demoSign: true, signatureText: "Ada Lovelace" })(ctx));
+    expect(d).toMatchObject({ forms_signed: 0, total: 0 });
+  });
+
   test("--demo-sign reports partial failure when some forms fail to sign", async () => {
     stubFetch([
       {
