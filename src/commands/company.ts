@@ -108,7 +108,9 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       const paymentConfig = paymentR.ok ? paymentR.data : null;
       const paySchedules = scheduleR.ok ? scheduleR.data : null;
       const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
-      const errors = [companyR, paymentR, scheduleR].filter((r) => !r.ok);
+      const errors = [companyR, paymentR, scheduleR]
+        .filter((r): r is { ok: false; label: string; error: string } => !r.ok)
+        .map(({ label, error }) => ({ label, error }));
 
       return {
         ok: true,
@@ -143,8 +145,11 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
         .body;
       const blockedOn = extractBlockers(status);
       const isComplete = status?.onboarding_completed === true;
-      const readyToFinish = blockedOn.length === 0 && !isComplete;
-      const stage = isComplete ? "done" : readyToFinish ? "ready_to_finish" : "onboarding";
+      // A malformed-but-200 response (no onboarding_steps) must not read as
+      // "no blockers" -> ready_to_finish; treat a missing step list as unknown.
+      const hasSteps = Array.isArray(status?.onboarding_steps);
+      const readyToFinish = hasSteps && blockedOn.length === 0 && !isComplete;
+      const stage = isComplete ? "done" : !hasSteps ? "unknown" : readyToFinish ? "ready_to_finish" : "onboarding";
       const suggested = blockedOn[0]?.suggested_action ?? null;
       return {
         ok: true,

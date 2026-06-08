@@ -1,8 +1,7 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, missingArgs, runCommand } from "../lib/runner.ts";
 
 type PayFrequency = "Every week" | "Every other week" | "Twice per month" | "Monthly";
 
@@ -109,11 +108,7 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
       });
     }
     if (!frequency || !anchorPayDate || blocked.length > 0) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
-      };
+      return missingArgs(blocked);
     }
 
     const body: PayScheduleBody = {

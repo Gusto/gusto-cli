@@ -1,6 +1,6 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
+import { type BlockedOn, type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
 
 export interface CommandContext {
   command: string;
@@ -56,6 +56,15 @@ export async function runCommand<T>(
     code = ExitCode.General;
   }
   return deps.exit(code);
+}
+
+/** Standard "missing required arguments" validation failure with a blocked_on list. */
+export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
+  return {
+    ok: false,
+    exitCode: ExitCode.Validation,
+    error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
+  };
 }
 
 export function notImplementedHandler(commandPath: string): CommandHandler {

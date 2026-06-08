@@ -274,6 +274,20 @@ describe("stateTaxHandler (network)", () => {
     expect(JSON.stringify(result.error.details)).toContain("work_addresses:emp-1");
   });
 
+  test("a state with no default rate is reported needs_manual_setup with a reason", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1" }] }, // employees
+      { status: 200, body: [] }, // locations
+      { status: 200, body: [{ active: true, state: "NY" }] }, // work_addresses (NY = no temp rate)
+      { status: 200, body: { requirement_sets: [] } }, // GET tax_requirements/NY
+      { status: 200, body: [{ state: "NY", ready_to_run_payroll: false }] }, // GET tax_requirements
+    ]);
+    const d = data(await stateTaxHandler(auth)(ctx));
+    const ny = (d.results as { state: string; status: string; reason?: string }[]).find((r) => r.state === "NY");
+    expect(ny?.status).toBe("needs_manual_setup");
+    expect(ny?.reason).toContain("no new-employer default rate");
+  });
+
   test("surfaces a readiness-readback failure via partial_errors", async () => {
     stubFetch([
       { status: 200, body: [{ uuid: "emp-1" }] }, // employees

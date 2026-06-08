@@ -41,6 +41,18 @@ describe("companyShowHandler", () => {
     const partial = d.partial_errors as { label: string }[];
     expect(partial.map((e) => e.label)).toEqual(["payment_config"]);
   });
+
+  test("all three GETs succeed: success true, no partial_errors", async () => {
+    routeFetch([
+      { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
+      { match: "/pay_schedules", status: 200, body: [{ frequency: "Every week", anchor_pay_date: "2026-02-06" }] },
+      { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved" } },
+    ]);
+    const d = data(await companyShowHandler(auth)(ctx));
+    expect(d.success).toBe(true);
+    expect(d.partial_errors).toBeUndefined();
+    expect((d.summary as { payment_speed?: string }).payment_speed).toBe("standard");
+  });
 });
 
 describe("companyOnboardingStatusHandler", () => {

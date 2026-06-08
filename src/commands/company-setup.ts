@@ -12,20 +12,12 @@ import {
   buildTaxRequirementSets,
 } from "../lib/state-tax.ts";
 import { type BlockedOn } from "../lib/output.ts";
-import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, missingArgs, runCommand } from "../lib/runner.ts";
 import { type PayScheduleCreateOpts, payScheduleCreateHandler } from "./pay-schedule.ts";
 
 interface ContextOpts {
   companyUuid?: string;
   token?: string;
-}
-
-function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
-  return {
-    ok: false,
-    exitCode: ExitCode.Validation,
-    error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
-  };
 }
 
 function asArray<T>(body: unknown): T[] {
@@ -138,12 +130,15 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
 
     const blocked = federalTaxBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
-    // blockers guarantee the four fields are present.
+    const { ein, taxPayerType, filingForm, legalName } = opts;
+    // blockers already guaranteed these; re-check narrows the types via control
+    // flow (no non-null assertions). Unreachable when blocked was empty.
+    if (!ein || !taxPayerType || !filingForm || !legalName) return missingArgs(blocked);
     const fields: FederalTaxFields = {
-      ein: opts.ein!,
-      taxPayerType: opts.taxPayerType!,
-      filingForm: opts.filingForm!,
-      legalName: opts.legalName!,
+      ein,
+      taxPayerType,
+      filingForm,
+      legalName,
       ...(taxableAsScorp !== undefined ? { taxableAsScorp } : {}),
     };
 
@@ -386,8 +381,13 @@ type StateStatuses = Record<string, { setup_complete?: boolean; ready_to_run_pay
  * recorded in `partialErrors` rather than silently shrinking the set. */
 async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: PartialError[]): Promise<Set<string>> {
   const companyBase = `/v1/companies/${ctx.companyUuid}`;
-  const employees = asArray<EmployeeRec>((await ctx.client.get(`${companyBase}/employees`)).body);
-  const locations = asArray<LocationRec>((await ctx.client.get(`${companyBase}/locations`)).body);
+  // Independent reads - fetch together.
+  const [employeesRes, locationsRes] = await Promise.all([
+    ctx.client.get(`${companyBase}/employees`),
+    ctx.client.get(`${companyBase}/locations`),
+  ]);
+  const employees = asArray<EmployeeRec>(employeesRes.body);
+  const locations = asArray<LocationRec>(locationsRes.body);
   const primaryLocationUuid = locations[0]?.uuid;
 
   // Each employee is independent, so fetch (and back-fill) in parallel. Per-employee
@@ -473,17 +473,14 @@ async function loadReadiness(ctx: CompanyApiContext, partialErrors: PartialError
   return stateStatuses;
 }
 
-async function loadWorkAddresses(
-  client: { get: <T>(p: string) => Promise<{ body: T }> },
-  employeeUuid: string,
-): Promise<WorkAddressRec[]> {
+/** Minimal read surface of ApiClient the load helpers need. */
+type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
+
+async function loadWorkAddresses(client: ReadClient, employeeUuid: string): Promise<WorkAddressRec[]> {
   return asArray<WorkAddressRec>((await client.get(`/v1/employees/${employeeUuid}/work_addresses`)).body);
 }
 
-async function loadStateStatuses(
-  client: { get: <T>(p: string) => Promise<{ body: T }> },
-  companyBase: string,
-): Promise<StateStatusRec[]> {
+async function loadStateStatuses(client: ReadClient, companyBase: string): Promise<StateStatusRec[]> {
   return asArray<StateStatusRec>((await client.get(`${companyBase}/tax_requirements`)).body);
 }
 
@@ -514,7 +511,7 @@ interface FormRec {
 
 export function formsHandler(opts: FormsOpts, isTty = process.stdout.isTTY === true): CommandHandler {
   return async ({ globals }) => {
-    if (opts.demoSign) return demoSignHandler(opts)({ command: "gusto company forms", globals });
+    if (opts.demoSign) return demoSign(opts, globals);
     return hostedSigningFlow(opts, globals, isTty);
   };
 }
@@ -542,72 +539,70 @@ async function hostedSigningFlow(opts: FormsOpts, globals: GlobalFlags, isTty: b
   });
 }
 
-function demoSignHandler(opts: FormsOpts): CommandHandler {
-  return async ({ globals }) => {
-    // Demo escape hatch: never allow server-side signing against production - it
-    // bypasses the legally-defensible hosted flow. Force the hosted path there.
-    if (globals.env === "production") {
+async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandResult> {
+  // Demo escape hatch: never allow server-side signing against production - it
+  // bypasses the legally-defensible hosted flow. Force the hosted path there.
+  if (globals.env === "production") {
+    return {
+      ok: false,
+      exitCode: ExitCode.Blocked,
+      error: {
+        code: "demo_only",
+        message:
+          "`--demo-sign` is a non-production demo escape hatch. In production run `gusto company forms` (the hosted signing flow) so the signatory signs in Gusto's hosted UI.",
+      },
+    };
+  }
+  if (!opts.signatureText) {
+    return missingArgs([{ field: "signature-text", reason: "required for --demo-sign (full legal name)" }]);
+  }
+  // Always sign from localhost - a demo escape hatch has no business accepting a
+  // caller-supplied IP, which would let the signer's location be spoofed in the
+  // audit trail.
+  const ip = "127.0.0.1";
+  return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    const forms = asArray<FormRec>((await ctx.client.get(`/v1/companies/${ctx.companyUuid}/forms`)).body);
+    const unsigned = forms.filter((f) => !f.signed_at && f.requires_signing === true);
+    if (unsigned.length === 0) {
+      return { ok: true, data: { forms_signed: 0, total: 0, message: "All forms already signed." } };
+    }
+    // Each form signs independently; sign in parallel and collect failures.
+    const outcomes = await Promise.all(
+      unsigned.map(async (f) => {
+        try {
+          await ctx.client.put(`/v1/forms/${f.uuid}/sign`, {
+            signature_text: opts.signatureText,
+            agree: true,
+            signed_by_ip_address: ip,
+          });
+          return null;
+        } catch (err) {
+          return { form: f.name ?? f.uuid, error: errMsg(err) };
+        }
+      }),
+    );
+    const failures = outcomes.filter((o): o is { form: string; error: string } => o !== null);
+    const signed = unsigned.length - failures.length;
+    if (failures.length === 0) {
       return {
-        ok: false,
-        exitCode: ExitCode.Blocked,
-        error: {
-          code: "demo_only",
-          message:
-            "`--demo-sign` is a non-production demo escape hatch. In production run `gusto company forms` (the hosted signing flow) so the signatory signs in Gusto's hosted UI.",
+        ok: true,
+        data: {
+          forms_signed: signed,
+          total: unsigned.length,
+          message: `Signed ${signed} of ${unsigned.length} forms.`,
         },
       };
     }
-    if (!opts.signatureText) {
-      return missingArgs([{ field: "signature-text", reason: "required for --demo-sign (full legal name)" }]);
-    }
-    // Always sign from localhost - a demo escape hatch has no business accepting a
-    // caller-supplied IP, which would let the signer's location be spoofed in the
-    // audit trail.
-    const ip = "127.0.0.1";
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
-      const forms = asArray<FormRec>((await ctx.client.get(`/v1/companies/${ctx.companyUuid}/forms`)).body);
-      const unsigned = forms.filter((f) => !f.signed_at && f.requires_signing === true);
-      if (unsigned.length === 0) {
-        return { ok: true, data: { forms_signed: 0, total: 0, message: "All forms already signed." } };
-      }
-      // Each form signs independently; sign in parallel and collect failures.
-      const outcomes = await Promise.all(
-        unsigned.map(async (f) => {
-          try {
-            await ctx.client.put(`/v1/forms/${f.uuid}/sign`, {
-              signature_text: opts.signatureText,
-              agree: true,
-              signed_by_ip_address: ip,
-            });
-            return null;
-          } catch (err) {
-            return { form: f.name ?? f.uuid, error: errMsg(err) };
-          }
-        }),
-      );
-      const failures = outcomes.filter((o): o is { form: string; error: string } => o !== null);
-      const signed = unsigned.length - failures.length;
-      if (failures.length === 0) {
-        return {
-          ok: true,
-          data: {
-            forms_signed: signed,
-            total: unsigned.length,
-            message: `Signed ${signed} of ${unsigned.length} forms.`,
-          },
-        };
-      }
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiClient,
-        error: {
-          code: "form_signing_failed",
-          message: `Signed ${signed} of ${unsigned.length} forms; ${failures.length} failed.`,
-          details: failures,
-        },
-      };
-    });
-  };
+    return {
+      ok: false,
+      exitCode: ExitCode.ApiClient,
+      error: {
+        code: "form_signing_failed",
+        message: `Signed ${signed} of ${unsigned.length} forms; ${failures.length} failed.`,
+        details: failures,
+      },
+    };
+  });
 }
 
 // ───────────────────────────── registration ─────────────────────────────
