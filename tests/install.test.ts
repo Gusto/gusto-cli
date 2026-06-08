@@ -261,6 +261,24 @@ describe("install.sh", () => {
     expect(readFileSync(profile, "utf8")).toContain(".gusto/bin");
   });
 
+  test("clears the macOS quarantine attribute via xattr on darwin", async () => {
+    fixture = startFixture();
+    // Force darwin + a fake xattr (recording its args) so the macOS-only branch
+    // runs deterministically on any host, including the ubuntu CI runner.
+    const bin = mkdtempSync(path.join(tmpdir(), "gusto-cli-xattr-"));
+    tempDirs.push(bin);
+    const marker = path.join(bin, "xattr-called");
+    writeFileSync(path.join(bin, "uname"), '#!/bin/sh\nif [ "$1" = "-m" ]; then echo arm64; else echo Darwin; fi\n', {
+      mode: 0o755,
+    });
+    writeFileSync(path.join(bin, "xattr"), `#!/bin/sh\necho "$@" >> "${marker}"\n`, { mode: 0o755 });
+
+    const result = await runInstall(fixture, { PATH: `${bin}:${process.env.PATH ?? ""}` });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    expect(readFileSync(marker, "utf8")).toContain("com.apple.quarantine");
+  });
+
   test("verifies the checksum with shasum when sha256sum is unavailable", async () => {
     fixture = startFixture();
     // PATH without sha256sum forces the `shasum -a 256` branch. A fake shasum keeps
@@ -292,6 +310,9 @@ describe("install.sh URL construction", () => {
       mode: 0o755,
     });
     await runScript({ PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home, SHELL: "/bin/bash", ...env });
+    if (!existsSync(log)) {
+      throw new Error("recordCurlUrl: install.sh exited before invoking curl (no curl.log written)");
+    }
     return readFileSync(log, "utf8");
   }
 
