@@ -20,7 +20,7 @@ const caRequirements: TaxRequirementsResponse = {
 describe("buildTaxRequirementSets", () => {
   test("CA with temporary rates builds the usedefaultsuirates payload", () => {
     const result = buildTaxRequirementSets(caRequirements, "CA", true);
-    expect(result.status).toBe("submitted");
+    if (result.status !== "submitted") throw new Error("expected submitted");
     expect(result.requirement_sets).toHaveLength(1);
     const set = result.requirement_sets[0];
     expect(set?.key).toBe("taxrates");
@@ -45,6 +45,5 @@ describe("buildTaxRequirementSets", () => {
     };
     const result = buildTaxRequirementSets(noDefault, "TX", true);
     expect(result.status).toBe("no_default_rate_question");
-    expect(result.requirement_sets).toEqual([]);
   });
 });

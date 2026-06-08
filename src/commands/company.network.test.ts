@@ -42,6 +42,18 @@ describe("companyShowHandler", () => {
     expect(partial.map((e) => e.label)).toEqual(["payment_config"]);
   });
 
+  test("a failed primary company GET nulls the summary and reports partial_errors", async () => {
+    routeFetch([
+      { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
+      { match: "/pay_schedules", status: 200, body: [] },
+      { match: "/companies/co-1", status: 404, body: { error: "not found" } }, // primary company GET fails (404 = not retried)
+    ]);
+    const d = data(await companyShowHandler(auth)(ctx));
+    expect(d.success).toBe(false);
+    expect((d.summary as { name: string | null }).name).toBeNull();
+    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toContain("company");
+  });
+
   test("all three GETs succeed: success true, no partial_errors", async () => {
     routeFetch([
       { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },

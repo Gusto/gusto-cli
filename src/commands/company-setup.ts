@@ -178,7 +178,21 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
         einProvided = einUsed;
         einUsed = fabricateEin();
         einAutoRotated = true;
-        result = await attempt(einUsed);
+        try {
+          result = await attempt(einUsed);
+        } catch (retryErr) {
+          // The rotated EIN also failed - surface the rotation context instead of a
+          // generic error that hides that a fabricated EIN was tried.
+          return {
+            ok: false,
+            exitCode: retryErr instanceof ApiError ? retryErr.exitCode : ExitCode.General,
+            error: {
+              code: "ein_rotation_failed",
+              message: `EIN ${einProvided} was already in use; retried with a fabricated EIN (${einUsed}) which also failed.`,
+              details: { ein_provided: einProvided, ein_used: einUsed, error: errMsg(retryErr) },
+            },
+          };
+        }
       }
 
       return {
@@ -445,15 +459,26 @@ async function statesForEmployee(
         error: "employee has a job but no work address and no company location to back-fill from",
       });
     } else {
+      let provisioned = false;
       try {
         await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
           location_uuid: primaryLocationUuid,
           active: true,
           effective_date: new Date().toISOString().slice(0, 10),
         });
-        workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+        provisioned = true;
       } catch (err) {
         errors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
+      }
+      // Reload separately: if the POST succeeded but the reload fails, the address
+      // exists server-side, so label it as a reload failure (not a provisioning one)
+      // to avoid implying the POST failed and prompting a duplicate re-POST.
+      if (provisioned) {
+        try {
+          workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+        } catch (err) {
+          errors.push({ label: `reload_work_addresses:${emp.uuid}`, error: errMsg(err) });
+        }
       }
     }
   }
@@ -516,7 +541,7 @@ async function loadStateStatuses(client: ReadClient, companyBase: string): Promi
   return asArray<StateStatusRec>((await client.get(`${companyBase}/tax_requirements`)).body);
 }
 
-function reasonFor(status: StateTaxBuildStatus, state: string): string {
+function reasonFor(status: Exclude<StateTaxBuildStatus, "submitted">, state: string): string {
   if (status === "needs_manual_setup")
     return `${state} has no new-employer default rate available; enter the actual rate.`;
   return `${state} does not expose usedefaultsuirates - needs the employer's actual rate.`;

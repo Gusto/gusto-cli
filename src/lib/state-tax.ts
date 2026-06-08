@@ -31,10 +31,11 @@ export interface TaxRequirementsResponse {
 
 export type StateTaxBuildStatus = "submitted" | "needs_manual_setup" | "no_default_rate_question";
 
-export interface StateTaxBuildResult {
-  status: StateTaxBuildStatus;
-  requirement_sets: RequirementSet[];
-}
+// Discriminated on status: requirement_sets only exists (and is only meaningful)
+// on the "submitted" branch.
+export type StateTaxBuildResult =
+  | { status: "submitted"; requirement_sets: RequirementSet[] }
+  | { status: "needs_manual_setup" | "no_default_rate_question" };
 
 /** Build the requirement_sets that enable the new-employer default SUI rate
  * for `state`. Returns the reason when no default-rate path is available. */
@@ -44,7 +45,7 @@ export function buildTaxRequirementSets(
   useTemporaryRates: boolean,
 ): StateTaxBuildResult {
   if (!useTemporaryRates || !TEMPORARY_RATE_STATES.includes(state)) {
-    return { status: "needs_manual_setup", requirement_sets: [] };
+    return { status: "needs_manual_setup" };
   }
 
   const requirementSets: RequirementSet[] = [];
@@ -67,7 +68,7 @@ export function buildTaxRequirementSets(
   }
 
   if (requirementSets.length === 0) {
-    return { status: "no_default_rate_question", requirement_sets: [] };
+    return { status: "no_default_rate_question" };
   }
   return { status: "submitted", requirement_sets: requirementSets };
 }
