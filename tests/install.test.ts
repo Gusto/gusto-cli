@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { type Run, spawnCapture } from "./support";
 
 type Server = ReturnType<typeof Bun.serve>;
 
@@ -53,23 +54,10 @@ function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string; 
   return { server, baseUrl: `http://localhost:${server.port}`, home };
 }
 
-interface Run {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
 // Single launch path for install.sh. `env` is merged over a base PATH; callers
 // supply HOME/SHELL/GUSTO_CLI_* as needed.
 async function runScript(env: Record<string, string>): Promise<Run> {
-  const proc = Bun.spawn(["sh", INSTALL_SH], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { PATH: process.env.PATH ?? "", ...env },
-  });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const exitCode = await proc.exited;
-  return { stdout, stderr, exitCode };
+  return spawnCapture(["sh", INSTALL_SH], { PATH: process.env.PATH ?? "", ...env });
 }
 
 async function runInstall(fixture: Fixture, env: Record<string, string> = {}): Promise<Run> {
