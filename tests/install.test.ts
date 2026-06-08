@@ -100,11 +100,14 @@ function linkTools(names: string[]): string {
   return dir;
 }
 
-let fixture: Fixture;
+let fixture: Fixture | undefined;
 const shimDirs: string[] = [];
 afterEach(() => {
   fixture?.server.stop(true);
   if (fixture?.home) rmSync(fixture.home, { recursive: true, force: true });
+  // Reset so a test that doesn't create a fixture (e.g. the URL-construction tests)
+  // doesn't make afterEach re-stop a stale, already-stopped server.
+  fixture = undefined;
   while (shimDirs.length) rmSync(shimDirs.pop()!, { recursive: true, force: true });
 });
 
@@ -286,5 +289,11 @@ describe("install.sh URL construction", () => {
     expect(readFileSync(log, "utf8")).toContain(
       "https://github.com/Gusto/gusto-cli-public/releases/download/v1.2.3/gusto-",
     );
+  });
+
+  test("builds the URL from GUSTO_CLI_REPO when set", async () => {
+    const { log, exitCode } = runWithCurlShim({ GUSTO_CLI_REPO: "acme/widget" });
+    await exitCode;
+    expect(readFileSync(log, "utf8")).toContain("https://github.com/acme/widget/releases/latest/download/gusto-");
   });
 });
