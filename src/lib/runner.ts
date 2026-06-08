@@ -1,5 +1,6 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import { availableFields, selectFields } from "./field-filter.ts";
+import type { FieldSelection, GlobalFlags } from "./global-flags.ts";
 import { type BlockedOn, type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
 
 export interface CommandContext {
@@ -41,7 +42,8 @@ export async function runCommand<T>(
   try {
     const result = await handler({ command, globals });
     if (result.ok) {
-      emit(output, { ok: true, data: result.data }, deps.sinks);
+      // `--fields` only ever reshapes successful output; error envelopes are emitted verbatim.
+      emit(output, { ok: true, data: applyFieldSelection(result.data, globals.fields) }, deps.sinks);
       code = ExitCode.Success;
     } else {
       emit(output, { ok: false, error: result.error }, deps.sinks);
@@ -74,6 +76,14 @@ export function validationFailure(message: string, blocked: BlockedOn[]): Comman
 /** Standard "missing required arguments" validation failure with a blocked_on list. */
 export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
   return validationFailure("missing required arguments", blocked);
+}
+
+/** Apply a `--fields` selection to successful data: `discover` replaces it with the list of
+ * available top-level field names; `select` projects it down to the requested keys. */
+function applyFieldSelection(data: unknown, selection: FieldSelection | undefined): unknown {
+  if (!selection) return data;
+  if (selection.mode === "discover") return { fields: availableFields(data) };
+  return selectFields(data, selection.keys);
 }
 
 export function notImplementedHandler(commandPath: string): CommandHandler {
