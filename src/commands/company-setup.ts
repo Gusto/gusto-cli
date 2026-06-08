@@ -4,7 +4,12 @@ import { ApiError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { defaultOpenBrowser } from "../lib/oauth/login.ts";
-import { type TaxRequirementsResponse, TEMPORARY_RATE_STATES, buildTaxRequirementSets } from "../lib/state-tax.ts";
+import {
+  type StateTaxBuildStatus,
+  type TaxRequirementsResponse,
+  TEMPORARY_RATE_STATES,
+  buildTaxRequirementSets,
+} from "../lib/state-tax.ts";
 import { type BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
 import { type PayScheduleCreateOpts, payScheduleCreateHandler } from "./pay-schedule.ts";
@@ -163,6 +168,9 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
 
       // Staging persists EINs across runs, so a fixture EIN often collides on a
       // re-run. On a 422 "already in use", rotate to a fresh fabricated EIN once.
+      // NEVER in production - fabricating an EIN there would register a bogus
+      // number for the company's IRS filings. There, surface the 422 instead.
+      const mayRotate = globals.env !== "production";
       let einUsed = fields.ein;
       let result: unknown;
       let einAutoRotated = false;
@@ -170,7 +178,7 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
       try {
         result = await attempt(einUsed);
       } catch (err) {
-        if (!einAlreadyInUse(err)) throw err;
+        if (!mayRotate || !einAlreadyInUse(err)) throw err;
         einProvided = einUsed;
         einUsed = fabricateEin();
         einAutoRotated = true;
@@ -257,10 +265,16 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
           )
         ).body;
         phase = "verify";
-        await ctx.client.put(`${base}/${bank.uuid}/verify`, {
-          deposit_1: Number(deposits.deposit_1),
-          deposit_2: Number(deposits.deposit_2),
-        });
+        const d1 = Number(deposits.deposit_1);
+        const d2 = Number(deposits.deposit_2);
+        // Guard a malformed test-deposit response so we don't PUT null amounts and
+        // mask the real cause behind a generic verify 422.
+        if (!Number.isFinite(d1) || !Number.isFinite(d2)) {
+          throw new Error(
+            `send_test_deposits returned non-numeric amounts (deposit_1=${deposits.deposit_1}, deposit_2=${deposits.deposit_2})`,
+          );
+        }
+        await ctx.client.put(`${base}/${bank.uuid}/verify`, { deposit_1: d1, deposit_2: d2 });
       } catch (err) {
         return {
           ok: false,
@@ -361,7 +375,7 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
 }
 
 type PartialError = { label: string; error: string };
-type StateResult = { state: string; status: string; reason?: string; error?: string };
+type StateResult = { state: string; status: StateTaxBuildStatus | "error"; reason?: string; error?: string };
 type StateStatuses = Record<string, { setup_complete?: boolean; ready_to_run_payroll?: boolean }>;
 
 function errMsg(err: unknown): string {
@@ -461,7 +475,7 @@ async function loadStateStatuses(
   return asArray<StateStatusRec>((await client.get(`${companyBase}/tax_requirements`)).body);
 }
 
-function reasonFor(status: string, state: string): string {
+function reasonFor(status: StateTaxBuildStatus, state: string): string {
   if (status === "needs_manual_setup")
     return `${state} has no new-employer default rate available; enter the actual rate.`;
   return `${state} does not expose usedefaultsuirates - needs the employer's actual rate.`;

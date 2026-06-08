@@ -83,6 +83,25 @@ describe("federalTaxHandler (network)", () => {
     expect((calls[3]?.body as { version: string }).version).toBe("v2");
   });
 
+  test("does NOT auto-rotate the EIN on production - surfaces the 422 instead", async () => {
+    const calls = stubFetch([
+      { status: 200, body: { version: "v1" } },
+      { status: 422, body: { errors: [{ message: "EIN is already in use" }] } },
+    ]);
+    const prod: GlobalFlags = { ...globals, env: "production" };
+    const result = await federalTaxHandler({
+      ...auth,
+      ein: "12-3456789",
+      taxPayerType: "LLC",
+      filingForm: "941",
+      legalName: "Acme Inc.",
+    })({ command: "test", globals: prod });
+
+    expect(result.ok).toBe(false);
+    // GET + one PUT only - no fabricated-EIN retry.
+    expect(calls).toHaveLength(2);
+  });
+
   test("a non-EIN 422 is not retried and surfaces as an error", async () => {
     const calls = stubFetch([
       { status: 200, body: { version: "v1" } },
