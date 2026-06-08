@@ -109,13 +109,6 @@ describe("payroll/ledger validate before auth (exit 7)", () => {
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "start-date" }));
   });
 
-  test("payroll list with a non-integer --per blocks on per", async () => {
-    const result = await run(["payroll", "list", "--per", "lots"]);
-    expect(result.exitCode).toBe(7);
-    const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "per" }));
-  });
-
   test("ledger show with a non-positive --timeout blocks on timeout", async () => {
     const result = await run(["ledger", "show", "payroll-uuid-123", "--timeout", "0"]);
     expect(result.exitCode).toBe(7);

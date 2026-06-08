@@ -14,8 +14,6 @@ export interface PayrollListOpts {
   dateFilterBy?: string;
   include?: string;
   sortOrder?: string;
-  page?: string;
-  per?: string;
   companyUuid?: string;
   token?: string;
 }
@@ -33,17 +31,13 @@ function isValidIsoDate(value: string): boolean {
   return parsed.toISOString().slice(0, 10) === value;
 }
 
-function isPositiveInt(value: string): boolean {
-  return /^\d+$/.test(value) && Number(value) > 0;
-}
-
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
- * query params, validating that any supplied dates are ISO `YYYY-MM-DD` and that
- * page/per are positive integers. The range rules (end_date at most 3 months
- * out; start/end at most 1 year apart) are enforced server-side and surfaced
- * through the API error envelope, so they are intentionally not duplicated here.
- * The deprecated `processed` / `include_off_cycle` params are omitted in favor
- * of `processing_statuses` / `payroll_types`. */
+ * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The
+ * range rules (end_date at most 3 months out; start/end at most 1 year apart)
+ * are enforced server-side and surfaced through the API error envelope, so they
+ * are intentionally not duplicated here. The deprecated `processed` /
+ * `include_off_cycle` params are omitted in favor of `processing_statuses` /
+ * `payroll_types`. Pagination params (`page`/`per`) are deferred to AINT-564. */
 export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryResult {
   const blocked: BlockedOn[] = [];
   if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {
@@ -51,12 +45,6 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryRe
   }
   if (opts.endDate !== undefined && !isValidIsoDate(opts.endDate)) {
     blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
-  if (opts.page !== undefined && !isPositiveInt(opts.page)) {
-    blocked.push({ field: "page", reason: "must be a positive integer" });
-  }
-  if (opts.per !== undefined && !isPositiveInt(opts.per)) {
-    blocked.push({ field: "per", reason: "must be a positive integer" });
   }
   if (blocked.length > 0) return { ok: false, blocked };
 
@@ -71,8 +59,6 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryRe
   set("date_filter_by", opts.dateFilterBy);
   set("include", opts.include);
   set("sort_order", opts.sortOrder);
-  set("page", opts.page);
-  set("per", opts.per);
   return { ok: true, query };
 }
 
@@ -92,8 +78,6 @@ export function registerPayrollCommand(parent: Command): void {
     .option("--date-filter-by <field>", "Date to filter by: check_date (defaults to pay period)")
     .option("--include <attrs>", "Include extra attributes: benefits, deductions, taxes - comma-separate")
     .option("--sort-order <order>", "asc or desc (default asc)")
-    .option("--page <n>", "Page number to fetch (default: all pages unless forced)")
-    .option("--per <n>", "Page size, max 100 (default 25)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .addHelpText(
