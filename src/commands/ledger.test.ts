@@ -44,19 +44,22 @@ describe("buildGeneralLedgerBody", () => {
 });
 
 describe("isReportSucceeded", () => {
-  test("true only for the Succeeded status", () => {
+  test("matches the API's lowercase 'succeeded', case-insensitively", () => {
+    // The live API returns lowercase statuses (verified against sandbox).
+    expect(isReportSucceeded({ status: "succeeded" })).toBe(true);
     expect(isReportSucceeded({ status: "Succeeded" })).toBe(true);
-    expect(isReportSucceeded({ status: "Pending" })).toBe(false);
-    expect(isReportSucceeded({ status: "Failed" })).toBe(false);
+    expect(isReportSucceeded({ status: "pending" })).toBe(false);
+    expect(isReportSucceeded({ status: "failed" })).toBe(false);
     expect(isReportSucceeded({})).toBe(false);
   });
 });
 
 describe("isReportFailed", () => {
-  test("true only for the Failed status", () => {
+  test("matches the API's lowercase 'failed', case-insensitively", () => {
+    expect(isReportFailed({ status: "failed" })).toBe(true);
     expect(isReportFailed({ status: "Failed" })).toBe(true);
-    expect(isReportFailed({ status: "Pending" })).toBe(false);
-    expect(isReportFailed({ status: "Succeeded" })).toBe(false);
+    expect(isReportFailed({ status: "pending" })).toBe(false);
+    expect(isReportFailed({ status: "succeeded" })).toBe(false);
     expect(isReportFailed({})).toBe(false);
   });
 });
@@ -94,10 +97,10 @@ describe("executeLedgerShow", () => {
   test("waits and returns the completed report body", async () => {
     const client = clientWith({
       post: { status: 200, body: { request_uuid: "req-1" } },
-      report: { status: 200, body: { status: "Succeeded", report_urls: ["https://x/gl.json"] } },
+      report: { status: 200, body: { status: "succeeded", report_urls: ["https://x/gl.json"] } },
     });
     const result = await executeLedgerShow(client, PAYROLL, {});
-    expect(result).toEqual({ ok: true, data: { status: "Succeeded", report_urls: ["https://x/gl.json"] } });
+    expect(result).toEqual({ ok: true, data: { status: "succeeded", report_urls: ["https://x/gl.json"] } });
   });
 
   test("a null response body is an error, not a silent success", async () => {
@@ -128,7 +131,7 @@ describe("executeLedgerShow", () => {
   test("a terminally failed report yields report_failed", async () => {
     const client = clientWith({
       post: { status: 200, body: { request_uuid: "req-1" } },
-      report: { status: 200, body: { status: "Failed" } },
+      report: { status: 200, body: { status: "failed" } },
     });
     const result = await executeLedgerShow(client, PAYROLL, {});
     expect(result.ok).toBe(false);

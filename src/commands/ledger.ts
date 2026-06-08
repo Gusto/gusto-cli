@@ -30,15 +30,17 @@ export function buildGeneralLedgerBody(opts: GeneralLedgerOpts): GeneralLedgerBo
 }
 
 /** True once `GET /v1/reports/{uuid}` reports the report finished generating
- * and its download URL is ready. Drives the `poll()` success predicate. */
+ * and its download URL is ready. Drives the `poll()` success predicate.
+ * Case-insensitive: the API serializes statuses lowercase (`succeeded`), but we
+ * match defensively so a casing change on either side can't silently break polling. */
 export function isReportSucceeded(body: ReportStatusBody): boolean {
-  return body.status === "Succeeded";
+  return body.status?.toLowerCase() === "succeeded";
 }
 
 /** True once the report request has terminally failed. Drives the `poll()`
  * failure predicate so we stop polling instead of waiting out the timeout. */
 export function isReportFailed(body: ReportStatusBody): boolean {
-  return body.status === "Failed";
+  return body.status?.toLowerCase() === "failed";
 }
 
 interface LedgerShowOpts extends GeneralLedgerOpts {
