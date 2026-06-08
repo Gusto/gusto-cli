@@ -100,6 +100,14 @@ function linkTools(names: string[]): string {
   return dir;
 }
 
+// A `uname` shim reporting a given machine (-m) and system (-s), returned as a PATH
+// prefix so a test can simulate any OS/arch regardless of the host.
+function unamePath(machine: string, system: string): string {
+  const shim = writeShim("uname", `#!/bin/sh\nif [ "$1" = "-m" ]; then echo ${machine}; else echo ${system}; fi\n`);
+  tempDirs.push(shim);
+  return `${shim}:${process.env.PATH ?? ""}`;
+}
+
 let fixture: Fixture | undefined;
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -160,11 +168,7 @@ describe("install.sh", () => {
 
   test("errors clearly on an unsupported architecture, installing nothing", async () => {
     fixture = startFixture();
-    // Shadow `uname` with a fake reporting an unsupported arch on a supported OS.
-    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo riscv64; else echo Linux; fi\n');
-    tempDirs.push(shim);
-
-    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    const result = await runInstall(fixture, { PATH: unamePath("riscv64", "Linux") });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("unsupported architecture: riscv64");
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
@@ -172,10 +176,7 @@ describe("install.sh", () => {
 
   test("errors clearly on an unsupported OS, installing nothing", async () => {
     fixture = startFixture();
-    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo x86_64; else echo SunOS; fi\n');
-    tempDirs.push(shim);
-
-    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    const result = await runInstall(fixture, { PATH: unamePath("x86_64", "SunOS") });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("unsupported OS: SunOS");
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
@@ -183,10 +184,7 @@ describe("install.sh", () => {
 
   test("errors clearly on linux arm64, which has no prebuilt binary", async () => {
     fixture = startFixture();
-    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo aarch64; else echo Linux; fi\n');
-    tempDirs.push(shim);
-
-    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    const result = await runInstall(fixture, { PATH: unamePath("aarch64", "Linux") });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toLowerCase()).toContain("linux arm64");
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
@@ -194,10 +192,7 @@ describe("install.sh", () => {
 
   test("maps the amd64 arch alias to x64", async () => {
     fixture = startFixture();
-    const shim = writeShim("uname", '#!/bin/sh\nif [ "$1" = "-m" ]; then echo amd64; else echo Linux; fi\n');
-    tempDirs.push(shim);
-
-    const result = await runInstall(fixture, { PATH: `${shim}:${process.env.PATH ?? ""}` });
+    const result = await runInstall(fixture, { PATH: unamePath("amd64", "Linux") });
     expect(result.exitCode).toBe(0);
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
   });
