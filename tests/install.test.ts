@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -85,6 +85,18 @@ function writeShim(name: string, body: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "gusto-cli-shim-"));
   const file = path.join(dir, name);
   writeFileSync(file, body, { mode: 0o755 });
+  return dir;
+}
+
+// Build a dir symlinking only the named tools, to use as the *entire* PATH.
+// Lets a test run install.sh with a specific tool (e.g. sha256sum) absent.
+function linkTools(names: string[]): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "gusto-cli-tools-"));
+  for (const name of names) {
+    const real = Bun.which(name);
+    if (!real) throw new Error(`linkTools: required tool not found on PATH: ${name}`);
+    symlinkSync(real, path.join(dir, name));
+  }
   return dir;
 }
 
@@ -202,6 +214,43 @@ describe("install.sh", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("HOME");
     expect(result.stderr.toLowerCase()).toContain("gusto_install_dir");
+  });
+
+  test("installs and warns to set PATH when GUSTO_INSTALL_DIR is set but HOME is empty", async () => {
+    fixture = startFixture();
+    const dest = path.join(fixture.home, "explicit-bin");
+    const result = await runInstall(fixture, { GUSTO_INSTALL_DIR: dest, HOME: "" });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(path.join(dest, "gusto"))).toBe(true);
+    expect(result.stderr.toLowerCase()).toContain("add");
+    expect(result.stderr).toContain("PATH");
+  });
+
+  test("adds the bin dir to .zshrc for a zsh shell", async () => {
+    fixture = startFixture();
+    await runInstall(fixture, { SHELL: "/bin/zsh" });
+    const profile = path.join(fixture.home, ".zshrc");
+    expect(existsSync(profile)).toBe(true);
+    expect(readFileSync(profile, "utf8")).toContain(".gusto/bin");
+  });
+
+  test("falls back to .profile for a non-bash/zsh shell", async () => {
+    fixture = startFixture();
+    await runInstall(fixture, { SHELL: "/bin/sh" });
+    const profile = path.join(fixture.home, ".profile");
+    expect(existsSync(profile)).toBe(true);
+    expect(readFileSync(profile, "utf8")).toContain(".gusto/bin");
+  });
+
+  test("verifies the checksum with shasum when sha256sum is unavailable", async () => {
+    fixture = startFixture();
+    // PATH without sha256sum forces install.sh down the `shasum -a 256` branch.
+    const toolDir = linkTools(["sh", "uname", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm", "shasum"]);
+    shimDirs.push(toolDir);
+
+    const result = await runInstall(fixture, { PATH: toolDir });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
   });
 });
 
