@@ -3,6 +3,7 @@ import { createCompanyResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { parsePositiveNumber } from "../lib/parse.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type EntityType = "Employee" | "Contractor";
@@ -74,12 +75,12 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   for (const { opt, field, classification } of HOUR_FLAGS) {
     const raw = opts[opt];
     if (raw === undefined) continue;
-    const hours = Number(raw);
-    if (!Number.isFinite(hours) || hours <= 0) {
-      blocked.push({ field, reason: `must be a positive number, got: ${raw}` });
+    const parsed = parsePositiveNumber(raw);
+    if (!parsed.ok) {
+      blocked.push({ field, reason: parsed.reason });
       continue;
     }
-    entries.push({ hours_worked: hours, pay_classification: classification });
+    entries.push({ hours_worked: parsed.value, pay_classification: classification });
   }
   if (entries.length === 0 && !someHourFlagInvalid(opts)) {
     blocked.push({ field: "hours", reason: "provide at least one of --regular, --overtime, --double-overtime" });
