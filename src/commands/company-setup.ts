@@ -314,7 +314,6 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
 interface StateTaxOpts extends ContextOpts {
   temporaryRates?: boolean;
   dryRun?: boolean;
-  example?: boolean;
 }
 
 interface EmployeeRec {
@@ -338,7 +337,7 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
   return async ({ globals }) => {
     const useTemporaryRates = opts.temporaryRates !== false;
 
-    if (opts.example || opts.dryRun) {
+    if (opts.dryRun) {
       return {
         ok: true,
         data: {
@@ -401,38 +400,9 @@ async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: Par
   const locations = asArray<LocationRec>(locationsRes.body);
   const primaryLocationUuid = locations[0]?.uuid;
 
-  // Each employee is independent, so fetch (and back-fill) in parallel. Per-employee
-  // failures are collected locally and merged, so one bad employee doesn't abort the rest.
-  const perEmployee = await Promise.all(
-    employees.map(async (emp) => {
-      const found: string[] = [];
-      const errors: PartialError[] = [];
-      let workAddresses: WorkAddressRec[];
-      try {
-        workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-      } catch (err) {
-        errors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
-        return { found, errors };
-      }
-      const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
-      if (hasJob && workAddresses.length === 0 && primaryLocationUuid) {
-        try {
-          await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
-            location_uuid: primaryLocationUuid,
-            active: true,
-            effective_date: new Date().toISOString().slice(0, 10),
-          });
-          workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-        } catch (err) {
-          errors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
-        }
-      }
-      for (const wa of workAddresses) {
-        if (wa.active === true && wa.state) found.push(wa.state);
-      }
-      return { found, errors };
-    }),
-  );
+  // Each employee is independent, so resolve them in parallel and merge. Per-employee
+  // failures are collected locally so one bad employee doesn't abort the rest.
+  const perEmployee = await Promise.all(employees.map((emp) => statesForEmployee(ctx, emp, primaryLocationUuid)));
 
   const states = new Set<string>();
   for (const r of perEmployee) {
@@ -440,6 +410,49 @@ async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: Par
     partialErrors.push(...r.errors);
   }
   return states;
+}
+
+/** Active work-address states for one employee, back-filling a missing address from
+ * the primary location when the employee has a job. Failures surface as partial errors. */
+async function statesForEmployee(
+  ctx: CompanyApiContext,
+  emp: EmployeeRec,
+  primaryLocationUuid: string | undefined,
+): Promise<{ found: string[]; errors: PartialError[] }> {
+  const found: string[] = [];
+  const errors: PartialError[] = [];
+  let workAddresses: WorkAddressRec[];
+  try {
+    workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+  } catch (err) {
+    errors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
+    return { found, errors };
+  }
+
+  const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
+  if (hasJob && workAddresses.length === 0) {
+    if (!primaryLocationUuid) {
+      errors.push({
+        label: `no_location_to_provision:${emp.uuid}`,
+        error: "employee has a job but no work address and no company location to back-fill from",
+      });
+    } else {
+      try {
+        await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
+          location_uuid: primaryLocationUuid,
+          active: true,
+          effective_date: new Date().toISOString().slice(0, 10),
+        });
+        workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+      } catch (err) {
+        errors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
+      }
+    }
+  }
+  for (const wa of workAddresses) {
+    if (wa.active === true && wa.state) found.push(wa.state);
+  }
+  return { found, errors };
 }
 
 /** Opt each state into the new-employer default rate where supported. Per-state
@@ -533,7 +546,14 @@ async function hostedSigningFlow(opts: FormsOpts, globals: GlobalFlags, isTty: b
       flow_type: "sign_all_forms",
       ...(opts.note ? { options: { note: opts.note } } : {}),
     };
-    const result = (await ctx.client.post<{ url: string }>(`/v1/companies/${ctx.companyUuid}/flows`, body)).body;
+    const result = (await ctx.client.post<{ url?: string }>(`/v1/companies/${ctx.companyUuid}/flows`, body)).body;
+    if (!result.url) {
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiServer,
+        error: { code: "flow_no_url", message: "flow create returned no signing url", details: result },
+      };
+    }
     if (isTty && !globals.agent && !globals.json) {
       // Best-effort: a headless/SSH box with no browser-opener must not fail the
       // command - the URL in the response is the deliverable.
@@ -618,74 +638,86 @@ async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandR
 
 // ───────────────────────────── registration ─────────────────────────────
 
+/** The --company-uuid / --token override options every company command shares. */
+export function withContextOptions(cmd: Command): Command {
+  return cmd
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)");
+}
+
+const DRY_RUN_OPT = ["--dry-run", "Build the request without sending"] as const;
+const EXAMPLE_OPT = ["--example", "Print a canned sample payload without calling the API"] as const;
+
 export function registerCompanySetup(company: Command, parent: Command): void {
   const setup = company.command("setup").description("Provide information for an onboarding sub-domain");
 
-  setup
-    .command("federal-tax")
-    .description("Set EIN, taxpayer type, filing form, and legal name (completes federal_tax_setup)")
-    .option("--ein <ein>", "9-digit EIN")
-    .option("--tax-payer-type <type>", "IRS entity classification, e.g. S-Corporation, LLC, Sole proprietor")
-    .option("--filing-form <form>", '"941" (quarterly) or "944" (annual)')
-    .option("--legal-name <name>", "Legal name on file with the IRS")
-    .option("--taxable-as-scorp", "S-corp election (auto-on for tax-payer-type=S-Corporation)")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
-    .option("--dry-run", "Build the request without sending")
-    .option("--example", "Print a canned sample payload without calling the API")
+  withContextOptions(
+    setup
+      .command("federal-tax")
+      .description("Set EIN, taxpayer type, filing form, and legal name (completes federal_tax_setup)")
+      .option("--ein <ein>", "9-digit EIN")
+      .option("--tax-payer-type <type>", "IRS entity classification, e.g. S-Corporation, LLC, Sole proprietor")
+      .option("--filing-form <form>", '"941" (quarterly) or "944" (annual)')
+      .option("--legal-name <name>", "Legal name on file with the IRS")
+      .option("--taxable-as-scorp", "S-corp election (auto-on for tax-payer-type=S-Corporation)"),
+  )
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((opts: FederalTaxOpts) =>
       runCommand("gusto company setup federal-tax", readGlobalFlags(parent.opts()), federalTaxHandler(opts)),
     );
 
-  setup
-    .command("bank-account")
-    .description("Connect + verify a company bank account in one shot")
-    .option("--routing <num>", "9-digit US routing number")
-    .option("--account-number <num>", "Bank account number")
-    .option("--account-type <type>", "Checking or Savings")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
-    .option("--dry-run", "Build the request without sending")
-    .option("--example", "Print a canned sample payload without calling the API")
+  withContextOptions(
+    setup
+      .command("bank-account")
+      .description("Connect + verify a company bank account in one shot")
+      .option("--routing <num>", "9-digit US routing number")
+      .option("--account-number <num>", "Bank account number")
+      .option("--account-type <type>", "Checking or Savings"),
+  )
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((opts: BankAccountOpts) =>
       runCommand("gusto company setup bank-account", readGlobalFlags(parent.opts()), bankAccountHandler(opts)),
     );
 
-  setup
-    .command("state-tax")
-    .description("Auto-detect states from employee work addresses; opt into new-employer default rates (CA/TX/FL)")
-    .option("--no-temporary-rates", "Do not apply new-employer default rates")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+  withContextOptions(
+    setup
+      .command("state-tax")
+      .description("Auto-detect states from employee work addresses; opt into new-employer default rates (CA/TX/FL)")
+      .option("--no-temporary-rates", "Do not apply new-employer default rates"),
+  )
     .option("--dry-run", "Describe what setup would do without sending")
     .action((opts: StateTaxOpts) =>
       runCommand("gusto company setup state-tax", readGlobalFlags(parent.opts()), stateTaxHandler(opts)),
     );
 
-  setup
-    .command("pay-schedule")
-    .description("Create the company pay schedule (frequency + anchor dates)")
-    .option("--frequency <freq>", "Pay frequency: weekly, biweekly, semi-monthly, monthly")
-    .option("--first-payday <date>", "First payday (YYYY-MM-DD); the API names this anchor_pay_date")
-    .option("--anchor-pay-date <date>", "Alias for --first-payday")
-    .option("--anchor-end-of-pay-period <date>", "Anchor end-of-period (YYYY-MM-DD)")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
-    .option("--dry-run", "Build the request without sending")
-    .option("--example", "Print a canned sample payload without calling the API")
+  withContextOptions(
+    setup
+      .command("pay-schedule")
+      .description("Create the company pay schedule (frequency + anchor dates)")
+      .option("--frequency <freq>", "Pay frequency: weekly, biweekly, semi-monthly, monthly")
+      .option("--first-payday <date>", "First payday (YYYY-MM-DD); the API names this anchor_pay_date")
+      .option("--anchor-pay-date <date>", "Alias for --first-payday")
+      .option("--anchor-end-of-pay-period <date>", "Anchor end-of-period (YYYY-MM-DD)"),
+  )
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((opts: PayScheduleCreateOpts) =>
       runCommand("gusto company setup pay-schedule", readGlobalFlags(parent.opts()), payScheduleCreateHandler(opts)),
     );
 }
 
 export function registerCompanyForms(company: Command, parent: Command): void {
-  company
-    .command("forms")
-    .description("Open the hosted signing flow for company forms (8655 + state agreements)")
-    .option("--note <text>", "Optional note included in the signing flow")
-    .option("--demo-sign", "[DEMO ONLY, non-production] server-side sign all pending forms instead of the hosted flow")
-    .option("--signature-text <text>", "Full legal name of the signatory (required with --demo-sign)")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
-    .action((opts: FormsOpts) => runCommand("gusto company forms", readGlobalFlags(parent.opts()), formsHandler(opts)));
+  withContextOptions(
+    company
+      .command("forms")
+      .description("Open the hosted signing flow for company forms (8655 + state agreements)")
+      .option("--note <text>", "Optional note included in the signing flow")
+      .option(
+        "--demo-sign",
+        "[DEMO ONLY, non-production] server-side sign all pending forms instead of the hosted flow",
+      )
+      .option("--signature-text <text>", "Full legal name of the signatory (required with --demo-sign)"),
+  ).action((opts: FormsOpts) => runCommand("gusto company forms", readGlobalFlags(parent.opts()), formsHandler(opts)));
 }

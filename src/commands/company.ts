@@ -12,7 +12,7 @@ import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-inpu
 import { resolveStore } from "../lib/oauth/token-store.ts";
 import { type OnboardingStatus, extractBlockers } from "../lib/onboarding-map.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
-import { registerCompanyForms, registerCompanySetup } from "./company-setup.ts";
+import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
 
 interface CompanyShowOpts {
   companyUuid?: string;
@@ -38,27 +38,19 @@ export function registerCompanyCommand(parent: Command): void {
       runCommand("gusto company provision", readGlobalFlags(parent.opts()), companyProvisionHandler(opts)),
     );
 
-  cmd
-    .command("onboarding-status")
-    .description("Onboarding state + structured blocked_on list (the agent's navigation hook)")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
-    .action((opts: CompanyShowOpts) =>
-      runCommand(
-        "gusto company onboarding-status",
-        readGlobalFlags(parent.opts()),
-        companyOnboardingStatusHandler(opts),
-      ),
-    );
+  withContextOptions(
+    cmd
+      .command("onboarding-status")
+      .description("Onboarding state + structured blocked_on list (the agent's navigation hook)"),
+  ).action((opts: CompanyShowOpts) =>
+    runCommand("gusto company onboarding-status", readGlobalFlags(parent.opts()), companyOnboardingStatusHandler(opts)),
+  );
 
-  cmd
-    .command("show")
-    .description("Company overview: record, payment config, and pay schedule")
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
-    .action((opts: CompanyShowOpts) =>
-      runCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
-    );
+  withContextOptions(
+    cmd.command("show").description("Company overview: record, payment config, and pay schedule"),
+  ).action((opts: CompanyShowOpts) =>
+    runCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
+  );
 
   registerCompanySetup(cmd, parent);
   registerCompanyForms(cmd, parent);
@@ -139,7 +131,11 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
 }
 
 /** Map onboarding flags to a stage label. `unknown` guards a malformed-but-200 status. */
-function onboardingStage(s: { isComplete: boolean; hasSteps: boolean; readyToFinish: boolean }): string {
+function onboardingStage(s: {
+  isComplete: boolean;
+  hasSteps: boolean;
+  readyToFinish: boolean;
+}): "done" | "unknown" | "ready_to_finish" | "onboarding" {
   if (s.isComplete) return "done";
   if (!s.hasSteps) return "unknown";
   return s.readyToFinish ? "ready_to_finish" : "onboarding";
@@ -148,8 +144,10 @@ function onboardingStage(s: { isComplete: boolean; hasSteps: boolean; readyToFin
 export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
     withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
-      const status = (await ctx.client.get<OnboardingStatus>(`/v1/companies/${ctx.companyUuid}/onboarding_status`))
-        .body;
+      // Honest type: an empty/malformed body can deserialize to null or {}.
+      const status = (
+        await ctx.client.get<OnboardingStatus | null>(`/v1/companies/${ctx.companyUuid}/onboarding_status`)
+      ).body;
       const blockedOn = extractBlockers(status);
       const isComplete = status?.onboarding_completed === true;
       // A malformed-but-200 response (no onboarding_steps) must not read as
@@ -157,7 +155,9 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       const hasSteps = Array.isArray(status?.onboarding_steps);
       const readyToFinish = hasSteps && blockedOn.length === 0 && !isComplete;
       const stage = onboardingStage({ isComplete, hasSteps, readyToFinish });
-      const suggested = blockedOn[0]?.suggested_action ?? null;
+      // First blocker that actually has a command - not just blockedOn[0], whose
+      // suggested_action may be null while a later blocker has one.
+      const suggested = blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null;
       return {
         ok: true,
         data: {

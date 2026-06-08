@@ -292,6 +292,18 @@ describe("stateTaxHandler (network)", () => {
     );
   });
 
+  test("records no_location_to_provision when an employee needs a work address but there's no location", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1", jobs: [{}] }] }, // employees (has job)
+      { status: 200, body: [] }, // locations: none to back-fill from
+      { status: 200, body: [] }, // work_addresses: none
+    ]);
+    const result = await stateTaxHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(JSON.stringify(result.error.details)).toContain("no_location_to_provision:emp-1");
+  });
+
   test("records provision_work_address in partial_errors when the back-fill POST fails", async () => {
     stubFetch([
       { status: 200, body: [{ uuid: "emp-1", jobs: [{}] }] }, // employees (has job)
@@ -317,6 +329,25 @@ describe("stateTaxHandler (network)", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("no_work_addresses");
     expect(JSON.stringify(result.error.details)).toContain("work_addresses:emp-1");
+  });
+
+  test("a supported state without an editable default-rate flag is no_default_rate_question", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1" }] }, // employees
+      { status: 200, body: [] }, // locations
+      { status: 200, body: [{ active: true, state: "CA" }] }, // work_addresses (CA = supported)
+      {
+        status: 200,
+        body: {
+          requirement_sets: [{ key: "taxrates", requirements: [{ key: "usedefaultsuirates", editable: false }] }],
+        },
+      }, // GET tax_requirements/CA - default-rate flag not editable
+      { status: 200, body: [{ state: "CA", ready_to_run_payroll: false }] }, // GET tax_requirements
+    ]);
+    const d = data(await stateTaxHandler(auth)(ctx));
+    const ca = (d.results as { state: string; status: string; reason?: string }[]).find((r) => r.state === "CA");
+    expect(ca?.status).toBe("no_default_rate_question");
+    expect(ca?.reason).toContain("does not expose usedefaultsuirates");
   });
 
   test("a state with no default rate is reported needs_manual_setup with a reason", async () => {
@@ -354,6 +385,14 @@ describe("formsHandler", () => {
     expect(calls[0]?.method).toBe("POST");
     expect(calls[0]?.url).toContain("/companies/co-1/flows");
     expect(d).toMatchObject({ flow_type: "sign_all_forms", url: "https://flows.example/abc" });
+  });
+
+  test("hosted flow with no url in the response fails with flow_no_url", async () => {
+    stubFetch([{ status: 200, body: {} }]); // POST /flows returns no url
+    const result = await formsHandler(auth, false)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("flow_no_url");
   });
 
   test("--demo-sign signs each unsigned form from localhost", async () => {
