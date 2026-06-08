@@ -92,7 +92,7 @@ case ":$PATH:" in
         *) profile="$HOME/.profile" ;;
       esac
     fi
-    if [ -n "$profile" ] && ! grep -qsF "$INSTALL_DIR" "$profile" 2>/dev/null; then
+    if [ -n "$profile" ] && ! grep -qsF "export PATH=\"$INSTALL_DIR:" "$profile" 2>/dev/null; then
       # $PATH is intentionally literal here - it must expand in the user's shell, not now.
       # shellcheck disable=SC2016
       printf '\n# Added by gusto-cli install.sh\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >>"$profile"
@@ -102,4 +102,7 @@ case ":$PATH:" in
     ;;
 esac
 
-"$INSTALL_DIR/gusto" --version
+"$INSTALL_DIR/gusto" --version || {
+  echo "gusto: installed to $INSTALL_DIR/gusto but 'gusto --version' failed" >&2
+  exit 1
+}

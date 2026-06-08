@@ -100,10 +100,14 @@ function linkTools(names: string[]): string {
   return dir;
 }
 
-// A `uname` shim reporting a given machine (-m) and system (-s), returned as a PATH
-// prefix so a test can simulate any OS/arch regardless of the host.
+// A `uname` shim body reporting a given machine (-m) and system (-s).
+function unameShimBody(machine: string, system: string): string {
+  return `#!/bin/sh\nif [ "$1" = "-m" ]; then echo ${machine}; else echo ${system}; fi\n`;
+}
+
+// A `uname` shim returned as a PATH prefix so a test can simulate any OS/arch.
 function unamePath(machine: string, system: string): string {
-  const shim = writeShim("uname", `#!/bin/sh\nif [ "$1" = "-m" ]; then echo ${machine}; else echo ${system}; fi\n`);
+  const shim = writeShim("uname", unameShimBody(machine, system));
   tempDirs.push(shim);
   return `${shim}:${process.env.PATH ?? ""}`;
 }
@@ -162,8 +166,8 @@ describe("install.sh", () => {
     // Running again must not append a duplicate PATH line.
     await runInstall(fixture, { SHELL: "/bin/bash" });
     const after2 = readFileSync(profile, "utf8");
-    const occurrences = after2.split("\n").filter((l) => l.includes(".gusto/bin")).length;
-    expect(occurrences).toBe(1);
+    const exportLines = after2.split("\n").filter((l) => /^export PATH=.*\.gusto\/bin/.test(l));
+    expect(exportLines).toHaveLength(1);
   });
 
   test("errors clearly on an unsupported architecture, installing nothing", async () => {
@@ -193,6 +197,13 @@ describe("install.sh", () => {
   test("maps the amd64 arch alias to x64", async () => {
     fixture = startFixture();
     const result = await runInstall(fixture, { PATH: unamePath("amd64", "Linux") });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
+  });
+
+  test("maps the x86_64 arch to x64", async () => {
+    fixture = startFixture();
+    const result = await runInstall(fixture, { PATH: unamePath("x86_64", "Linux") });
     expect(result.exitCode).toBe(0);
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
   });
@@ -268,9 +279,7 @@ describe("install.sh", () => {
     const bin = mkdtempSync(path.join(tmpdir(), "gusto-cli-xattr-"));
     tempDirs.push(bin);
     const marker = path.join(bin, "xattr-called");
-    writeFileSync(path.join(bin, "uname"), '#!/bin/sh\nif [ "$1" = "-m" ]; then echo arm64; else echo Darwin; fi\n', {
-      mode: 0o755,
-    });
+    writeFileSync(path.join(bin, "uname"), unameShimBody("arm64", "Darwin"), { mode: 0o755 });
     writeFileSync(path.join(bin, "xattr"), `#!/bin/sh\necho "$@" >> "${marker}"\n`, { mode: 0o755 });
 
     const result = await runInstall(fixture, { PATH: `${bin}:${process.env.PATH ?? ""}` });
@@ -306,9 +315,7 @@ describe("install.sh URL construction", () => {
     writeFileSync(path.join(bin, "curl"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
     // Force a supported platform so the OS/arch guard never short-circuits before
     // curl runs - otherwise the log is never created (e.g. on a linux arm64 host).
-    writeFileSync(path.join(bin, "uname"), '#!/bin/sh\nif [ "$1" = "-m" ]; then echo x86_64; else echo Linux; fi\n', {
-      mode: 0o755,
-    });
+    writeFileSync(path.join(bin, "uname"), unameShimBody("x86_64", "Linux"), { mode: 0o755 });
     await runScript({ PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home, SHELL: "/bin/bash", ...env });
     if (!existsSync(log)) {
       throw new Error("recordCurlUrl: install.sh exited before invoking curl (no curl.log written)");
