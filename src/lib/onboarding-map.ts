@@ -44,7 +44,8 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
   payroll_schedule: {
     command: "gusto company setup pay-schedule",
     required_flags: ["--frequency"],
-    optional_flags: ["--first-payday"],
+    // --anchor-end-of-pay-period is required for weekly/biweekly (enforced in pay-schedule.ts).
+    optional_flags: ["--first-payday", "--anchor-end-of-pay-period"],
   },
   sign_all_forms: {
     command: "gusto company forms",

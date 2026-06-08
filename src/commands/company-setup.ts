@@ -265,16 +265,18 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
             `${base}/${bank.uuid}/send_test_deposits`,
           )
         ).body;
-        phase = "verify";
         const { deposit_1: raw1, deposit_2: raw2 } = deposits;
         const d1 = Number(raw1);
         const d2 = Number(raw2);
         // Guard a malformed test-deposit response so we don't PUT bogus amounts and
         // mask the real cause behind a generic verify 422. Reject null/undefined
         // explicitly - Number(null) is 0, which would slip past the isFinite check.
+        // Validate while still in the send_test_deposits phase so the error attributes
+        // it correctly (not to verify).
         if (raw1 == null || raw2 == null || !Number.isFinite(d1) || !Number.isFinite(d2)) {
           throw new Error(`send_test_deposits returned non-numeric amounts (deposit_1=${raw1}, deposit_2=${raw2})`);
         }
+        phase = "verify";
         await ctx.client.put(`${base}/${bank.uuid}/verify`, { deposit_1: d1, deposit_2: d2 });
       } catch (err) {
         return {

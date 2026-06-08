@@ -175,6 +175,8 @@ describe("bankAccountHandler (network)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("bank_verification_failed");
+    // Error is attributed to the send_test_deposits phase, not verify.
+    expect(result.error.details).toMatchObject({ phase: "send_test_deposits" });
     // No verify PUT should have been attempted with bad amounts.
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
@@ -221,6 +223,67 @@ describe("stateTaxHandler (network)", () => {
     expect(putCall?.body).toMatchObject({
       requirement_sets: [{ key: "taxrates", requirements: [{ key: "usedefaultsuirates", value: true }] }],
     });
+  });
+
+  test("auto-provisions a missing work address from the primary location", async () => {
+    const calls = stubFetch([
+      { status: 200, body: [{ uuid: "emp-1", jobs: [{}] }] }, // employees (has a job)
+      { status: 200, body: [{ uuid: "loc-1" }] }, // locations
+      { status: 200, body: [] }, // emp-1 work_addresses: none yet
+      { status: 201, body: {} }, // POST work_addresses
+      { status: 200, body: [{ active: true, state: "CA" }] }, // reload work_addresses
+      { status: 200, body: { requirement_sets: [] } }, // GET tax_requirements/CA (no default rate)
+      { status: 200, body: [{ state: "CA", ready_to_run_payroll: false }] }, // GET tax_requirements
+    ]);
+    const d = data(await stateTaxHandler(auth)(ctx));
+    expect(d.states_found).toEqual(["CA"]);
+    const post = calls.find((c) => c.method === "POST" && c.url.includes("/employees/emp-1/work_addresses"));
+    expect(post?.body).toMatchObject({ location_uuid: "loc-1", active: true });
+  });
+
+  test("reports a per-state submit failure without aborting the run", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1" }] }, // employees (no job -> no provisioning)
+      { status: 200, body: [] }, // locations
+      { status: 200, body: [{ active: true, state: "CA" }] }, // work_addresses
+      {
+        status: 200,
+        body: {
+          requirement_sets: [{ key: "taxrates", requirements: [{ key: "usedefaultsuirates", editable: true }] }],
+        },
+      }, // GET tax_requirements/CA (submittable)
+      { status: 422, body: { errors: [{ message: "bad" }] } }, // PUT tax_requirements/CA fails
+      { status: 200, body: [{ state: "CA", ready_to_run_payroll: false }] }, // GET tax_requirements
+    ]);
+    const d = data(await stateTaxHandler(auth)(ctx));
+    expect(d.results as { state: string; status: string }[]).toContainEqual(
+      expect.objectContaining({ state: "CA", status: "error" }),
+    );
+  });
+
+  test("surfaces a work-address fetch failure via partial_errors / details", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1" }] }, // employees
+      { status: 200, body: [] }, // locations
+      { status: 404, body: { error: "not found" } }, // work_addresses fetch fails (not retried)
+    ]);
+    const result = await stateTaxHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("no_work_addresses");
+    expect(JSON.stringify(result.error.details)).toContain("work_addresses:emp-1");
+  });
+
+  test("surfaces a readiness-readback failure via partial_errors", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1" }] }, // employees
+      { status: 200, body: [] }, // locations
+      { status: 200, body: [{ active: true, state: "CA" }] }, // work_addresses
+      { status: 200, body: { requirement_sets: [] } }, // GET tax_requirements/CA (no default rate)
+      { status: 404, body: { error: "nope" } }, // GET tax_requirements (readiness) fails
+    ]);
+    const d = data(await stateTaxHandler(auth)(ctx));
+    expect(JSON.stringify(d.partial_errors)).toContain("tax_requirements_status");
   });
 });
 
