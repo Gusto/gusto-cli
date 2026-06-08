@@ -1,15 +1,39 @@
 import { describe, expect, test } from "bun:test";
+import { ApiError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { TEST_CONTEXT as ctx, okData as data } from "../lib/test-support.ts";
 import {
   bankAccountBlockers,
   bankAccountHandler,
+  einAlreadyInUse,
   federalTaxBlockers,
   federalTaxHandler,
   formsHandler,
   resolveTaxableAsScorp,
   stateTaxHandler,
 } from "./company-setup.ts";
+
+describe("einAlreadyInUse", () => {
+  const err = (status: number, body: unknown) => new ApiError(status, body, ExitCode.ApiClient, `PUT x -> ${status}`);
+
+  test("true for a 422 with an 'already in use' message in errors[]", () => {
+    expect(einAlreadyInUse(err(422, { errors: [{ message: "EIN is already in use" }] }))).toBe(true);
+  });
+  test("true for a 422 with a top-level error string", () => {
+    expect(einAlreadyInUse(err(422, { error: "That EIN is already in use" }))).toBe(true);
+  });
+  test("false for a non-422", () => {
+    expect(einAlreadyInUse(err(409, { errors: [{ message: "EIN is already in use" }] }))).toBe(false);
+  });
+  test("false when 'ein' and 'already in use' are in separate errors (no cross-splice)", () => {
+    expect(
+      einAlreadyInUse(err(422, { errors: [{ message: "EIN is required" }, { message: "name already in use" }] })),
+    ).toBe(false);
+  });
+  test("false for a non-ApiError", () => {
+    expect(einAlreadyInUse(new Error("boom"))).toBe(false);
+  });
+});
 
 describe("federalTaxBlockers", () => {
   test("flags every missing field", () => {

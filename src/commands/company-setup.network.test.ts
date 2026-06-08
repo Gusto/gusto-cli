@@ -180,6 +180,37 @@ describe("bankAccountHandler (network)", () => {
     // No verify PUT should have been attempted with bad amounts.
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
+
+  test("an empty-string deposit amount is rejected (Number('') is 0, finite)", async () => {
+    const calls = stubFetch([
+      { status: 201, body: { uuid: "bank-1" } },
+      { status: 200, body: { deposit_1: "", deposit_2: "0.03" } },
+    ]);
+    const result = await bankAccountHandler({
+      ...auth,
+      routing: "123456789",
+      accountNumber: "987654321",
+      accountType: "Checking",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("bank_verification_failed");
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("a create response without a uuid fails before any follow-up call", async () => {
+    const calls = stubFetch([{ status: 201, body: {} }]); // no uuid
+    const result = await bankAccountHandler({
+      ...auth,
+      routing: "123456789",
+      accountNumber: "987654321",
+      accountType: "Checking",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("bank_create_no_uuid");
+    expect(calls).toHaveLength(1); // only the create POST
+  });
 });
 
 describe("stateTaxHandler (network)", () => {
@@ -259,6 +290,20 @@ describe("stateTaxHandler (network)", () => {
     expect(d.results as { state: string; status: string }[]).toContainEqual(
       expect.objectContaining({ state: "CA", status: "error" }),
     );
+  });
+
+  test("records provision_work_address in partial_errors when the back-fill POST fails", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1", jobs: [{}] }] }, // employees (has job)
+      { status: 200, body: [{ uuid: "loc-1" }] }, // locations
+      { status: 200, body: [] }, // work_addresses: none
+      { status: 422, body: { error: "cannot assign" } }, // POST work_addresses fails
+    ]);
+    const result = await stateTaxHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("no_work_addresses");
+    expect(JSON.stringify(result.error.details)).toContain("provision_work_address:emp-1");
   });
 
   test("surfaces a work-address fetch failure via partial_errors / details", async () => {

@@ -95,6 +95,14 @@ describe("companyOnboardingStatusHandler", () => {
     expect(d.blocked_on).toEqual([]);
   });
 
+  test("a malformed 200 (no onboarding_steps) is stage 'unknown', not ready_to_finish", async () => {
+    routeFetch([{ match: "/onboarding_status", status: 200, body: { onboarding_completed: false } }]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("unknown");
+    expect(d.ready_to_finish).toBe(false);
+    expect(d.blocked_on).toEqual([]);
+  });
+
   test("onboarding_completed yields stage done with no blockers", async () => {
     routeFetch([
       { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },

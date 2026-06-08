@@ -138,6 +138,13 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
     });
 }
 
+/** Map onboarding flags to a stage label. `unknown` guards a malformed-but-200 status. */
+function onboardingStage(s: { isComplete: boolean; hasSteps: boolean; readyToFinish: boolean }): string {
+  if (s.isComplete) return "done";
+  if (!s.hasSteps) return "unknown";
+  return s.readyToFinish ? "ready_to_finish" : "onboarding";
+}
+
 export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
     withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
@@ -149,7 +156,7 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       // "no blockers" -> ready_to_finish; treat a missing step list as unknown.
       const hasSteps = Array.isArray(status?.onboarding_steps);
       const readyToFinish = hasSteps && blockedOn.length === 0 && !isComplete;
-      const stage = isComplete ? "done" : !hasSteps ? "unknown" : readyToFinish ? "ready_to_finish" : "onboarding";
+      const stage = onboardingStage({ isComplete, hasSteps, readyToFinish });
       const suggested = blockedOn[0]?.suggested_action ?? null;
       return {
         ok: true,

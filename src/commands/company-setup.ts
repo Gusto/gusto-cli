@@ -84,7 +84,7 @@ function fabricateEin(): string {
   return `${prefix}-${suffix}`;
 }
 
-function einAlreadyInUse(err: unknown): boolean {
+export function einAlreadyInUse(err: unknown): boolean {
   if (!(err instanceof ApiError) || err.status !== 422) return false;
   // Test each error message in isolation - matching over a concatenated blob
   // could splice "ein" from one error and "already in use" from another and
@@ -249,7 +249,15 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
 
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}/bank_accounts`;
-      const bank = (await ctx.client.post<{ uuid: string }>(base, bankAccountBody(opts))).body;
+      const bank = (await ctx.client.post<{ uuid?: string }>(base, bankAccountBody(opts))).body;
+      if (!bank.uuid) {
+        return {
+          ok: false,
+          exitCode: ExitCode.ApiServer,
+          error: { code: "bank_create_no_uuid", message: "bank account create returned no uuid", details: bank },
+        };
+      }
+      const bankUuid = bank.uuid;
 
       // The account now exists. If a later phase fails, surface the uuid + which
       // phase so the agent can resume verification instead of re-creating it.
@@ -257,30 +265,33 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
       try {
         const deposits = (
           await ctx.client.post<{ deposit_1?: number | string | null; deposit_2?: number | string | null }>(
-            `${base}/${bank.uuid}/send_test_deposits`,
+            `${base}/${bankUuid}/send_test_deposits`,
           )
         ).body;
-        const { deposit_1: raw1, deposit_2: raw2 } = deposits;
-        const d1 = Number(raw1);
-        const d2 = Number(raw2);
         // Guard a malformed test-deposit response so we don't PUT bogus amounts and
-        // mask the real cause behind a generic verify 422. Reject null/undefined
-        // explicitly - Number(null) is 0, which would slip past the isFinite check.
-        // Validate while still in the send_test_deposits phase so the error attributes
-        // it correctly (not to verify).
-        if (raw1 == null || raw2 == null || !Number.isFinite(d1) || !Number.isFinite(d2)) {
-          throw new Error(`send_test_deposits returned non-numeric amounts (deposit_1=${raw1}, deposit_2=${raw2})`);
+        // mask the real cause behind a generic verify 422. null/undefined/empty/
+        // non-numeric are all rejected - Number(null) and Number("") are both 0
+        // (finite), so isFinite alone isn't enough.
+        const badAmount = (v: unknown) =>
+          v == null || (typeof v === "string" && v.trim() === "") || !Number.isFinite(Number(v));
+        if (badAmount(deposits.deposit_1) || badAmount(deposits.deposit_2)) {
+          throw new Error(
+            `send_test_deposits returned non-numeric amounts (deposit_1=${deposits.deposit_1}, deposit_2=${deposits.deposit_2})`,
+          );
         }
         phase = "verify";
-        await ctx.client.put(`${base}/${bank.uuid}/verify`, { deposit_1: d1, deposit_2: d2 });
+        await ctx.client.put(`${base}/${bankUuid}/verify`, {
+          deposit_1: Number(deposits.deposit_1),
+          deposit_2: Number(deposits.deposit_2),
+        });
       } catch (err) {
         return {
           ok: false,
           exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
           error: {
             code: "bank_verification_failed",
-            message: `Bank account ${bank.uuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
-            details: { bank_account_uuid: bank.uuid, phase, error: errMsg(err) },
+            message: `Bank account ${bankUuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
+            details: { bank_account_uuid: bankUuid, phase, error: errMsg(err) },
           },
         };
       }
@@ -289,7 +300,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
       return {
         ok: true,
         data: {
-          bank_account_uuid: bank.uuid,
+          bank_account_uuid: bankUuid,
           verification_status: "verified",
           message: `Bank account ending in ${last4} connected and verified.`,
         },
