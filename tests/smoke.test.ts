@@ -422,7 +422,15 @@ describe("--fields filters success output", () => {
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
-    expect(Object.keys(envelope.data).sort()).toEqual(["method", "path"]);
+    expect(Object.keys(envelope.data)).toEqual(["method", "path"]);
+  });
+
+  test("employee add --example --fields (no value) lists the available top-level fields", async () => {
+    const result = await run(["employee", "add", "--example", "--fields"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.fields).toEqual(["method", "path", "body", "note"]);
   });
 });
 

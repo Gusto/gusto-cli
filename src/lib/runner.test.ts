@@ -68,10 +68,32 @@ describe("runCommand", () => {
     const result = await runWithExitCapture(
       "test",
       async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com", extra: "drop me" } }),
-      { ...flags, fields: ["uuid", "email"] },
+      { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
     );
     expect(result.exitCode).toBe(ExitCode.Success);
     expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { uuid: "u1", email: "a@b.com" } });
+  });
+
+  test("filters each row when success data is an array (the `employee list` shape)", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: true,
+        data: [
+          { uuid: "u1", email: "a@b.com", name: "Jane" },
+          { uuid: "u2", email: "c@d.com", name: "John" },
+        ],
+      }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      ok: true,
+      data: [
+        { uuid: "u1", email: "a@b.com" },
+        { uuid: "u2", email: "c@d.com" },
+      ],
+    });
   });
 
   test("never filters error envelopes even when --fields is set", async () => {
@@ -82,7 +104,31 @@ describe("runCommand", () => {
         exitCode: ExitCode.Validation,
         error: { code: "bad_input", message: "nope" },
       }),
-      { ...flags, fields: ["code"] },
+      { ...flags, fields: { mode: "select", keys: ["code"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
+  });
+
+  test("--fields with no value emits the available field names instead of the data", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
+      { ...flags, fields: { mode: "discover" } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { fields: ["uuid", "email"] } });
+  });
+
+  test("discovery does not run on error envelopes", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "bad_input", message: "nope" },
+      }),
+      { ...flags, fields: { mode: "discover" } },
     );
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
