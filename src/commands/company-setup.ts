@@ -74,8 +74,8 @@ function federalTaxBody(fields: FederalTaxFields, version?: string): Record<stri
   };
 }
 
-/** A fabricated 9-digit EIN in XX-XXXXXXX form. Used only on staging when the
- * provided EIN collides with another company. */
+/** A fabricated 9-digit EIN in XX-XXXXXXX form. Used only outside production
+ * (the sandbox env) when the provided EIN collides with another company. */
 function fabricateEin(): string {
   const prefix = 10 + Math.floor(Math.random() * 90);
   const suffix = Math.floor(Math.random() * 10_000_000)
@@ -162,7 +162,7 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
         return (await ctx.client.put(base, federalTaxBody({ ...fields, ein }, current.version))).body;
       };
 
-      // Staging persists EINs across runs, so a fixture EIN often collides on a
+      // Sandbox persists EINs across runs, so a fixture EIN often collides on a
       // re-run. On a 422 "already in use", rotate to a fresh fabricated EIN once.
       // NEVER in production - fabricating an EIN there would register a bogus
       // number for the company's IRS filings. There, surface the 422 instead.
