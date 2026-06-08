@@ -2,7 +2,7 @@
 
 Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboarded payroll in a single chat session with an agent.
 
-> **Status: V0.0.1.** Command surface is locked. Config, skill bundling, and most REST commands are implemented and callable today against a sandbox API token. OAuth login (`gusto auth login`), `gusto company provision`, and `gusto company finish` are deferred to AINT-561 and AINT-562. See the [shape spec](https://www.notion.so/36ead673c6c281efacd0c2e2c533f9f7) and the [V1 sprint epic AINT-552](https://gustohq.atlassian.net/browse/AINT-552).
+> **Status: V0.0.1.** Command surface is locked. Config, skill bundling, and most REST commands are implemented and callable today against a sandbox API token. OAuth login (`gusto auth login`) and `gusto company provision` are live (AINT-561). The `gusto company` onboarding surface - `onboarding-status`, `setup <federal-tax|state-tax|bank-account|pay-schedule>`, and `forms` - is implemented (AINT-562). See the [shape spec](https://www.notion.so/36ead673c6c281efacd0c2e2c533f9f7) and the [V1 sprint epic AINT-552](https://gustohq.atlassian.net/browse/AINT-552).
 
 > **Repo name:** currently `gusto-cli-public` because `Gusto/gusto-cli` is taken by an unrelated internal engineering CLI (`gdev-eng`). Once that collision is resolved, this repo will move to `Gusto/gusto-cli`.
 

@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
-import { fetchCompanyResource } from "../lib/api-context.ts";
+import { withCompanyContext } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -9,7 +9,9 @@ import { companyUuidFromTokenInfo, defaultOpenBrowser } from "../lib/oauth/login
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
+import { type OnboardingStatus, extractBlockers } from "../lib/onboarding-map.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+import { registerCompanyForms, registerCompanySetup } from "./company-setup.ts";
 
 interface CompanyShowOpts {
   companyUuid?: string;
@@ -23,7 +25,7 @@ interface ProvisionOpts {
 }
 
 export function registerCompanyCommand(parent: Command): void {
-  const cmd = parent.command("company").description("Provision, inspect, and finish company onboarding");
+  const cmd = parent.command("company").description("Provision, inspect, and onboard a company");
 
   cmd
     .command("provision")
@@ -36,45 +38,126 @@ export function registerCompanyCommand(parent: Command): void {
     );
 
   cmd
-    .command("status")
-    .description("Show onboarding status + structured blocked_on list")
+    .command("onboarding-status")
+    .description("Onboarding state + structured blocked_on list (the agent's navigation hook)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: CompanyShowOpts) =>
-      runCommand("gusto company status", readGlobalFlags(parent.opts()), companyStatusHandler(opts)),
+      runCommand(
+        "gusto company onboarding-status",
+        readGlobalFlags(parent.opts()),
+        companyOnboardingStatusHandler(opts),
+      ),
     );
 
   cmd
     .command("show")
-    .description("Read company record (legal name, EIN, entity type, addresses)")
+    .description("Company overview: record, payment config, and pay schedule")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: CompanyShowOpts) =>
       runCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
     );
 
-  cmd
-    .command("finish")
-    .description("Transition to onboarded (endpoint TBD - landing with AINT-562)")
-    .action(() => runCommand("gusto company finish", readGlobalFlags(parent.opts()), companyFinishHandler()));
+  registerCompanySetup(cmd, parent);
+  registerCompanyForms(cmd, parent);
 }
 
-function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchCompanyResource(
-      globals,
-      { token: opts.token, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}`,
-    );
+interface CompanyRecord {
+  name?: string;
+  trade_name?: string;
+  company_status?: string;
+  tier?: string;
+  ein?: string;
+  entity_type?: string;
+}
+interface PaymentConfig {
+  payment_speed?: string;
+  fast_payment_limit?: unknown;
+}
+interface PaySchedule {
+  uuid?: string;
+  frequency?: string;
+  anchor_pay_date?: string;
+  anchor_end_of_pay_period?: string;
 }
 
-function companyStatusHandler(opts: CompanyShowOpts): CommandHandler {
+export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchCompanyResource(
-      globals,
-      { token: opts.token, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}/onboarding_status`,
-    );
+    withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+      const base = `/v1/companies/${ctx.companyUuid}`;
+      const safe = async <T>(
+        label: string,
+        fn: () => Promise<T>,
+      ): Promise<{ ok: true; data: T } | { ok: false; label: string; error: string }> => {
+        try {
+          return { ok: true, data: await fn() };
+        } catch (err) {
+          return { ok: false, label, error: err instanceof Error ? err.message : String(err) };
+        }
+      };
+
+      const [companyR, paymentR, scheduleR] = await Promise.all([
+        safe("company", async () => (await ctx.client.get<CompanyRecord>(base)).body),
+        safe("payment_config", async () => (await ctx.client.get<PaymentConfig>(`${base}/payment_configs`)).body),
+        safe("pay_schedules", async () => (await ctx.client.get<PaySchedule[]>(`${base}/pay_schedules`)).body),
+      ]);
+
+      const company = companyR.ok ? companyR.data : null;
+      const paymentConfig = paymentR.ok ? paymentR.data : null;
+      const paySchedules = scheduleR.ok ? scheduleR.data : null;
+      const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
+      const errors = [companyR, paymentR, scheduleR].filter((r) => !r.ok);
+
+      return {
+        ok: true,
+        data: {
+          success: errors.length === 0,
+          company_uuid: ctx.companyUuid,
+          summary: {
+            name: company?.name ?? null,
+            trade_name: company?.trade_name ?? null,
+            status: company?.company_status ?? null,
+            tier: company?.tier ?? null,
+            ein: company?.ein ?? null,
+            entity_type: company?.entity_type ?? null,
+            payment_speed: paymentConfig?.payment_speed ?? null,
+            pay_schedule: firstSchedule
+              ? { frequency: firstSchedule.frequency, anchor_pay_date: firstSchedule.anchor_pay_date }
+              : null,
+          },
+          company,
+          payment_config: paymentConfig,
+          pay_schedules: paySchedules,
+          ...(errors.length > 0 ? { partial_errors: errors } : {}),
+        },
+      };
+    });
+}
+
+export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+      const status = (await ctx.client.get<OnboardingStatus>(`/v1/companies/${ctx.companyUuid}/onboarding_status`))
+        .body;
+      const blockedOn = extractBlockers(status);
+      const isComplete = status?.onboarding_completed === true;
+      const readyToFinish = blockedOn.length === 0 && !isComplete;
+      const stage = isComplete ? "done" : readyToFinish ? "ready_to_finish" : "onboarding";
+      const suggested = blockedOn[0]?.suggested_action ?? null;
+      return {
+        ok: true,
+        data: {
+          stage,
+          company_uuid: ctx.companyUuid,
+          blocked_on: blockedOn,
+          ready_to_finish: readyToFinish,
+          suggested_action: suggested,
+          next_command: suggested?.command ?? null,
+          onboarding_status: status,
+        },
+      };
+    });
 }
 
 export interface ProvisionData {
@@ -144,16 +227,4 @@ async function waitForEnter(): Promise<void> {
   } finally {
     rl.close();
   }
-}
-
-function companyFinishHandler(): CommandHandler {
-  return async () => ({
-    ok: false,
-    exitCode: ExitCode.General,
-    error: {
-      code: "endpoint_unknown",
-      message:
-        "`gusto company finish` is deferred - the finalize endpoint depends on the Mode 1 path. Landing with AINT-562.",
-    },
-  });
 }

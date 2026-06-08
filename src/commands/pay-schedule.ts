@@ -21,7 +21,7 @@ interface PayScheduleBody {
   anchor_end_of_pay_period?: string;
 }
 
-interface PayScheduleCreateOpts {
+export interface PayScheduleCreateOpts {
   frequency?: string;
   firstPayday?: string;
   anchorPayDate?: string;
@@ -65,7 +65,7 @@ export function registerPayScheduleCommand(parent: Command): void {
     );
 }
 
-function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
+export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
       return {

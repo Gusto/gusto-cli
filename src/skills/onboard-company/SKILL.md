@@ -17,13 +17,19 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 
 1. **Provision the company.** Run `gusto company provision`. The CLI will print a claim URL, open it in the user's browser, and wait. The user verifies identity (Google SSO is the magical path; email magic-link works too). When they return, the CLI mints an OAuth token and persists it.
 
-2. **Check onboarding status.** Run `gusto company status`. Read the `blocked_on` field to know what's pending - federal tax setup, state tax setup, bank connection, signatory, etc. These plumbing steps are reached via `gusto api request` until they're promoted to first-class commands.
+2. **Check onboarding status.** Run `gusto company onboarding-status`. Read the `blocked_on` array - each entry carries a `suggested_action` with the exact command (and flags) that resolves it. `next_command` is the first step to run.
 
-3. **Add the first W-2 employee.** Run `gusto employee add --first-name <X> --last-name <Y> --email <Z> --role <title> --comp <amount>`. The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default.
+3. **Clear the blockers.** Work the `blocked_on` list. Most steps map to a `gusto company setup <domain>` command:
+   - `gusto company setup federal-tax --ein <ein> --tax-payer-type <type> --filing-form <941|944> --legal-name <name>`
+   - `gusto company setup bank-account --routing <num> --account-number <num> --account-type <Checking|Savings>` (connects + verifies in one shot)
+   - `gusto company setup state-tax` (auto-detects states from employee work addresses; opts into new-employer default rates for CA/TX/FL)
+   - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD>`
 
-4. **Set up a pay schedule.** Run `gusto pay-schedule create --frequency <weekly|bi-weekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD>`. The CLI handles Gusto's date-math rules (pay-period alignment, weekend rollover).
+4. **Add the first W-2 employee.** Run `gusto employee create ...` (see `gusto employee create --help`). The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
 
-5. **Finalize.** Run `gusto company finish`. Pre-checks status; refuses early with the structured `blocked_on` list if anything is still pending.
+5. **Sign forms.** Run `gusto company forms`. This opens the hosted gws-flows signing URL (8655 + state agreements) for the signatory to click. Surface the URL to the user; don't sign on their behalf.
+
+6. **Re-check.** Run `gusto company onboarding-status` again - when `blocked_on` is empty, `stage` is `ready_to_finish`.
 
 ## Pause points (user input required)
 
@@ -44,7 +50,7 @@ Always pass `--agent` to every CLI call so the output is parseable JSON. The CLI
 - `gusto company provision` is the only step that creates server-side state before the user has logged in. If anything fails after provision, the user can still claim the account in the browser and continue from there.
 - Employee invites are reversible - the user can cancel an invite in the dashboard if they sent it to the wrong address.
 - Pay-schedule creation is reversible until the first pay run.
-- `gusto company finish` is one-way; don't run it until `status` returns no blockers.
+- Form signing is a legally-binding attestation; the signatory must complete it in the hosted flow. Don't auto-sign.
 
 ## Out of scope
 
