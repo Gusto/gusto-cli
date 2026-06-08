@@ -350,8 +350,8 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
 
     // 3-step orchestrator: discover states -> submit requirements -> read back readiness.
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
-      const partialErrors: PartialError[] = [];
-      const states = await discoverEmployeeStates(ctx, partialErrors);
+      const { states, errors: discoverErrors } = await discoverEmployeeStates(ctx);
+      const partialErrors: PartialError[] = [...discoverErrors];
       if (states.size === 0) {
         return {
           ok: false,
@@ -364,7 +364,8 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
         };
       }
       const results = await submitStateRequirements(ctx, states, useTemporaryRates);
-      const stateStatuses = await loadReadiness(ctx, partialErrors);
+      const { statuses: stateStatuses, errors: readinessErrors } = await loadReadiness(ctx);
+      partialErrors.push(...readinessErrors);
       const found = [...states];
       const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true);
 
@@ -383,13 +384,19 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
 }
 
 type PartialError = { label: string; error: string };
-type StateResult = { state: string; status: StateTaxBuildStatus | "error"; reason?: string; error?: string };
+// Discriminated on `status` so callers can't read `reason`/`error` for the wrong state.
+type StateResult =
+  | { state: string; status: "submitted" }
+  | { state: string; status: "needs_manual_setup" | "no_default_rate_question"; reason: string }
+  | { state: string; status: "error"; error: string };
 type StateStatuses = Record<string, { setup_complete?: boolean; ready_to_run_payroll?: boolean }>;
 
 /** Discover the states to set up from employee work addresses, back-filling a
  * missing work address from the primary location. Per-employee failures are
  * recorded in `partialErrors` rather than silently shrinking the set. */
-async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: PartialError[]): Promise<Set<string>> {
+async function discoverEmployeeStates(
+  ctx: CompanyApiContext,
+): Promise<{ states: Set<string>; errors: PartialError[] }> {
   const companyBase = `/v1/companies/${ctx.companyUuid}`;
   // Independent reads - fetch together.
   const [employeesRes, locationsRes] = await Promise.all([
@@ -405,11 +412,12 @@ async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: Par
   const perEmployee = await Promise.all(employees.map((emp) => statesForEmployee(ctx, emp, primaryLocationUuid)));
 
   const states = new Set<string>();
+  const errors: PartialError[] = [];
   for (const r of perEmployee) {
     for (const s of r.found) states.add(s);
-    partialErrors.push(...r.errors);
+    errors.push(...r.errors);
   }
-  return states;
+  return { states, errors };
 }
 
 /** Active work-address states for one employee, back-filling a missing address from
@@ -482,19 +490,19 @@ async function submitStateRequirements(
   );
 }
 
-/** Read back per-state readiness. A failed GET is surfaced via `partialErrors`
+/** Read back per-state readiness. A failed GET is returned as an error entry
  * rather than masquerading as "not ready". */
-async function loadReadiness(ctx: CompanyApiContext, partialErrors: PartialError[]): Promise<StateStatuses> {
+async function loadReadiness(ctx: CompanyApiContext): Promise<{ statuses: StateStatuses; errors: PartialError[] }> {
   const companyBase = `/v1/companies/${ctx.companyUuid}`;
-  const stateStatuses: StateStatuses = {};
+  const statuses: StateStatuses = {};
   try {
     for (const s of await loadStateStatuses(ctx.client, companyBase)) {
-      stateStatuses[s.state] = { setup_complete: s.setup_complete, ready_to_run_payroll: s.ready_to_run_payroll };
+      statuses[s.state] = { setup_complete: s.setup_complete, ready_to_run_payroll: s.ready_to_run_payroll };
     }
   } catch (err) {
-    partialErrors.push({ label: "tax_requirements_status", error: errMsg(err) });
+    return { statuses, errors: [{ label: "tax_requirements_status", error: errMsg(err) }] };
   }
-  return stateStatuses;
+  return { statuses, errors: [] };
 }
 
 /** Minimal read surface of ApiClient the load helpers need. */
