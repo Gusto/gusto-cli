@@ -19,23 +19,22 @@ interface MapEntry {
   optional_flags: string[];
 }
 
+// add_bank_info and verify_bank_info are both resolved by the one compound
+// connect command (create + test deposits + verify), so they share an entry.
+const BANK_CONNECT: MapEntry = {
+  command: "gusto company setup bank-account",
+  required_flags: ["--routing", "--account-number", "--account-type"],
+  optional_flags: [],
+};
+
 const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
   federal_tax_setup: {
     command: "gusto company setup federal-tax",
     required_flags: ["--ein", "--tax-payer-type", "--filing-form", "--legal-name"],
     optional_flags: ["--taxable-as-scorp"],
   },
-  add_bank_info: {
-    command: "gusto company setup bank-account",
-    required_flags: ["--routing", "--account-number", "--account-type"],
-    optional_flags: [],
-  },
-  // Resolved by the same compound connect (create + test deposits + verify).
-  verify_bank_info: {
-    command: "gusto company setup bank-account",
-    required_flags: ["--routing", "--account-number", "--account-type"],
-    optional_flags: [],
-  },
+  add_bank_info: BANK_CONNECT,
+  verify_bank_info: BANK_CONNECT,
   state_setup: {
     command: "gusto company setup state-tax",
     required_flags: [],
@@ -43,9 +42,9 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
   },
   payroll_schedule: {
     command: "gusto company setup pay-schedule",
-    required_flags: ["--frequency"],
-    // --anchor-end-of-pay-period is required for weekly/biweekly (enforced in pay-schedule.ts).
-    optional_flags: ["--first-payday", "--anchor-end-of-pay-period"],
+    required_flags: ["--frequency", "--first-payday"],
+    // --anchor-end-of-pay-period is also required for weekly/biweekly (enforced in pay-schedule.ts).
+    optional_flags: ["--anchor-end-of-pay-period"],
   },
   sign_all_forms: {
     command: "gusto company forms",
