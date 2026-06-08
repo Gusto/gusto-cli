@@ -123,6 +123,17 @@ describe("runCommand", () => {
     expect(result.stderr).toContain("email");
   });
 
+  test("--fields discovery falls back when there are no top-level fields (handler returns no data)", async () => {
+    const result = await runWithExitCapture("test", async () => ({ ok: true }), {
+      ...flags,
+      fields: { mode: "discover" },
+    });
+    expect(result.exitCode).toBe(ExitCode.General);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("--fields");
+    expect(result.stderr).toContain("(no top-level fields available)");
+  });
+
   test("discovery does not run on error envelopes", async () => {
     const result = await runWithExitCapture(
       "test",
