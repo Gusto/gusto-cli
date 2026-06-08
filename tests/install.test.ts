@@ -290,6 +290,18 @@ describe("install.sh", () => {
     expect(readFileSync(marker, "utf8")).toContain("com.apple.quarantine");
   });
 
+  test("installs on darwin when xattr is absent (quarantine strip is a no-op)", async () => {
+    fixture = startFixture();
+    // Darwin platform but no xattr on PATH exercises the guard's false branch.
+    const toolDir = linkTools(["sh", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
+    writeFileSync(path.join(toolDir, "uname"), unameShimBody("arm64", "Darwin"), { mode: 0o755 });
+    writeFileSync(path.join(toolDir, "sha256sum"), `#!/bin/sh\necho "${FAKE_SHA256}  $1"\n`, { mode: 0o755 });
+
+    const result = await runInstall(fixture, { PATH: toolDir });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
+  });
+
   test("verifies the checksum with shasum when sha256sum is unavailable", async () => {
     fixture = startFixture();
     // PATH without sha256sum forces the `shasum -a 256` branch. A fake shasum keeps
@@ -298,6 +310,19 @@ describe("install.sh", () => {
     const toolDir = linkTools(["sh", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
     writeFileSync(path.join(toolDir, "uname"), unameShimBody("x86_64", "Linux"), { mode: 0o755 });
     writeFileSync(path.join(toolDir, "shasum"), `#!/bin/sh\necho "${FAKE_SHA256}  $3"\n`, { mode: 0o755 });
+
+    const result = await runInstall(fixture, { PATH: toolDir });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(true);
+  });
+
+  test("verifies the checksum with sha256sum when it is available", async () => {
+    fixture = startFixture();
+    // A fake sha256sum on PATH forces the `command -v sha256sum` branch regardless
+    // of whether the host ships it (macOS does not), mirroring the shasum test.
+    const toolDir = linkTools(["sh", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
+    writeFileSync(path.join(toolDir, "uname"), unameShimBody("x86_64", "Linux"), { mode: 0o755 });
+    writeFileSync(path.join(toolDir, "sha256sum"), `#!/bin/sh\necho "${FAKE_SHA256}  $1"\n`, { mode: 0o755 });
 
     const result = await runInstall(fixture, { PATH: toolDir });
     expect(result.exitCode).toBe(0);

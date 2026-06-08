@@ -40,9 +40,10 @@ asset="gusto-$os-$arch"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# --proto-redir blocks an https->http downgrade if a redirect is followed. The
-# initial scheme is intentionally unrestricted so GUSTO_CLI_BASE_URL can point at
-# http for tests/staging.
+# --proto-redir restricts any redirect we follow to https only (so a redirect
+# can't land on http). The initial scheme is intentionally unrestricted so
+# GUSTO_CLI_BASE_URL can point at http for tests/staging - note that an http
+# staging server issuing an http redirect would fail here.
 fetch() {
   curl -fsSL --retry 3 --proto-redir "=https" "$1" -o "$2"
 }
