@@ -103,7 +103,7 @@ function ledgerShowHandler(payrollUuid: string, opts: LedgerShowOpts): CommandHa
     let requestUuid: string;
     try {
       const created = await client.post<{ request_uuid?: string }>(
-        `/v1/payrolls/${payrollUuid}/reports/general_ledger`,
+        `/v1/payrolls/${encodeURIComponent(payrollUuid)}/reports/general_ledger`,
         buildGeneralLedgerBody(opts),
       );
       if (!created.body?.request_uuid) {
@@ -142,7 +142,7 @@ function ledgerShowHandler(payrollUuid: string, opts: LedgerShowOpts): CommandHa
       if (err instanceof PollTimeoutError) {
         return {
           ok: false,
-          exitCode: ExitCode.Network,
+          exitCode: ExitCode.Timeout,
           error: {
             code: "report_timeout",
             message: `general ledger report ${requestUuid} did not finish before the timeout; poll ${pollPath} to retrieve it`,

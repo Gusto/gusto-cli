@@ -22,6 +22,17 @@ export type PayrollListQueryResult = { ok: true; query: QueryParams } | { ok: fa
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Closed enums, sourced from zenpayroll Api::V1::PayrollsController (the index
+// endpoint's constants - deliberately NOT the public docs, which are stale: the
+// docs omit `external` and list the SHOW-only `benefits`/`deductions` for
+// `include`). The API silently returns an empty array for unknown enum values
+// instead of erroring, so validating client-side turns an agent's typo into an
+// actionable blocked_on instead of a misleading empty result.
+const PROCESSING_STATUSES = ["processed", "unprocessed"] as const;
+const PAYROLL_TYPES = ["regular", "off_cycle", "external"] as const;
+const INCLUDE_OPTIONS = ["taxes", "payroll_status_meta", "totals", "risk_blockers", "reversals"] as const;
+const SORT_ORDERS = ["asc", "desc"] as const;
+
 /** True for a real calendar date in `YYYY-MM-DD` form (rejects bad formats and
  * impossible dates like 2026-02-30). */
 function isValidIsoDate(value: string): boolean {
@@ -29,6 +40,26 @@ function isValidIsoDate(value: string): boolean {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return false;
   return parsed.toISOString().slice(0, 10) === value;
+}
+
+/** Validate a flag value against a closed enum, returning a `blocked_on` entry
+ * for any unrecognized token (or null if all are valid). `multi` splits the
+ * value on commas for the comma-separated multi-value params; empty tokens
+ * (from trailing/double commas) are ignored. */
+function validateEnum(
+  field: string,
+  value: string | undefined,
+  allowed: readonly string[],
+  multi: boolean,
+): BlockedOn | null {
+  if (value === undefined) return null;
+  const tokens = (multi ? value.split(",") : [value]).filter((t) => t.length > 0);
+  const invalid = tokens.filter((t) => !allowed.includes(t));
+  if (invalid.length === 0) return null;
+  return {
+    field,
+    reason: `invalid value(s) ${invalid.map((t) => `'${t}'`).join(", ")}; allowed: ${allowed.join(", ")}`,
+  };
 }
 
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
@@ -45,6 +76,14 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryRe
   }
   if (opts.endDate !== undefined && !isValidIsoDate(opts.endDate)) {
     blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  for (const entry of [
+    validateEnum("processing-status", opts.processingStatus, PROCESSING_STATUSES, true),
+    validateEnum("payroll-type", opts.payrollType, PAYROLL_TYPES, true),
+    validateEnum("include", opts.include, INCLUDE_OPTIONS, true),
+    validateEnum("sort-order", opts.sortOrder, SORT_ORDERS, false),
+  ]) {
+    if (entry) blocked.push(entry);
   }
   if (blocked.length > 0) return { ok: false, blocked };
 
@@ -70,14 +109,14 @@ export function registerPayrollCommand(parent: Command): void {
     .description("List company payrolls (filter to past and/or future windows)")
     .option(
       "--processing-status <statuses>",
-      "processed, unprocessed - comma-separate for multiple (default processed)",
+      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed)`,
     )
-    .option("--payroll-type <types>", "regular, off_cycle - comma-separate for multiple (default regular)")
+    .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
     .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
     .option("--end-date <date>", "Only payrolls up to this date (YYYY-MM-DD; at most 3 months in the future)")
     .option("--date-filter-by <field>", "Date to filter by: check_date (defaults to pay period)")
-    .option("--include <attrs>", "Include extra attributes: benefits, deductions, taxes - comma-separate")
-    .option("--sort-order <order>", "asc or desc (default asc)")
+    .option("--include <attrs>", `Include extra attributes: ${INCLUDE_OPTIONS.join(", ")} - comma-separate`)
+    .option("--sort-order <order>", `${SORT_ORDERS.join(", ")} (default asc)`)
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .addHelpText(

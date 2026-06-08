@@ -70,4 +70,44 @@ describe("buildPayrollListQuery", () => {
       query: { start_date: "2026-07-03" },
     });
   });
+
+  test("accepts every valid enum value (incl. external payroll type and index-only includes)", () => {
+    const result = buildPayrollListQuery({
+      processingStatus: "processed,unprocessed",
+      payrollType: "regular,off_cycle,external",
+      include: "taxes,totals,risk_blockers,reversals,payroll_status_meta",
+      sortOrder: "asc",
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects an invalid sort-order", () => {
+    const result = buildPayrollListQuery({ sortOrder: "sideways" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "sort-order" }));
+  });
+
+  test("rejects an invalid processing-status token within a comma list", () => {
+    const result = buildPayrollListQuery({ processingStatus: "processed,banana" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    const entry = result.blocked.find((b) => b.field === "processing-status");
+    expect(entry?.reason).toContain("banana");
+  });
+
+  test("rejects SHOW-only include values that the index endpoint ignores", () => {
+    // benefits/deductions are valid on the show endpoint but NOT the index.
+    const result = buildPayrollListQuery({ include: "benefits" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "include" }));
+  });
+
+  test("ignores empty tokens from trailing commas", () => {
+    expect(buildPayrollListQuery({ payrollType: "regular," })).toEqual({
+      ok: true,
+      query: { payroll_types: "regular," },
+    });
+  });
 });

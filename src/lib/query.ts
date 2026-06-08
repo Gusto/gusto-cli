@@ -1,5 +1,6 @@
-/** A query-string value: a scalar, a list (joined with commas to match Gusto's
- * `?processing_statuses=processed,unprocessed` convention), or undefined (omitted). */
+/** A query-string value: a scalar, a list (joined with commas, then percent-encoded
+ * along with the rest of the value - so `["a","b"]` serializes as `a%2Cb`, which the
+ * server decodes back to Gusto's `a,b` multi-value convention), or undefined (omitted). */
 export type QueryValue = string | string[] | undefined;
 
 export type QueryParams = Record<string, QueryValue>;

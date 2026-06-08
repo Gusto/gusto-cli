@@ -365,6 +365,7 @@ describe("ApiClient.poll", () => {
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(PollTimeoutError);
+      expect((err as PollTimeoutError).exitCode).toBe(ExitCode.Timeout);
       expect((err as PollTimeoutError).attempts).toBe(3);
       expect((err as PollTimeoutError).lastBody).toEqual({ status: "Pending" });
       expect(seq.calls).toBe(3);

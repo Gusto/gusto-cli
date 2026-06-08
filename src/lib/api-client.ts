@@ -28,7 +28,7 @@ export class NetworkError extends Error {
  * configured time / attempt budget. Carries the last response body so callers
  * can report the terminal status (and any resumable request id). */
 export class PollTimeoutError extends Error {
-  readonly exitCode: ExitCodeValue = ExitCode.Network;
+  readonly exitCode: ExitCodeValue = ExitCode.Timeout;
   readonly attempts: number;
   readonly lastBody: unknown;
   constructor(message: string, attempts: number, lastBody: unknown) {
