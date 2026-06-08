@@ -78,6 +78,14 @@ if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -d com.apple.quarantine "$INSTALL_DIR/gusto" 2>/dev/null || true
 fi
 
+# Verify the binary runs before touching the user's PATH/profile, so a failed
+# check doesn't leave a dangling PATH entry pointing at an empty dir.
+"$INSTALL_DIR/gusto" --version || {
+  rm -f "$INSTALL_DIR/gusto"
+  echo "gusto: '$INSTALL_DIR/gusto --version' failed; removed the broken install" >&2
+  exit 1
+}
+
 # Ensure the install dir is on PATH. Append once to the shell profile if missing.
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
@@ -101,9 +109,3 @@ case ":$PATH:" in
     fi
     ;;
 esac
-
-"$INSTALL_DIR/gusto" --version || {
-  rm -f "$INSTALL_DIR/gusto"
-  echo "gusto: '$INSTALL_DIR/gusto --version' failed; removed the broken install" >&2
-  exit 1
-}

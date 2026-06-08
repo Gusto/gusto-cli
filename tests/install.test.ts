@@ -154,10 +154,12 @@ describe("install.sh", () => {
   test("rolls back the install when the binary fails its version check", async () => {
     // Passes the checksum but exits non-zero on `--version`.
     fixture = startFixture({ binaryBody: "#!/bin/sh\nexit 1\n" });
-    const result = await runInstall(fixture);
+    const result = await runInstall(fixture, { SHELL: "/bin/bash" });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toLowerCase()).toContain("version");
     expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
+    // The profile must not be modified when the version check fails.
+    expect(existsSync(path.join(fixture.home, ".bashrc"))).toBe(false);
   });
 
   test("adds the bin dir to the shell profile, idempotently", async () => {
