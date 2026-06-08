@@ -162,7 +162,9 @@ describe("bankAccountHandler (network)", () => {
   test("flags a malformed send_test_deposits response instead of PUTting null", async () => {
     const calls = stubFetch([
       { status: 201, body: { uuid: "bank-1" } },
-      { status: 200, body: { deposit_1: null } }, // missing/non-numeric amounts
+      // deposit_1 is null with a valid deposit_2: Number(null) is 0 (finite), so the
+      // guard must reject null explicitly rather than rely on isFinite alone.
+      { status: 200, body: { deposit_1: null, deposit_2: "0.03" } },
     ]);
     const result = await bankAccountHandler({
       ...auth,
