@@ -22,22 +22,16 @@ interface Fixture {
   server: Server;
   baseUrl: string;
   home: string;
-  /** Override the bytes served for binary downloads to force a checksum mismatch. */
-  corruptBinary: boolean;
 }
 
+// opts.corruptBinary serves tampered bytes to force a checksum mismatch;
+// opts.sha256sumsBody overrides the served SHA256SUMS.
 function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string } = {}): Fixture {
   const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-install-"));
-  const fixture: Fixture = {
-    corruptBinary: opts.corruptBinary ?? false,
-    home,
-    baseUrl: "",
-    server: undefined as unknown as Server,
-  };
-
+  const corruptBinary = opts.corruptBinary ?? false;
   const sha256sumsBody = opts.sha256sumsBody ?? `${TARGETS.map((t) => `${FAKE_SHA256}  ${t}`).join("\n")}\n`;
 
-  fixture.server = Bun.serve({
+  const server = Bun.serve({
     port: 0,
     fetch(req) {
       const { pathname } = new URL(req.url);
@@ -46,14 +40,14 @@ function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string }
         return new Response(sha256sumsBody, { headers: { "content-type": "text/plain" } });
       }
       if (TARGETS.includes(name)) {
-        const body = fixture.corruptBinary ? "tampered\n" : FAKE_BINARY;
+        const body = corruptBinary ? "tampered\n" : FAKE_BINARY;
         return new Response(body, { headers: { "content-type": "application/octet-stream" } });
       }
       return new Response("not found", { status: 404 });
     },
   });
-  fixture.baseUrl = `http://localhost:${fixture.server.port}`;
-  return fixture;
+
+  return { server, baseUrl: `http://localhost:${server.port}`, home };
 }
 
 interface Run {
