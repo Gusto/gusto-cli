@@ -55,6 +55,27 @@ export function resolveTaxableAsScorp(opts: FederalTaxOpts): boolean | undefined
   return undefined;
 }
 
+interface FederalTaxFields {
+  ein: string;
+  taxPayerType: string;
+  filingForm: string;
+  legalName: string;
+  taxableAsScorp?: boolean;
+}
+
+/** The federal_tax_details request body. Built once so the dry-run preview and
+ * the real PUT can't drift. `version` is omitted for dry-run (read at send time). */
+function federalTaxBody(fields: FederalTaxFields, version?: string): Record<string, unknown> {
+  return {
+    ...(version !== undefined ? { version } : {}),
+    ein: fields.ein,
+    tax_payer_type: fields.taxPayerType,
+    filing_form: fields.filingForm,
+    legal_name: fields.legalName,
+    ...(fields.taxableAsScorp !== undefined ? { taxable_as_scorp: fields.taxableAsScorp } : {}),
+  };
+}
+
 /** A fabricated 9-digit EIN in XX-XXXXXXX form. Used only on staging when the
  * provided EIN collides with another company. */
 function fabricateEin(): string {
@@ -67,8 +88,24 @@ function fabricateEin(): string {
 
 function einAlreadyInUse(err: unknown): boolean {
   if (!(err instanceof ApiError) || err.status !== 422) return false;
-  const haystack = `${err.message} ${JSON.stringify(err.body ?? "")}`;
-  return /ein.*already in use/i.test(haystack);
+  // Test each error message in isolation - matching over a concatenated blob
+  // could splice "ein" from one error and "already in use" from another and
+  // trigger an EIN rotation the user never authorized.
+  const re = /ein\b.*already in use/i;
+  const messages: string[] = [err.message];
+  const body = err.body;
+  if (body && typeof body === "object") {
+    const b = body as { message?: unknown; error?: unknown; errors?: unknown[] };
+    if (typeof b.message === "string") messages.push(b.message);
+    if (typeof b.error === "string") messages.push(b.error);
+    if (Array.isArray(b.errors)) {
+      for (const e of b.errors) {
+        const m = (e as { message?: unknown })?.message;
+        if (typeof m === "string") messages.push(m);
+      }
+    }
+  }
+  return messages.some((m) => re.test(m));
 }
 
 export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
@@ -95,6 +132,14 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
 
     const blocked = federalTaxBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
+    // blockers guarantee the four fields are present.
+    const fields: FederalTaxFields = {
+      ein: opts.ein!,
+      taxPayerType: opts.taxPayerType!,
+      filingForm: opts.filingForm!,
+      legalName: opts.legalName!,
+      ...(taxableAsScorp !== undefined ? { taxableAsScorp } : {}),
+    };
 
     if (opts.dryRun) {
       return {
@@ -102,13 +147,7 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
         data: {
           method: "PUT",
           path: "/v1/companies/{company_uuid}/federal_tax_details",
-          body: {
-            ein: opts.ein,
-            tax_payer_type: opts.taxPayerType,
-            filing_form: opts.filingForm,
-            legal_name: opts.legalName,
-            ...(taxableAsScorp !== undefined ? { taxable_as_scorp: taxableAsScorp } : {}),
-          },
+          body: federalTaxBody(fields),
           note: "dry-run: version is read from current federal_tax_details at send time",
         },
       };
@@ -119,20 +158,12 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
 
       const attempt = async (ein: string): Promise<unknown> => {
         const current = (await ctx.client.get<{ version?: string }>(base)).body;
-        const body = {
-          version: current.version,
-          ein,
-          tax_payer_type: opts.taxPayerType,
-          filing_form: opts.filingForm,
-          legal_name: opts.legalName,
-          ...(taxableAsScorp !== undefined ? { taxable_as_scorp: taxableAsScorp } : {}),
-        };
-        return (await ctx.client.put(base, body)).body;
+        return (await ctx.client.put(base, federalTaxBody({ ...fields, ein }, current.version))).body;
       };
 
       // Staging persists EINs across runs, so a fixture EIN often collides on a
       // re-run. On a 422 "already in use", rotate to a fresh fabricated EIN once.
-      let einUsed = opts.ein as string;
+      let einUsed = fields.ein;
       let result: unknown;
       let einAutoRotated = false;
       let einProvided: string | null = null;
@@ -178,6 +209,11 @@ export function bankAccountBlockers(opts: BankAccountOpts): BlockedOn[] {
   return blocked;
 }
 
+/** The bank_accounts create body. Built once so dry-run and the real POST can't drift. */
+function bankAccountBody(opts: BankAccountOpts): Record<string, unknown> {
+  return { routing_number: opts.routing, account_number: opts.accountNumber, account_type: opts.accountType };
+}
+
 export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
@@ -201,11 +237,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
         data: {
           method: "POST",
           path: "/v1/companies/{company_uuid}/bank_accounts",
-          body: {
-            routing_number: opts.routing,
-            account_number: opts.accountNumber,
-            account_type: opts.accountType,
-          },
+          body: bankAccountBody(opts),
           note: "dry-run: send_test_deposits + verify follow on send",
         },
       };
@@ -213,13 +245,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
 
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}/bank_accounts`;
-      const bank = (
-        await ctx.client.post<{ uuid: string }>(base, {
-          routing_number: opts.routing,
-          account_number: opts.accountNumber,
-          account_type: opts.accountType,
-        })
-      ).body;
+      const bank = (await ctx.client.post<{ uuid: string }>(base, bankAccountBody(opts))).body;
 
       const deposits = (
         await ctx.client.post<{ deposit_1: number | string; deposit_2: number | string }>(
@@ -287,13 +313,21 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
 
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
       const companyBase = `/v1/companies/${ctx.companyUuid}`;
+      const partialErrors: { label: string; error: string }[] = [];
       const employees = asArray<EmployeeRec>((await ctx.client.get(`${companyBase}/employees`)).body);
       const locations = asArray<LocationRec>((await ctx.client.get(`${companyBase}/locations`)).body);
       const primaryLocationUuid = locations[0]?.uuid;
 
       const states = new Set<string>();
       for (const emp of employees) {
-        let workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+        let workAddresses: WorkAddressRec[];
+        try {
+          workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+        } catch (err) {
+          // Surface the dropped employee instead of silently shrinking the state set.
+          partialErrors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
+          continue;
+        }
         const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
         if (hasJob && workAddresses.length === 0 && primaryLocationUuid) {
           try {
@@ -303,8 +337,8 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
               effective_date: new Date().toISOString().slice(0, 10),
             });
             workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-          } catch {
-            // Fall through - report the state as needing manual setup below.
+          } catch (err) {
+            partialErrors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
           }
         }
         for (const wa of workAddresses) {
@@ -319,28 +353,39 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
           error: {
             code: "no_work_addresses",
             message: "No employee work addresses found. Add employees before setting up state taxes.",
+            ...(partialErrors.length > 0 ? { details: partialErrors } : {}),
           },
         };
       }
 
-      const results: { state: string; status: string; reason?: string }[] = [];
+      // Per-state try/catch so a mid-loop failure doesn't discard the states
+      // already submitted earlier in the loop - each state's outcome is reported.
+      const results: { state: string; status: string; reason?: string; error?: string }[] = [];
       for (const state of states) {
-        const reqs = (await ctx.client.get<TaxRequirementsResponse>(`${companyBase}/tax_requirements/${state}`)).body;
-        const built = buildTaxRequirementSets(reqs, state, useTemporaryRates);
-        if (built.status !== "submitted") {
-          results.push({ state, status: built.status, reason: reasonFor(built.status, state) });
-          continue;
+        try {
+          const reqs = (await ctx.client.get<TaxRequirementsResponse>(`${companyBase}/tax_requirements/${state}`)).body;
+          const built = buildTaxRequirementSets(reqs, state, useTemporaryRates);
+          if (built.status !== "submitted") {
+            results.push({ state, status: built.status, reason: reasonFor(built.status, state) });
+            continue;
+          }
+          await ctx.client.put(`${companyBase}/tax_requirements/${state}`, {
+            requirement_sets: built.requirement_sets,
+          });
+          results.push({ state, status: "submitted" });
+        } catch (err) {
+          results.push({ state, status: "error", error: errMsg(err) });
         }
-        await ctx.client.put(`${companyBase}/tax_requirements/${state}`, {
-          requirement_sets: built.requirement_sets,
-        });
-        results.push({ state, status: "submitted" });
       }
 
-      const statusList = await loadStateStatuses(ctx.client, companyBase);
       const stateStatuses: Record<string, { setup_complete?: boolean; ready_to_run_payroll?: boolean }> = {};
-      for (const s of statusList) {
-        stateStatuses[s.state] = { setup_complete: s.setup_complete, ready_to_run_payroll: s.ready_to_run_payroll };
+      try {
+        for (const s of await loadStateStatuses(ctx.client, companyBase)) {
+          stateStatuses[s.state] = { setup_complete: s.setup_complete, ready_to_run_payroll: s.ready_to_run_payroll };
+        }
+      } catch (err) {
+        // Don't let a failed readiness GET masquerade as "not ready" with no explanation.
+        partialErrors.push({ label: "tax_requirements_status", error: errMsg(err) });
       }
       const found = [...states];
       const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true);
@@ -352,29 +397,29 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
           states_found: found,
           results,
           state_statuses: stateStatuses,
+          ...(partialErrors.length > 0 ? { partial_errors: partialErrors } : {}),
         },
       };
     });
   };
 }
 
-async function loadWorkAddresses(client: { get: <T>(p: string) => Promise<{ body: T }> }, employeeUuid: string) {
-  try {
-    return asArray<WorkAddressRec>((await client.get(`/v1/employees/${employeeUuid}/work_addresses`)).body);
-  } catch {
-    return [];
-  }
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function loadWorkAddresses(
+  client: { get: <T>(p: string) => Promise<{ body: T }> },
+  employeeUuid: string,
+): Promise<WorkAddressRec[]> {
+  return asArray<WorkAddressRec>((await client.get(`/v1/employees/${employeeUuid}/work_addresses`)).body);
 }
 
 async function loadStateStatuses(
   client: { get: <T>(p: string) => Promise<{ body: T }> },
   companyBase: string,
 ): Promise<StateStatusRec[]> {
-  try {
-    return asArray<StateStatusRec>((await client.get(`${companyBase}/tax_requirements`)).body);
-  } catch {
-    return [];
-  }
+  return asArray<StateStatusRec>((await client.get(`${companyBase}/tax_requirements`)).body);
 }
 
 function reasonFor(status: string, state: string): string {
@@ -393,7 +438,6 @@ interface FormsOpts extends ContextOpts {
   note?: string;
   demoSign?: boolean;
   signatureText?: string;
-  ipAddress?: string;
 }
 
 interface FormRec {
@@ -435,10 +479,26 @@ async function hostedSigningFlow(opts: FormsOpts, globals: GlobalFlags, isTty: b
 
 function demoSignHandler(opts: FormsOpts): CommandHandler {
   return async ({ globals }) => {
+    // Demo escape hatch: never allow server-side signing against production - it
+    // bypasses the legally-defensible hosted flow. Force the hosted path there.
+    if (globals.env === "production") {
+      return {
+        ok: false,
+        exitCode: ExitCode.Blocked,
+        error: {
+          code: "demo_only",
+          message:
+            "`--demo-sign` is a non-production demo escape hatch. In production run `gusto company forms` (the hosted signing flow) so the signatory signs in Gusto's hosted UI.",
+        },
+      };
+    }
     if (!opts.signatureText) {
       return missingArgs([{ field: "signature-text", reason: "required for --demo-sign (full legal name)" }]);
     }
-    const ip = opts.ipAddress ?? "127.0.0.1";
+    // Always sign from localhost - a demo escape hatch has no business accepting a
+    // caller-supplied IP, which would let the signer's location be spoofed in the
+    // audit trail.
+    const ip = "127.0.0.1";
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
       const forms = asArray<FormRec>((await ctx.client.get(`/v1/companies/${ctx.companyUuid}/forms`)).body);
       const unsigned = forms.filter((f) => !f.signed_at && f.requires_signing === true);
@@ -549,9 +609,8 @@ export function registerCompanyForms(company: Command, parent: Command): void {
     .command("forms")
     .description("Open the hosted signing flow for company forms (8655 + state agreements)")
     .option("--note <text>", "Optional note included in the signing flow")
-    .option("--demo-sign", "[DEMO ONLY] server-side sign all pending forms instead of opening the hosted flow")
+    .option("--demo-sign", "[DEMO ONLY, non-production] server-side sign all pending forms instead of the hosted flow")
     .option("--signature-text <text>", "Full legal name of the signatory (required with --demo-sign)")
-    .option("--ip-address <ip>", "Signer IP for --demo-sign (default 127.0.0.1)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: FormsOpts) => runCommand("gusto company forms", readGlobalFlags(parent.opts()), formsHandler(opts)));

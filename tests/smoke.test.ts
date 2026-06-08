@@ -140,6 +140,9 @@ describe("dry-run works without auth", () => {
         alias,
         "--first-payday",
         "2026-07-03",
+        // Week-based frequencies require it; harmless for the month-based ones.
+        "--anchor-end-of-pay-period",
+        "2026-06-26",
         "--dry-run",
       ]);
       expect(result.exitCode).toBe(0);
@@ -157,6 +160,8 @@ describe("dry-run works without auth", () => {
       "weekly",
       "--anchor-pay-date",
       "2026-07-03",
+      "--anchor-end-of-pay-period",
+      "2026-06-26",
       "--dry-run",
     ]);
     expect(result.exitCode).toBe(0);

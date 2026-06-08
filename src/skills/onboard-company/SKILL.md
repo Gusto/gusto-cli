@@ -25,7 +25,7 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
    - `gusto company setup state-tax` (auto-detects states from employee work addresses; opts into new-employer default rates for CA/TX/FL)
    - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD>`
 
-4. **Add the first W-2 employee.** Run `gusto employee create ...` (see `gusto employee create --help`). The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
+4. **Add the first W-2 employee.** Run `gusto employee add ...` (see `gusto employee add --help`). The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
 
 5. **Sign forms.** Run `gusto company forms`. This opens the hosted gws-flows signing URL (8655 + state agreements) for the signatory to click. Surface the URL to the user; don't sign on their behalf.
 

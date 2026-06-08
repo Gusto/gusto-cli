@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import type { CommandResult } from "../lib/runner.ts";
-import { bankAccountHandler, federalTaxHandler, stateTaxHandler } from "./company-setup.ts";
+import { bankAccountHandler, federalTaxHandler, formsHandler, stateTaxHandler } from "./company-setup.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 const ctx = { command: "test", globals };
@@ -190,5 +191,46 @@ describe("stateTaxHandler (network)", () => {
     expect(putCall?.body).toMatchObject({
       requirement_sets: [{ key: "taxrates", requirements: [{ key: "usedefaultsuirates", value: true }] }],
     });
+  });
+});
+
+describe("formsHandler", () => {
+  test("hosted flow creates a signing URL via POST /flows", async () => {
+    const calls = stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    const d = data(await formsHandler(auth, false)(ctx));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toContain("/companies/co-1/flows");
+    expect(d).toMatchObject({ flow_type: "sign_all_forms", url: "https://flows.example/abc" });
+  });
+
+  test("--demo-sign signs each unsigned form from localhost", async () => {
+    const calls = stubFetch([
+      { status: 200, body: [{ uuid: "f1", requires_signing: true, signed_at: null }] }, // GET forms
+      { status: 200, body: {} }, // PUT sign
+    ]);
+    const d = data(await formsHandler({ ...auth, demoSign: true, signatureText: "Ada Lovelace" })(ctx));
+    expect(d).toMatchObject({ forms_signed: 1, total: 1 });
+    const sign = calls.find((c) => c.url.includes("/forms/f1/sign"));
+    expect(sign?.method).toBe("PUT");
+    expect(sign?.body).toMatchObject({
+      signature_text: "Ada Lovelace",
+      agree: true,
+      signed_by_ip_address: "127.0.0.1",
+    });
+  });
+
+  test("--demo-sign is refused on production (no API call)", async () => {
+    const calls = stubFetch([{ status: 200, body: {} }]);
+    const prod: GlobalFlags = { ...globals, env: "production" };
+    const result = await formsHandler({ ...auth, demoSign: true, signatureText: "Ada Lovelace" })({
+      command: "test",
+      globals: prod,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("demo_only");
+    expect(calls).toHaveLength(0);
   });
 });
