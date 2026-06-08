@@ -301,6 +301,46 @@ describe("ApiClient retries (idempotent verbs only)", () => {
   });
 });
 
+describe("ApiClient request deadline", () => {
+  test("does not even attempt once the deadline has already passed", async () => {
+    const seq = sequenceFetch([{ status: 200, body: { ok: true } }]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    try {
+      await client.request("GET", "/v1/x", undefined, { deadline: 0, now: () => 1000 });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NetworkError);
+      expect(seq.calls).toBe(0);
+    }
+  });
+
+  test("stops retrying once the deadline is exhausted (does not run the full retry budget)", async () => {
+    const seq = sequenceFetch([{ status: 503, body: { err: "down" } }]);
+    let t = 0;
+    const now = (): number => {
+      const v = t;
+      t += 100;
+      return v;
+    };
+    const client = makeClient(seq.fetch, { maxRetries: 5, retrySleepMs: () => 0 });
+    try {
+      await client.request("GET", "/v1/x", undefined, { deadline: 1000, now });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      // Without a deadline this would be maxRetries + 1 = 6 attempts.
+      expect(seq.calls).toBeLessThan(6);
+    }
+  });
+
+  test("succeeds normally when the request completes within the deadline", async () => {
+    const client = makeClient(mockFetch({}, { status: 200, body: { ok: true } }));
+    const result = await client.request<{ ok: boolean }>("GET", "/v1/x", undefined, { deadline: 9_999_999_999_999 });
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(true);
+  });
+});
+
 describe("ApiClient.poll", () => {
   const PENDING = { status: 200, body: { status: "Pending" } };
   const succeeded = (extra: Record<string, unknown> = {}) => ({

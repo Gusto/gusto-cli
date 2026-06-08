@@ -51,6 +51,15 @@ export class PollFailedError extends Error {
   }
 }
 
+export interface RequestOptions {
+  /** Absolute wall-clock deadline (ms, same epoch as `now`). When set, the retry
+   * backoff and the per-request abort timeout are both capped so a request can
+   * never run past it. Used by `poll()` to honor `--timeout` exactly. */
+  deadline?: number;
+  /** Clock source (ms); injectable for deterministic deadline tests. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
 export interface PollOptions<T> {
   /** Terminal-success predicate. `poll()` resolves with the first response whose body satisfies it. */
   until: (body: T) => boolean;
@@ -111,8 +120,8 @@ export class ApiClient {
     this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
   }
 
-  get<T = unknown>(path: string): Promise<ApiResponse<T>> {
-    return this.request<T>("GET", path);
+  get<T = unknown>(path: string, opts?: RequestOptions): Promise<ApiResponse<T>> {
+    return this.request<T>("GET", path, undefined, opts);
   }
 
   post<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>> {
@@ -130,19 +139,35 @@ export class ApiClient {
   /** GET `path` repeatedly until `until` holds (resolves with that response),
    * `isFailure` holds (rejects with `PollFailedError`), or the time / attempt
    * budget is exhausted (rejects with `PollTimeoutError`). Sleeps `intervalMs`
-   * between attempts. Used for async report generation (general ledger). */
+   * between attempts. The wall-clock deadline is threaded into each GET so the
+   * inner retry loop and per-request timeout can't overshoot it. Used for async
+   * report generation (general ledger). */
   async poll<T = unknown>(path: string, options: PollOptions<T>): Promise<ApiResponse<T>> {
     const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const timeoutMs = options.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
     const sleepMs = options.sleepMs ?? (() => intervalMs);
     const now = options.now ?? (() => Date.now());
 
-    const start = now();
+    const deadline = Number.isFinite(timeoutMs) ? now() + timeoutMs : undefined;
+    const timedOut = (attempt: number, lastBody: unknown): PollTimeoutError =>
+      new PollTimeoutError(`poll: ${path} did not succeed within ${timeoutMs}ms`, attempt, lastBody);
+
     let attempt = 0;
     let lastBody: unknown;
 
     for (;;) {
-      const response = await this.get<T>(path);
+      if (deadline !== undefined && now() >= deadline) {
+        throw timedOut(attempt, lastBody);
+      }
+
+      let response: ApiResponse<T>;
+      try {
+        response = await this.get<T>(path, { deadline, now });
+      } catch (err) {
+        // A GET aborted because the budget ran out is a poll timeout, not a bare network error.
+        if (deadline !== undefined && now() >= deadline) throw timedOut(attempt, lastBody);
+        throw err;
+      }
       attempt += 1;
       lastBody = response.body;
 
@@ -155,24 +180,48 @@ export class ApiClient {
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) {
         throw new PollTimeoutError(`poll: ${path} did not succeed within ${attempt} attempts`, attempt, lastBody);
       }
-      if (now() - start >= timeoutMs) {
-        throw new PollTimeoutError(`poll: ${path} did not succeed within ${timeoutMs}ms`, attempt, lastBody);
-      }
-      await sleep(sleepMs(attempt - 1));
+
+      // Clamp the inter-poll sleep to the remaining budget; if none remains the
+      // next iteration's deadline check throws immediately.
+      let wait = sleepMs(attempt - 1);
+      if (deadline !== undefined) wait = Math.min(wait, Math.max(0, deadline - now()));
+      await sleep(wait);
     }
   }
 
-  async request<T = unknown>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
+  async request<T = unknown>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts: RequestOptions = {},
+  ): Promise<ApiResponse<T>> {
     const isIdempotent = IDEMPOTENT_METHODS.has(method.toUpperCase());
+    const now = opts.now ?? (() => Date.now());
+    const { deadline } = opts;
     let lastError: ApiError | NetworkError | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       if (attempt > 0) {
-        await sleep(this.retrySleepMs(attempt - 1));
+        let backoff = this.retrySleepMs(attempt - 1);
+        if (deadline !== undefined) {
+          const remaining = deadline - now();
+          if (remaining <= 0) break; // out of budget - stop retrying
+          backoff = Math.min(backoff, remaining);
+        }
+        await sleep(backoff);
+      }
+
+      // Cap each attempt's timeout by the remaining budget so a single in-flight
+      // request can never overshoot the deadline.
+      let perRequestTimeout = this.timeoutMs;
+      if (deadline !== undefined) {
+        const remaining = deadline - now();
+        if (remaining <= 0) break;
+        perRequestTimeout = Math.min(this.timeoutMs, remaining);
       }
 
       try {
-        return await this.sendOnce<T>(method, path, body);
+        return await this.sendOnce<T>(method, path, body, perRequestTimeout);
       } catch (err) {
         if (err instanceof ApiError && err.status >= 500 && isIdempotent) {
           lastError = err;
@@ -189,14 +238,14 @@ export class ApiClient {
     throw lastError ?? new NetworkError(`request failed after ${this.maxRetries + 1} attempts`);
   }
 
-  private async sendOnce<T>(method: string, path: string, body: unknown): Promise<ApiResponse<T>> {
+  private async sendOnce<T>(method: string, path: string, body: unknown, timeoutMs: number): Promise<ApiResponse<T>> {
     const url = path.startsWith("http") ? path : `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: "application/json",
       "X-Gusto-API-Version": this.apiVersion,
     };
-    let init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
+    let init: RequestInit = { method, headers, signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       init = { ...init, body: JSON.stringify(body) };
@@ -208,7 +257,7 @@ export class ApiClient {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-        throw new NetworkError(`request timed out after ${this.timeoutMs}ms calling ${method} ${url}`);
+        throw new NetworkError(`request timed out after ${timeoutMs}ms calling ${method} ${url}`);
       }
       throw new NetworkError(`network error calling ${method} ${url}: ${msg}`);
     }
