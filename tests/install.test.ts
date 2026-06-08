@@ -29,7 +29,7 @@ interface Fixture {
 // opts.corruptBinary serves tampered bytes to force a checksum mismatch;
 // opts.sha256sumsBody overrides the served SHA256SUMS.
 function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string; binaryBody?: string } = {}): Fixture {
-  const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-install-"));
+  const home = tmpDir("gusto-cli-install-");
   const corruptBinary = opts.corruptBinary ?? false;
   const binaryBody = opts.binaryBody ?? FAKE_BINARY;
   const binaryHash = createHash("sha256").update(binaryBody).digest("hex");
@@ -67,7 +67,7 @@ async function runInstall(fixture: Fixture, env: Record<string, string> = {}): P
 // Write an executable shim into its own dir (kept out of $HOME so it doesn't
 // pollute the install target) and return the dir to prepend to PATH.
 function writeShim(name: string, body: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "gusto-cli-shim-"));
+  const dir = tmpDir("gusto-cli-shim-");
   const file = path.join(dir, name);
   writeFileSync(file, body, { mode: 0o755 });
   return dir;
@@ -76,7 +76,7 @@ function writeShim(name: string, body: string): string {
 // Build a dir symlinking only the named tools, to use as the *entire* PATH.
 // Lets a test run install.sh with a specific tool (e.g. sha256sum) absent.
 function linkTools(names: string[]): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "gusto-cli-tools-"));
+  const dir = tmpDir("gusto-cli-tools-");
   for (const name of names) {
     const real = Bun.which(name);
     if (!real) throw new Error(`linkTools: required tool not found on PATH: ${name}`);
@@ -93,15 +93,22 @@ function unameShimBody(machine: string, system: string): string {
 // A `uname` shim returned as a PATH prefix so a test can simulate any OS/arch.
 function unamePath(machine: string, system: string): string {
   const shim = writeShim("uname", unameShimBody(machine, system));
-  tempDirs.push(shim);
   return `${shim}:${process.env.PATH ?? ""}`;
 }
 
 let fixture: Fixture | undefined;
 const tempDirs: string[] = [];
+
+// Create a temp dir that afterEach auto-removes. Every test temp dir goes through
+// here so cleanup is uniform - no caller registers manually.
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
 afterEach(() => {
   fixture?.server.stop(true);
-  if (fixture?.home) rmSync(fixture.home, { recursive: true, force: true });
   // Reset so a test that doesn't create a fixture (e.g. the URL-construction tests)
   // doesn't make afterEach re-stop a stale, already-stopped server.
   fixture = undefined;
@@ -272,8 +279,7 @@ describe("install.sh", () => {
     fixture = startFixture();
     // Force darwin + a fake xattr (recording its args) so the macOS-only branch
     // runs deterministically on any host, including the ubuntu CI runner.
-    const bin = mkdtempSync(path.join(tmpdir(), "gusto-cli-xattr-"));
-    tempDirs.push(bin);
+    const bin = tmpDir("gusto-cli-xattr-");
     const marker = path.join(bin, "xattr-called");
     writeFileSync(path.join(bin, "uname"), unameShimBody("arm64", "Darwin"), { mode: 0o755 });
     writeFileSync(path.join(bin, "xattr"), `#!/bin/sh\necho "$@" >> "${marker}"\n`, { mode: 0o755 });
@@ -292,7 +298,6 @@ describe("install.sh", () => {
     const toolDir = linkTools(["sh", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
     writeFileSync(path.join(toolDir, "uname"), unameShimBody("x86_64", "Linux"), { mode: 0o755 });
     writeFileSync(path.join(toolDir, "shasum"), `#!/bin/sh\necho "${FAKE_SHA256}  $3"\n`, { mode: 0o755 });
-    tempDirs.push(toolDir);
 
     const result = await runInstall(fixture, { PATH: toolDir });
     expect(result.exitCode).toBe(0);
@@ -305,11 +310,9 @@ describe("install.sh URL construction", () => {
   // GitHub release URL install.sh builds (no GUSTO_CLI_BASE_URL) is observable
   // without a network call. Reuses runScript so there's one launch path.
   async function recordCurlUrl(env: Record<string, string>): Promise<string> {
-    const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-url-"));
-    tempDirs.push(home);
+    const home = tmpDir("gusto-cli-url-");
     const log = path.join(home, "curl.log");
-    const bin = mkdtempSync(path.join(tmpdir(), "gusto-cli-urlbin-"));
-    tempDirs.push(bin);
+    const bin = tmpDir("gusto-cli-urlbin-");
     writeFileSync(path.join(bin, "curl"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
     // Force a supported platform so the OS/arch guard never short-circuits before
     // curl runs - otherwise the log is never created (e.g. on a linux arm64 host).
