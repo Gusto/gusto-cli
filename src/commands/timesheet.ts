@@ -53,10 +53,18 @@ interface TimesheetCreateInput {
 export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCreateValidation {
   const blocked: BlockedOn[] = [];
 
-  if (opts.employeeUuid && opts.contractorUuid) {
+  const ambiguousEntity = Boolean(opts.employeeUuid && opts.contractorUuid);
+  const isEmployee = Boolean(opts.employeeUuid) && !opts.contractorUuid;
+  if (ambiguousEntity) {
     blocked.push({ field: "employee-uuid", reason: "pass only one of --employee-uuid or --contractor-uuid" });
   } else if (!opts.employeeUuid && !opts.contractorUuid) {
     blocked.push({ field: "employee-uuid", reason: "required (or pass --contractor-uuid)" });
+  }
+
+  // The API requires a job for employee time sheets (TimeTracking::TimeSheet validates
+  // employee_job_uuid presence if member_employee?); contractors don't take a job.
+  if (isEmployee && !opts.jobUuid) {
+    blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
   }
 
   if (!opts.start) blocked.push({ field: "start", reason: "required (shift start, ISO 8601)" });
@@ -115,11 +123,10 @@ interface TimesheetSyncInput {
   payScheduleUuid?: string;
   payPeriodStart?: string;
   payPeriodEnd?: string;
-  kind?: string;
 }
 
 /** Validate timesheet-sync args and, on success, return the payroll-sync request body.
- * `kind` defaults to "regular" (the standard payroll export). */
+ * `kind` is always "regular" — the API only supports regular payroll exports today. */
 export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncValidation {
   const blocked: BlockedOn[] = [];
   if (!opts.payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
@@ -133,7 +140,7 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
   return {
     ok: true,
     body: {
-      kind: opts.kind ?? "regular",
+      kind: "regular",
       pay_schedule_uuid: opts.payScheduleUuid as string,
       pay_period_start_date: opts.payPeriodStart as string,
       pay_period_end_date: opts.payPeriodEnd as string,
@@ -155,6 +162,8 @@ interface TimesheetSyncOpts extends TimesheetSyncInput {
   example?: boolean;
 }
 
+// Note: `kind` is intentionally not a flag — only regular payroll exports are supported today.
+
 export function registerTimesheetCommand(parent: Command): void {
   const cmd = parent.command("timesheet").description("Sync hours to timesheets and sync them to payroll");
 
@@ -166,7 +175,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--start <timestamp>", "Shift start (ISO 8601); the API names this `shift_started_at`")
     .option("--end <timestamp>", "Shift end (ISO 8601); omit for an ongoing shift")
     .option("--time-zone <tz>", "Time zone where the hours were tracked (e.g. America/New_York)")
-    .option("--job-uuid <uuid>", "Job UUID the hours are tracked against")
+    .option("--job-uuid <uuid>", "Job UUID the hours are tracked against (required for employees)")
     .option("--regular <hours>", "Regular hours worked")
     .option("--overtime <hours>", "Overtime hours worked")
     .option("--double-overtime <hours>", "Double-overtime hours worked")
@@ -184,7 +193,6 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--pay-schedule-uuid <uuid>", "Pay schedule UUID for the pay period")
     .option("--pay-period-start <date>", "Pay period start (YYYY-MM-DD)")
     .option("--pay-period-end <date>", "Pay period end (YYYY-MM-DD)")
-    .option("--kind <kind>", "Payroll kind (default: regular)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
@@ -205,6 +213,7 @@ function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
           body: {
             entity_uuid: "9b8c7d6e-0000-1111-2222-333344445555",
             entity_type: "Employee",
+            job_uuid: "1f2e3d4c-0000-1111-2222-333344445555",
             time_zone: "America/New_York",
             shift_started_at: "2026-06-01T09:00:00Z",
             shift_ended_at: "2026-06-01T17:30:00Z",

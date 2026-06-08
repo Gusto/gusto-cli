@@ -4,12 +4,13 @@ import { validateTimesheetCreate, validateTimesheetSync } from "./timesheet.ts";
 describe("validateTimesheetCreate", () => {
   const base = {
     employeeUuid: "emp-1",
+    jobUuid: "job-1",
     start: "2026-06-01T09:00:00Z",
     timeZone: "America/New_York",
     regular: "8",
   };
 
-  test("employee + regular hours + start + time-zone returns the populated body", () => {
+  test("employee + job + regular hours + start + time-zone returns the populated body", () => {
     const result = validateTimesheetCreate(base);
     expect(result).toEqual({
       ok: true,
@@ -18,9 +19,22 @@ describe("validateTimesheetCreate", () => {
         entity_type: "Employee",
         time_zone: "America/New_York",
         shift_started_at: "2026-06-01T09:00:00Z",
+        job_uuid: "job-1",
         entries: [{ hours_worked: 8, pay_classification: "Regular" }],
       },
     });
+  });
+
+  test("an employee without --job-uuid is blocked (job is required for employees)", () => {
+    const result = validateTimesheetCreate({
+      employeeUuid: "emp-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "job-uuid" }));
   });
 
   test("all three hour types map to the exact pay_classification enum strings", () => {
@@ -51,7 +65,7 @@ describe("validateTimesheetCreate", () => {
     expect(result.body.job_uuid).toBe("job-9");
   });
 
-  test("--contractor-uuid sets entity_type Contractor", () => {
+  test("--contractor-uuid sets entity_type Contractor and does NOT require a job", () => {
     const result = validateTimesheetCreate({
       contractorUuid: "ctr-1",
       start: "2026-06-01T09:00:00Z",
@@ -62,6 +76,7 @@ describe("validateTimesheetCreate", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.body.entity_uuid).toBe("ctr-1");
     expect(result.body.entity_type).toBe("Contractor");
+    expect(result.body.job_uuid).toBeUndefined();
   });
 
   test("missing both entity uuids blocks on entity", () => {
@@ -149,7 +164,7 @@ describe("validateTimesheetSync", () => {
     payPeriodEnd: "2026-06-15",
   };
 
-  test("pay-schedule + period dates returns the populated body, kind defaults to regular", () => {
+  test("pay-schedule + period dates returns the populated body, kind is always regular", () => {
     const result = validateTimesheetSync(base);
     expect(result).toEqual({
       ok: true,
@@ -160,13 +175,6 @@ describe("validateTimesheetSync", () => {
         pay_period_end_date: "2026-06-15",
       },
     });
-  });
-
-  test("explicit --kind passes through", () => {
-    const result = validateTimesheetSync({ ...base, kind: "off_cycle" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    expect(result.body.kind).toBe("off_cycle");
   });
 
   test("missing --pay-schedule-uuid blocks on pay-schedule-uuid", () => {
