@@ -110,14 +110,17 @@ describe("runCommand", () => {
     expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
   });
 
-  test("--fields with no value emits the available field names instead of the data", async () => {
+  test("--fields with no value lists available fields on stderr and exits non-zero (gh convention)", async () => {
     const result = await runWithExitCapture(
       "test",
       async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
       { ...flags, fields: { mode: "discover" } },
     );
-    expect(result.exitCode).toBe(ExitCode.Success);
-    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { fields: ["uuid", "email"] } });
+    expect(result.exitCode).toBe(ExitCode.General);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("--fields");
+    expect(result.stderr).toContain("uuid");
+    expect(result.stderr).toContain("email");
   });
 
   test("discovery does not run on error envelopes", async () => {

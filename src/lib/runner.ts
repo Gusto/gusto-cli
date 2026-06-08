@@ -1,6 +1,6 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import { availableFields, selectFields } from "./field-filter.ts";
-import type { FieldSelection, GlobalFlags } from "./global-flags.ts";
+import type { GlobalFlags } from "./global-flags.ts";
 import { type BlockedOn, type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
 
 export interface CommandContext {
@@ -41,9 +41,17 @@ export async function runCommand<T>(
   let code: ExitCodeValue;
   try {
     const result = await handler({ command, globals });
-    if (result.ok) {
-      // `--fields` only ever reshapes successful output; error envelopes are emitted verbatim.
-      emit(output, { ok: true, data: applyFieldSelection(result.data, globals.fields) }, deps.sinks);
+    const selection = globals.fields;
+    if (result.ok && selection?.mode === "discover") {
+      // gh convention: a bare `--fields` is a usage error — list the available top-level fields
+      // on stderr, leave stdout empty, and exit non-zero. Only reached on success; an errored
+      // command falls through to the error branch and surfaces its own failure instead.
+      writeFieldsHint(availableFields(result.data), deps);
+      code = ExitCode.General;
+    } else if (result.ok) {
+      // `--fields <list>` only ever reshapes successful output; without it, data passes through.
+      const data = selection?.mode === "select" ? selectFields(result.data, selection.keys) : result.data;
+      emit(output, { ok: true, data }, deps.sinks);
       code = ExitCode.Success;
     } else {
       emit(output, { ok: false, error: result.error }, deps.sinks);
@@ -78,12 +86,11 @@ export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
   return validationFailure("missing required arguments", blocked);
 }
 
-/** Apply a `--fields` selection to successful data: `discover` replaces it with the list of
- * available top-level field names; `select` projects it down to the requested keys. */
-function applyFieldSelection(data: unknown, selection: FieldSelection | undefined): unknown {
-  if (!selection) return data;
-  if (selection.mode === "discover") return { fields: availableFields(data) };
-  return selectFields(data, selection.keys);
+/** Print the gh-style "you must specify fields" hint to stderr, listing what's available. */
+function writeFieldsHint(fields: string[], deps: RunnerDeps): void {
+  const stderr = deps.sinks?.stderr ?? process.stderr;
+  const body = fields.length > 0 ? fields.map((f) => `  ${f}`).join("\n") : "  (no top-level fields available)";
+  stderr.write(`Specify one or more comma-separated fields for \`--fields\`:\n${body}\n`);
 }
 
 export function notImplementedHandler(commandPath: string): CommandHandler {
