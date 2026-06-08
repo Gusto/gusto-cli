@@ -1,4 +1,6 @@
+import type { GlobalFlags } from "./global-flags.ts";
 import type { StreamSinks } from "./output.ts";
+import type { CommandContext, CommandResult } from "./runner.ts";
 
 export interface CapturedStream {
   buffer: string;
@@ -23,6 +25,23 @@ export function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; st
   const stdout = captureStream();
   const stderr = captureStream();
   return { sinks: { stdout: stdout.sink, stderr: stderr.sink }, stdout, stderr };
+}
+
+/** Shared command-handler test fixtures. */
+export const TEST_GLOBALS: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
+export const TEST_CONTEXT: CommandContext = { command: "test", globals: TEST_GLOBALS };
+export const TEST_AUTH = { token: "tkn", companyUuid: "co-1" };
+
+/** Unwrap a successful CommandResult's data, throwing if it failed. */
+export function okData(result: CommandResult): Record<string, unknown> {
+  if (!result.ok) throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
+  return result.data as Record<string, unknown>;
+}
+
+/** The `field`s from a failed CommandResult's blocked_on list. */
+export function blockedFields(result: CommandResult): string[] {
+  if (result.ok) throw new Error("expected validation failure");
+  return (result.error.blocked_on ?? []).map((b) => b.field);
 }
 
 export interface MockResponse {

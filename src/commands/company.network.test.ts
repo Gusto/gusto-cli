@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { GlobalFlags } from "../lib/global-flags.ts";
-import type { CommandResult } from "../lib/runner.ts";
 import { companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
-import { type MockResponse, stubGlobalFetch } from "../lib/test-support.ts";
-
-const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
-const ctx = { command: "test", globals };
-const auth = { token: "tkn", companyUuid: "co-1" };
+import {
+  type MockResponse,
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  okData as data,
+  stubGlobalFetch,
+} from "../lib/test-support.ts";
 
 interface Route extends MockResponse {
   match: string;
@@ -18,11 +18,6 @@ afterEach(() => restore());
 /** Stub global fetch, routing each request to the first route whose substring the URL contains. */
 function routeFetch(routes: Route[]): void {
   restore = stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 }).restore;
-}
-
-function data(result: CommandResult): Record<string, unknown> {
-  if (!result.ok) throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
-  return result.data as Record<string, unknown>;
 }
 
 describe("companyShowHandler", () => {

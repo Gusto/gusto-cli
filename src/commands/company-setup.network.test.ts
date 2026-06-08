@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
-import type { CommandResult } from "../lib/runner.ts";
 import { bankAccountHandler, federalTaxHandler, formsHandler, stateTaxHandler } from "./company-setup.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { type MockResponse, type RecordedCall, stubGlobalFetch } from "../lib/test-support.ts";
-
-const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
-const ctx = { command: "test", globals };
-const auth = { token: "tkn", companyUuid: "co-1" };
+import {
+  type MockResponse,
+  type RecordedCall,
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  TEST_GLOBALS as globals,
+  okData as data,
+  stubGlobalFetch,
+} from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -17,11 +20,6 @@ function stubFetch(responses: MockResponse[]): RecordedCall[] {
   const s = stubGlobalFetch(responses);
   restore = s.restore;
   return s.calls;
-}
-
-function data(result: CommandResult): Record<string, unknown> {
-  if (!result.ok) throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
-  return result.data as Record<string, unknown>;
 }
 
 describe("federalTaxHandler (network)", () => {
@@ -142,6 +140,42 @@ describe("bankAccountHandler (network)", () => {
     expect(calls[2]?.body).toEqual({ deposit_1: 0.02, deposit_2: 0.03 });
     expect(d).toMatchObject({ bank_account_uuid: "bank-1", verification_status: "verified" });
   });
+
+  test("surfaces bank_account_uuid + phase when verify fails after create", async () => {
+    stubFetch([
+      { status: 201, body: { uuid: "bank-1" } }, // create
+      { status: 200, body: { deposit_1: "0.02", deposit_2: "0.03" } }, // send_test_deposits
+      { status: 422, body: { errors: [{ message: "amounts do not match" }] } }, // verify
+    ]);
+    const result = await bankAccountHandler({
+      ...auth,
+      routing: "123456789",
+      accountNumber: "987654321",
+      accountType: "Checking",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("bank_verification_failed");
+    expect(result.error.details).toMatchObject({ bank_account_uuid: "bank-1", phase: "verify" });
+  });
+
+  test("flags a malformed send_test_deposits response instead of PUTting null", async () => {
+    const calls = stubFetch([
+      { status: 201, body: { uuid: "bank-1" } },
+      { status: 200, body: { deposit_1: null } }, // missing/non-numeric amounts
+    ]);
+    const result = await bankAccountHandler({
+      ...auth,
+      routing: "123456789",
+      accountNumber: "987654321",
+      accountType: "Checking",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("bank_verification_failed");
+    // No verify PUT should have been attempted with bad amounts.
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
 });
 
 describe("stateTaxHandler (network)", () => {
@@ -212,6 +246,26 @@ describe("formsHandler", () => {
       agree: true,
       signed_by_ip_address: "127.0.0.1",
     });
+  });
+
+  test("--demo-sign reports partial failure when some forms fail to sign", async () => {
+    stubFetch([
+      {
+        status: 200,
+        body: [
+          { uuid: "f1", requires_signing: true, signed_at: null },
+          { uuid: "f2", name: "Form 8655", requires_signing: true, signed_at: null },
+        ],
+      }, // GET forms
+      { status: 200, body: {} }, // PUT f1 sign -> ok
+      { status: 500, body: { error: "boom" } }, // PUT f2 sign -> fail
+    ]);
+    const result = await formsHandler({ ...auth, demoSign: true, signatureText: "Ada Lovelace" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("form_signing_failed");
+    expect(result.error.message).toContain("Signed 1 of 2");
+    expect((result.error.details as { form: string }[])[0]?.form).toBe("Form 8655");
   });
 
   test("--demo-sign is refused on production (no API call)", async () => {

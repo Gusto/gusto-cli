@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
-import type { GlobalFlags } from "../lib/global-flags.ts";
-import type { CommandResult } from "../lib/runner.ts";
+import { TEST_CONTEXT as ctx, okData as data } from "../lib/test-support.ts";
 import {
   bankAccountBlockers,
   bankAccountHandler,
@@ -11,14 +10,6 @@ import {
   resolveTaxableAsScorp,
   stateTaxHandler,
 } from "./company-setup.ts";
-
-const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
-const ctx = { command: "test", globals };
-
-function data(result: CommandResult): Record<string, unknown> {
-  if (!result.ok) throw new Error("expected ok result");
-  return result.data as Record<string, unknown>;
-}
 
 describe("federalTaxBlockers", () => {
   test("flags every missing field", () => {

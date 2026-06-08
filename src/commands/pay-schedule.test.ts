@@ -1,17 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
-import type { GlobalFlags } from "../lib/global-flags.ts";
-import type { CommandResult } from "../lib/runner.ts";
+import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields } from "../lib/test-support.ts";
 import { payScheduleCreateHandler } from "./pay-schedule.ts";
-
-const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
-const ctx = { command: "test", globals };
-const auth = { token: "tkn", companyUuid: "co-1" };
-
-function blockedFields(result: CommandResult): string[] {
-  if (result.ok) throw new Error("expected validation failure");
-  return (result.error.blocked_on ?? []).map((b) => b.field);
-}
 
 describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {
   test("biweekly without --anchor-end-of-pay-period is refused pre-flight", async () => {
