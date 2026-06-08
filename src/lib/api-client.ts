@@ -24,6 +24,50 @@ export class NetworkError extends Error {
   }
 }
 
+/** Thrown by `poll()` when the success predicate never holds within the
+ * configured time / attempt budget. Carries the last response body so callers
+ * can report the terminal status (and any resumable request id). */
+export class PollTimeoutError extends Error {
+  readonly exitCode: ExitCodeValue = ExitCode.Network;
+  readonly attempts: number;
+  readonly lastBody: unknown;
+  constructor(message: string, attempts: number, lastBody: unknown) {
+    super(message);
+    this.name = "PollTimeoutError";
+    this.attempts = attempts;
+    this.lastBody = lastBody;
+  }
+}
+
+/** Thrown by `poll()` when the failure predicate matches a response, i.e. the
+ * polled operation reached a terminal failed state. */
+export class PollFailedError extends Error {
+  readonly exitCode: ExitCodeValue = ExitCode.ApiServer;
+  readonly body: unknown;
+  constructor(message: string, body: unknown) {
+    super(message);
+    this.name = "PollFailedError";
+    this.body = body;
+  }
+}
+
+export interface PollOptions<T> {
+  /** Terminal-success predicate. `poll()` resolves with the first response whose body satisfies it. */
+  until: (body: T) => boolean;
+  /** Terminal-failure predicate. When a body satisfies it, `poll()` rejects with `PollFailedError`. */
+  isFailure?: (body: T) => boolean;
+  /** Delay between polls in ms. Default 2000. */
+  intervalMs?: number;
+  /** Overall wall-clock budget in ms before `PollTimeoutError`. Default 120000. */
+  timeoutMs?: number;
+  /** Hard cap on GET attempts before `PollTimeoutError`. Optional; complements `timeoutMs`. */
+  maxAttempts?: number;
+  /** Sleep duration (ms) before poll attempt `n` (zero-indexed). Override in tests to skip waits. */
+  sleepMs?: (attempt: number) => number;
+  /** Clock source (ms); injectable for deterministic timeout tests. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_RETRIES = 3;
 const IDEMPOTENT_METHODS = new Set(["GET", "DELETE"]);
@@ -79,6 +123,16 @@ export class ApiClient {
 
   delete<T = unknown>(path: string): Promise<ApiResponse<T>> {
     return this.request<T>("DELETE", path);
+  }
+
+  /** GET `path` repeatedly until `until` holds (resolves with that response),
+   * `isFailure` holds (rejects with `PollFailedError`), or the time / attempt
+   * budget is exhausted (rejects with `PollTimeoutError`). Sleeps `intervalMs`
+   * between attempts. Used for async report generation (general ledger). */
+  poll<T = unknown>(path: string, options: PollOptions<T>): Promise<ApiResponse<T>> {
+    void path;
+    void options;
+    throw new Error("not implemented: poll");
   }
 
   async request<T = unknown>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
