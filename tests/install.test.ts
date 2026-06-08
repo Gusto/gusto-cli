@@ -287,8 +287,10 @@ describe("install.sh", () => {
   test("verifies the checksum with shasum when sha256sum is unavailable", async () => {
     fixture = startFixture();
     // PATH without sha256sum forces the `shasum -a 256` branch. A fake shasum keeps
-    // the test independent of whether the runner ships a real one (ubuntu may not).
-    const toolDir = linkTools(["sh", "uname", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
+    // the test independent of whether the runner ships a real one (ubuntu may not),
+    // and a pinned uname keeps it off the linux-arm64 guard on arm64 CI hosts.
+    const toolDir = linkTools(["sh", "mktemp", "curl", "awk", "grep", "mkdir", "mv", "chmod", "rm"]);
+    writeFileSync(path.join(toolDir, "uname"), unameShimBody("x86_64", "Linux"), { mode: 0o755 });
     writeFileSync(path.join(toolDir, "shasum"), `#!/bin/sh\necho "${FAKE_SHA256}  $3"\n`, { mode: 0o755 });
     tempDirs.push(toolDir);
 
