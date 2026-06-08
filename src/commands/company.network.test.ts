@@ -2,30 +2,22 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import type { CommandResult } from "../lib/runner.ts";
 import { companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import { type MockResponse, stubGlobalFetch } from "../lib/test-support.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 const ctx = { command: "test", globals };
 const auth = { token: "tkn", companyUuid: "co-1" };
 
-interface Route {
+interface Route extends MockResponse {
   match: string;
-  status: number;
-  body?: unknown;
 }
 
-const realFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = realFetch;
-});
+let restore: () => void = () => {};
+afterEach(() => restore());
 
 /** Stub global fetch, routing each request to the first route whose substring the URL contains. */
 function routeFetch(routes: Route[]): void {
-  globalThis.fetch = (async (url: string | URL | Request) => {
-    const u = url.toString();
-    const r = routes.find((rt) => u.includes(rt.match)) ?? { status: 404 };
-    const body = "body" in r && r.body !== undefined ? JSON.stringify(r.body) : "";
-    return new Response(body, { status: r.status, headers: { "content-type": "application/json" } });
-  }) as unknown as typeof fetch;
+  restore = stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 }).restore;
 }
 
 function data(result: CommandResult): Record<string, unknown> {

@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { withCompanyContext } from "../lib/api-context.ts";
+import { type CompanyApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { ApiError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -247,16 +247,31 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
       const base = `/v1/companies/${ctx.companyUuid}/bank_accounts`;
       const bank = (await ctx.client.post<{ uuid: string }>(base, bankAccountBody(opts))).body;
 
-      const deposits = (
-        await ctx.client.post<{ deposit_1: number | string; deposit_2: number | string }>(
-          `${base}/${bank.uuid}/send_test_deposits`,
-        )
-      ).body;
-
-      await ctx.client.put(`${base}/${bank.uuid}/verify`, {
-        deposit_1: Number(deposits.deposit_1),
-        deposit_2: Number(deposits.deposit_2),
-      });
+      // The account now exists. If a later phase fails, surface the uuid + which
+      // phase so the agent can resume verification instead of re-creating it.
+      let phase: "send_test_deposits" | "verify" = "send_test_deposits";
+      try {
+        const deposits = (
+          await ctx.client.post<{ deposit_1: number | string; deposit_2: number | string }>(
+            `${base}/${bank.uuid}/send_test_deposits`,
+          )
+        ).body;
+        phase = "verify";
+        await ctx.client.put(`${base}/${bank.uuid}/verify`, {
+          deposit_1: Number(deposits.deposit_1),
+          deposit_2: Number(deposits.deposit_2),
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
+          error: {
+            code: "bank_verification_failed",
+            message: `Bank account ${bank.uuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
+            details: { bank_account_uuid: bank.uuid, phase, error: errMsg(err) },
+          },
+        };
+      }
 
       const last4 = (opts.accountNumber ?? "").slice(-4);
       return {
@@ -311,41 +326,10 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
       };
     }
 
+    // 3-step orchestrator: discover states -> submit requirements -> read back readiness.
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
-      const companyBase = `/v1/companies/${ctx.companyUuid}`;
-      const partialErrors: { label: string; error: string }[] = [];
-      const employees = asArray<EmployeeRec>((await ctx.client.get(`${companyBase}/employees`)).body);
-      const locations = asArray<LocationRec>((await ctx.client.get(`${companyBase}/locations`)).body);
-      const primaryLocationUuid = locations[0]?.uuid;
-
-      const states = new Set<string>();
-      for (const emp of employees) {
-        let workAddresses: WorkAddressRec[];
-        try {
-          workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-        } catch (err) {
-          // Surface the dropped employee instead of silently shrinking the state set.
-          partialErrors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
-          continue;
-        }
-        const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
-        if (hasJob && workAddresses.length === 0 && primaryLocationUuid) {
-          try {
-            await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
-              location_uuid: primaryLocationUuid,
-              active: true,
-              effective_date: new Date().toISOString().slice(0, 10),
-            });
-            workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-          } catch (err) {
-            partialErrors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
-          }
-        }
-        for (const wa of workAddresses) {
-          if (wa.active === true && wa.state) states.add(wa.state);
-        }
-      }
-
+      const partialErrors: PartialError[] = [];
+      const states = await discoverEmployeeStates(ctx, partialErrors);
       if (states.size === 0) {
         return {
           ok: false,
@@ -357,36 +341,8 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
           },
         };
       }
-
-      // Per-state try/catch so a mid-loop failure doesn't discard the states
-      // already submitted earlier in the loop - each state's outcome is reported.
-      const results: { state: string; status: string; reason?: string; error?: string }[] = [];
-      for (const state of states) {
-        try {
-          const reqs = (await ctx.client.get<TaxRequirementsResponse>(`${companyBase}/tax_requirements/${state}`)).body;
-          const built = buildTaxRequirementSets(reqs, state, useTemporaryRates);
-          if (built.status !== "submitted") {
-            results.push({ state, status: built.status, reason: reasonFor(built.status, state) });
-            continue;
-          }
-          await ctx.client.put(`${companyBase}/tax_requirements/${state}`, {
-            requirement_sets: built.requirement_sets,
-          });
-          results.push({ state, status: "submitted" });
-        } catch (err) {
-          results.push({ state, status: "error", error: errMsg(err) });
-        }
-      }
-
-      const stateStatuses: Record<string, { setup_complete?: boolean; ready_to_run_payroll?: boolean }> = {};
-      try {
-        for (const s of await loadStateStatuses(ctx.client, companyBase)) {
-          stateStatuses[s.state] = { setup_complete: s.setup_complete, ready_to_run_payroll: s.ready_to_run_payroll };
-        }
-      } catch (err) {
-        // Don't let a failed readiness GET masquerade as "not ready" with no explanation.
-        partialErrors.push({ label: "tax_requirements_status", error: errMsg(err) });
-      }
+      const results = await submitStateRequirements(ctx, states, useTemporaryRates);
+      const stateStatuses = await loadReadiness(ctx, partialErrors);
       const found = [...states];
       const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true);
 
@@ -404,8 +360,91 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
   };
 }
 
+type PartialError = { label: string; error: string };
+type StateResult = { state: string; status: string; reason?: string; error?: string };
+type StateStatuses = Record<string, { setup_complete?: boolean; ready_to_run_payroll?: boolean }>;
+
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Discover the states to set up from employee work addresses, back-filling a
+ * missing work address from the primary location. Per-employee failures are
+ * recorded in `partialErrors` rather than silently shrinking the set. */
+async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: PartialError[]): Promise<Set<string>> {
+  const companyBase = `/v1/companies/${ctx.companyUuid}`;
+  const employees = asArray<EmployeeRec>((await ctx.client.get(`${companyBase}/employees`)).body);
+  const locations = asArray<LocationRec>((await ctx.client.get(`${companyBase}/locations`)).body);
+  const primaryLocationUuid = locations[0]?.uuid;
+
+  const states = new Set<string>();
+  for (const emp of employees) {
+    let workAddresses: WorkAddressRec[];
+    try {
+      workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+    } catch (err) {
+      partialErrors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
+      continue;
+    }
+    const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
+    if (hasJob && workAddresses.length === 0 && primaryLocationUuid) {
+      try {
+        await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
+          location_uuid: primaryLocationUuid,
+          active: true,
+          effective_date: new Date().toISOString().slice(0, 10),
+        });
+        workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+      } catch (err) {
+        partialErrors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
+      }
+    }
+    for (const wa of workAddresses) {
+      if (wa.active === true && wa.state) states.add(wa.state);
+    }
+  }
+  return states;
+}
+
+/** Opt each state into the new-employer default rate where supported. Per-state
+ * try/catch so a mid-loop failure doesn't discard states already submitted. */
+async function submitStateRequirements(
+  ctx: CompanyApiContext,
+  states: Set<string>,
+  useTemporaryRates: boolean,
+): Promise<StateResult[]> {
+  const companyBase = `/v1/companies/${ctx.companyUuid}`;
+  const results: StateResult[] = [];
+  for (const state of states) {
+    try {
+      const reqs = (await ctx.client.get<TaxRequirementsResponse>(`${companyBase}/tax_requirements/${state}`)).body;
+      const built = buildTaxRequirementSets(reqs, state, useTemporaryRates);
+      if (built.status !== "submitted") {
+        results.push({ state, status: built.status, reason: reasonFor(built.status, state) });
+        continue;
+      }
+      await ctx.client.put(`${companyBase}/tax_requirements/${state}`, { requirement_sets: built.requirement_sets });
+      results.push({ state, status: "submitted" });
+    } catch (err) {
+      results.push({ state, status: "error", error: errMsg(err) });
+    }
+  }
+  return results;
+}
+
+/** Read back per-state readiness. A failed GET is surfaced via `partialErrors`
+ * rather than masquerading as "not ready". */
+async function loadReadiness(ctx: CompanyApiContext, partialErrors: PartialError[]): Promise<StateStatuses> {
+  const companyBase = `/v1/companies/${ctx.companyUuid}`;
+  const stateStatuses: StateStatuses = {};
+  try {
+    for (const s of await loadStateStatuses(ctx.client, companyBase)) {
+      stateStatuses[s.state] = { setup_complete: s.setup_complete, ready_to_run_payroll: s.ready_to_run_payroll };
+    }
+  } catch (err) {
+    partialErrors.push({ label: "tax_requirements_status", error: errMsg(err) });
+  }
+  return stateStatuses;
 }
 
 async function loadWorkAddresses(
@@ -516,28 +555,28 @@ function demoSignHandler(opts: FormsOpts): CommandHandler {
           });
           signed++;
         } catch (err) {
-          failures.push({ form: f.name ?? f.uuid, error: err instanceof Error ? err.message : String(err) });
+          failures.push({ form: f.name ?? f.uuid, error: errMsg(err) });
         }
       }
+      if (failures.length === 0) {
+        return {
+          ok: true,
+          data: {
+            forms_signed: signed,
+            total: unsigned.length,
+            message: `Signed ${signed} of ${unsigned.length} forms.`,
+          },
+        };
+      }
       return {
-        ok: failures.length === 0,
-        ...(failures.length === 0
-          ? {
-              data: {
-                forms_signed: signed,
-                total: unsigned.length,
-                message: `Signed ${signed} of ${unsigned.length} forms.`,
-              },
-            }
-          : {
-              exitCode: ExitCode.ApiClient,
-              error: {
-                code: "form_signing_failed",
-                message: `Signed ${signed} of ${unsigned.length} forms; ${failures.length} failed.`,
-                details: failures,
-              },
-            }),
-      } as CommandResult;
+        ok: false,
+        exitCode: ExitCode.ApiClient,
+        error: {
+          code: "form_signing_failed",
+          message: `Signed ${signed} of ${unsigned.length} forms; ${failures.length} failed.`,
+          details: failures,
+        },
+      };
     });
   };
 }

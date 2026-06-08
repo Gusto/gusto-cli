@@ -3,45 +3,20 @@ import type { GlobalFlags } from "../lib/global-flags.ts";
 import type { CommandResult } from "../lib/runner.ts";
 import { bankAccountHandler, federalTaxHandler, formsHandler, stateTaxHandler } from "./company-setup.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
+import { type MockResponse, type RecordedCall, stubGlobalFetch } from "../lib/test-support.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 const ctx = { command: "test", globals };
 const auth = { token: "tkn", companyUuid: "co-1" };
 
-interface Call {
-  method: string;
-  url: string;
-  body: unknown;
-}
-
-interface MockResponse {
-  status: number;
-  body?: unknown;
-}
-
-const realFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = realFetch;
-});
+let restore: () => void = () => {};
+afterEach(() => restore());
 
 /** Stub global fetch with one response per call (last repeats), recording each call. */
-function stubFetch(responses: MockResponse[]): Call[] {
-  const calls: Call[] = [];
-  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-    const idx = Math.min(calls.length, responses.length - 1);
-    const bodyStr = typeof init?.body === "string" ? init.body : undefined;
-    calls.push({
-      method: init?.method ?? "GET",
-      url: url.toString(),
-      body: bodyStr ? JSON.parse(bodyStr) : undefined,
-    });
-    const r = responses[idx] ?? { status: 200 };
-    return new Response(r.body !== undefined ? JSON.stringify(r.body) : "", {
-      status: r.status,
-      headers: { "content-type": "application/json" },
-    });
-  }) as unknown as typeof fetch;
-  return calls;
+function stubFetch(responses: MockResponse[]): RecordedCall[] {
+  const s = stubGlobalFetch(responses);
+  restore = s.restore;
+  return s.calls;
 }
 
 function data(result: CommandResult): Record<string, unknown> {

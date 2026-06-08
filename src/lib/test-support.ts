@@ -24,3 +24,41 @@ export function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; st
   const stderr = captureStream();
   return { sinks: { stdout: stdout.sink, stderr: stderr.sink }, stdout, stderr };
 }
+
+export interface MockResponse {
+  status: number;
+  body?: unknown;
+}
+
+export interface RecordedCall {
+  method: string;
+  url: string;
+  body: unknown;
+}
+
+/**
+ * Stub `globalThis.fetch` for command-handler tests that build their own
+ * ApiClient internally (so there's no `fetchImpl` seam to inject).
+ *
+ * `plan` is either an array replayed one response per call (the last repeats),
+ * or a router `(url) => MockResponse` for URL-substring matching. Returns the
+ * recorded calls and a `restore()` to put the real fetch back.
+ */
+export function stubGlobalFetch(plan: MockResponse[] | ((url: string) => MockResponse)): {
+  calls: RecordedCall[];
+  restore: () => void;
+} {
+  const original = globalThis.fetch;
+  const calls: RecordedCall[] = [];
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = url.toString();
+    const bodyStr = typeof init?.body === "string" ? init.body : undefined;
+    calls.push({ method: init?.method ?? "GET", url: u, body: bodyStr ? JSON.parse(bodyStr) : undefined });
+    const r = Array.isArray(plan) ? (plan[Math.min(calls.length - 1, plan.length - 1)] ?? { status: 200 }) : plan(u);
+    return new Response(r.body !== undefined ? JSON.stringify(r.body) : "", {
+      status: r.status,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { calls, restore: () => void (globalThis.fetch = original) };
+}
