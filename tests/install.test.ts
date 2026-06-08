@@ -26,7 +26,7 @@ interface Fixture {
   corruptBinary: boolean;
 }
 
-function startFixture(opts: { corruptBinary?: boolean } = {}): Fixture {
+function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string } = {}): Fixture {
   const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-install-"));
   const fixture: Fixture = {
     corruptBinary: opts.corruptBinary ?? false,
@@ -35,14 +35,15 @@ function startFixture(opts: { corruptBinary?: boolean } = {}): Fixture {
     server: undefined as unknown as Server,
   };
 
+  const sha256sumsBody = opts.sha256sumsBody ?? `${TARGETS.map((t) => `${FAKE_SHA256}  ${t}`).join("\n")}\n`;
+
   fixture.server = Bun.serve({
     port: 0,
     fetch(req) {
       const { pathname } = new URL(req.url);
       const name = pathname.replace(/^\//, "");
       if (name === "SHA256SUMS") {
-        const body = TARGETS.map((t) => `${FAKE_SHA256}  ${t}`).join("\n") + "\n";
-        return new Response(body, { headers: { "content-type": "text/plain" } });
+        return new Response(sha256sumsBody, { headers: { "content-type": "text/plain" } });
       }
       if (TARGETS.includes(name)) {
         const body = fixture.corruptBinary ? "tampered\n" : FAKE_BINARY;
@@ -166,19 +167,8 @@ describe("install.sh", () => {
   });
 
   test("aborts when SHA256SUMS has no line for the asset", async () => {
-    fixture = startFixture();
-    // Serve a SHA256SUMS that lists a different asset only.
-    fixture.server.stop(true);
-    fixture.server = Bun.serve({
-      port: 0,
-      fetch(req) {
-        const name = new URL(req.url).pathname.replace(/^\//, "");
-        if (name === "SHA256SUMS") return new Response(`${FAKE_SHA256}  gusto-some-other-target\n`);
-        if (TARGETS.includes(name)) return new Response(FAKE_BINARY);
-        return new Response("not found", { status: 404 });
-      },
-    });
-    fixture.baseUrl = `http://localhost:${fixture.server.port}`;
+    // SHA256SUMS lists a different asset only, so there's no line for this host's target.
+    fixture = startFixture({ sha256sumsBody: `${FAKE_SHA256}  gusto-some-other-target\n` });
 
     const result = await runInstall(fixture);
     expect(result.exitCode).toBe(1);
