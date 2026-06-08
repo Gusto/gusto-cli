@@ -103,6 +103,7 @@ case ":$PATH:" in
 esac
 
 "$INSTALL_DIR/gusto" --version || {
-  echo "gusto: installed to $INSTALL_DIR/gusto but 'gusto --version' failed" >&2
+  rm -f "$INSTALL_DIR/gusto"
+  echo "gusto: '$INSTALL_DIR/gusto --version' failed; removed the broken install" >&2
   exit 1
 }

@@ -24,12 +24,15 @@ interface Fixture {
   home: string;
 }
 
+// opts.binaryBody overrides the served binary (SHA256SUMS is computed to match);
 // opts.corruptBinary serves tampered bytes to force a checksum mismatch;
 // opts.sha256sumsBody overrides the served SHA256SUMS.
-function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string } = {}): Fixture {
+function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string; binaryBody?: string } = {}): Fixture {
   const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-install-"));
   const corruptBinary = opts.corruptBinary ?? false;
-  const sha256sumsBody = opts.sha256sumsBody ?? `${TARGETS.map((t) => `${FAKE_SHA256}  ${t}`).join("\n")}\n`;
+  const binaryBody = opts.binaryBody ?? FAKE_BINARY;
+  const binaryHash = createHash("sha256").update(binaryBody).digest("hex");
+  const sha256sumsBody = opts.sha256sumsBody ?? `${TARGETS.map((t) => `${binaryHash}  ${t}`).join("\n")}\n`;
 
   const server = Bun.serve({
     port: 0,
@@ -40,7 +43,7 @@ function startFixture(opts: { corruptBinary?: boolean; sha256sumsBody?: string }
         return new Response(sha256sumsBody, { headers: { "content-type": "text/plain" } });
       }
       if (TARGETS.includes(name)) {
-        const body = corruptBinary ? "tampered\n" : FAKE_BINARY;
+        const body = corruptBinary ? "tampered\n" : binaryBody;
         return new Response(body, { headers: { "content-type": "application/octet-stream" } });
       }
       return new Response("not found", { status: 404 });
@@ -146,6 +149,15 @@ describe("install.sh", () => {
 
     const installed = path.join(fixture.home, ".gusto", "bin", "gusto");
     expect(existsSync(installed)).toBe(false);
+  });
+
+  test("rolls back the install when the binary fails its version check", async () => {
+    // Passes the checksum but exits non-zero on `--version`.
+    fixture = startFixture({ binaryBody: "#!/bin/sh\nexit 1\n" });
+    const result = await runInstall(fixture);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toLowerCase()).toContain("version");
+    expect(existsSync(path.join(fixture.home, ".gusto", "bin", "gusto"))).toBe(false);
   });
 
   test("adds the bin dir to the shell profile, idempotently", async () => {
