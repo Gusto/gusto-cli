@@ -390,31 +390,43 @@ async function discoverEmployeeStates(ctx: CompanyApiContext, partialErrors: Par
   const locations = asArray<LocationRec>((await ctx.client.get(`${companyBase}/locations`)).body);
   const primaryLocationUuid = locations[0]?.uuid;
 
-  const states = new Set<string>();
-  for (const emp of employees) {
-    let workAddresses: WorkAddressRec[];
-    try {
-      workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-    } catch (err) {
-      partialErrors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
-      continue;
-    }
-    const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
-    if (hasJob && workAddresses.length === 0 && primaryLocationUuid) {
+  // Each employee is independent, so fetch (and back-fill) in parallel. Per-employee
+  // failures are collected locally and merged, so one bad employee doesn't abort the rest.
+  const perEmployee = await Promise.all(
+    employees.map(async (emp) => {
+      const found: string[] = [];
+      const errors: PartialError[] = [];
+      let workAddresses: WorkAddressRec[];
       try {
-        await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
-          location_uuid: primaryLocationUuid,
-          active: true,
-          effective_date: new Date().toISOString().slice(0, 10),
-        });
         workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
       } catch (err) {
-        partialErrors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
+        errors.push({ label: `work_addresses:${emp.uuid}`, error: errMsg(err) });
+        return { found, errors };
       }
-    }
-    for (const wa of workAddresses) {
-      if (wa.active === true && wa.state) states.add(wa.state);
-    }
+      const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
+      if (hasJob && workAddresses.length === 0 && primaryLocationUuid) {
+        try {
+          await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
+            location_uuid: primaryLocationUuid,
+            active: true,
+            effective_date: new Date().toISOString().slice(0, 10),
+          });
+          workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
+        } catch (err) {
+          errors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
+        }
+      }
+      for (const wa of workAddresses) {
+        if (wa.active === true && wa.state) found.push(wa.state);
+      }
+      return { found, errors };
+    }),
+  );
+
+  const states = new Set<string>();
+  for (const r of perEmployee) {
+    for (const s of r.found) states.add(s);
+    partialErrors.push(...r.errors);
   }
   return states;
 }
@@ -427,22 +439,23 @@ async function submitStateRequirements(
   useTemporaryRates: boolean,
 ): Promise<StateResult[]> {
   const companyBase = `/v1/companies/${ctx.companyUuid}`;
-  const results: StateResult[] = [];
-  for (const state of states) {
-    try {
-      const reqs = (await ctx.client.get<TaxRequirementsResponse>(`${companyBase}/tax_requirements/${state}`)).body;
-      const built = buildTaxRequirementSets(reqs, state, useTemporaryRates);
-      if (built.status !== "submitted") {
-        results.push({ state, status: built.status, reason: reasonFor(built.status, state) });
-        continue;
+  // States are independent; submit in parallel. Per-state try/catch keeps one
+  // failure from discarding the others, and Promise.all preserves result order.
+  return Promise.all(
+    [...states].map(async (state): Promise<StateResult> => {
+      try {
+        const reqs = (await ctx.client.get<TaxRequirementsResponse>(`${companyBase}/tax_requirements/${state}`)).body;
+        const built = buildTaxRequirementSets(reqs, state, useTemporaryRates);
+        if (built.status !== "submitted") {
+          return { state, status: built.status, reason: reasonFor(built.status, state) };
+        }
+        await ctx.client.put(`${companyBase}/tax_requirements/${state}`, { requirement_sets: built.requirement_sets });
+        return { state, status: "submitted" };
+      } catch (err) {
+        return { state, status: "error", error: errMsg(err) };
       }
-      await ctx.client.put(`${companyBase}/tax_requirements/${state}`, { requirement_sets: built.requirement_sets });
-      results.push({ state, status: "submitted" });
-    } catch (err) {
-      results.push({ state, status: "error", error: errMsg(err) });
-    }
-  }
-  return results;
+    }),
+  );
 }
 
 /** Read back per-state readiness. A failed GET is surfaced via `partialErrors`
@@ -557,20 +570,23 @@ function demoSignHandler(opts: FormsOpts): CommandHandler {
       if (unsigned.length === 0) {
         return { ok: true, data: { forms_signed: 0, total: 0, message: "All forms already signed." } };
       }
-      let signed = 0;
-      const failures: { form: string; error: string }[] = [];
-      for (const f of unsigned) {
-        try {
-          await ctx.client.put(`/v1/forms/${f.uuid}/sign`, {
-            signature_text: opts.signatureText,
-            agree: true,
-            signed_by_ip_address: ip,
-          });
-          signed++;
-        } catch (err) {
-          failures.push({ form: f.name ?? f.uuid, error: errMsg(err) });
-        }
-      }
+      // Each form signs independently; sign in parallel and collect failures.
+      const outcomes = await Promise.all(
+        unsigned.map(async (f) => {
+          try {
+            await ctx.client.put(`/v1/forms/${f.uuid}/sign`, {
+              signature_text: opts.signatureText,
+              agree: true,
+              signed_by_ip_address: ip,
+            });
+            return null;
+          } catch (err) {
+            return { form: f.name ?? f.uuid, error: errMsg(err) };
+          }
+        }),
+      );
+      const failures = outcomes.filter((o): o is { form: string; error: string } => o !== null);
+      const signed = unsigned.length - failures.length;
       if (failures.length === 0) {
         return {
           ok: true,
