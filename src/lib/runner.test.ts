@@ -64,6 +64,30 @@ describe("runCommand", () => {
     expect(envelope.error.message).toBe("literal string");
   });
 
+  test("filters success data down to the requested --fields", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com", extra: "drop me" } }),
+      { ...flags, fields: ["uuid", "email"] },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { uuid: "u1", email: "a@b.com" } });
+  });
+
+  test("never filters error envelopes even when --fields is set", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "bad_input", message: "nope" },
+      }),
+      { ...flags, fields: ["code"] },
+    );
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
+  });
+
   test("passes the command name + globals into the handler context", async () => {
     const captured: { command?: string; globals?: GlobalFlags } = {};
     await runWithExitCapture("gusto company provision", async (ctx) => {

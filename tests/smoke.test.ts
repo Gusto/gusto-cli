@@ -416,6 +416,16 @@ describe("skill commands work without auth", () => {
   });
 });
 
+describe("--fields filters success output", () => {
+  test("employee add --example --fields method,path keeps only those keys", async () => {
+    const result = await run(["employee", "add", "--example", "--fields", "method,path"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(Object.keys(envelope.data).sort()).toEqual(["method", "path"]);
+  });
+});
+
 describe("api request", () => {
   test("--dry-run prints the would-be request without needing a token", async () => {
     const result = await run(["api", "request", "POST", "/v1/things", "--data", '{"name":"thing"}', "--dry-run"]);

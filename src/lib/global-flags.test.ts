@@ -23,4 +23,12 @@ describe("readGlobalFlags", () => {
     expect(flags.agent).toBe(false);
     expect(flags.json).toBe(false);
   });
+
+  test("parses --fields into a trimmed, comma-split array", () => {
+    expect(readGlobalFlags({ fields: "uuid, email ,name" }).fields).toEqual(["uuid", "email", "name"]);
+  });
+
+  test("leaves fields undefined when the flag is absent", () => {
+    expect(readGlobalFlags({}).fields).toBeUndefined();
+  });
 });
