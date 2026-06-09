@@ -435,6 +435,15 @@ describe("--fields filters success output", () => {
     expect(envelope.ok).toBe(false);
     expect(envelope.error.code).toBe("fields_discovery_unsupported");
   });
+
+  test("skill list --fields (no value) lists available fields on stderr, exit 1 (read-command discovery)", async () => {
+    // Exercises the runReadCommand discovery path end-to-end through the compiled binary on a
+    // read command that needs no auth or network — bare `--fields` lists fields and exits 1.
+    const result = await run(["skill", "list", "--fields"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.trim()).toBe("");
+    expect(result.stderr).toContain("skills");
+  });
 });
 
 describe("api request", () => {

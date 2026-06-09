@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { availableFields, parseFieldList, selectFields, unknownFields } from "./field-filter.ts";
+import { availableFields, parseFieldList, partitionFields, selectFields } from "./field-filter.ts";
 
 describe("parseFieldList", () => {
   test("splits on commas and trims whitespace", () => {
@@ -92,13 +92,16 @@ describe("availableFields", () => {
   });
 });
 
-describe("unknownFields", () => {
-  test("returns requested keys that are absent from an object", () => {
-    expect(unknownFields({ uuid: "u1", email: "a@b.com" }, ["uuid", "bogus"])).toEqual(["bogus"]);
+describe("partitionFields", () => {
+  test("splits requested keys into available and unknown for an object", () => {
+    expect(partitionFields({ uuid: "u1", email: "a@b.com" }, ["uuid", "bogus"])).toEqual({
+      available: ["uuid", "email"],
+      unknown: ["bogus"],
+    });
   });
 
-  test("returns an empty array when every requested key is present", () => {
-    expect(unknownFields({ uuid: "u1", email: "a@b.com" }, ["email", "uuid"])).toEqual([]);
+  test("reports no unknowns when every requested key is present", () => {
+    expect(partitionFields({ uuid: "u1", email: "a@b.com" }, ["email", "uuid"]).unknown).toEqual([]);
   });
 
   test("treats a key present in only some array rows as known (it is in the union)", () => {
@@ -106,7 +109,7 @@ describe("unknownFields", () => {
       { uuid: "u1", email: "a@b.com" },
       { uuid: "u2" },
     ];
-    expect(unknownFields(rows, ["uuid", "email"])).toEqual([]);
+    expect(partitionFields(rows, ["uuid", "email"]).unknown).toEqual([]);
   });
 
   test("flags a key present in no array row", () => {
@@ -114,12 +117,15 @@ describe("unknownFields", () => {
       { uuid: "u1", email: "a@b.com" },
       { uuid: "u2", phone: "555" },
     ];
-    expect(unknownFields(rows, ["uuid", "bogus"])).toEqual(["bogus"]);
+    expect(partitionFields(rows, ["uuid", "bogus"]).unknown).toEqual(["bogus"]);
   });
 
-  test("flags every requested key when data has no fields (primitive, null, empty)", () => {
-    expect(unknownFields("hello", ["uuid"])).toEqual(["uuid"]);
-    expect(unknownFields(undefined, ["uuid", "email"])).toEqual(["uuid", "email"]);
-    expect(unknownFields({}, ["uuid"])).toEqual(["uuid"]);
+  test("reports no unknowns when data exposes no fields (empty array/object, primitive, null)", () => {
+    // No field universe to validate against — selection falls through to an empty projection
+    // rather than a spurious 'unknown field' error (e.g. `list --fields uuid` with zero rows).
+    expect(partitionFields([], ["uuid"]).unknown).toEqual([]);
+    expect(partitionFields({}, ["uuid"]).unknown).toEqual([]);
+    expect(partitionFields("hello", ["uuid"]).unknown).toEqual([]);
+    expect(partitionFields(undefined, ["uuid", "email"]).unknown).toEqual([]);
   });
 });

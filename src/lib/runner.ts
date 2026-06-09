@@ -1,5 +1,5 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
-import { availableFields, selectFields, unknownFields } from "./field-filter.ts";
+import { availableFields, partitionFields, selectFields } from "./field-filter.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { type BlockedOn, type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
 
@@ -96,14 +96,26 @@ async function run<T>(
       writeFieldsHint(availableFields(result.data), deps);
       code = ExitCode.General;
     } else if (selection?.mode === "select") {
-      // A requested key that matches nothing in the data is almost always a typo. Mirror gh and
-      // the discovery hint: name the unknown field(s), list what's valid on stderr, and exit
-      // non-zero — rather than silently emitting an empty projection that reads as a successful
-      // empty result. A key present in only *some* array rows stays valid (see unknownFields).
-      const unknown = unknownFields(result.data, selection.keys);
+      // A requested key that matches nothing in the data is almost always a typo. Surface it as a
+      // structured `unknown_fields` envelope (machine-readable like every other runner error) so
+      // an agent can recover, rather than silently projecting to an empty result that reads as
+      // success. A key in only *some* array rows stays valid, and a genuinely empty result (no
+      // fields to validate against) filters cleanly instead of erroring — see partitionFields.
+      const { available, unknown } = partitionFields(result.data, selection.keys);
       if (unknown.length > 0) {
-        writeUnknownFieldsError(unknown, availableFields(result.data), deps);
-        code = ExitCode.General;
+        emit(
+          output,
+          {
+            ok: false,
+            error: {
+              code: "unknown_fields",
+              message: `Unknown \`--fields\` value(s): ${unknown.join(", ")}. Available: ${available.join(", ")}.`,
+              details: { unknown, available },
+            },
+          },
+          deps.sinks,
+        );
+        code = ExitCode.CliUsage;
       } else {
         emit(output, { ok: true, data: selectFields(result.data, selection.keys) }, deps.sinks);
         code = ExitCode.Success;
@@ -151,12 +163,6 @@ function fieldLines(fields: string[]): string {
 function writeFieldsHint(fields: string[], deps: RunnerDeps): void {
   const stderr = deps.sinks?.stderr ?? process.stderr;
   stderr.write(`Specify one or more comma-separated fields for \`--fields\`:\n${fieldLines(fields)}\n`);
-}
-
-/** Print the gh-style "unknown field" error to stderr, naming the bad keys and listing valid ones. */
-function writeUnknownFieldsError(unknown: string[], available: string[], deps: RunnerDeps): void {
-  const stderr = deps.sinks?.stderr ?? process.stderr;
-  stderr.write(`Unknown \`--fields\` value(s): ${unknown.join(", ")}\nAvailable fields:\n${fieldLines(available)}\n`);
 }
 
 export function notImplementedHandler(commandPath: string): CommandHandler {

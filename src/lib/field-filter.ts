@@ -45,14 +45,20 @@ export function selectFields(data: unknown, keys: string[]): unknown {
   return data;
 }
 
-/** Requested keys that match no field anywhere in `data` — i.e. keys absent from `availableFields`.
- * For arrays this is measured against the union of keys across all rows, so a key present in only
- * *some* rows is still "known" and never reported here; only a key in *no* row (or absent from an
- * object entirely) is. These are almost always typos, which callers can surface rather than silently
- * projecting to nothing. */
-export function unknownFields(data: unknown, keys: string[]): string[] {
-  const available = new Set(availableFields(data));
-  return keys.filter((key) => !available.has(key));
+/** Partition requested `--fields` keys against the fields actually present in `data`, computing
+ * `availableFields` exactly once. Returns both the `available` list (for error messaging) and the
+ * `unknown` keys (requested but present nowhere — measured against the union of keys across array
+ * rows, so a key in only *some* rows stays known). These unknowns are almost always typos.
+ *
+ * When `data` exposes no fields at all (empty array/object, primitive, null) `unknown` is empty:
+ * there is no field universe to validate against, so a genuinely empty result like
+ * `employee list --fields uuid` on a company with no employees still projects cleanly to `[]`
+ * instead of erroring on a "missing" field. */
+export function partitionFields(data: unknown, keys: string[]): { available: string[]; unknown: string[] } {
+  const available = availableFields(data);
+  if (available.length === 0) return { available, unknown: [] };
+  const set = new Set(available);
+  return { available, unknown: keys.filter((key) => !set.has(key)) };
 }
 
 /** List the top-level field names available on `data`, in first-seen source order. For an array,

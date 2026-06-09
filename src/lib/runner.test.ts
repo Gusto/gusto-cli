@@ -106,17 +106,28 @@ describe("runCommand", () => {
     });
   });
 
-  test("errors when a requested --fields key matches nothing in the data (likely a typo)", async () => {
+  test("emits a structured unknown_fields envelope when a --fields key matches nothing (typo)", async () => {
     const result = await runWithExitCapture(
       "test",
       async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
       { ...flags, fields: { mode: "select", keys: ["uuid", "scpoe"] } },
     );
     expect(result.exitCode).not.toBe(ExitCode.Success);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("scpoe");
-    expect(result.stderr).toContain("uuid");
-    expect(result.stderr).toContain("email");
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("unknown_fields");
+    expect(envelope.error.details.unknown).toEqual(["scpoe"]);
+    expect(envelope.error.details.available).toEqual(["uuid", "email"]);
+  });
+
+  test("filters an empty-array result to [] instead of flagging the fields as unknown", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: [] }),
+      { ...flags, fields: { mode: "select", keys: ["uuid"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: [] });
   });
 
   test("does not error when a requested field is present in only some array rows", async () => {
