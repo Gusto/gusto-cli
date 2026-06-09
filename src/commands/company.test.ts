@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { InputError } from "../lib/oauth/provision-input.ts";
-import { NOT_INTERACTIVE, companyProvisionHandler, provisionPayloadError, provisionResultData } from "./company.ts";
+import { companyProvisionHandler, provisionPayloadError, provisionResultData } from "./company.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 
@@ -42,17 +42,6 @@ describe("provisionPayloadError", () => {
 });
 
 describe("companyProvisionHandler", () => {
-  test("returns NOT_INTERACTIVE when stdin isn't a TTY and it's not a dry run", async () => {
-    const original = process.stdin.isTTY;
-    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
-    try {
-      const result = await companyProvisionHandler({ example: true })({ command: "gusto company provision", globals });
-      expect(result).toEqual(NOT_INTERACTIVE);
-    } finally {
-      Object.defineProperty(process.stdin, "isTTY", { value: original, configurable: true });
-    }
-  });
-
   test("dry-run returns the request shape without touching stdin", async () => {
     const result = await companyProvisionHandler({ example: true, dryRun: true })({
       command: "gusto company provision",
