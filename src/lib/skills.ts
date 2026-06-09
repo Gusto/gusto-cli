@@ -84,23 +84,24 @@ export async function getSkillStatus(name: string, dir: SkillsDir = findSkillsDi
   return onDisk === expectedContent(skill, dir.kind) ? "installed" : "stale";
 }
 
+const STATUS_TO_ACTION: Record<SkillStatus, InstallAction> = {
+  not_installed: "installed",
+  stale: "refreshed",
+  installed: "already_up_to_date",
+};
+
 export async function installSkill(name: string, dir: SkillsDir = findSkillsDir()): Promise<InstallResult> {
   const skill = getSkill(name);
   if (!skill) throw new Error(`Unknown skill: ${name}`);
 
-  const targetDir = path.join(dir.path, skill.name);
-  await mkdir(targetDir, { recursive: true });
+  const targetFile = installedPath(dir, name);
+  const action = STATUS_TO_ACTION[await getSkillStatus(name, dir)];
 
-  const content = expectedContent(skill, dir.kind);
-  const targetFile = path.join(targetDir, "SKILL.md");
-
-  let action: InstallAction = "installed";
-  if (existsSync(targetFile)) {
-    const onDisk = await readFile(targetFile, "utf8");
-    action = onDisk === content ? "already_up_to_date" : "refreshed";
+  if (action !== "already_up_to_date") {
+    await mkdir(path.dirname(targetFile), { recursive: true });
+    await writeFile(targetFile, expectedContent(skill, dir.kind));
   }
 
-  await writeFile(targetFile, content);
   return { skill: skill.name, installedAt: targetFile, kind: dir.kind, scope: dir.scope, action };
 }
 

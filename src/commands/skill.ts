@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
-import { findSkillsDir, getSkill, getSkillStatus, installSkill, listSkills } from "../lib/skills.ts";
+import { findSkillsDir, getSkill, getSkillStatus, installSkill, listSkills, type SkillsDir } from "../lib/skills.ts";
 
 export function registerSkillCommand(parent: Command): void {
   const cmd = parent.command("skill").description("List and install bundled skills");
@@ -33,9 +33,8 @@ command in Claude Code.
     );
 }
 
-function skillListHandler(): CommandHandler {
+export function skillListHandler(dir: SkillsDir = findSkillsDir()): CommandHandler {
   return async () => {
-    const dir = findSkillsDir();
     const skills = await Promise.all(
       listSkills().map(async ({ name, description }) => ({
         name,
@@ -47,7 +46,7 @@ function skillListHandler(): CommandHandler {
   };
 }
 
-function skillInstallHandler(name: string): CommandHandler {
+export function skillInstallHandler(name: string, dir: SkillsDir = findSkillsDir()): CommandHandler {
   return async () => {
     const skill = getSkill(name);
     if (!skill) {
@@ -60,7 +59,6 @@ function skillInstallHandler(name: string): CommandHandler {
         },
       };
     }
-    const dir = findSkillsDir();
     const result = await installSkill(name, dir);
     return { ok: true, data: result };
   };

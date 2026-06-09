@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { InputError } from "../lib/oauth/provision-input.ts";
-import { companyProvisionHandler, provisionPayloadError, provisionResultData } from "./company.ts";
+import { companyProvisionHandler, provisionPayloadError, provisionResultData, waitForEnter } from "./company.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 
@@ -50,5 +50,17 @@ describe("companyProvisionHandler", () => {
     expect(result.ok).toBe(true);
     expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
     expect((result as { data: { method: string; path: string } }).data.path).toBe("/v1/provision");
+  });
+});
+
+describe("waitForEnter", () => {
+  test("resolves immediately without prompting when stdin is not a TTY", async () => {
+    const original = process.stdin.isTTY;
+    try {
+      Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+      await expect(waitForEnter()).resolves.toBeUndefined();
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: original, configurable: true });
+    }
   });
 });

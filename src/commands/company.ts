@@ -221,7 +221,7 @@ export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   };
 }
 
-async function waitForEnter(): Promise<void> {
+export async function waitForEnter(): Promise<void> {
   if (!process.stdin.isTTY) return;
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
