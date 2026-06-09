@@ -6,6 +6,8 @@ Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboar
 
 > **Repo name:** currently `gusto-cli-public` because `Gusto/gusto-cli` is taken by an unrelated internal engineering CLI (`gdev-eng`). Once that collision is resolved, this repo will move to `Gusto/gusto-cli`.
 
+> **Driving this with an agent?** See [`AGENTS.md`](AGENTS.md). Discover commands with `gusto --help` and `gusto <command> --help` - that's the source of truth, not this README.
+
 ## Install
 
 ```sh
@@ -45,6 +47,8 @@ gusto employee list        # company-scoped read
 gusto employee add --first-name Jane --last-name Doe --email jane@example.com
 gusto skill install onboard-company
 ```
+
+The commands above are examples. `gusto --help` lists every top-level command and `gusto <command> --help` lists its flags - that's the authoritative command surface (and what agents should reach for first), since this README can drift.
 
 `gusto <any-create-command> --dry-run` builds the request body from your args and prints it without sending. Useful for agent introspection and for previewing the request shape before committing.
 
