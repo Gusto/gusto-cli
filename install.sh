@@ -45,7 +45,7 @@ trap 'rm -rf "$tmp"' EXIT
 # GUSTO_CLI_BASE_URL can point at http for tests/staging - note that an http
 # staging server issuing an http redirect would fail here.
 fetch() {
-  curl -fsSL --retry 3 --proto-redir "=https" "$1" -o "$2"
+  curl -fsSL --retry 3 --retry-all-errors --proto-redir "=https" "$1" -o "$2"
 }
 fetch "$base/$asset" "$tmp/gusto"
 fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS"
