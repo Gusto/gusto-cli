@@ -18,9 +18,14 @@ export class ApiError extends Error {
 
 export class NetworkError extends Error {
   readonly exitCode: ExitCodeValue = ExitCode.Network;
-  constructor(message: string) {
+  /** True when the failure is a request timeout / deadline abort (vs. a
+   * connection-level error like DNS failure or connection reset). `poll()` only
+   * reclassifies timeout-flavored failures so it can't mask a real network fault. */
+  readonly timedOut: boolean;
+  constructor(message: string, timedOut = false) {
     super(message);
     this.name = "NetworkError";
+    this.timedOut = timedOut;
   }
 }
 
@@ -162,8 +167,13 @@ export class ApiClient {
       try {
         response = await this.get<T>(path, { deadline, now });
       } catch (err) {
-        // A GET aborted because the budget ran out is a poll timeout, not a bare network error.
-        if (deadline !== undefined && now() >= deadline) throw timedOut(attempt, lastBody);
+        // Reclassify ONLY a deadline-driven timeout/abort as a poll timeout. A
+        // genuine network fault (DNS, connection reset) or API error propagates
+        // unchanged, even if the clock is past the deadline, so we never mask
+        // the real root cause behind a "did not finish before timeout" message.
+        if (deadline !== undefined && err instanceof NetworkError && err.timedOut && now() >= deadline) {
+          throw timedOut(attempt, lastBody);
+        }
         throw err;
       }
       attempt += 1;
@@ -203,7 +213,9 @@ export class ApiClient {
         let backoff = this.retrySleepMs(attempt - 1);
         if (deadline !== undefined) {
           const remaining = deadline - now();
-          if (remaining <= 0) break; // out of budget - stop retrying
+          // Out of budget: surface the real error we already saw, else a
+          // timeout-flavored error so poll() can classify it as a timeout.
+          if (remaining <= 0) throw lastError ?? this.deadlineError(method, path);
           backoff = Math.min(backoff, remaining);
         }
         await sleep(backoff);
@@ -214,7 +226,7 @@ export class ApiClient {
       let perRequestTimeout = this.timeoutMs;
       if (deadline !== undefined) {
         const remaining = deadline - now();
-        if (remaining <= 0) break;
+        if (remaining <= 0) throw lastError ?? this.deadlineError(method, path);
         perRequestTimeout = Math.min(this.timeoutMs, remaining);
       }
 
@@ -236,6 +248,13 @@ export class ApiClient {
     throw lastError ?? new NetworkError(`request failed after ${this.maxRetries + 1} attempts`);
   }
 
+  /** A timeout-flavored NetworkError for when the request budget (deadline) is
+   * exhausted before a response. Marked `timedOut` so `poll()` treats it as a
+   * timeout rather than a connection failure. */
+  private deadlineError(method: string, path: string): NetworkError {
+    return new NetworkError(`request deadline exceeded calling ${method} ${path}`, true);
+  }
+
   private async sendOnce<T>(method: string, path: string, body: unknown, timeoutMs: number): Promise<ApiResponse<T>> {
     const url = path.startsWith("http") ? path : `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const headers: Record<string, string> = {
@@ -255,7 +274,7 @@ export class ApiClient {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-        throw new NetworkError(`request timed out after ${timeoutMs}ms calling ${method} ${url}`);
+        throw new NetworkError(`request timed out after ${timeoutMs}ms calling ${method} ${url}`, true);
       }
       throw new NetworkError(`network error calling ${method} ${url}: ${msg}`);
     }

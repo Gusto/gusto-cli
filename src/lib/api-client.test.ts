@@ -445,6 +445,43 @@ describe("ApiClient.poll", () => {
     // Slept before the 2nd and 3rd attempts (zero-indexed).
     expect(sleeps).toEqual([0, 1]);
   });
+
+  test("a GET aborted at the deadline is reclassified as PollTimeoutError", async () => {
+    // Fetch always aborts (timeout-flavored failure). Clock advances 400ms per
+    // call: deadline=1000, loop-top check (400) is under it, the GET runs and
+    // aborts, and the catch check (1200) is past the deadline.
+    const aborting = (async () => {
+      throw new DOMException("aborted", "TimeoutError");
+    }) as unknown as typeof fetch;
+    let t = -400;
+    const now = (): number => (t += 400);
+    const client = makeClient(aborting, { maxRetries: 0 });
+    try {
+      await client.poll("/v1/reports/r", { until: () => false, timeoutMs: 1000, now, sleepMs: () => 0 });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PollTimeoutError);
+    }
+  });
+
+  test("a genuine network fault past the deadline is NOT masked as a timeout", async () => {
+    // A real connection error (not a timeout) that happens to surface when the
+    // clock is already past the deadline must propagate, not become a PollTimeoutError.
+    const failing = (async () => {
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    let t = -400;
+    const now = (): number => (t += 400);
+    const client = makeClient(failing, { maxRetries: 0 });
+    try {
+      await client.poll("/v1/reports/r", { until: () => false, timeoutMs: 1000, now, sleepMs: () => 0 });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NetworkError);
+      expect(err).not.toBeInstanceOf(PollTimeoutError);
+      expect((err as NetworkError).message).toContain("ECONNRESET");
+    }
+  });
 });
 
 describe("ApiClient timeout", () => {
