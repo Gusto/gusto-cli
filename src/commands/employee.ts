@@ -242,7 +242,8 @@ export function buildEmployeeList(body: unknown, status: EmployeeStatus): Employ
     terminated: buckets.terminated.length,
     filter_applied: status,
   };
-  return { summary, employees: status === "all" ? employees : buckets[status] };
+  if (status === "all") return { summary, employees };
+  return { summary, employees: buckets[status] };
 }
 
 export type CompParseResult =
