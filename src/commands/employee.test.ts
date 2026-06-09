@@ -105,6 +105,11 @@ describe("buildEmployeeList", () => {
     expect(employees).toHaveLength(16);
   });
 
+  test("onboarding filter returns only the 63 onboarding employees", () => {
+    const { employees } = buildEmployeeList(FIXTURE, "onboarding");
+    expect(employees).toHaveLength(63);
+  });
+
   test("terminated filter returns only the 6 terminated employees", () => {
     const { employees } = buildEmployeeList(FIXTURE, "terminated");
     expect(employees).toHaveLength(6);
