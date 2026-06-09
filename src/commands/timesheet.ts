@@ -3,7 +3,7 @@ import { createCompanyResource } from "../lib/api-context.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand, validationFailure } from "../lib/runner.ts";
+import { type CommandHandler, type ValidationResult, runCommand, validationFailure } from "../lib/runner.ts";
 
 type PayClassification = "Regular" | "Overtime" | "Double overtime";
 
@@ -37,9 +37,7 @@ export type TimesheetCreateBody = {
   entries: TimeEntry[];
 } & TimesheetEntity;
 
-export type TimesheetCreateValidation =
-  | { ok: true; body: TimesheetCreateBody }
-  | { ok: false; message: string; blocked: BlockedOn[] };
+export type TimesheetCreateValidation = ValidationResult<TimesheetCreateBody>;
 
 interface TimesheetCreateInput {
   employeeUuid?: string;
@@ -144,9 +142,7 @@ export interface TimesheetSyncBody {
   pay_period_end_date: string;
 }
 
-export type TimesheetSyncValidation =
-  | { ok: true; body: TimesheetSyncBody }
-  | { ok: false; message: string; blocked: BlockedOn[] };
+export type TimesheetSyncValidation = ValidationResult<TimesheetSyncBody>;
 
 interface TimesheetSyncInput {
   payScheduleUuid?: string;

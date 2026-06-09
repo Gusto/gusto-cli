@@ -17,6 +17,10 @@ export type CommandResult<T = unknown> =
 
 export type CommandHandler<T = unknown> = (ctx: CommandContext) => Promise<CommandResult<T>>;
 
+/** A validator's result: a built request body on success, or a message + blocked_on list on
+ * failure. Generic so each command's `validate*` function shares one shape. */
+export type ValidationResult<T> = { ok: true; body: T } | { ok: false; message: string; blocked: BlockedOn[] };
+
 export interface RunnerDeps {
   exit: (code: number) => never;
   sinks?: StreamSinks;
