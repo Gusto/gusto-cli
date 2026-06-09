@@ -185,6 +185,30 @@ export async function fetchCompanyResource(
   }
 }
 
+/** Resolve company context, then run `fn` with the company-scoped client and
+ * map any API/network error it throws. For multi-call flows (read-then-write,
+ * compound sequences) where the single-request helpers don't fit. */
+export async function withCompanyContext(
+  globals: GlobalFlags,
+  opts: CompanyResourceOpts,
+  fn: (ctx: CompanyApiContext) => Promise<CommandResult>,
+): Promise<CommandResult> {
+  const resolved = await resolveApiContext(globals, {
+    tokenOverride: opts.token,
+    companyOverride: opts.companyUuid,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
+  if (!resolved.ok) return resolved.result;
+
+  try {
+    return await fn(resolved.ctx);
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
 /** Resolve auth context only (no company required), GET the path, and map API/network errors.
  * Use for resource endpoints where the resource UUID is already in the path
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */

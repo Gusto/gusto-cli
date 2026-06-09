@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ApiClient } from "./api-client.ts";
-import { createCompanyResource, fetchCompanyResource, fetchResource, resolveApiContext } from "./api-context.ts";
+import { ApiClient, ApiError } from "./api-client.ts";
+import {
+  createCompanyResource,
+  fetchCompanyResource,
+  fetchResource,
+  resolveApiContext,
+  withCompanyContext,
+} from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
@@ -253,5 +259,39 @@ describe("fetchCompanyResource", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Auth);
+  });
+});
+
+describe("withCompanyContext", () => {
+  test("auth failure short-circuits before fn runs", async () => {
+    let ran = false;
+    const result = await withCompanyContext(flags, noSession(), async () => {
+      ran = true;
+      return { ok: true };
+    });
+    expect(ran).toBe(false);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+  });
+
+  test("maps an ApiError thrown by fn via toResult", async () => {
+    const result = await withCompanyContext(flags, { token: "tok", companyUuid: "co-1" }, async () => {
+      throw new ApiError(404, { error: "nope" }, ExitCode.ApiClient, "GET x -> 404");
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("api_client_error");
+  });
+
+  test("returns fn's result on success", async () => {
+    const result = await withCompanyContext(flags, { token: "tok", companyUuid: "co-1" }, async (ctx) => ({
+      ok: true,
+      data: { company: ctx.companyUuid },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as { company: string }).company).toBe("co-1");
   });
 });
