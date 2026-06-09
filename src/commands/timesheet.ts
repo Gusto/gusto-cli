@@ -3,7 +3,7 @@ import { createCompanyResource } from "../lib/api-context.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { parsePositiveNumber } from "../lib/parse.ts";
+import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
 
 type EntityType = "Employee" | "Contractor";
@@ -70,7 +70,14 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
     blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
   }
 
-  if (!start) blocked.push({ field: "start", reason: "required (shift start, ISO 8601)" });
+  if (!start) {
+    blocked.push({ field: "start", reason: "required (shift start, ISO 8601)" });
+  } else if (!isValidIso8601(start)) {
+    blocked.push({ field: "start", reason: "must be a valid ISO 8601 timestamp (e.g. 2026-06-01T09:00:00Z)" });
+  }
+  if (opts.end !== undefined && !isValidIso8601(opts.end)) {
+    blocked.push({ field: "end", reason: "must be a valid ISO 8601 timestamp (e.g. 2026-06-01T17:30:00Z)" });
+  }
   if (!timeZone) blocked.push({ field: "time-zone", reason: "required (e.g. America/New_York)" });
 
   const entries: TimeEntry[] = [];
@@ -136,12 +143,20 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
   const blocked: BlockedOn[] = [];
   const { payScheduleUuid, payPeriodStart, payPeriodEnd } = opts;
   if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
-  if (!payPeriodStart) blocked.push({ field: "pay-period-start", reason: "required (YYYY-MM-DD)" });
-  if (!payPeriodEnd) blocked.push({ field: "pay-period-end", reason: "required (YYYY-MM-DD)" });
+  if (!payPeriodStart) {
+    blocked.push({ field: "pay-period-start", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(payPeriodStart)) {
+    blocked.push({ field: "pay-period-start", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  if (!payPeriodEnd) {
+    blocked.push({ field: "pay-period-end", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(payPeriodEnd)) {
+    blocked.push({ field: "pay-period-end", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
 
-  // Re-check the locals so the compiler narrows them to `string` for the body below.
-  if (!payScheduleUuid || !payPeriodStart || !payPeriodEnd) {
-    return { ok: false, message: "missing required arguments", blocked };
+  // Re-check the locals (narrows them to `string`) and catch any format errors above.
+  if (!payScheduleUuid || !payPeriodStart || !payPeriodEnd || blocked.length > 0) {
+    return { ok: false, message: "missing or invalid arguments", blocked };
   }
 
   return {

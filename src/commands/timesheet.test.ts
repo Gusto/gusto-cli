@@ -142,18 +142,34 @@ describe("validateTimesheetCreate", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hours" }));
   });
 
-  test("a non-numeric hour value is rejected", () => {
+  test("a non-numeric hour value is rejected with the specific field, not the generic hours block", () => {
     const result = validateTimesheetCreate({ ...base, regular: "eight" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "regular" }));
+    expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "hours" }));
   });
 
-  test("a negative hour value is rejected", () => {
+  test("a negative hour value is rejected with the specific field, not the generic hours block", () => {
     const result = validateTimesheetCreate({ ...base, overtime: "-2" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "overtime" }));
+    expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "hours" }));
+  });
+
+  test("a malformed --start timestamp is blocked", () => {
+    const result = validateTimesheetCreate({ ...base, start: "not-a-date" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start" }));
+  });
+
+  test("a malformed --end timestamp is blocked", () => {
+    const result = validateTimesheetCreate({ ...base, end: "06/05/2026" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end" }));
   });
 });
 
@@ -199,5 +215,19 @@ describe("validateTimesheetSync", () => {
     expect(result.blocked).toContainEqual(
       expect.objectContaining({ field: "pay-period-end" }),
     );
+  });
+
+  test("a malformed --pay-period-start date is blocked", () => {
+    const result = validateTimesheetSync({ ...base, payPeriodStart: "06/01/2026" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
+  });
+
+  test("a malformed --pay-period-end date is blocked", () => {
+    const result = validateTimesheetSync({ ...base, payPeriodEnd: "not-a-date" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
   });
 });
