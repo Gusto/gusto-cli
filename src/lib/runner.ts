@@ -95,17 +95,22 @@ async function run<T>(
       // command falls through to the error branch and surfaces its own failure instead.
       writeFieldsHint(availableFields(result.data), deps);
       code = ExitCode.General;
-    } else if (selection?.mode === "select" && unknownFields(result.data, selection.keys).length > 0) {
+    } else if (selection?.mode === "select") {
       // A requested key that matches nothing in the data is almost always a typo. Mirror gh and
       // the discovery hint: name the unknown field(s), list what's valid on stderr, and exit
       // non-zero — rather than silently emitting an empty projection that reads as a successful
       // empty result. A key present in only *some* array rows stays valid (see unknownFields).
-      writeUnknownFieldsError(unknownFields(result.data, selection.keys), availableFields(result.data), deps);
-      code = ExitCode.General;
+      const unknown = unknownFields(result.data, selection.keys);
+      if (unknown.length > 0) {
+        writeUnknownFieldsError(unknown, availableFields(result.data), deps);
+        code = ExitCode.General;
+      } else {
+        emit(output, { ok: true, data: selectFields(result.data, selection.keys) }, deps.sinks);
+        code = ExitCode.Success;
+      }
     } else {
-      // `--fields <list>` only ever reshapes successful output; without it, data passes through.
-      const data = selection?.mode === "select" ? selectFields(result.data, selection.keys) : result.data;
-      emit(output, { ok: true, data }, deps.sinks);
+      // Without `--fields`, successful data passes through untouched.
+      emit(output, { ok: true, data: result.data }, deps.sinks);
       code = ExitCode.Success;
     }
   } catch (err) {
