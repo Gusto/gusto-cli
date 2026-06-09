@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { availableFields, parseFieldList, selectFields } from "./field-filter.ts";
+import { availableFields, parseFieldList, selectFields, unknownFields } from "./field-filter.ts";
 
 describe("parseFieldList", () => {
   test("splits on commas and trims whitespace", () => {
@@ -89,5 +89,37 @@ describe("availableFields", () => {
     expect(availableFields(null)).toEqual([]);
     expect(availableFields(undefined)).toEqual([]);
     expect(availableFields([])).toEqual([]);
+  });
+});
+
+describe("unknownFields", () => {
+  test("returns requested keys that are absent from an object", () => {
+    expect(unknownFields({ uuid: "u1", email: "a@b.com" }, ["uuid", "bogus"])).toEqual(["bogus"]);
+  });
+
+  test("returns an empty array when every requested key is present", () => {
+    expect(unknownFields({ uuid: "u1", email: "a@b.com" }, ["email", "uuid"])).toEqual([]);
+  });
+
+  test("treats a key present in only some array rows as known (it is in the union)", () => {
+    const rows = [
+      { uuid: "u1", email: "a@b.com" },
+      { uuid: "u2" },
+    ];
+    expect(unknownFields(rows, ["uuid", "email"])).toEqual([]);
+  });
+
+  test("flags a key present in no array row", () => {
+    const rows = [
+      { uuid: "u1", email: "a@b.com" },
+      { uuid: "u2", phone: "555" },
+    ];
+    expect(unknownFields(rows, ["uuid", "bogus"])).toEqual(["bogus"]);
+  });
+
+  test("flags every requested key when data has no fields (primitive, null, empty)", () => {
+    expect(unknownFields("hello", ["uuid"])).toEqual(["uuid"]);
+    expect(unknownFields(undefined, ["uuid", "email"])).toEqual(["uuid", "email"]);
+    expect(unknownFields({}, ["uuid"])).toEqual(["uuid"]);
   });
 });

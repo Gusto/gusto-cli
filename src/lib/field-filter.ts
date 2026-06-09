@@ -45,6 +45,16 @@ export function selectFields(data: unknown, keys: string[]): unknown {
   return data;
 }
 
+/** Requested keys that match no field anywhere in `data` — i.e. keys absent from `availableFields`.
+ * For arrays this is measured against the union of keys across all rows, so a key present in only
+ * *some* rows is still "known" and never reported here; only a key in *no* row (or absent from an
+ * object entirely) is. These are almost always typos, which callers can surface rather than silently
+ * projecting to nothing. */
+export function unknownFields(data: unknown, keys: string[]): string[] {
+  const available = new Set(availableFields(data));
+  return keys.filter((key) => !available.has(key));
+}
+
 /** List the top-level field names available on `data`, in first-seen source order. For an array,
  * returns the union of keys across all object rows. Primitives, null/undefined, and empty
  * collections yield an empty list. */

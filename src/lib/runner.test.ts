@@ -96,6 +96,38 @@ describe("runCommand", () => {
     });
   });
 
+  test("errors when a requested --fields key matches nothing in the data (likely a typo)", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "scpoe"] } },
+    );
+    expect(result.exitCode).not.toBe(ExitCode.Success);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("scpoe");
+    expect(result.stderr).toContain("uuid");
+    expect(result.stderr).toContain("email");
+  });
+
+  test("does not error when a requested field is present in only some array rows", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: true,
+        data: [
+          { uuid: "u1", email: "a@b.com" },
+          { uuid: "u2" },
+        ],
+      }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      ok: true,
+      data: [{ uuid: "u1", email: "a@b.com" }, { uuid: "u2" }],
+    });
+  });
+
   test("never filters error envelopes even when --fields is set", async () => {
     const result = await runWithExitCapture(
       "test",
