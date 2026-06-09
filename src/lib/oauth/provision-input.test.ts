@@ -1,11 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { EXAMPLE_PAYLOAD, InputError, resolveProvisionPayload } from "./provision-input.ts";
+import { InputError, resolveProvisionPayload } from "./provision-input.ts";
 
 const noFile = (): Promise<string> => Promise.reject(new Error("should not read"));
 
 describe("resolveProvisionPayload", () => {
-  test("--example returns the canned payload", async () => {
-    expect(await resolveProvisionPayload({ example: true }, noFile)).toEqual(EXAMPLE_PAYLOAD);
+  test("--example returns the canned shape with a unique email + EIN", async () => {
+    const payload = await resolveProvisionPayload({ example: true }, noFile);
+    expect(payload.user.first_name).toBe("Ada");
+    expect(payload.user.email).toMatch(/^ada\+[a-f0-9]{8}@example\.com$/);
+    expect(payload.company.name).toBe("Analytical Engines LLC");
+    expect(payload.company.ein).toMatch(/^00-\d{7}$/);
+  });
+
+  test("--example yields distinct email + EIN across calls (so repeat runs don't 422)", async () => {
+    const a = await resolveProvisionPayload({ example: true }, noFile);
+    const b = await resolveProvisionPayload({ example: true }, noFile);
+    expect(a.user.email).not.toBe(b.user.email);
+    expect(a.company.ein).not.toBe(b.company.ein);
   });
 
   test("--input and --example together is an error", async () => {

@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 export interface ProvisionPayload {
   user: Record<string, unknown>;
   company: Record<string, unknown>;
@@ -25,6 +27,17 @@ export const EXAMPLE_PAYLOAD: ProvisionPayload = {
   },
 };
 
+/** EXAMPLE_PAYLOAD with email + EIN randomized so repeat `--example` runs don't 422 on uniqueness. */
+export function buildExamplePayload(): ProvisionPayload {
+  const tag = randomBytes(4).toString("hex");
+  const einDigits = (randomBytes(4).readUInt32BE(0) % 9_000_000) + 1_000_000;
+  return {
+    ...EXAMPLE_PAYLOAD,
+    user: { ...EXAMPLE_PAYLOAD.user, email: `ada+${tag}@example.com` },
+    company: { ...EXAMPLE_PAYLOAD.company, ein: `00-${einDigits}` },
+  };
+}
+
 export class InputError extends Error {}
 
 interface InputFlags {
@@ -39,7 +52,7 @@ export async function resolveProvisionPayload(
   if (flags.input && flags.example) {
     throw new InputError("pass either --input or --example, not both");
   }
-  if (flags.example) return EXAMPLE_PAYLOAD;
+  if (flags.example) return buildExamplePayload();
   if (!flags.input) {
     throw new InputError("provide --input <file.json> with a {user, company} payload, or --example for a sample run");
   }
