@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields } from "../lib/test-support.ts";
-import { payScheduleCreateHandler } from "./pay-schedule.ts";
+import { payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 
 describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {
   test("biweekly without --anchor-end-of-pay-period is refused pre-flight", async () => {

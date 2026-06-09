@@ -13,7 +13,7 @@ import {
 } from "../lib/state-tax.ts";
 import { type BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand } from "../lib/runner.ts";
-import { type PayScheduleCreateOpts, payScheduleCreateHandler } from "./pay-schedule.ts";
+import { type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 
 interface ContextOpts {
   companyUuid?: string;
