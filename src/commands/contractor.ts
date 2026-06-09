@@ -17,9 +17,7 @@ type ContractorWage = { wage_type: "Fixed" } | { wage_type: "Hourly"; hourly_rat
 /** Onboarding mode. The API requires `email` iff `self_onboarding === true` (that's where the
  * invite is sent); admin-driven contractors may omit it. Model it as a discriminated union — the
  * same way `ContractorWage` ties `hourly_rate` to Hourly — so the compiler keeps the two in step. */
-type ContractorOnboarding =
-  | { self_onboarding: false; email?: string }
-  | { self_onboarding: true; email: string };
+type ContractorOnboarding = { self_onboarding: false; email?: string } | { self_onboarding: true; email: string };
 
 /** Fields the Gusto API requires on every contractor regardless of type. */
 type ContractorCommon = {
