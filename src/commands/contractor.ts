@@ -3,23 +3,63 @@ import { createCompanyResource, fetchCompanyResource, fetchResource } from "../l
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { parsePositiveNumber } from "../lib/parse.ts";
 import { type CommandHandler, runCommand } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
+type WageType = "Fixed" | "Hourly";
+
+/** Wage fields. The API requires `hourly_rate` iff `wage_type === "Hourly"`, so model it as a
+ * discriminated union — the compiler then rejects invalid states like a Fixed wage carrying an
+ * `hourly_rate`, or an Hourly wage with none. */
+type ContractorWage = { wage_type: "Fixed" } | { wage_type: "Hourly"; hourly_rate: string };
+
+/** Onboarding mode. The API requires `email` iff `self_onboarding === true` (that's where the
+ * invite is sent); admin-driven contractors may omit it. Model it as a discriminated union — the
+ * same way `ContractorWage` ties `hourly_rate` to Hourly — so the compiler keeps the two in step. */
+type ContractorOnboarding =
+  | { self_onboarding: false; email?: string }
+  | { self_onboarding: true; email: string };
+
+/** Fields the Gusto API requires on every contractor regardless of type. */
+type ContractorCommon = {
+  start_date: string;
+} & ContractorWage &
+  ContractorOnboarding;
 
 export type ContractorBody =
-  | { type: "Individual"; first_name: string; last_name: string; email: string; self_onboarding: true }
-  | { type: "Business"; business_name: string; email: string; self_onboarding: true };
+  | ({ type: "Individual"; first_name: string; last_name: string } & ContractorCommon)
+  | ({ type: "Business"; business_name: string } & ContractorCommon);
 
 export type ContractorValidation =
   | { ok: true; body: ContractorBody }
   | { ok: false; message: string; blocked: BlockedOn[] };
 
+// Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
+function isValidStartDate(raw: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
+  const date = new Date(`${raw}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === raw;
+}
+
 /** Validate contractor-add args and, on success, return the fully-populated request body.
- * `--type` drives which fields are required: individual needs first/last name + email,
- * business needs business-name + email. Returning the body lets the compiler prove it's complete. */
+ * `--type` drives which identity fields are required (individual: first/last name; business:
+ * business-name). `--wage-type` and `--start-date` are required for every contractor, and
+ * `--hourly-rate` is required when wage-type is hourly. Returning the body lets the compiler
+ * prove it's complete. */
 export function validateContractorAdd(
-  opts: Pick<ContractorAddOpts, "type" | "firstName" | "lastName" | "businessName" | "email">,
+  opts: Pick<
+    ContractorAddOpts,
+    | "type"
+    | "firstName"
+    | "lastName"
+    | "businessName"
+    | "email"
+    | "wageType"
+    | "startDate"
+    | "hourlyRate"
+    | "selfOnboarding"
+  >,
 ): ContractorValidation {
   if (opts.type !== "individual" && opts.type !== "business") {
     return {
@@ -29,29 +69,103 @@ export function validateContractorAdd(
     };
   }
 
+  const blocked: BlockedOn[] = [];
+
+  let wageType: WageType | undefined;
+  if (!opts.wageType) {
+    blocked.push({ field: "wage-type", reason: "required: 'fixed' or 'hourly'" });
+  } else if (opts.wageType === "fixed") {
+    wageType = "Fixed";
+  } else if (opts.wageType === "hourly") {
+    wageType = "Hourly";
+  } else {
+    blocked.push({ field: "wage-type", reason: "must be 'fixed' or 'hourly'" });
+  }
+
+  const startDate = opts.startDate;
+  if (!startDate) {
+    blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidStartDate(startDate)) {
+    blocked.push({ field: "start-date", reason: `must be a valid YYYY-MM-DD date, got: ${startDate}` });
+  }
+
+  let wage: ContractorWage | undefined;
+  if (wageType === "Hourly") {
+    if (!opts.hourlyRate) {
+      blocked.push({ field: "hourly-rate", reason: "required when --wage-type is hourly" });
+    } else {
+      const parsed = parsePositiveNumber(opts.hourlyRate);
+      if (!parsed.ok) {
+        blocked.push({ field: "hourly-rate", reason: parsed.reason });
+      } else {
+        // Forward the value we actually validated, not the raw input: Number() accepts forms the
+        // API won't (e.g. "1e3", "0x10", " 45 "), so normalize them to a plain decimal string.
+        wage = { wage_type: "Hourly", hourly_rate: String(parsed.value) };
+      }
+    }
+  } else if (wageType === "Fixed") {
+    if (opts.hourlyRate) {
+      // Reject rather than silently drop: a fixed-wage contractor has no hourly rate, so
+      // accepting --hourly-rate would lose the user's input with no signal.
+      blocked.push({ field: "hourly-rate", reason: "not allowed when --wage-type is fixed" });
+    } else {
+      wage = { wage_type: "Fixed" };
+    }
+  }
+
+  // Default to admin-driven: the caller supplies the contractor's details rather than
+  // emailing them a self-onboarding invite. Opt in with --self-onboarding.
+  const selfOnboarding = opts.selfOnboarding ?? false;
+
+  // Email is required only when self-onboarding — that's where the API sends the invite. When
+  // admin-driven it's optional, so gate the check on the mode rather than requiring it outright.
+  const { email } = opts;
+  let onboarding: ContractorOnboarding | undefined;
+  if (selfOnboarding) {
+    if (!email) {
+      blocked.push({ field: "email", reason: "required with --self-onboarding" });
+    } else {
+      onboarding = { self_onboarding: true, email };
+    }
+  } else {
+    onboarding = email ? { self_onboarding: false, email } : { self_onboarding: false };
+  }
+
   if (opts.type === "individual") {
-    const { firstName, lastName, email } = opts;
-    if (!firstName || !lastName || !email) {
-      const blocked: BlockedOn[] = [];
-      if (!email) blocked.push({ field: "email", reason: "required" });
-      if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
-      if (!lastName) blocked.push({ field: "last-name", reason: "required for individual" });
-      return { ok: false, message: "missing required arguments", blocked };
+    const { firstName, lastName } = opts;
+    if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
+    if (!lastName) blocked.push({ field: "last-name", reason: "required for individual" });
+    if (blocked.length > 0 || !firstName || !lastName || !onboarding || !wage || !startDate) {
+      return { ok: false, message: "missing or invalid arguments", blocked };
     }
     return {
       ok: true,
-      body: { type: "Individual", first_name: firstName, last_name: lastName, email, self_onboarding: true },
+      body: {
+        type: "Individual",
+        first_name: firstName,
+        last_name: lastName,
+        start_date: startDate,
+        ...wage,
+        ...onboarding,
+      },
     };
   }
 
-  const { businessName, email } = opts;
-  if (!businessName || !email) {
-    const blocked: BlockedOn[] = [];
-    if (!email) blocked.push({ field: "email", reason: "required" });
-    if (!businessName) blocked.push({ field: "business-name", reason: "required for business" });
-    return { ok: false, message: "missing required arguments", blocked };
+  const { businessName } = opts;
+  if (!businessName) blocked.push({ field: "business-name", reason: "required for business" });
+  if (blocked.length > 0 || !businessName || !onboarding || !wage || !startDate) {
+    return { ok: false, message: "missing or invalid arguments", blocked };
   }
-  return { ok: true, body: { type: "Business", business_name: businessName, email, self_onboarding: true } };
+  return {
+    ok: true,
+    body: {
+      type: "Business",
+      business_name: businessName,
+      start_date: startDate,
+      ...wage,
+      ...onboarding,
+    },
+  };
 }
 
 interface ContractorAddOpts {
@@ -60,6 +174,10 @@ interface ContractorAddOpts {
   lastName?: string;
   businessName?: string;
   email?: string;
+  wageType?: string;
+  startDate?: string;
+  hourlyRate?: string;
+  selfOnboarding?: boolean;
   companyUuid?: string;
   token?: string;
   dryRun?: boolean;
@@ -80,12 +198,16 @@ export function registerContractorCommand(parent: Command): void {
 
   cmd
     .command("add")
-    .description("One-call 1099 onboarding with auto-invite (Individual or Business)")
+    .description("Add a 1099 contractor (Individual or Business); admin-driven by default")
     .option("--type <type>", "Contractor type: individual or business")
     .option("--first-name <name>", "First name (required for individual)")
     .option("--last-name <name>", "Last name (required for individual)")
     .option("--business-name <name>", "Business name (required for business)")
-    .option("--email <email>", "Email - also where the invite is sent")
+    .option("--email <email>", "Email - required with --self-onboarding (where the invite is sent); optional otherwise")
+    .option("--wage-type <type>", "Wage type: fixed or hourly (required)")
+    .option("--start-date <date>", "Start date YYYY-MM-DD (required)")
+    .option("--hourly-rate <amount>", "Hourly rate (required when --wage-type is hourly)")
+    .option("--self-onboarding", "Email the contractor a self-onboarding invite (default: admin-driven)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
@@ -129,14 +251,18 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
                 type: "Business",
                 business_name: "Acme LLC",
                 email: "billing@acme.example.com",
-                self_onboarding: true,
+                wage_type: "Fixed",
+                start_date: "2026-06-03",
+                self_onboarding: false,
               }
             : {
                 type: "Individual",
                 first_name: "Sam",
                 last_name: "Rivera",
                 email: "sam@example.com",
-                self_onboarding: true,
+                wage_type: "Fixed",
+                start_date: "2026-06-03",
+                self_onboarding: false,
               },
           note: "example: canonical request shape, no args or auth required",
         },
