@@ -155,7 +155,13 @@ export async function executeLedgerShow(
         error: {
           code: "report_timeout",
           message: `general ledger report ${requestUuid} did not finish before the timeout; poll ${pollPath} to retrieve it`,
-          details: { request_uuid: requestUuid, poll_path: pollPath, last_status: err.lastBody },
+          details: {
+            request_uuid: requestUuid,
+            poll_path: pollPath,
+            attempts: err.attempts,
+            // Omit when no GET completed (e.g. budget already spent) rather than emit last_status: undefined.
+            ...(err.lastBody !== undefined ? { last_status: err.lastBody } : {}),
+          },
         },
       };
     }

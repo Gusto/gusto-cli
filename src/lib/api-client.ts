@@ -65,8 +65,6 @@ export interface PollOptions<T> {
   until: (body: T) => boolean;
   /** Terminal-failure predicate. When a body satisfies it, `poll()` rejects with `PollFailedError`. */
   isFailure?: (body: T) => boolean;
-  /** Delay between polls in ms. Default 2000. */
-  intervalMs?: number;
   /** Overall wall-clock budget in ms before `PollTimeoutError`. Default 120000. */
   timeoutMs?: number;
   /** Hard cap on GET attempts before `PollTimeoutError`. Optional; complements `timeoutMs`. */
@@ -138,14 +136,14 @@ export class ApiClient {
 
   /** GET `path` repeatedly until `until` holds (resolves with that response),
    * `isFailure` holds (rejects with `PollFailedError`), or the time / attempt
-   * budget is exhausted (rejects with `PollTimeoutError`). Sleeps `intervalMs`
-   * between attempts. The wall-clock deadline is threaded into each GET so the
-   * inner retry loop and per-request timeout can't overshoot it. Used for async
-   * report generation (general ledger). */
+   * budget is exhausted (rejects with `PollTimeoutError`). Sleeps a fixed
+   * `DEFAULT_POLL_INTERVAL_MS` between attempts unless `sleepMs` overrides it.
+   * The wall-clock deadline is threaded into each GET so the inner retry loop
+   * and per-request timeout can't overshoot it. Used for async report
+   * generation (general ledger). */
   async poll<T = unknown>(path: string, options: PollOptions<T>): Promise<ApiResponse<T>> {
-    const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const timeoutMs = options.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
-    const sleepMs = options.sleepMs ?? (() => intervalMs);
+    const sleepMs = options.sleepMs ?? (() => DEFAULT_POLL_INTERVAL_MS);
     const now = options.now ?? (() => Date.now());
 
     const deadline = Number.isFinite(timeoutMs) ? now() + timeoutMs : undefined;

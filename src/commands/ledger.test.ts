@@ -128,6 +128,23 @@ describe("executeLedgerShow", () => {
     expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 
+  test("a timeout before any poll attempt reports attempts:0 and omits last_status", async () => {
+    // timeoutMs:0 => the deadline is already reached on entry, so poll throws
+    // before any GET completes (the lastBody-undefined edge from review r814).
+    const client = clientWith({
+      post: { status: 200, body: { request_uuid: "req-1" } },
+      report: { status: 200, body: { status: "pending" } },
+    });
+    const result = await executeLedgerShow(client, PAYROLL, { timeoutMs: 0 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("report_timeout");
+    expect(result.exitCode).toBe(ExitCode.Timeout);
+    const details = result.error.details as { attempts: number; last_status?: unknown };
+    expect(details.attempts).toBe(0);
+    expect("last_status" in details).toBe(false);
+  });
+
   test("a terminally failed report yields report_failed", async () => {
     const client = clientWith({
       post: { status: 200, body: { request_uuid: "req-1" } },

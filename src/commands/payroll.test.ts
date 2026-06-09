@@ -81,6 +81,17 @@ describe("buildPayrollListQuery", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("accepts check_date and rejects any other date-filter-by", () => {
+    expect(buildPayrollListQuery({ dateFilterBy: "check_date" })).toEqual({
+      ok: true,
+      query: { date_filter_by: "check_date" },
+    });
+    const bad = buildPayrollListQuery({ dateFilterBy: "checkdate" });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) throw new Error("expected failure");
+    expect(bad.blocked).toContainEqual(expect.objectContaining({ field: "date-filter-by" }));
+  });
+
   test("rejects an invalid sort-order", () => {
     const result = buildPayrollListQuery({ sortOrder: "sideways" });
     expect(result.ok).toBe(false);

@@ -32,6 +32,10 @@ const PROCESSING_STATUSES = ["processed", "unprocessed"] as const;
 const PAYROLL_TYPES = ["regular", "off_cycle", "external"] as const;
 const INCLUDE_OPTIONS = ["taxes", "payroll_status_meta", "totals", "risk_blockers", "reversals"] as const;
 const SORT_ORDERS = ["asc", "desc"] as const;
+// `check_date` is the only explicit value (omitting the flag defaults to pay
+// period). The server already rejects unknown values with a 422, but validating
+// here gives the same fast exit-7 blocked_on feedback as the other enums.
+const DATE_FILTER_BY = ["check_date"] as const;
 
 /** True for a real calendar date in `YYYY-MM-DD` form (rejects bad formats and
  * impossible dates like 2026-02-30). */
@@ -82,6 +86,7 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryRe
     validateEnum("payroll-type", opts.payrollType, PAYROLL_TYPES, true),
     validateEnum("include", opts.include, INCLUDE_OPTIONS, true),
     validateEnum("sort-order", opts.sortOrder, SORT_ORDERS, false),
+    validateEnum("date-filter-by", opts.dateFilterBy, DATE_FILTER_BY, false),
   ]) {
     if (entry) blocked.push(entry);
   }
