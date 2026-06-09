@@ -425,11 +425,15 @@ describe("--fields filters success output", () => {
     expect(Object.keys(envelope.data)).toEqual(["method", "path"]);
   });
 
-  test("employee add --example --fields (no value) lists available fields on stderr, exit 1 (gh convention)", async () => {
+  test("employee add --fields (no value) rejects discovery on a write command, exit 2", async () => {
+    // Bare `--fields` (discovery) is gated to read commands; it must not run a mutating handler
+    // just to introspect output. `--example` doesn't change that — `employee add` is a write
+    // command either way, so discovery is rejected before the handler runs.
     const result = await run(["employee", "add", "--example", "--fields"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout.trim()).toBe("");
-    for (const f of ["method", "path", "body", "note"]) expect(result.stderr).toContain(f);
+    expect(result.exitCode).toBe(2);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("fields_discovery_unsupported");
   });
 });
 
