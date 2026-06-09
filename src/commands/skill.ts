@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
-import { findSkillsDir, getSkill, installSkill, listSkills } from "../lib/skills.ts";
+import { findSkillsDir, getSkill, getSkillStatus, installSkill, listSkills, type SkillsDir } from "../lib/skills.ts";
 
 export function registerSkillCommand(parent: Command): void {
   const cmd = parent.command("skill").description("List and install bundled skills");
@@ -33,14 +33,20 @@ command in Claude Code.
     );
 }
 
-function skillListHandler(): CommandHandler {
-  return async () => ({
-    ok: true,
-    data: { skills: listSkills().map(({ name, description }) => ({ name, description })) },
-  });
+export function skillListHandler(dir: SkillsDir = findSkillsDir()): CommandHandler {
+  return async () => {
+    const skills = await Promise.all(
+      listSkills().map(async ({ name, description }) => ({
+        name,
+        description,
+        status: await getSkillStatus(name, dir),
+      })),
+    );
+    return { ok: true, data: { skills } };
+  };
 }
 
-function skillInstallHandler(name: string): CommandHandler {
+export function skillInstallHandler(name: string, dir: SkillsDir = findSkillsDir()): CommandHandler {
   return async () => {
     const skill = getSkill(name);
     if (!skill) {
@@ -53,7 +59,6 @@ function skillInstallHandler(name: string): CommandHandler {
         },
       };
     }
-    const dir = findSkillsDir();
     const result = await installSkill(name, dir);
     return { ok: true, data: result };
   };

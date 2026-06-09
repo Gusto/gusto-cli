@@ -194,16 +194,6 @@ export function provisionPayloadError(err: unknown): CommandResult<never> {
   return toResult(err);
 }
 
-export const NOT_INTERACTIVE: CommandResult<never> = {
-  ok: false,
-  exitCode: ExitCode.General,
-  error: {
-    code: "not_interactive",
-    message:
-      "`gusto company provision` is interactive - it opens a browser and waits for you to claim the account. Run it in a terminal, or use --dry-run to preview the request.",
-  },
-};
-
 export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   return async ({ globals }) => {
     let payload;
@@ -216,7 +206,6 @@ export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
     if (opts.dryRun) {
       return { ok: true, data: { method: "POST", path: "/v1/provision", body: payload } };
     }
-    if (!process.stdin.isTTY) return NOT_INTERACTIVE;
 
     try {
       const result = await provision(resolveEnv(globals), payload, {
@@ -232,7 +221,8 @@ export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   };
 }
 
-async function waitForEnter(): Promise<void> {
+export async function waitForEnter(): Promise<void> {
+  if (!process.stdin.isTTY) return;
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     await rl.question("Press Enter once you've finished claiming the account in your browser...");

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import onboardCompany from "../skills/onboard-company/SKILL.md" with { type: "text" };
@@ -54,25 +54,59 @@ export function findSkillsDir(startDir: string = process.cwd(), home: string = h
   return { path: path.join(home, ".claude", "skills"), kind: "claude", scope: "global" };
 }
 
+export type SkillStatus = "not_installed" | "installed" | "stale";
+
+export type InstallAction = "installed" | "refreshed" | "already_up_to_date";
+
 export interface InstallResult {
   skill: string;
   installedAt: string;
   kind: SkillsDirKind;
   scope: "local" | "global";
+  action: InstallAction;
 }
+
+function expectedContent(skill: Skill, kind: SkillsDirKind): string {
+  return kind === "claude" ? injectUserInvocable(skill.content) : skill.content;
+}
+
+function installedPath(dir: SkillsDir, name: string): string {
+  return path.join(dir.path, name, "SKILL.md");
+}
+
+/** What state the installed copy of a skill is in relative to the bundled version. */
+export async function getSkillStatus(name: string, dir: SkillsDir = findSkillsDir()): Promise<SkillStatus> {
+  const skill = getSkill(name);
+  if (!skill) return "not_installed";
+  let onDisk: string;
+  try {
+    onDisk = await readFile(installedPath(dir, name), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "not_installed";
+    throw err;
+  }
+  return onDisk === expectedContent(skill, dir.kind) ? "installed" : "stale";
+}
+
+const STATUS_TO_ACTION: Record<SkillStatus, InstallAction> = {
+  not_installed: "installed",
+  stale: "refreshed",
+  installed: "already_up_to_date",
+};
 
 export async function installSkill(name: string, dir: SkillsDir = findSkillsDir()): Promise<InstallResult> {
   const skill = getSkill(name);
   if (!skill) throw new Error(`Unknown skill: ${name}`);
 
-  const targetDir = path.join(dir.path, skill.name);
-  await mkdir(targetDir, { recursive: true });
+  const targetFile = installedPath(dir, name);
+  const action = STATUS_TO_ACTION[await getSkillStatus(name, dir)];
 
-  const content = dir.kind === "claude" ? injectUserInvocable(skill.content) : skill.content;
-  const targetFile = path.join(targetDir, "SKILL.md");
-  await writeFile(targetFile, content);
+  if (action !== "already_up_to_date") {
+    await mkdir(path.dirname(targetFile), { recursive: true });
+    await writeFile(targetFile, expectedContent(skill, dir.kind));
+  }
 
-  return { skill: skill.name, installedAt: targetFile, kind: dir.kind, scope: dir.scope };
+  return { skill: skill.name, installedAt: targetFile, kind: dir.kind, scope: dir.scope, action };
 }
 
 export function injectUserInvocable(markdown: string): string {

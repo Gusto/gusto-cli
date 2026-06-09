@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findSkillsDir, getSkill, injectUserInvocable, installSkill, listSkills } from "./skills.ts";
+import { findSkillsDir, getSkill, getSkillStatus, injectUserInvocable, installSkill, listSkills } from "./skills.ts";
 
 let scratch: string;
 
@@ -88,6 +88,7 @@ describe("installSkill", () => {
     const content = readFileSync(result.installedAt, "utf8");
     expect(content).toContain("user-invocable: true");
     expect(content).toContain("# Onboard a Gusto company");
+    expect(result.action).toBe("installed");
   });
 
   test("does NOT inject user-invocable for non-claude targets", async () => {
@@ -97,8 +98,51 @@ describe("installSkill", () => {
     expect(content).not.toContain("user-invocable: true");
   });
 
+  test("returns action='refreshed' when overwriting a stale installed copy", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    const target = path.join(dir.path, "onboard-company", "SKILL.md");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "stale content from an older CLI");
+    const result = await installSkill("onboard-company", dir);
+    expect(result.action).toBe("refreshed");
+    expect(readFileSync(result.installedAt, "utf8")).toContain("# Onboard a Gusto company");
+  });
+
+  test("returns action='already_up_to_date' when content matches", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    await installSkill("onboard-company", dir);
+    const second = await installSkill("onboard-company", dir);
+    expect(second.action).toBe("already_up_to_date");
+  });
+
   test("throws on unknown skill", async () => {
     const dir = { path: scratch, kind: "claude" as const, scope: "local" as const };
     await expect(installSkill("nope", dir)).rejects.toThrow("Unknown skill");
+  });
+});
+
+describe("getSkillStatus", () => {
+  test("returns 'not_installed' when SKILL.md does not exist", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    expect(await getSkillStatus("onboard-company", dir)).toBe("not_installed");
+  });
+
+  test("returns 'installed' when the on-disk copy matches the bundled content", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    await installSkill("onboard-company", dir);
+    expect(await getSkillStatus("onboard-company", dir)).toBe("installed");
+  });
+
+  test("returns 'stale' when the on-disk copy differs from the bundled content", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    const target = path.join(dir.path, "onboard-company", "SKILL.md");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "an older version of the skill");
+    expect(await getSkillStatus("onboard-company", dir)).toBe("stale");
+  });
+
+  test("returns 'not_installed' for an unknown skill name", async () => {
+    const dir = { path: scratch, kind: "claude" as const, scope: "local" as const };
+    expect(await getSkillStatus("not-a-skill", dir)).toBe("not_installed");
   });
 });
