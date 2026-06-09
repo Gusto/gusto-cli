@@ -1,21 +1,16 @@
 import { createCompanyResource } from "./api-context.ts";
 import { type CommandHandler, missingArgs } from "./runner.ts";
 
-export type PayFrequency = "Every week" | "Every other week" | "Twice per month" | "Monthly";
+export type PayFrequency = "Every week" | "Every other week";
 
+// V1 supports weekly + biweekly only. Twice-per-month and Monthly need extra
+// fields (`day_1`, `day_2`, plus anchor_end_of_pay_period for all frequencies)
+// that the CLI doesn't model; AINT-606 tracks adding them.
 export const FREQUENCY_MAP: Record<string, PayFrequency> = {
   weekly: "Every week",
   biweekly: "Every other week",
   "bi-weekly": "Every other week",
-  "semi-monthly": "Twice per month",
-  semimonthly: "Twice per month",
-  monthly: "Monthly",
 };
-
-// Week-based schedules are anchored by a pay-period window, so the API requires
-// anchor_end_of_pay_period for them. Month-based ones (Twice per month, Monthly)
-// are defined by day-of-month instead and don't need it.
-const ANCHOR_END_REQUIRED: readonly PayFrequency[] = ["Every week", "Every other week"];
 
 interface PayScheduleBody {
   frequency: PayFrequency;
@@ -70,7 +65,7 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
     if (!anchorPayDate) {
       blocked.push({ field: "first-payday", reason: "required (use --first-payday or --anchor-pay-date)" });
     }
-    if (frequency && ANCHOR_END_REQUIRED.includes(frequency) && !opts.anchorEndOfPayPeriod) {
+    if (frequency && !opts.anchorEndOfPayPeriod) {
       blocked.push({
         field: "anchor-end-of-pay-period",
         reason: `required for ${frequency.toLowerCase()} schedules (YYYY-MM-DD, end of the first pay period)`,

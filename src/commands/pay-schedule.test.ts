@@ -42,13 +42,29 @@ describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {
     expect(blockedFields(result)).toContain("frequency");
   });
 
-  test("monthly does not require it", async () => {
+  test("monthly is rejected as an unknown frequency in V1 (AINT-606 tracks full support)", async () => {
     const result = await payScheduleCreateHandler({
       ...auth,
       frequency: "monthly",
       firstPayday: "2026-07-31",
       dryRun: true,
     })(ctx);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toContain("frequency");
+  });
+
+  test("semi-monthly is also rejected as an unknown frequency in V1", async () => {
+    const result = await payScheduleCreateHandler({
+      ...auth,
+      frequency: "semi-monthly",
+      firstPayday: "2026-07-15",
+      dryRun: true,
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toContain("frequency");
   });
 });
