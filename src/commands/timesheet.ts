@@ -5,7 +5,6 @@ import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
 import { type CommandHandler, runCommand, validationFailure } from "../lib/runner.ts";
 
-type EntityType = "Employee" | "Contractor";
 type PayClassification = "Regular" | "Overtime" | "Double overtime";
 
 // Maps each granular hour flag to the exact pay_classification enum string the
@@ -25,15 +24,18 @@ interface TimeEntry {
   pay_classification: PayClassification;
 }
 
-export interface TimesheetCreateBody {
+/** Employee time sheets must carry a job; contractor time sheets must not. Modeled as a
+ * discriminated union so invalid combinations (Contractor + job_uuid, Employee without one)
+ * don't typecheck — mirrors the discriminated unions in contractor.ts. */
+type TimesheetEntity = { entity_type: "Employee"; job_uuid: string } | { entity_type: "Contractor" };
+
+export type TimesheetCreateBody = {
   entity_uuid: string;
-  entity_type: EntityType;
   time_zone: string;
   shift_started_at: string;
   shift_ended_at?: string;
-  job_uuid?: string;
   entries: TimeEntry[];
-}
+} & TimesheetEntity;
 
 export type TimesheetCreateValidation =
   | { ok: true; body: TimesheetCreateBody }
@@ -68,9 +70,20 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   }
 
   // The API requires a job for employee time sheets (TimeTracking::TimeSheet validates
-  // employee_job_uuid presence if member_employee?); contractors don't take a job.
-  if (isEmployee && !opts.jobUuid) {
-    blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
+  // employee_job_uuid presence if member_employee?); contractor time sheets don't take one.
+  let entity: TimesheetEntity | undefined;
+  if (isEmployee) {
+    if (opts.jobUuid) {
+      entity = { entity_type: "Employee", job_uuid: opts.jobUuid };
+    } else {
+      blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
+    }
+  } else if (entityUuid && !ambiguousEntity) {
+    if (opts.jobUuid) {
+      blocked.push({ field: "job-uuid", reason: "not supported for contractor time sheets" });
+    } else {
+      entity = { entity_type: "Contractor" };
+    }
   }
 
   if (!start) {
@@ -98,19 +111,18 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
     blocked.push({ field: "hours", reason: "provide at least one of --regular, --overtime, --double-overtime" });
   }
 
-  // Re-check the required locals in the guard so the compiler narrows them to `string`
-  // for the body below (matches employee.ts / pay-schedule.ts).
-  if (ambiguousEntity || !entityUuid || !start || !timeZone || blocked.length > 0) {
+  // Re-check the required locals in the guard so the compiler narrows them (entityUuid/start/
+  // timeZone to `string`, entity to a concrete variant) for the body below.
+  if (ambiguousEntity || !entityUuid || !entity || !start || !timeZone || blocked.length > 0) {
     return { ok: false, message: "missing or invalid arguments", blocked };
   }
 
   const body: TimesheetCreateBody = {
     entity_uuid: entityUuid,
-    entity_type: isEmployee ? "Employee" : "Contractor",
+    ...entity,
     time_zone: timeZone,
     shift_started_at: start,
     ...(opts.end ? { shift_ended_at: opts.end } : {}),
-    ...(opts.jobUuid ? { job_uuid: opts.jobUuid } : {}),
     entries,
   };
   return { ok: true, body };

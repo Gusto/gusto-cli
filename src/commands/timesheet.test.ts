@@ -68,6 +68,7 @@ describe("validateTimesheetCreate", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.body.shift_ended_at).toBe("2026-06-01T17:00:00Z");
+    if (result.body.entity_type !== "Employee") throw new Error("expected employee body");
     expect(result.body.job_uuid).toBe("job-9");
   });
 
@@ -82,7 +83,20 @@ describe("validateTimesheetCreate", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.body.entity_uuid).toBe("ctr-1");
     expect(result.body.entity_type).toBe("Contractor");
-    expect(result.body.job_uuid).toBeUndefined();
+    expect(result.body).not.toHaveProperty("job_uuid");
+  });
+
+  test("a contractor with --job-uuid is rejected (contractors don't take a job)", () => {
+    const result = validateTimesheetCreate({
+      contractorUuid: "ctr-1",
+      jobUuid: "job-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "job-uuid" }));
   });
 
   test("missing both entity uuids blocks on entity", () => {
@@ -288,5 +302,12 @@ describe("timesheetSyncHandler", () => {
       pay_period_start_date: "2026-06-01",
       pay_period_end_date: "2026-06-15",
     });
+  });
+
+  test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
+    const result = await timesheetSyncHandler({})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("validation");
   });
 });
