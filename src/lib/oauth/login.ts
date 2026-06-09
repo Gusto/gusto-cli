@@ -25,7 +25,6 @@ export interface LoginDeps {
   http: OAuthHttpOptions;
   openBrowser?: (url: string) => Promise<void>;
   print?: (line: string) => void;
-  timeoutMs?: number;
   now?: () => number;
 }
 
@@ -38,7 +37,7 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
   const { verifier, challenge } = generatePkce();
   const state = randomState();
 
-  const server = await startLoopbackServer(state, { timeoutMs: deps.timeoutMs });
+  const server = await startLoopbackServer(state);
   try {
     const authorizeUrl = buildAuthorizeUrl(http.baseUrl, {
       clientId: creds.clientId,
