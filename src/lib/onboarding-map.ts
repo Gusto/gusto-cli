@@ -49,7 +49,9 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
   sign_all_forms: {
     command: "gusto company forms",
     required_flags: [],
-    optional_flags: ["--note", "--demo-sign"],
+    // Deliberately NOT advertising --demo-sign: agents should use the hosted
+    // signing flow (the legally-defensible path), not the demo escape hatch.
+    optional_flags: ["--note"],
   },
   add_employees: {
     command: "gusto employee add",

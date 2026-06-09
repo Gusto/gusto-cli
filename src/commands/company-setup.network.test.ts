@@ -100,6 +100,27 @@ describe("federalTaxHandler (network)", () => {
     expect(calls).toHaveLength(2);
   });
 
+  test("ein_rotation_failed when the fabricated EIN also collides", async () => {
+    const calls = stubFetch([
+      { status: 200, body: { version: "v1" } }, // GET
+      { status: 422, body: { errors: [{ message: "EIN is already in use" }] } }, // PUT -> rotate
+      { status: 200, body: { version: "v2" } }, // GET (retry)
+      { status: 422, body: { errors: [{ message: "EIN is already in use" }] } }, // PUT (rotated) also fails
+    ]);
+    const result = await federalTaxHandler({
+      ...auth,
+      ein: "12-3456789",
+      taxPayerType: "LLC",
+      filingForm: "941",
+      legalName: "Acme Inc.",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("ein_rotation_failed");
+    expect(result.error.details).toMatchObject({ ein_provided: "12-3456789" });
+    expect(calls).toHaveLength(4);
+  });
+
   test("a non-EIN 422 is not retried and surfaces as an error", async () => {
     const calls = stubFetch([
       { status: 200, body: { version: "v1" } },
@@ -302,6 +323,22 @@ describe("stateTaxHandler (network)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(JSON.stringify(result.error.details)).toContain("no_location_to_provision:emp-1");
+  });
+
+  test("labels a reload failure after a successful back-fill POST as reload_work_addresses", async () => {
+    stubFetch([
+      { status: 200, body: [{ uuid: "emp-1", jobs: [{}] }] }, // employees (has job)
+      { status: 200, body: [{ uuid: "loc-1" }] }, // locations
+      { status: 200, body: [] }, // work_addresses: none
+      { status: 201, body: {} }, // POST work_addresses succeeds
+      { status: 404, body: { error: "gone" } }, // reload GET fails
+    ]);
+    const result = await stateTaxHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    const details = JSON.stringify(result.error.details);
+    expect(details).toContain("reload_work_addresses:emp-1");
+    expect(details).not.toContain("provision_work_address");
   });
 
   test("records provision_work_address in partial_errors when the back-fill POST fails", async () => {
