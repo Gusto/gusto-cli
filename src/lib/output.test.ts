@@ -69,11 +69,28 @@ describe("emit", () => {
     expect(stderr.buffer).toBe("");
   });
 
-  test("agent mode emits a single JSON line for error", () => {
+  test("agent mode emits the JSON envelope to stdout AND a human error line to stderr", () => {
     const { sinks, stdout, stderr } = captureSinks();
     emit({ mode: "agent", color: false, verbose: false }, { ok: false, error: { code: "x", message: "y" } }, sinks);
     expect(stdout.buffer).toBe(`${JSON.stringify({ ok: false, error: { code: "x", message: "y" } })}\n`);
-    expect(stderr.buffer).toBe("");
+    expect(stderr.buffer).toBe("error: y\n");
+  });
+
+  test("agent mode error also surfaces blocked_on details on stderr", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "agent", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "validation",
+          message: "missing fields",
+          blocked_on: [{ field: "ein", reason: "required" }],
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toBe("error: missing fields\nblocked on:\n  - ein: required\n");
   });
 
   test("human mode writes structured data as pretty JSON to stdout", () => {

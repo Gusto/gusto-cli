@@ -64,6 +64,7 @@ export function outputOptionsFrom(flags: GlobalFlags): OutputOptions {
 export function emit<T>(opts: OutputOptions, payload: AgentEnvelope<T>, sinks: StreamSinks = defaultSinks): void {
   if (opts.mode === "agent") {
     sinks.stdout.write(`${JSON.stringify(payload)}\n`);
+    if (!payload.ok) writeHumanError(payload.error, sinks.stderr);
     return;
   }
   if (payload.ok) {
@@ -72,12 +73,15 @@ export function emit<T>(opts: OutputOptions, payload: AgentEnvelope<T>, sinks: S
     }
     return;
   }
-  const err = payload.error;
-  sinks.stderr.write(`error: ${err.message}\n`);
+  writeHumanError(payload.error, sinks.stderr);
+}
+
+function writeHumanError(err: EnvelopeError, stderr: NodeJS.WritableStream): void {
+  stderr.write(`error: ${err.message}\n`);
   if (err.blocked_on && err.blocked_on.length > 0) {
-    sinks.stderr.write("blocked on:\n");
+    stderr.write("blocked on:\n");
     for (const b of err.blocked_on) {
-      sinks.stderr.write(`  - ${b.field}: ${b.reason}\n`);
+      stderr.write(`  - ${b.field}: ${b.reason}\n`);
     }
   }
 }
