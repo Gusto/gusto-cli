@@ -4,7 +4,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
 
 type EntityType = "Employee" | "Contractor";
 type PayClassification = "Regular" | "Overtime" | "Double overtime";
@@ -54,11 +54,13 @@ interface TimesheetCreateInput {
 export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCreateValidation {
   const blocked: BlockedOn[] = [];
 
+  const { start, timeZone } = opts;
   const ambiguousEntity = Boolean(opts.employeeUuid && opts.contractorUuid);
   const isEmployee = Boolean(opts.employeeUuid) && !opts.contractorUuid;
+  const entityUuid = opts.employeeUuid ?? opts.contractorUuid;
   if (ambiguousEntity) {
     blocked.push({ field: "employee-uuid", reason: "pass only one of --employee-uuid or --contractor-uuid" });
-  } else if (!opts.employeeUuid && !opts.contractorUuid) {
+  } else if (!entityUuid) {
     blocked.push({ field: "employee-uuid", reason: "required (or pass --contractor-uuid)" });
   }
 
@@ -68,8 +70,8 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
     blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
   }
 
-  if (!opts.start) blocked.push({ field: "start", reason: "required (shift start, ISO 8601)" });
-  if (!opts.timeZone) blocked.push({ field: "time-zone", reason: "required (e.g. America/New_York)" });
+  if (!start) blocked.push({ field: "start", reason: "required (shift start, ISO 8601)" });
+  if (!timeZone) blocked.push({ field: "time-zone", reason: "required (e.g. America/New_York)" });
 
   const entries: TimeEntry[] = [];
   for (const { opt, field, classification } of HOUR_FLAGS) {
@@ -82,20 +84,21 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
     }
     entries.push({ hours_worked: parsed.value, pay_classification: classification });
   }
-  if (entries.length === 0 && !someHourFlagInvalid(opts)) {
+  if (entries.length === 0 && !hasAnyHourFlag(opts)) {
     blocked.push({ field: "hours", reason: "provide at least one of --regular, --overtime, --double-overtime" });
   }
 
-  if (blocked.length > 0) {
+  // Re-check the required locals in the guard so the compiler narrows them to `string`
+  // for the body below (matches employee.ts / pay-schedule.ts).
+  if (ambiguousEntity || !entityUuid || !start || !timeZone || blocked.length > 0) {
     return { ok: false, message: "missing or invalid arguments", blocked };
   }
 
-  const entityType: EntityType = opts.employeeUuid ? "Employee" : "Contractor";
   const body: TimesheetCreateBody = {
-    entity_uuid: (opts.employeeUuid ?? opts.contractorUuid) as string,
-    entity_type: entityType,
-    time_zone: opts.timeZone as string,
-    shift_started_at: opts.start as string,
+    entity_uuid: entityUuid,
+    entity_type: isEmployee ? "Employee" : "Contractor",
+    time_zone: timeZone,
+    shift_started_at: start,
     ...(opts.end ? { shift_ended_at: opts.end } : {}),
     ...(opts.jobUuid ? { job_uuid: opts.jobUuid } : {}),
     entries,
@@ -103,9 +106,10 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   return { ok: true, body };
 }
 
-/** True when at least one hour flag was supplied but failed parsing — used so we don't
- * stack a generic "provide at least one" block on top of a specific bad-value block. */
-function someHourFlagInvalid(opts: TimesheetCreateInput): boolean {
+/** True when any hour flag was supplied (defined), regardless of whether it parsed —
+ * lets the caller skip the generic "provide at least one" block when a specific
+ * bad-value block has already been pushed for that flag. */
+function hasAnyHourFlag(opts: TimesheetCreateInput): boolean {
   return HOUR_FLAGS.some(({ opt }) => opts[opt] !== undefined);
 }
 
@@ -130,11 +134,13 @@ interface TimesheetSyncInput {
  * `kind` is always "regular" — the API only supports regular payroll exports today. */
 export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncValidation {
   const blocked: BlockedOn[] = [];
-  if (!opts.payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
-  if (!opts.payPeriodStart) blocked.push({ field: "pay-period-start", reason: "required (YYYY-MM-DD)" });
-  if (!opts.payPeriodEnd) blocked.push({ field: "pay-period-end", reason: "required (YYYY-MM-DD)" });
+  const { payScheduleUuid, payPeriodStart, payPeriodEnd } = opts;
+  if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
+  if (!payPeriodStart) blocked.push({ field: "pay-period-start", reason: "required (YYYY-MM-DD)" });
+  if (!payPeriodEnd) blocked.push({ field: "pay-period-end", reason: "required (YYYY-MM-DD)" });
 
-  if (blocked.length > 0) {
+  // Re-check the locals so the compiler narrows them to `string` for the body below.
+  if (!payScheduleUuid || !payPeriodStart || !payPeriodEnd) {
     return { ok: false, message: "missing required arguments", blocked };
   }
 
@@ -142,9 +148,9 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
     ok: true,
     body: {
       kind: "regular",
-      pay_schedule_uuid: opts.payScheduleUuid as string,
-      pay_period_start_date: opts.payPeriodStart as string,
-      pay_period_end_date: opts.payPeriodEnd as string,
+      pay_schedule_uuid: payScheduleUuid,
+      pay_period_start_date: payPeriodStart,
+      pay_period_end_date: payPeriodEnd,
     },
   };
 }
@@ -203,6 +209,15 @@ export function registerTimesheetCommand(parent: Command): void {
     );
 }
 
+/** Map a failed validation into the standard validation `CommandResult` envelope (exit 7). */
+function validationFailure(v: { message: string; blocked: BlockedOn[] }): CommandResult {
+  return {
+    ok: false,
+    exitCode: ExitCode.Validation,
+    error: { code: "validation", message: v.message, blocked_on: v.blocked },
+  };
+}
+
 function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
@@ -229,13 +244,7 @@ function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
     }
 
     const validation = validateTimesheetCreate(opts);
-    if (!validation.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: validation.message, blocked_on: validation.blocked },
-      };
-    }
+    if (!validation.ok) return validationFailure(validation);
 
     return createCompanyResource(globals, "time_tracking/time_sheets", validation.body, {
       token: opts.token,
@@ -265,13 +274,7 @@ function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
     }
 
     const validation = validateTimesheetSync(opts);
-    if (!validation.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: validation.message, blocked_on: validation.blocked },
-      };
-    }
+    if (!validation.ok) return validationFailure(validation);
 
     return createCompanyResource(globals, "time_tracking/payroll_syncs", validation.body, {
       token: opts.token,
