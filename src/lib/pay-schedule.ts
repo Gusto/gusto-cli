@@ -15,7 +15,7 @@ export const FREQUENCY_MAP: Record<string, PayFrequency> = {
 interface PayScheduleBody {
   frequency: PayFrequency;
   anchor_pay_date: string;
-  anchor_end_of_pay_period?: string;
+  anchor_end_of_pay_period: string;
 }
 
 export interface PayScheduleCreateOpts {
@@ -65,21 +65,22 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
     if (!anchorPayDate) {
       blocked.push({ field: "first-payday", reason: "required (use --first-payday or --anchor-pay-date)" });
     }
-    if (frequency && !opts.anchorEndOfPayPeriod) {
+    const anchorEnd = opts.anchorEndOfPayPeriod;
+    if (frequency && !anchorEnd) {
       blocked.push({
         field: "anchor-end-of-pay-period",
         reason: `required for ${frequency.toLowerCase()} schedules (YYYY-MM-DD, end of the first pay period)`,
       });
     }
-    if (!frequency || !anchorPayDate || blocked.length > 0) {
+    if (!frequency || !anchorPayDate || !anchorEnd || blocked.length > 0) {
       return missingArgs(blocked);
     }
 
     const body: PayScheduleBody = {
       frequency,
       anchor_pay_date: anchorPayDate,
+      anchor_end_of_pay_period: anchorEnd,
     };
-    if (opts.anchorEndOfPayPeriod) body.anchor_end_of_pay_period = opts.anchorEndOfPayPeriod;
 
     return createCompanyResource(globals, "pay_schedules", body, {
       token: opts.token,
