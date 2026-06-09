@@ -48,8 +48,9 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
           body: {
             frequency: "Every other week",
             anchor_pay_date: "2026-07-03",
+            anchor_end_of_pay_period: "2026-06-26",
           },
-          note: "example: canonical biweekly shape; --anchor-end-of-pay-period optional",
+          note: "example: canonical biweekly shape; weekly/biweekly require --anchor-end-of-pay-period",
         },
       };
     }

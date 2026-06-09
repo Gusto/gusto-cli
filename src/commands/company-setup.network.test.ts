@@ -424,6 +424,15 @@ describe("formsHandler", () => {
     expect(d).toMatchObject({ flow_type: "sign_all_forms", url: "https://flows.example/abc" });
   });
 
+  test("--note is passed through as options.note in the /flows body", async () => {
+    const calls = stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    await formsHandler({ ...auth, note: "please sign by Friday" }, false)(ctx);
+    expect(calls[0]?.body).toMatchObject({
+      flow_type: "sign_all_forms",
+      options: { note: "please sign by Friday" },
+    });
+  });
+
   test("hosted flow with no url in the response fails with flow_no_url", async () => {
     stubFetch([{ status: 200, body: {} }]); // POST /flows returns no url
     const result = await formsHandler(auth, false)(ctx);

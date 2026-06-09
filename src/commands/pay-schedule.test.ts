@@ -32,6 +32,16 @@ describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {
     });
   });
 
+  test("an unknown frequency string is refused with a validation error", async () => {
+    const result = await payScheduleCreateHandler({ ...auth, frequency: "fortnightly", firstPayday: "2026-07-03" })(
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toContain("frequency");
+  });
+
   test("monthly does not require it", async () => {
     const result = await payScheduleCreateHandler({
       ...auth,

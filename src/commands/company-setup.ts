@@ -200,7 +200,7 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
         data: {
           federal_tax: result,
           ein_used: einUsed,
-          tax_payer_type: opts.taxPayerType,
+          tax_payer_type: taxPayerType,
           taxable_as_scorp: taxableAsScorp ?? null,
           ...(einAutoRotated ? { ein_auto_rotated: true, ein_provided: einProvided } : {}),
         },
