@@ -4,7 +4,7 @@ import { ApiError } from "../lib/api-client.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
-import { defaultOpenBrowser } from "../lib/oauth/login.ts";
+import { defaultOpenBrowser } from "../lib/browser.ts";
 import {
   type StateTaxBuildStatus,
   type TaxRequirementsResponse,
@@ -309,13 +309,21 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
           deposit_2: Number(deposits.deposit_2),
         });
       } catch (err) {
+        // Preserve the server response body (e.g. a 422's errors[].message) so the
+        // agent gets the actual reason verify failed, not just "PUT ... -> 422".
+        const apiBody = err instanceof ApiError ? err.body : undefined;
         return {
           ok: false,
           exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
           error: {
             code: "bank_verification_failed",
             message: `Bank account ${bankUuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
-            details: { bank_account_uuid: bankUuid, phase, error: errMsg(err) },
+            details: {
+              bank_account_uuid: bankUuid,
+              phase,
+              error: errMsg(err),
+              ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
+            },
           },
         };
       }
@@ -463,39 +471,54 @@ async function statesForEmployee(
 
   const hasJob = Array.isArray(emp.jobs) && emp.jobs.length > 0;
   if (hasJob && workAddresses.length === 0) {
-    if (!primaryLocationUuid) {
-      errors.push({
-        label: `no_location_to_provision:${emp.uuid}`,
-        error: "employee has a job but no work address and no company location to back-fill from",
-      });
-    } else {
-      let provisioned = false;
-      try {
-        await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
-          location_uuid: primaryLocationUuid,
-          active: true,
-          effective_date: new Date().toISOString().slice(0, 10),
-        });
-        provisioned = true;
-      } catch (err) {
-        errors.push({ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) });
-      }
-      // Reload separately: if the POST succeeded but the reload fails, the address
-      // exists server-side, so label it as a reload failure (not a provisioning one)
-      // to avoid implying the POST failed and prompting a duplicate re-POST.
-      if (provisioned) {
-        try {
-          workAddresses = await loadWorkAddresses(ctx.client, emp.uuid);
-        } catch (err) {
-          errors.push({ label: `reload_work_addresses:${emp.uuid}`, error: errMsg(err) });
-        }
-      }
-    }
+    const backFill = await provisionAndReloadWorkAddresses(ctx, emp, primaryLocationUuid);
+    workAddresses = backFill.workAddresses;
+    errors.push(...backFill.errors);
   }
   for (const wa of workAddresses) {
     if (wa.active === true && wa.state) found.push(wa.state);
   }
   return { found, errors };
+}
+
+/** Back-fill a missing work address from the company's primary location, then reload.
+ * Returns whatever addresses we end up with (empty if provisioning failed) plus any
+ * partial errors. Pulled out of statesForEmployee to keep that function flat. */
+async function provisionAndReloadWorkAddresses(
+  ctx: CompanyApiContext,
+  emp: EmployeeRec,
+  primaryLocationUuid: string | undefined,
+): Promise<{ workAddresses: WorkAddressRec[]; errors: PartialError[] }> {
+  if (!primaryLocationUuid) {
+    return {
+      workAddresses: [],
+      errors: [
+        {
+          label: `no_location_to_provision:${emp.uuid}`,
+          error: "employee has a job but no work address and no company location to back-fill from",
+        },
+      ],
+    };
+  }
+
+  try {
+    await ctx.client.post(`/v1/employees/${emp.uuid}/work_addresses`, {
+      location_uuid: primaryLocationUuid,
+      active: true,
+      effective_date: new Date().toISOString().slice(0, 10),
+    });
+  } catch (err) {
+    return { workAddresses: [], errors: [{ label: `provision_work_address:${emp.uuid}`, error: errMsg(err) }] };
+  }
+
+  // Reload separately: the POST succeeded, so if the reload fails the address still
+  // exists server-side. Label it as a reload failure (not a provisioning one) to avoid
+  // implying the POST failed and prompting a duplicate re-POST.
+  try {
+    return { workAddresses: await loadWorkAddresses(ctx.client, emp.uuid), errors: [] };
+  } catch (err) {
+    return { workAddresses: [], errors: [{ label: `reload_work_addresses:${emp.uuid}`, error: errMsg(err) }] };
+  }
 }
 
 /** Opt each state into the new-employer default rate where supported. Per-state
@@ -576,14 +599,23 @@ interface FormRec {
   requires_signing?: boolean;
 }
 
-export function formsHandler(opts: FormsOpts, isTty = process.stdout.isTTY === true): CommandHandler {
+export function formsHandler(
+  opts: FormsOpts,
+  isTty = process.stdout.isTTY === true,
+  openBrowser: (url: string) => Promise<void> = defaultOpenBrowser,
+): CommandHandler {
   return async ({ globals }) => {
     if (opts.demoSign) return demoSign(opts, globals);
-    return hostedSigningFlow(opts, globals, isTty);
+    return hostedSigningFlow(opts, globals, isTty, openBrowser);
   };
 }
 
-async function hostedSigningFlow(opts: FormsOpts, globals: GlobalFlags, isTty: boolean): Promise<CommandResult> {
+async function hostedSigningFlow(
+  opts: FormsOpts,
+  globals: GlobalFlags,
+  isTty: boolean,
+  openBrowser: (url: string) => Promise<void>,
+): Promise<CommandResult> {
   return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
     const body = {
       flow_type: "sign_all_forms",
@@ -597,17 +629,27 @@ async function hostedSigningFlow(opts: FormsOpts, globals: GlobalFlags, isTty: b
         error: { code: "flow_no_url", message: "flow create returned no signing url", details: result },
       };
     }
+    // Best-effort browser open in interactive mode. A headless/SSH box with no
+    // browser-opener must not fail the command - the URL is always returned in
+    // `message`, and `browser_opened: false` makes a failed open observable
+    // rather than silent.
+    let browserOpened: boolean | undefined;
     if (isTty && !globals.agent && !globals.json) {
-      // Best-effort: a headless/SSH box with no browser-opener must not fail the
-      // command - the URL in the response is the deliverable.
-      await defaultOpenBrowser(result.url).catch(() => {});
+      browserOpened = await openBrowser(result.url).then(
+        () => true,
+        () => false,
+      );
     }
+    const couldntOpen = browserOpened === false;
     return {
       ok: true,
       data: {
         flow_type: "sign_all_forms",
         url: result.url,
-        message: `Signing flow ready. Surface this URL to the signatory: ${result.url}`,
+        ...(couldntOpen ? { browser_opened: false } : {}),
+        message: couldntOpen
+          ? `Couldn't open a browser automatically. Surface this URL to the signatory: ${result.url}`
+          : `Signing flow ready. Surface this URL to the signatory: ${result.url}`,
       },
     };
   });

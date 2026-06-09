@@ -177,7 +177,12 @@ describe("bankAccountHandler (network)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("bank_verification_failed");
-    expect(result.error.details).toMatchObject({ bank_account_uuid: "bank-1", phase: "verify" });
+    expect(result.error.details).toMatchObject({
+      bank_account_uuid: "bank-1",
+      phase: "verify",
+      // The server's 422 body is preserved so the agent sees the real reason.
+      response: { errors: [{ message: "amounts do not match" }] },
+    });
   });
 
   test("flags a malformed send_test_deposits response instead of PUTting null", async () => {
@@ -431,6 +436,28 @@ describe("formsHandler", () => {
       flow_type: "sign_all_forms",
       options: { note: "please sign by Friday" },
     });
+  });
+
+  test("interactive TTY mode opens the signing URL in a browser", async () => {
+    stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    const ttyCtx = { command: "test", globals: { ...globals, agent: false, json: false } };
+    const opened: string[] = [];
+    const d = data(
+      await formsHandler(auth, true, async (u) => {
+        opened.push(u);
+      })(ttyCtx),
+    );
+    expect(opened).toEqual(["https://flows.example/abc"]);
+    expect(d).toMatchObject({ url: "https://flows.example/abc" });
+    expect(d.browser_opened).toBeUndefined();
+  });
+
+  test("a failed browser open still surfaces the URL and flags browser_opened:false", async () => {
+    stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    const ttyCtx = { command: "test", globals: { ...globals, agent: false, json: false } };
+    const d = data(await formsHandler(auth, true, () => Promise.reject(new Error("no browser here")))(ttyCtx));
+    expect(d).toMatchObject({ url: "https://flows.example/abc", browser_opened: false });
+    expect(String(d.message)).toContain("https://flows.example/abc");
   });
 
   test("hosted flow with no url in the response fails with flow_no_url", async () => {

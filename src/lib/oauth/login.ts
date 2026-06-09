@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { defaultOpenBrowser } from "../browser.ts";
 import type { Environment } from "../global-flags.ts";
 import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
@@ -88,16 +88,4 @@ export async function openOrPrint(
     print("Open this URL in your browser to sign in:");
     print(`  ${url}`);
   }
-}
-
-export function defaultOpenBrowser(url: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-    const child = spawn(cmd, [url], { stdio: "ignore", detached: true });
-    child.on("error", reject);
-    child.on("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
 }
