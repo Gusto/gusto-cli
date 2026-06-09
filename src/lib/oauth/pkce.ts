@@ -101,13 +101,11 @@ export interface LoopbackServer {
 }
 
 /** Bind the loopback callback server first (so the caller learns the port and
- * can build the authorize URL), then await the redirect via `waitForCode()`. */
-export function startLoopbackServer(
-  expectedState: string,
-  opts: { timeoutMs?: number; host?: string } = {},
-): Promise<LoopbackServer> {
+ * can build the authorize URL), then await the redirect via `waitForCode()`.
+ * No timeout: matches `gh auth login` / `aws sso login` style. The user Ctrl-Cs
+ * to bail; the server is closed via `close()` on the returned handle. */
+export function startLoopbackServer(expectedState: string, opts: { host?: string } = {}): Promise<LoopbackServer> {
   const host = opts.host ?? "127.0.0.1";
-  const timeoutMs = opts.timeoutMs ?? 300_000;
 
   return new Promise<LoopbackServer>((resolveServer, rejectServer) => {
     let settled = false;
@@ -132,15 +130,9 @@ export function startLoopbackServer(
       succeed(parsed.code);
     });
 
-    const timer = setTimeout(
-      () => fail(new Error(`timed out waiting for browser callback after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-
     function settle(): boolean {
       if (settled) return false;
       settled = true;
-      clearTimeout(timer);
       server.close();
       return true;
     }

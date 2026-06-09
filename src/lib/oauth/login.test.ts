@@ -65,7 +65,6 @@ describe("login", () => {
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
       openBrowser,
       print: () => {},
-      timeoutMs: 5_000,
     });
 
     expect(info.resource?.uuid).toBe("comp-9");
@@ -94,7 +93,6 @@ describe("login", () => {
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
       openBrowser,
       print: () => {},
-      timeoutMs: 5_000,
     });
 
     expect(store.data.sandbox?.accessToken).toBe("new-at");

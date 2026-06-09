@@ -68,7 +68,6 @@ describe("provision", () => {
       openBrowser,
       confirmClaim: () => Promise.resolve(),
       print: () => {},
-      timeoutMs: 5_000,
     });
 
     expect(result.accountClaimUrl).toBe("https://claim/co-1");

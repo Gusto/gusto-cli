@@ -98,7 +98,7 @@ describe("refreshToken", () => {
 
 describe("startLoopbackServer", () => {
   test("captures the code when state matches", async () => {
-    const server = await startLoopbackServer("good-state", { timeoutMs: 5_000 });
+    const server = await startLoopbackServer("good-state");
     const codeP = server.waitForCode();
     const res = await fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(res.status).toBe(200);
@@ -107,7 +107,7 @@ describe("startLoopbackServer", () => {
   });
 
   test("rejects on state mismatch", async () => {
-    const server = await startLoopbackServer("expected", { timeoutMs: 5_000 });
+    const server = await startLoopbackServer("expected");
     // Capture the rejection via an attached handler (avoids an unhandled-rejection window).
     const settled = server.waitForCode().then(
       () => null,
@@ -120,7 +120,7 @@ describe("startLoopbackServer", () => {
   });
 
   test("rejects when the callback carries an error param", async () => {
-    const server = await startLoopbackServer("good-state", { timeoutMs: 5_000 });
+    const server = await startLoopbackServer("good-state");
     const settled = server.waitForCode().then(
       () => null,
       (e: Error) => e,
@@ -130,10 +130,5 @@ describe("startLoopbackServer", () => {
     const err = await settled;
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toMatch(/authorization failed: access_denied/);
-  });
-
-  test("rejects with a timeout when no callback arrives", async () => {
-    const server = await startLoopbackServer("good-state", { timeoutMs: 10 });
-    await expect(server.waitForCode()).rejects.toThrow(/timed out waiting for browser callback/);
   });
 });
