@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:te
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { type Run, spawnCapture } from "./support";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
@@ -9,22 +10,8 @@ const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
 const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
 
-interface Run {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
 async function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
-  const baseEnv = stripGustoEnv(process.env);
-  const proc = Bun.spawn([BIN_PATH, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...baseEnv, XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env },
-  });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const exitCode = await proc.exited;
-  return { stdout, stderr, exitCode };
+  return spawnCapture([BIN_PATH, ...args], { ...stripGustoEnv(process.env), XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env });
 }
 
 function stripGustoEnv(env: NodeJS.ProcessEnv): Record<string, string> {

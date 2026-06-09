@@ -12,7 +12,9 @@ Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboar
 curl -fsSL https://cli.gusto.com/install.sh | sh
 ```
 
-(Install path lands with [AINT-560](https://gustohq.atlassian.net/browse/AINT-560).)
+This detects your OS/arch, downloads the matching binary from the latest GitHub Release, verifies its SHA256, and installs to `~/.gusto/bin/gusto` (no sudo). If that dir isn't on your `PATH`, it adds a line to your shell profile (`.zshrc`/`.bashrc`/`.profile`). Set `GUSTO_CLI_VERSION` to pin a release or `GUSTO_INSTALL_DIR` to install elsewhere.
+
+New binaries are published to GitHub Releases on each `v*.*.*` tag (see `.github/workflows/release.yml`).
 
 ## Authentication
 
