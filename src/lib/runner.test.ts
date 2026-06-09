@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type CommandHandler, notImplementedHandler, runCommand } from "./runner.ts";
+import { type CommandHandler, missingArgs, notImplementedHandler, runCommand, validationFailure } from "./runner.ts";
 import { captureSinks } from "./test-support.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
@@ -73,6 +73,30 @@ describe("runCommand", () => {
     });
     expect(captured.command).toBe("gusto company provision");
     expect(captured.globals?.agent).toBe(true);
+  });
+});
+
+describe("validationFailure", () => {
+  test("returns a validation envelope (exit 7) with the message and blocked_on passed through", () => {
+    const blocked = [{ field: "start", reason: "required" }];
+    const result = validationFailure("missing or invalid arguments", blocked);
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: { code: "validation", message: "missing or invalid arguments", blocked_on: blocked },
+    });
+  });
+});
+
+describe("missingArgs", () => {
+  test("delegates to validationFailure with the standard message", () => {
+    const blocked = [{ field: "email", reason: "required" }];
+    const result = missingArgs(blocked);
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
+    });
   });
 });
 

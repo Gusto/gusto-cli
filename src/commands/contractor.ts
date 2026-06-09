@@ -1,10 +1,9 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type ValidationResult, runCommand, validationFailure } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
 type WageType = "Fixed" | "Hourly";
@@ -29,9 +28,7 @@ export type ContractorBody =
   | ({ type: "Individual"; first_name: string; last_name: string } & ContractorCommon)
   | ({ type: "Business"; business_name: string } & ContractorCommon);
 
-export type ContractorValidation =
-  | { ok: true; body: ContractorBody }
-  | { ok: false; message: string; blocked: BlockedOn[] };
+export type ContractorValidation = ValidationResult<ContractorBody>;
 
 // Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
 function isValidStartDate(raw: string): boolean {
@@ -268,13 +265,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
     }
 
     const validation = validateContractorAdd(opts);
-    if (!validation.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: validation.message, blocked_on: validation.blocked },
-      };
-    }
+    if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "contractors", validation.body, {
       token: opts.token,

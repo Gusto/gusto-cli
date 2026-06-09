@@ -17,6 +17,10 @@ export type CommandResult<T = unknown> =
 
 export type CommandHandler<T = unknown> = (ctx: CommandContext) => Promise<CommandResult<T>>;
 
+/** A validator's result: a built request body on success, or a message + blocked_on list on
+ * failure. Generic so each command's `validate*` function shares one shape. */
+export type ValidationResult<T> = { ok: true; body: T } | { ok: false; message: string; blocked: BlockedOn[] };
+
 export interface RunnerDeps {
   exit: (code: number) => never;
   sinks?: StreamSinks;
@@ -58,13 +62,18 @@ export async function runCommand<T>(
   return deps.exit(code);
 }
 
-/** Standard "missing required arguments" validation failure with a blocked_on list. */
-export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
+/** A validation failure (exit 7) carrying a caller-supplied message and blocked_on list. */
+export function validationFailure(message: string, blocked: BlockedOn[]): CommandResult<never> {
   return {
     ok: false,
     exitCode: ExitCode.Validation,
-    error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
+    error: { code: "validation", message, blocked_on: blocked },
   };
+}
+
+/** Standard "missing required arguments" validation failure with a blocked_on list. */
+export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
+  return validationFailure("missing required arguments", blocked);
 }
 
 export function notImplementedHandler(commandPath: string): CommandHandler {
