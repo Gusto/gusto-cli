@@ -5,7 +5,9 @@ import { registerCompanyCommand } from "./commands/company.ts";
 import { registerConfigCommand } from "./commands/config.ts";
 import { registerContractorCommand } from "./commands/contractor.ts";
 import { registerEmployeeCommand } from "./commands/employee.ts";
+import { registerLedgerCommand } from "./commands/ledger.ts";
 import { registerPayScheduleCommand } from "./commands/pay-schedule.ts";
+import { registerPayrollCommand } from "./commands/payroll.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
@@ -44,6 +46,8 @@ function buildProgram(): Command {
   registerEmployeeCommand(program);
   registerContractorCommand(program);
   registerPayScheduleCommand(program);
+  registerPayrollCommand(program);
+  registerLedgerCommand(program);
   registerTimesheetCommand(program);
   registerAuthCommand(program);
   registerSkillCommand(program);

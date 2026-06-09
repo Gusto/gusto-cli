@@ -8,6 +8,7 @@ export const ExitCode = {
   Network: 6,
   Validation: 7,
   Blocked: 8,
+  Timeout: 9,
 } as const;
 
 export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];

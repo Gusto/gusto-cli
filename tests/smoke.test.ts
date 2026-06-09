@@ -38,7 +38,18 @@ describe("compiled binary", () => {
   test("--help lists all top-level commands and exits 0", async () => {
     const result = await run(["--help"]);
     expect(result.exitCode).toBe(0);
-    for (const cmd of ["company", "employee", "contractor", "pay-schedule", "auth", "skill", "config", "api"]) {
+    for (const cmd of [
+      "company",
+      "employee",
+      "contractor",
+      "pay-schedule",
+      "payroll",
+      "ledger",
+      "auth",
+      "skill",
+      "config",
+      "api",
+    ]) {
       expect(result.stdout).toContain(cmd);
     }
   });
@@ -68,6 +79,48 @@ describe("auth required commands without a token", () => {
     expect(result.exitCode).toBe(3);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("no_access_token");
+  });
+
+  test("payroll list without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["payroll", "list"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("ledger show without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["ledger", "show", "payroll-uuid-123"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("ledger show --no-wait still needs a token (POSTs the report request)", async () => {
+    const result = await run(["ledger", "show", "payroll-uuid-123", "--no-wait"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+});
+
+describe("payroll/ledger validate before auth (exit 7)", () => {
+  test("payroll list with a malformed --start-date blocks on start-date", async () => {
+    const result = await run(["payroll", "list", "--start-date", "01-01-2026"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "start-date" }));
+  });
+
+  test("payroll list with an invalid --sort-order blocks on sort-order", async () => {
+    const result = await run(["payroll", "list", "--sort-order", "sideways"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "sort-order" }));
+  });
+
+  test("ledger show with a non-positive --timeout blocks on timeout", async () => {
+    const result = await run(["ledger", "show", "payroll-uuid-123", "--timeout", "0"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "timeout" }));
   });
 });
 

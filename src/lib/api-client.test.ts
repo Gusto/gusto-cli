@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { ApiClient, type ApiClientOptions, ApiError, NetworkError } from "./api-client.ts";
+import {
+  ApiClient,
+  type ApiClientOptions,
+  ApiError,
+  NetworkError,
+  PollFailedError,
+  PollTimeoutError,
+} from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 
 interface MockResponse {
@@ -291,6 +298,189 @@ describe("ApiClient retries (idempotent verbs only)", () => {
     });
     await client.get("/v1/x");
     expect(sleeps).toEqual([0, 1]); // sleep before attempts 2 and 3 (zero-indexed)
+  });
+});
+
+describe("ApiClient request deadline", () => {
+  test("does not even attempt once the deadline has already passed", async () => {
+    const seq = sequenceFetch([{ status: 200, body: { ok: true } }]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    try {
+      await client.request("GET", "/v1/x", undefined, { deadline: 0, now: () => 1000 });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NetworkError);
+      expect(seq.calls).toBe(0);
+    }
+  });
+
+  test("stops retrying once the deadline is exhausted (does not run the full retry budget)", async () => {
+    const seq = sequenceFetch([{ status: 503, body: { err: "down" } }]);
+    let t = 0;
+    const now = (): number => {
+      const v = t;
+      t += 100;
+      return v;
+    };
+    const client = makeClient(seq.fetch, { maxRetries: 5, retrySleepMs: () => 0 });
+    try {
+      await client.request("GET", "/v1/x", undefined, { deadline: 1000, now });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      // Without a deadline this would be maxRetries + 1 = 6 attempts.
+      expect(seq.calls).toBeLessThan(6);
+    }
+  });
+
+  test("succeeds normally when the request completes within the deadline", async () => {
+    const client = makeClient(mockFetch({}, { status: 200, body: { ok: true } }));
+    const result = await client.request<{ ok: boolean }>("GET", "/v1/x", undefined, { deadline: 9_999_999_999_999 });
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(true);
+  });
+});
+
+describe("ApiClient.poll", () => {
+  const PENDING = { status: 200, body: { status: "Pending" } };
+  const succeeded = (extra: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: { status: "Succeeded", ...extra },
+  });
+
+  test("polls until `until` holds and resolves with that response", async () => {
+    const seq = sequenceFetch([PENDING, PENDING, succeeded({ report_urls: ["https://x/report.json"] })]);
+    const client = makeClient(seq.fetch);
+    const result = await client.poll<{ status: string; report_urls?: string[] }>("/v1/reports/r", {
+      until: (b) => b.status === "Succeeded",
+      isFailure: (b) => b.status === "Failed",
+      sleepMs: () => 0,
+    });
+    expect(result.body.status).toBe("Succeeded");
+    expect(result.body.report_urls).toEqual(["https://x/report.json"]);
+    expect(seq.calls).toBe(3);
+  });
+
+  test("resolves on the first attempt (no sleep) when `until` is already satisfied", async () => {
+    const seq = sequenceFetch([succeeded()]);
+    const sleeps: number[] = [];
+    const client = makeClient(seq.fetch);
+    await client.poll<{ status: string }>("/v1/reports/r", {
+      until: (b) => b.status === "Succeeded",
+      sleepMs: (n) => {
+        sleeps.push(n);
+        return 0;
+      },
+    });
+    expect(seq.calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  test("rejects with PollFailedError when `isFailure` matches", async () => {
+    const seq = sequenceFetch([PENDING, { status: 200, body: { status: "Failed" } }]);
+    const client = makeClient(seq.fetch);
+    try {
+      await client.poll<{ status: string }>("/v1/reports/r", {
+        until: (b) => b.status === "Succeeded",
+        isFailure: (b) => b.status === "Failed",
+        sleepMs: () => 0,
+      });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PollFailedError);
+      expect((err as PollFailedError).body).toEqual({ status: "Failed" });
+      expect(seq.calls).toBe(2);
+    }
+  });
+
+  test("rejects with PollTimeoutError after maxAttempts without success", async () => {
+    const seq = sequenceFetch([PENDING]);
+    const client = makeClient(seq.fetch);
+    try {
+      await client.poll<{ status: string }>("/v1/reports/r", {
+        until: (b) => b.status === "Succeeded",
+        maxAttempts: 3,
+        sleepMs: () => 0,
+      });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PollTimeoutError);
+      expect((err as PollTimeoutError).exitCode).toBe(ExitCode.Timeout);
+      expect((err as PollTimeoutError).attempts).toBe(3);
+      expect((err as PollTimeoutError).lastBody).toEqual({ status: "Pending" });
+      expect(seq.calls).toBe(3);
+    }
+  });
+
+  test("rejects with PollTimeoutError once the wall-clock budget is exceeded", async () => {
+    const seq = sequenceFetch([PENDING]);
+    // Each clock read advances 60s; with a 120s budget the poll cannot run forever.
+    let elapsed = 0;
+    const now = () => (elapsed += 60_000);
+    const client = makeClient(seq.fetch);
+    try {
+      await client.poll<{ status: string }>("/v1/reports/r", {
+        until: (b) => b.status === "Succeeded",
+        timeoutMs: 120_000,
+        sleepMs: () => 0,
+        now,
+      });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PollTimeoutError);
+    }
+  });
+
+  test("sleeps between polls via the injected sleepMs hook", async () => {
+    const seq = sequenceFetch([PENDING, PENDING, succeeded()]);
+    const sleeps: number[] = [];
+    const client = makeClient(seq.fetch);
+    await client.poll<{ status: string }>("/v1/reports/r", {
+      until: (b) => b.status === "Succeeded",
+      sleepMs: (n) => {
+        sleeps.push(n);
+        return 0;
+      },
+    });
+    // Slept before the 2nd and 3rd attempts (zero-indexed).
+    expect(sleeps).toEqual([0, 1]);
+  });
+
+  test("a GET aborted at the deadline is reclassified as PollTimeoutError", async () => {
+    // Fetch always aborts (timeout-flavored failure). Clock advances 400ms per
+    // call: deadline=1000, loop-top check (400) is under it, the GET runs and
+    // aborts, and the catch check (1200) is past the deadline.
+    const aborting = (async () => {
+      throw new DOMException("aborted", "TimeoutError");
+    }) as unknown as typeof fetch;
+    let t = -400;
+    const now = (): number => (t += 400);
+    const client = makeClient(aborting, { maxRetries: 0 });
+    try {
+      await client.poll("/v1/reports/r", { until: () => false, timeoutMs: 1000, now, sleepMs: () => 0 });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PollTimeoutError);
+    }
+  });
+
+  test("a genuine network fault past the deadline is NOT masked as a timeout", async () => {
+    // A real connection error (not a timeout) that happens to surface when the
+    // clock is already past the deadline must propagate, not become a PollTimeoutError.
+    const failing = (async () => {
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    let t = -400;
+    const now = (): number => (t += 400);
+    const client = makeClient(failing, { maxRetries: 0 });
+    try {
+      await client.poll("/v1/reports/r", { until: () => false, timeoutMs: 1000, now, sleepMs: () => 0 });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NetworkError);
+      expect(err).not.toBeInstanceOf(PollTimeoutError);
+      expect((err as NetworkError).message).toContain("ECONNRESET");
+    }
   });
 });
 
