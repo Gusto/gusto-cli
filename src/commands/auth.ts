@@ -10,7 +10,7 @@ import { revokeToken } from "../lib/oauth/revoke.ts";
 import { getValidUserToken } from "../lib/oauth/session.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
 import { hasClientCreds } from "../lib/oauth/types.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface AuthOpts {
   token?: string;
@@ -34,7 +34,7 @@ export function registerAuthCommand(parent: Command): void {
     .description("Show token identity + granted scopes via /v1/token_info")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: AuthOpts) =>
-      runCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
+      runReadCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
     );
 }
 

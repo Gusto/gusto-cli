@@ -1,10 +1,15 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type ValidationResult,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
 type WageType = "Fixed" | "Hourly";
@@ -17,9 +22,7 @@ type ContractorWage = { wage_type: "Fixed" } | { wage_type: "Hourly"; hourly_rat
 /** Onboarding mode. The API requires `email` iff `self_onboarding === true` (that's where the
  * invite is sent); admin-driven contractors may omit it. Model it as a discriminated union — the
  * same way `ContractorWage` ties `hourly_rate` to Hourly — so the compiler keeps the two in step. */
-type ContractorOnboarding =
-  | { self_onboarding: false; email?: string }
-  | { self_onboarding: true; email: string };
+type ContractorOnboarding = { self_onboarding: false; email?: string } | { self_onboarding: true; email: string };
 
 /** Fields the Gusto API requires on every contractor regardless of type. */
 type ContractorCommon = {
@@ -31,9 +34,7 @@ export type ContractorBody =
   | ({ type: "Individual"; first_name: string; last_name: string } & ContractorCommon)
   | ({ type: "Business"; business_name: string } & ContractorCommon);
 
-export type ContractorValidation =
-  | { ok: true; body: ContractorBody }
-  | { ok: false; message: string; blocked: BlockedOn[] };
+export type ContractorValidation = ValidationResult<ContractorBody>;
 
 // Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
 function isValidStartDate(raw: string): boolean {
@@ -224,7 +225,7 @@ export function registerContractorCommand(parent: Command): void {
     .description("Read contractor record")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((contractorUuid: string, opts: ContractorShowOpts) =>
-      runCommand("gusto contractor show", readGlobalFlags(parent.opts()), contractorShowHandler(contractorUuid, opts)),
+      runReadCommand("gusto contractor show", readGlobalFlags(parent.opts()), contractorShowHandler(contractorUuid, opts)),
     );
 
   cmd
@@ -233,7 +234,7 @@ export function registerContractorCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: ContractorListOpts) =>
-      runCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
+      runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );
 }
 
@@ -270,13 +271,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
     }
 
     const validation = validateContractorAdd(opts);
-    if (!validation.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: validation.message, blocked_on: validation.blocked },
-      };
-    }
+    if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "contractors", validation.body, {
       token: opts.token,

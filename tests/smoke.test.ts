@@ -38,7 +38,18 @@ describe("compiled binary", () => {
   test("--help lists all top-level commands and exits 0", async () => {
     const result = await run(["--help"]);
     expect(result.exitCode).toBe(0);
-    for (const cmd of ["company", "employee", "contractor", "pay-schedule", "auth", "skill", "config", "api"]) {
+    for (const cmd of [
+      "company",
+      "employee",
+      "contractor",
+      "pay-schedule",
+      "payroll",
+      "ledger",
+      "auth",
+      "skill",
+      "config",
+      "api",
+    ]) {
       expect(result.stdout).toContain(cmd);
     }
   });
@@ -68,6 +79,48 @@ describe("auth required commands without a token", () => {
     expect(result.exitCode).toBe(3);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("no_access_token");
+  });
+
+  test("payroll list without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["payroll", "list"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("ledger show without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["ledger", "show", "payroll-uuid-123"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("ledger show --no-wait still needs a token (POSTs the report request)", async () => {
+    const result = await run(["ledger", "show", "payroll-uuid-123", "--no-wait"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+});
+
+describe("payroll/ledger validate before auth (exit 7)", () => {
+  test("payroll list with a malformed --start-date blocks on start-date", async () => {
+    const result = await run(["payroll", "list", "--start-date", "01-01-2026"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "start-date" }));
+  });
+
+  test("payroll list with an invalid --sort-order blocks on sort-order", async () => {
+    const result = await run(["payroll", "list", "--sort-order", "sideways"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "sort-order" }));
+  });
+
+  test("ledger show with a non-positive --timeout blocks on timeout", async () => {
+    const result = await run(["ledger", "show", "payroll-uuid-123", "--timeout", "0"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "timeout" }));
   });
 });
 
@@ -182,12 +235,36 @@ describe("validation returns structured blocked_on before auth (exit 7)", () => 
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "type" }));
   });
 
-  test("contractor add --type individual blocks on missing names and email", async () => {
+  test("contractor add --type individual blocks on missing names, wage, and start date", async () => {
     const result = await run(["contractor", "add", "--type", "individual"]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "first-name" }));
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "last-name" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "wage-type" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    // Admin-driven is the default, so email is not required here.
+    expect(envelope.error.blocked_on).not.toContainEqual(expect.objectContaining({ field: "email" }));
+  });
+
+  test("contractor add --self-onboarding blocks on missing email", async () => {
+    const result = await run([
+      "contractor",
+      "add",
+      "--type",
+      "individual",
+      "--first-name",
+      "Jane",
+      "--last-name",
+      "Doe",
+      "--wage-type",
+      "fixed",
+      "--start-date",
+      "2026-01-01",
+      "--self-onboarding",
+    ]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "email" }));
   });
 
@@ -336,6 +413,36 @@ describe("skill commands work without auth", () => {
     } finally {
       rmSync(scratchRaw, { recursive: true, force: true });
     }
+  });
+});
+
+describe("--fields filters success output", () => {
+  test("employee add --example --fields method,path keeps only those keys", async () => {
+    const result = await run(["employee", "add", "--example", "--fields", "method,path"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(Object.keys(envelope.data)).toEqual(["method", "path"]);
+  });
+
+  test("employee add --fields (no value) rejects discovery on a write command, exit 2", async () => {
+    // Bare `--fields` (discovery) is gated to read commands; it must not run a mutating handler
+    // just to introspect output. `--example` doesn't change that — `employee add` is a write
+    // command either way, so discovery is rejected before the handler runs.
+    const result = await run(["employee", "add", "--example", "--fields"]);
+    expect(result.exitCode).toBe(2);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("fields_discovery_unsupported");
+  });
+
+  test("skill list --fields (no value) lists available fields on stderr, exit 1 (read-command discovery)", async () => {
+    // Exercises the runReadCommand discovery path end-to-end through the compiled binary on a
+    // read command that needs no auth or network — bare `--fields` lists fields and exits 1.
+    const result = await run(["skill", "list", "--fields"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.trim()).toBe("");
+    expect(result.stderr).toContain("skills");
   });
 });
 

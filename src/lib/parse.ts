@@ -13,3 +13,22 @@ export function parsePositiveNumber(raw: string): PositiveNumberResult {
   }
   return { ok: true, value: num };
 }
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** True for a real calendar date in `YYYY-MM-DD` form (rejects bad formats and
+ * impossible dates such as `2026-02-30`). */
+export function isValidIsoDate(value: string): boolean {
+  if (!ISO_DATE.test(value)) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.toISOString().slice(0, 10) === value;
+}
+
+/** True for an ISO 8601 date or date-time (e.g. `2026-06-01` or
+ * `2026-06-01T09:00:00Z`). Format-level check; range/semantic validation is the API's job. */
+export function isValidIso8601(value: string): boolean {
+  if (!ISO_8601.test(value)) return false;
+  return !Number.isNaN(new Date(value).getTime());
+}
