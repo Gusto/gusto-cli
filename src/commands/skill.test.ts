@@ -3,13 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ExitCode } from "../lib/exit-codes.ts";
-import type { GlobalFlags } from "../lib/global-flags.ts";
 import type { SkillsDir } from "../lib/skills.ts";
 import { installSkill } from "../lib/skills.ts";
+import { TEST_CONTEXT as ctx } from "../lib/test-support.ts";
 import { skillInstallHandler, skillListHandler } from "./skill.ts";
-
-const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
-const ctx = { command: "gusto skill", globals };
 
 let scratch: string;
 let dir: SkillsDir;

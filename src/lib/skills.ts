@@ -78,9 +78,13 @@ function installedPath(dir: SkillsDir, name: string): string {
 export async function getSkillStatus(name: string, dir: SkillsDir = findSkillsDir()): Promise<SkillStatus> {
   const skill = getSkill(name);
   if (!skill) return "not_installed";
-  const file = installedPath(dir, name);
-  if (!existsSync(file)) return "not_installed";
-  const onDisk = await readFile(file, "utf8");
+  let onDisk: string;
+  try {
+    onDisk = await readFile(installedPath(dir, name), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "not_installed";
+    throw err;
+  }
   return onDisk === expectedContent(skill, dir.kind) ? "installed" : "stale";
 }
 
