@@ -41,7 +41,7 @@ function buildProgram(): Command {
     .addOption(
       new Option(
         "--fields [list]",
-        "Filter successful output to these comma-separated top-level keys; pass with no value to list the available fields",
+        "Filter successful output to these comma-separated top-level keys; pass with no value on a read command to list its available fields",
       ),
     )
     .showHelpAfterError("(run `gusto --help` for usage)")

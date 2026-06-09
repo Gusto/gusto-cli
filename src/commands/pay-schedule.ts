@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { fetchCompanyResource } from "../lib/api-context.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { FREQUENCY_MAP, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface PayScheduleShowOpts {
   companyUuid?: string;
@@ -33,7 +33,7 @@ export function registerPayScheduleCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: PayScheduleShowOpts) =>
-      runCommand("gusto pay-schedule show", readGlobalFlags(parent.opts()), payScheduleShowHandler(opts)),
+      runReadCommand("gusto pay-schedule show", readGlobalFlags(parent.opts()), payScheduleShowHandler(opts)),
     );
 }
 

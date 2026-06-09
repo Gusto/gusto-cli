@@ -3,7 +3,13 @@ import { createCompanyResource, fetchCompanyResource, fetchResource } from "../l
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, type ValidationResult, runCommand, validationFailure } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type ValidationResult,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
 type WageType = "Fixed" | "Hourly";
@@ -219,7 +225,7 @@ export function registerContractorCommand(parent: Command): void {
     .description("Read contractor record")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((contractorUuid: string, opts: ContractorShowOpts) =>
-      runCommand("gusto contractor show", readGlobalFlags(parent.opts()), contractorShowHandler(contractorUuid, opts)),
+      runReadCommand("gusto contractor show", readGlobalFlags(parent.opts()), contractorShowHandler(contractorUuid, opts)),
     );
 
   cmd
@@ -228,7 +234,7 @@ export function registerContractorCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: ContractorListOpts) =>
-      runCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
+      runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );
 }
 

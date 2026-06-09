@@ -1,15 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type CommandHandler, missingArgs, notImplementedHandler, runCommand, validationFailure } from "./runner.ts";
+import {
+  type CommandHandler,
+  missingArgs,
+  notImplementedHandler,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "./runner.ts";
 import { captureSinks } from "./test-support.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
+
+type Runner = typeof runCommand;
 
 async function runWithExitCapture<T>(
   command: string,
   handler: CommandHandler<T>,
   globals: GlobalFlags = flags,
+  runner: Runner = runCommand,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const { sinks, stdout, stderr } = captureSinks();
   const calls: number[] = [];
@@ -18,7 +28,7 @@ async function runWithExitCapture<T>(
     throw new Error(`__exit:${code}`);
   }) as (code: number) => never;
   try {
-    await runCommand(command, globals, handler, { exit, sinks });
+    await runner(command, globals, handler, { exit, sinks });
   } catch (err) {
     if (!(err instanceof Error) || !err.message.startsWith("__exit:")) throw err;
   }
@@ -147,6 +157,7 @@ describe("runCommand", () => {
       "test",
       async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
       { ...flags, fields: { mode: "discover" } },
+      runReadCommand,
     );
     expect(result.exitCode).toBe(ExitCode.General);
     expect(result.stdout).toBe("");
@@ -156,10 +167,12 @@ describe("runCommand", () => {
   });
 
   test("--fields discovery falls back when there are no top-level fields (handler returns no data)", async () => {
-    const result = await runWithExitCapture("test", async () => ({ ok: true }), {
-      ...flags,
-      fields: { mode: "discover" },
-    });
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true }),
+      { ...flags, fields: { mode: "discover" } },
+      runReadCommand,
+    );
     expect(result.exitCode).toBe(ExitCode.General);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("--fields");
@@ -175,9 +188,43 @@ describe("runCommand", () => {
         error: { code: "bad_input", message: "nope" },
       }),
       { ...flags, fields: { mode: "discover" } },
+      runReadCommand,
     );
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
+  });
+
+  test("rejects bare --fields discovery on a mutating command WITHOUT running the handler", async () => {
+    let handlerRan = false;
+    const result = await runWithExitCapture(
+      "gusto employee add",
+      async () => {
+        handlerRan = true;
+        return { ok: true, data: { uuid: "created" } };
+      },
+      { ...flags, fields: { mode: "discover" } },
+      // default runner = runCommand (mutating / non-discoverable)
+    );
+    expect(handlerRan).toBe(false);
+    expect(result.exitCode).not.toBe(ExitCode.Success);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("fields_discovery_unsupported");
+  });
+
+  test("still runs select-mode --fields on a mutating command (only bare discovery is gated)", async () => {
+    let handlerRan = false;
+    const result = await runWithExitCapture(
+      "gusto employee add",
+      async () => {
+        handlerRan = true;
+        return { ok: true, data: { uuid: "u1", email: "a@b.com" } };
+      },
+      { ...flags, fields: { mode: "select", keys: ["uuid"] } },
+    );
+    expect(handlerRan).toBe(true);
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { uuid: "u1" } });
   });
 
   test("passes the command name + globals into the handler context", async () => {

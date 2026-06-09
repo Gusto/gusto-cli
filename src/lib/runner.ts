@@ -31,17 +31,61 @@ const defaultDeps: RunnerDeps = {
   exit: (code) => process.exit(code) as never,
 };
 
-export async function runCommand<T>(
+/** Run a command that may mutate state. A bare `--fields` (discovery) is rejected up front,
+ * before the handler runs, because discovery introspects output shape and must not trigger a
+ * write just to do so — see runReadCommand for the read-only counterpart. */
+export function runCommand<T>(
   command: string,
   globals: GlobalFlags,
   handler: CommandHandler<T>,
   deps: RunnerDeps = defaultDeps,
 ): Promise<never> {
+  return run(command, globals, handler, deps, false);
+}
+
+/** Run a read-only command. Identical to runCommand except a bare `--fields` lists the available
+ * output fields (gh-style discovery) — safe here because the handler has no side effects. */
+export function runReadCommand<T>(
+  command: string,
+  globals: GlobalFlags,
+  handler: CommandHandler<T>,
+  deps: RunnerDeps = defaultDeps,
+): Promise<never> {
+  return run(command, globals, handler, deps, true);
+}
+
+async function run<T>(
+  command: string,
+  globals: GlobalFlags,
+  handler: CommandHandler<T>,
+  deps: RunnerDeps,
+  readOnly: boolean,
+): Promise<never> {
   const output = outputOptionsFrom(globals);
+  const selection = globals.fields;
+
+  // Discovery (bare `--fields`) is a read-only usage helper. On a mutating command it would
+  // otherwise run the handler — performing the write — just to introspect the result's shape,
+  // then exit non-zero, which an agent reads as failure and retries (duplicating the record).
+  // Reject it before the handler executes; `--fields <list>` is unaffected and still runs.
+  if (selection?.mode === "discover" && !readOnly) {
+    emit(
+      output,
+      {
+        ok: false,
+        error: {
+          code: "fields_discovery_unsupported",
+          message: `\`--fields\` with no value lists output fields and is only available on read commands; \`${command}\` is not one. Pass an explicit list, e.g. \`--fields uuid,email\`.`,
+        },
+      },
+      deps.sinks,
+    );
+    return deps.exit(ExitCode.CliUsage);
+  }
+
   let code: ExitCodeValue;
   try {
     const result = await handler({ command, globals });
-    const selection = globals.fields;
     if (!result.ok) {
       emit(output, { ok: false, error: result.error }, deps.sinks);
       code = result.exitCode;
