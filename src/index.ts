@@ -16,7 +16,7 @@ const VERSION = "0.0.1";
 
 const HELP_FOOTER = `
 Documentation:
-  https://cli.gusto.com
+  https://github.com/Gusto/gusto-cli-public
 
 Report issues:
   https://github.com/Gusto/gusto-cli-public/issues
