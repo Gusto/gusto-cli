@@ -9,8 +9,10 @@ Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboar
 ## Install
 
 ```sh
-curl -fsSL https://cli.gusto.com/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh
 ```
+
+> `cli.gusto.com` isn't set up yet, so install pulls the script straight from GitHub for now. While the repo is internal this needs a GitHub login (or wait for the public release); once public, the `curl | sh` above works anonymously.
 
 This detects your OS/arch, downloads the matching binary from the latest GitHub Release, verifies its SHA256, and installs to `~/.gusto/bin/gusto` (no sudo). If that dir isn't on your `PATH`, it adds a line to your shell profile (`.zshrc`/`.bashrc`/`.profile`). Set `GUSTO_CLI_VERSION` to pin a release or `GUSTO_INSTALL_DIR` to install elsewhere.
 

@@ -12,7 +12,7 @@ import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
 import { type OnboardingStatus, extractBlockers } from "../lib/onboarding-map.ts";
-import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
 
 interface CompanyShowOpts {
@@ -44,13 +44,13 @@ export function registerCompanyCommand(parent: Command): void {
       .command("onboarding-status")
       .description("Onboarding state + structured blocked_on list (the agent's navigation hook)"),
   ).action((opts: CompanyShowOpts) =>
-    runCommand("gusto company onboarding-status", readGlobalFlags(parent.opts()), companyOnboardingStatusHandler(opts)),
+    runReadCommand("gusto company onboarding-status", readGlobalFlags(parent.opts()), companyOnboardingStatusHandler(opts)),
   );
 
   withContextOptions(
     cmd.command("show").description("Company overview: record, payment config, and pay schedule"),
   ).action((opts: CompanyShowOpts) =>
-    runCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
+    runReadCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
   );
 
   registerCompanySetup(cmd, parent);

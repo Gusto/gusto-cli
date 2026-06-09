@@ -9,7 +9,7 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 
 ## Preconditions
 
-- Gusto CLI installed (`curl -fsSL https://cli.gusto.com/install.sh | sh`)
+- Gusto CLI installed (`curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh`)
 - User has their first hire's name and email (other PII is collected via self-onboard invite, not in chat)
 - User is willing to verify their identity in a browser tab during the flow
 

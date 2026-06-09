@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 import { findSkillsDir, getSkill, getSkillStatus, installSkill, listSkills, type SkillsDir } from "../lib/skills.ts";
 
 export function registerSkillCommand(parent: Command): void {
@@ -10,7 +10,7 @@ export function registerSkillCommand(parent: Command): void {
   cmd
     .command("list")
     .description("Show bundled skills available to install")
-    .action(() => runCommand("gusto skill list", readGlobalFlags(parent.opts()), skillListHandler()));
+    .action(() => runReadCommand("gusto skill list", readGlobalFlags(parent.opts()), skillListHandler()));
 
   cmd
     .command("install <name>")

@@ -1,10 +1,9 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
 
 interface EmployeeBody {
   first_name: string;
@@ -73,7 +72,7 @@ Required: --first-name, --last-name, --email. Missing args return a structured
     .description("Read employee record")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
-      runCommand("gusto employee show", readGlobalFlags(parent.opts()), employeeShowHandler(employeeUuid, opts)),
+      runReadCommand("gusto employee show", readGlobalFlags(parent.opts()), employeeShowHandler(employeeUuid, opts)),
     );
 
   cmd
@@ -82,7 +81,7 @@ Required: --first-name, --last-name, --email. Missing args return a structured
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((opts: EmployeeListOpts) =>
-      runCommand("gusto employee list", readGlobalFlags(parent.opts()), employeeListHandler(opts)),
+      runReadCommand("gusto employee list", readGlobalFlags(parent.opts()), employeeListHandler(opts)),
     );
 }
 
@@ -124,11 +123,7 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
     }
 
     if (!firstName || !lastName || !email || blocked.length > 0) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: "missing or invalid arguments", blocked_on: blocked },
-      };
+      return validationFailure("missing or invalid arguments", blocked);
     }
 
     const body: EmployeeBody = {

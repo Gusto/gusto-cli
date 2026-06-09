@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parsePositiveNumber } from "./parse.ts";
+import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "./parse.ts";
 
 describe("parsePositiveNumber", () => {
   test("accepts a positive integer", () => {
@@ -31,5 +31,49 @@ describe("parsePositiveNumber", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toContain("1e1000");
+  });
+});
+
+describe("isValidIsoDate", () => {
+  test("accepts a real YYYY-MM-DD date", () => {
+    expect(isValidIsoDate("2026-06-01")).toBe(true);
+  });
+
+  test("rejects a non-ISO format", () => {
+    expect(isValidIsoDate("06/01/2026")).toBe(false);
+  });
+
+  test("rejects an impossible calendar date", () => {
+    expect(isValidIsoDate("2026-02-30")).toBe(false);
+  });
+
+  test("rejects a full timestamp", () => {
+    expect(isValidIsoDate("2026-06-01T09:00:00Z")).toBe(false);
+  });
+
+  test("rejects junk", () => {
+    expect(isValidIsoDate("not-a-date")).toBe(false);
+  });
+});
+
+describe("isValidIso8601", () => {
+  test("accepts a UTC timestamp", () => {
+    expect(isValidIso8601("2026-06-01T09:00:00Z")).toBe(true);
+  });
+
+  test("accepts a timestamp with a UTC offset", () => {
+    expect(isValidIso8601("2026-06-01T09:00:00-07:00")).toBe(true);
+  });
+
+  test("accepts a date-only value", () => {
+    expect(isValidIso8601("2026-06-01")).toBe(true);
+  });
+
+  test("rejects a non-ISO format", () => {
+    expect(isValidIso8601("06/01/2026")).toBe(false);
+  });
+
+  test("rejects junk", () => {
+    expect(isValidIso8601("not-a-date")).toBe(false);
   });
 });

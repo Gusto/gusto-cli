@@ -5,15 +5,18 @@ import { registerCompanyCommand } from "./commands/company.ts";
 import { registerConfigCommand } from "./commands/config.ts";
 import { registerContractorCommand } from "./commands/contractor.ts";
 import { registerEmployeeCommand } from "./commands/employee.ts";
+import { registerLedgerCommand } from "./commands/ledger.ts";
 import { registerPayScheduleCommand } from "./commands/pay-schedule.ts";
+import { registerPayrollCommand } from "./commands/payroll.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
+import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
 
 const VERSION = "0.0.1";
 
 const HELP_FOOTER = `
 Documentation:
-  https://cli.gusto.com
+  https://github.com/Gusto/gusto-cli-public
 
 Report issues:
   https://github.com/Gusto/gusto-cli-public/issues
@@ -35,6 +38,12 @@ function buildProgram(): Command {
         .env("GUSTO_ENVIRONMENT"),
     )
     .addOption(new Option("--verbose", "Print request IDs and intermediate state to stderr"))
+    .addOption(
+      new Option(
+        "--fields [list]",
+        "Filter successful output to these comma-separated top-level keys; pass with no value on a read command to list its available fields",
+      ),
+    )
     .showHelpAfterError("(run `gusto --help` for usage)")
     .addHelpText("after", HELP_FOOTER)
     .exitOverride();
@@ -43,6 +52,9 @@ function buildProgram(): Command {
   registerEmployeeCommand(program);
   registerContractorCommand(program);
   registerPayScheduleCommand(program);
+  registerPayrollCommand(program);
+  registerLedgerCommand(program);
+  registerTimesheetCommand(program);
   registerAuthCommand(program);
   registerSkillCommand(program);
   registerConfigCommand(program);
