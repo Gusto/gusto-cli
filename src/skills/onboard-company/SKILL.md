@@ -13,6 +13,10 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 - User has their first hire's name and email (other PII is collected via self-onboard invite, not in chat)
 - User is willing to verify their identity in a browser tab during the flow
 
+## Discovering commands
+
+The command shapes below are a guide, not a spec. Confirm exact flags with `gusto <command> --help` (e.g. `gusto company setup bank-account --help`) rather than trusting hardcoded examples - `--help` is generated from the CLI and stays accurate as commands evolve.
+
 ## Steps
 
 1. **Provision the company.** Run `gusto company provision`. The CLI will print a claim URL, open it in the user's browser, and wait. The user verifies identity (Google SSO is the magical path; email magic-link works too). When they return, the CLI mints an OAuth token and persists it.
