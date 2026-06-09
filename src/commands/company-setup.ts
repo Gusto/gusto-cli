@@ -227,9 +227,15 @@ export function bankAccountBlockers(opts: BankAccountOpts): BlockedOn[] {
   return blocked;
 }
 
+interface BankAccountFields {
+  routing: string;
+  accountNumber: string;
+  accountType: string;
+}
+
 /** The bank_accounts create body. Built once so dry-run and the real POST can't drift. */
-function bankAccountBody(opts: BankAccountOpts): Record<string, unknown> {
-  return { routing_number: opts.routing, account_number: opts.accountNumber, account_type: opts.accountType };
+function bankAccountBody(fields: BankAccountFields): Record<string, unknown> {
+  return { routing_number: fields.routing, account_number: fields.accountNumber, account_type: fields.accountType };
 }
 
 export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
@@ -248,6 +254,10 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
 
     const blocked = bankAccountBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
+    const { routing, accountNumber, accountType } = opts;
+    // blockers guarantee these; re-check narrows the types without assertions.
+    if (!routing || !accountNumber || !accountType) return missingArgs(blocked);
+    const fields: BankAccountFields = { routing, accountNumber, accountType };
 
     if (opts.dryRun) {
       return {
@@ -255,7 +265,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
         data: {
           method: "POST",
           path: "/v1/companies/{company_uuid}/bank_accounts",
-          body: bankAccountBody(opts),
+          body: bankAccountBody(fields),
           note: "dry-run: send_test_deposits + verify follow on send",
         },
       };
@@ -263,7 +273,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
 
     return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}/bank_accounts`;
-      const bank = (await ctx.client.post<{ uuid?: string }>(base, bankAccountBody(opts))).body;
+      const bank = (await ctx.client.post<{ uuid?: string }>(base, bankAccountBody(fields))).body;
       if (!bank.uuid) {
         return {
           ok: false,
@@ -620,6 +630,9 @@ async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandR
   if (!opts.signatureText) {
     return missingArgs([{ field: "signature-text", reason: "required for --demo-sign (full legal name)" }]);
   }
+  // Capture after the guard so the async closure sees the narrowed `string`, not
+  // `string | undefined` (the parameter narrowing is widened back inside the closure).
+  const signatureText = opts.signatureText;
   // Always sign from localhost - a demo escape hatch has no business accepting a
   // caller-supplied IP, which would let the signer's location be spoofed in the
   // audit trail.
@@ -635,7 +648,7 @@ async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandR
       unsigned.map(async (f) => {
         try {
           await ctx.client.put(`/v1/forms/${f.uuid}/sign`, {
-            signature_text: opts.signatureText,
+            signature_text: signatureText,
             agree: true,
             signed_by_ip_address: ip,
           });

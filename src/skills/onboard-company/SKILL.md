@@ -29,7 +29,7 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 
 5. **Sign forms.** Run `gusto company forms`. This opens the hosted gws-flows signing URL (8655 + state agreements) for the signatory to click. Surface the URL to the user; don't sign on their behalf.
 
-6. **Re-check.** Run `gusto company onboarding-status` again - when `blocked_on` is empty, `stage` is `ready_to_finish`.
+6. **Re-check.** Run `gusto company onboarding-status` again - when `blocked_on` is empty, `stage` is `ready_to_finish`. There's no separate finish command in V1: at `ready_to_finish` every required step is done and the company is set up. Gusto marks `onboarding_completed` on its side once it processes the final steps (re-run onboarding-status to see `stage: done`). Running actual payroll is out of V1 scope.
 
 ## Pause points (user input required)
 
