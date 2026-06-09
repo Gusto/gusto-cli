@@ -182,12 +182,36 @@ describe("validation returns structured blocked_on before auth (exit 7)", () => 
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "type" }));
   });
 
-  test("contractor add --type individual blocks on missing names and email", async () => {
+  test("contractor add --type individual blocks on missing names, wage, and start date", async () => {
     const result = await run(["contractor", "add", "--type", "individual"]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "first-name" }));
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "last-name" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "wage-type" }));
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    // Admin-driven is the default, so email is not required here.
+    expect(envelope.error.blocked_on).not.toContainEqual(expect.objectContaining({ field: "email" }));
+  });
+
+  test("contractor add --self-onboarding blocks on missing email", async () => {
+    const result = await run([
+      "contractor",
+      "add",
+      "--type",
+      "individual",
+      "--first-name",
+      "Jane",
+      "--last-name",
+      "Doe",
+      "--wage-type",
+      "fixed",
+      "--start-date",
+      "2026-01-01",
+      "--self-onboarding",
+    ]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "email" }));
   });
 
