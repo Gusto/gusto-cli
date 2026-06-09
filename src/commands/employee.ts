@@ -1,10 +1,9 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, validationFailure } from "../lib/runner.ts";
 
 interface EmployeeBody {
   first_name: string;
@@ -124,11 +123,7 @@ function employeeAddHandler(opts: EmployeeAddOpts): CommandHandler {
     }
 
     if (!firstName || !lastName || !email || blocked.length > 0) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: "missing or invalid arguments", blocked_on: blocked },
-      };
+      return validationFailure("missing or invalid arguments", blocked);
     }
 
     const body: EmployeeBody = {

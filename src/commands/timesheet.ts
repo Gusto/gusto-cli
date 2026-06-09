@@ -1,17 +1,20 @@
 import type { Command } from "commander";
 import { createCompanyResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, validationFailure } from "../lib/runner.ts";
 
 type EntityType = "Employee" | "Contractor";
 type PayClassification = "Regular" | "Overtime" | "Double overtime";
 
 // Maps each granular hour flag to the exact pay_classification enum string the
 // Time Tracking API expects (see TimeTracking::TimeEntry#pay_classification).
-const HOUR_FLAGS: { opt: "regular" | "overtime" | "doubleOvertime"; field: string; classification: PayClassification }[] = [
+const HOUR_FLAGS: {
+  opt: "regular" | "overtime" | "doubleOvertime";
+  field: string;
+  classification: PayClassification;
+}[] = [
   { opt: "regular", field: "regular", classification: "Regular" },
   { opt: "overtime", field: "overtime", classification: "Overtime" },
   { opt: "doubleOvertime", field: "double-overtime", classification: "Double overtime" },
@@ -121,7 +124,9 @@ function hasAnyHourFlag(opts: TimesheetCreateInput): boolean {
 }
 
 export interface TimesheetSyncBody {
-  kind: string;
+  // Only regular payroll exports are supported today (TimeTracking::ValueObjects::PayrollExport::Kind),
+  // so this is a constant rather than `string`.
+  kind: "regular";
   pay_schedule_uuid: string;
   pay_period_start_date: string;
   pay_period_end_date: string;
@@ -224,16 +229,7 @@ export function registerTimesheetCommand(parent: Command): void {
     );
 }
 
-/** Map a failed validation into the standard validation `CommandResult` envelope (exit 7). */
-function validationFailure(v: { message: string; blocked: BlockedOn[] }): CommandResult {
-  return {
-    ok: false,
-    exitCode: ExitCode.Validation,
-    error: { code: "validation", message: v.message, blocked_on: v.blocked },
-  };
-}
-
-function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
+export function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
       return {
@@ -259,7 +255,7 @@ function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
     }
 
     const validation = validateTimesheetCreate(opts);
-    if (!validation.ok) return validationFailure(validation);
+    if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "time_tracking/time_sheets", validation.body, {
       token: opts.token,
@@ -269,7 +265,7 @@ function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandler {
   };
 }
 
-function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
+export function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
       return {
@@ -289,7 +285,7 @@ function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
     }
 
     const validation = validateTimesheetSync(opts);
-    if (!validation.ok) return validationFailure(validation);
+    if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "time_tracking/payroll_syncs", validation.body, {
       token: opts.token,

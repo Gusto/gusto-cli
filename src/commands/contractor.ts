@@ -1,10 +1,9 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, runCommand, validationFailure } from "../lib/runner.ts";
 
 type ContractorType = "individual" | "business";
 type WageType = "Fixed" | "Hourly";
@@ -17,9 +16,7 @@ type ContractorWage = { wage_type: "Fixed" } | { wage_type: "Hourly"; hourly_rat
 /** Onboarding mode. The API requires `email` iff `self_onboarding === true` (that's where the
  * invite is sent); admin-driven contractors may omit it. Model it as a discriminated union — the
  * same way `ContractorWage` ties `hourly_rate` to Hourly — so the compiler keeps the two in step. */
-type ContractorOnboarding =
-  | { self_onboarding: false; email?: string }
-  | { self_onboarding: true; email: string };
+type ContractorOnboarding = { self_onboarding: false; email?: string } | { self_onboarding: true; email: string };
 
 /** Fields the Gusto API requires on every contractor regardless of type. */
 type ContractorCommon = {
@@ -270,13 +267,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
     }
 
     const validation = validateContractorAdd(opts);
-    if (!validation.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: validation.message, blocked_on: validation.blocked },
-      };
-    }
+    if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "contractors", validation.body, {
       token: opts.token,

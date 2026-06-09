@@ -58,13 +58,18 @@ export async function runCommand<T>(
   return deps.exit(code);
 }
 
-/** Standard "missing required arguments" validation failure with a blocked_on list. */
-export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
+/** A validation failure (exit 7) carrying a caller-supplied message and blocked_on list. */
+export function validationFailure(message: string, blocked: BlockedOn[]): CommandResult<never> {
   return {
     ok: false,
     exitCode: ExitCode.Validation,
-    error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
+    error: { code: "validation", message, blocked_on: blocked },
   };
+}
+
+/** Standard "missing required arguments" validation failure with a blocked_on list. */
+export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
+  return validationFailure("missing required arguments", blocked);
 }
 
 export function notImplementedHandler(commandPath: string): CommandHandler {

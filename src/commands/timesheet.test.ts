@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { validateTimesheetCreate, validateTimesheetSync } from "./timesheet.ts";
+import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData } from "../lib/test-support.ts";
+import {
+  timesheetCreateHandler,
+  timesheetSyncHandler,
+  validateTimesheetCreate,
+  validateTimesheetSync,
+} from "./timesheet.ts";
 
 describe("validateTimesheetCreate", () => {
   const base = {
@@ -87,9 +93,7 @@ describe("validateTimesheetCreate", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "employee-uuid" }),
-    );
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee-uuid" }));
   });
 
   test("passing both employee and contractor uuid is rejected as ambiguous", () => {
@@ -102,9 +106,7 @@ describe("validateTimesheetCreate", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "employee-uuid" }),
-    );
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee-uuid" }));
   });
 
   test("missing --time-zone blocks on time-zone", () => {
@@ -115,9 +117,7 @@ describe("validateTimesheetCreate", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "time-zone" }),
-    );
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "time-zone" }));
   });
 
   test("missing --start blocks on start", () => {
@@ -200,21 +200,15 @@ describe("validateTimesheetSync", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "pay-schedule-uuid" }),
-    );
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-schedule-uuid" }));
   });
 
   test("missing period dates block on both", () => {
     const result = validateTimesheetSync({ payScheduleUuid: "ps-1" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "pay-period-start" }),
-    );
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "pay-period-end" }),
-    );
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
   });
 
   test("a malformed --pay-period-start date is blocked", () => {
@@ -229,5 +223,70 @@ describe("validateTimesheetSync", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
+  });
+});
+
+describe("timesheetCreateHandler", () => {
+  test("--example returns the canonical request shape without auth", async () => {
+    const data = okData(await timesheetCreateHandler({ example: true })(ctx));
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/companies/{company_uuid}/time_tracking/time_sheets");
+    expect(data.body).toMatchObject({ entity_type: "Employee", job_uuid: expect.any(String) });
+  });
+
+  test("--dry-run builds the POST body from the flags", async () => {
+    const data = okData(
+      await timesheetCreateHandler({
+        ...auth,
+        employeeUuid: "emp-1",
+        jobUuid: "job-1",
+        start: "2026-06-01T09:00:00Z",
+        timeZone: "America/New_York",
+        regular: "8",
+        dryRun: true,
+      })(ctx),
+    );
+    expect(data.method).toBe("POST");
+    expect(data.body).toMatchObject({
+      entity_uuid: "emp-1",
+      entity_type: "Employee",
+      job_uuid: "job-1",
+      entries: [{ hours_worked: 8, pay_classification: "Regular" }],
+    });
+  });
+
+  test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
+    const result = await timesheetCreateHandler({})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("validation");
+  });
+});
+
+describe("timesheetSyncHandler", () => {
+  test("--example returns the canonical payroll-sync shape", async () => {
+    const data = okData(await timesheetSyncHandler({ example: true })(ctx));
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/companies/{company_uuid}/time_tracking/payroll_syncs");
+    expect(data.body).toMatchObject({ kind: "regular" });
+  });
+
+  test("--dry-run builds the POST body from the flags", async () => {
+    const data = okData(
+      await timesheetSyncHandler({
+        ...auth,
+        payScheduleUuid: "ps-1",
+        payPeriodStart: "2026-06-01",
+        payPeriodEnd: "2026-06-15",
+        dryRun: true,
+      })(ctx),
+    );
+    expect(data.method).toBe("POST");
+    expect(data.body).toMatchObject({
+      kind: "regular",
+      pay_schedule_uuid: "ps-1",
+      pay_period_start_date: "2026-06-01",
+      pay_period_end_date: "2026-06-15",
+    });
   });
 });
