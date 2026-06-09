@@ -416,6 +416,36 @@ describe("skill commands work without auth", () => {
   });
 });
 
+describe("--fields filters success output", () => {
+  test("employee add --example --fields method,path keeps only those keys", async () => {
+    const result = await run(["employee", "add", "--example", "--fields", "method,path"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(Object.keys(envelope.data)).toEqual(["method", "path"]);
+  });
+
+  test("employee add --fields (no value) rejects discovery on a write command, exit 2", async () => {
+    // Bare `--fields` (discovery) is gated to read commands; it must not run a mutating handler
+    // just to introspect output. `--example` doesn't change that — `employee add` is a write
+    // command either way, so discovery is rejected before the handler runs.
+    const result = await run(["employee", "add", "--example", "--fields"]);
+    expect(result.exitCode).toBe(2);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("fields_discovery_unsupported");
+  });
+
+  test("skill list --fields (no value) lists available fields on stderr, exit 1 (read-command discovery)", async () => {
+    // Exercises the runReadCommand discovery path end-to-end through the compiled binary on a
+    // read command that needs no auth or network — bare `--fields` lists fields and exits 1.
+    const result = await run(["skill", "list", "--fields"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.trim()).toBe("");
+    expect(result.stderr).toContain("skills");
+  });
+});
+
 describe("api request", () => {
   test("--dry-run prints the would-be request without needing a token", async () => {
     const result = await run(["api", "request", "POST", "/v1/things", "--data", '{"name":"thing"}', "--dry-run"]);

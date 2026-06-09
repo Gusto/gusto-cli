@@ -12,7 +12,7 @@ import {
 } from "../lib/config.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, runCommand, runReadCommand } from "../lib/runner.ts";
 
 function requireValidKey(key: string): { ok: true; key: ConfigKey } | { ok: false; result: CommandResult } {
   const validKey = validateKey(key);
@@ -33,7 +33,7 @@ export function registerConfigCommand(parent: Command): void {
   cmd
     .command("get <key>")
     .description(`Read a single config key (one of: ${CONFIG_KEYS.join(", ")})`)
-    .action((key: string) => runCommand("gusto config get", readGlobalFlags(parent.opts()), configGetHandler(key)));
+    .action((key: string) => runReadCommand("gusto config get", readGlobalFlags(parent.opts()), configGetHandler(key)));
 
   cmd
     .command("set <key> <value>")
@@ -53,7 +53,7 @@ Examples:
   cmd
     .command("list")
     .description("Show all user-settable config values")
-    .action(() => runCommand("gusto config list", readGlobalFlags(parent.opts()), configListHandler()));
+    .action(() => runReadCommand("gusto config list", readGlobalFlags(parent.opts()), configListHandler()));
 
   cmd
     .command("reset")

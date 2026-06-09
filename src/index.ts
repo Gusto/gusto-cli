@@ -38,6 +38,12 @@ function buildProgram(): Command {
         .env("GUSTO_ENVIRONMENT"),
     )
     .addOption(new Option("--verbose", "Print request IDs and intermediate state to stderr"))
+    .addOption(
+      new Option(
+        "--fields [list]",
+        "Filter successful output to these comma-separated top-level keys; pass with no value on a read command to list its available fields",
+      ),
+    )
     .showHelpAfterError("(run `gusto --help` for usage)")
     .addHelpText("after", HELP_FOOTER)
     .exitOverride();

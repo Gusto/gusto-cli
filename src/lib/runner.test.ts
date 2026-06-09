@@ -1,15 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type CommandHandler, missingArgs, notImplementedHandler, runCommand, validationFailure } from "./runner.ts";
+import {
+  type CommandHandler,
+  missingArgs,
+  notImplementedHandler,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "./runner.ts";
 import { captureSinks } from "./test-support.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
+
+type Runner = typeof runCommand;
 
 async function runWithExitCapture<T>(
   command: string,
   handler: CommandHandler<T>,
   globals: GlobalFlags = flags,
+  runner: Runner = runCommand,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const { sinks, stdout, stderr } = captureSinks();
   const calls: number[] = [];
@@ -18,7 +28,7 @@ async function runWithExitCapture<T>(
     throw new Error(`__exit:${code}`);
   }) as (code: number) => never;
   try {
-    await runCommand(command, globals, handler, { exit, sinks });
+    await runner(command, globals, handler, { exit, sinks });
   } catch (err) {
     if (!(err instanceof Error) || !err.message.startsWith("__exit:")) throw err;
   }
@@ -62,6 +72,170 @@ describe("runCommand", () => {
     expect(result.exitCode).toBe(ExitCode.General);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.message).toBe("literal string");
+  });
+
+  test("filters success data down to the requested --fields", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com", extra: "drop me" } }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { uuid: "u1", email: "a@b.com" } });
+  });
+
+  test("filters each row when success data is an array (the `employee list` shape)", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: true,
+        data: [
+          { uuid: "u1", email: "a@b.com", name: "Jane" },
+          { uuid: "u2", email: "c@d.com", name: "John" },
+        ],
+      }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      ok: true,
+      data: [
+        { uuid: "u1", email: "a@b.com" },
+        { uuid: "u2", email: "c@d.com" },
+      ],
+    });
+  });
+
+  test("emits a structured unknown_fields envelope when a --fields key matches nothing (typo)", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "scpoe"] } },
+    );
+    expect(result.exitCode).not.toBe(ExitCode.Success);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("unknown_fields");
+    expect(envelope.error.details.unknown).toEqual(["scpoe"]);
+    expect(envelope.error.details.available).toEqual(["uuid", "email"]);
+  });
+
+  test("filters an empty-array result to [] instead of flagging the fields as unknown", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: [] }),
+      { ...flags, fields: { mode: "select", keys: ["uuid"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: [] });
+  });
+
+  test("does not error when a requested field is present in only some array rows", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: true,
+        data: [
+          { uuid: "u1", email: "a@b.com" },
+          { uuid: "u2" },
+        ],
+      }),
+      { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      ok: true,
+      data: [{ uuid: "u1", email: "a@b.com" }, { uuid: "u2" }],
+    });
+  });
+
+  test("never filters error envelopes even when --fields is set", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "bad_input", message: "nope" },
+      }),
+      { ...flags, fields: { mode: "select", keys: ["code"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
+  });
+
+  test("--fields with no value lists available fields on stderr and exits non-zero (gh convention)", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } }),
+      { ...flags, fields: { mode: "discover" } },
+      runReadCommand,
+    );
+    expect(result.exitCode).toBe(ExitCode.General);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("--fields");
+    expect(result.stderr).toContain("uuid");
+    expect(result.stderr).toContain("email");
+  });
+
+  test("--fields discovery falls back when there are no top-level fields (handler returns no data)", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true }),
+      { ...flags, fields: { mode: "discover" } },
+      runReadCommand,
+    );
+    expect(result.exitCode).toBe(ExitCode.General);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("--fields");
+    expect(result.stderr).toContain("(no top-level fields available)");
+  });
+
+  test("discovery does not run on error envelopes", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "bad_input", message: "nope" },
+      }),
+      { ...flags, fields: { mode: "discover" } },
+      runReadCommand,
+    );
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: false, error: { code: "bad_input", message: "nope" } });
+  });
+
+  test("rejects bare --fields discovery on a mutating command WITHOUT running the handler", async () => {
+    let handlerRan = false;
+    const result = await runWithExitCapture(
+      "gusto employee add",
+      async () => {
+        handlerRan = true;
+        return { ok: true, data: { uuid: "created" } };
+      },
+      { ...flags, fields: { mode: "discover" } },
+      // default runner = runCommand (mutating / non-discoverable)
+    );
+    expect(handlerRan).toBe(false);
+    expect(result.exitCode).not.toBe(ExitCode.Success);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("fields_discovery_unsupported");
+  });
+
+  test("still runs select-mode --fields on a mutating command (only bare discovery is gated)", async () => {
+    let handlerRan = false;
+    const result = await runWithExitCapture(
+      "gusto employee add",
+      async () => {
+        handlerRan = true;
+        return { ok: true, data: { uuid: "u1", email: "a@b.com" } };
+      },
+      { ...flags, fields: { mode: "select", keys: ["uuid"] } },
+    );
+    expect(handlerRan).toBe(true);
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { uuid: "u1" } });
   });
 
   test("passes the command name + globals into the handler context", async () => {
