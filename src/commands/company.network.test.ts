@@ -70,6 +70,23 @@ describe("companyShowHandler", () => {
     expect(d.payment_config).toBeNull();
   });
 
+  test("non-404 payment_config failure still surfaces on a non-partner-managed company", async () => {
+    // Suppression must be narrow: only the expected 404. A 401/422/etc on the same endpoint
+    // is a real failure the user should still see.
+    routeFetch([
+      { match: "/payment_configs", status: 422, body: { errors: [{ category: "invalid_request" }] } },
+      { match: "/pay_schedules", status: 200, body: [] },
+      {
+        match: "/companies/co-1",
+        status: 200,
+        body: { name: "Acme", company_status: "Approved", is_partner_managed: false },
+      },
+    ]);
+    const d = data(await companyShowHandler(auth)(ctx));
+    expect(d.success).toBe(false);
+    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toContain("payment_config");
+  });
+
   test("payment_config 404 still surfaces when the company IS partner-managed (real bug)", async () => {
     routeFetch([
       { match: "/payment_configs", status: 404, body: { errors: [{ category: "not_found" }] } },
