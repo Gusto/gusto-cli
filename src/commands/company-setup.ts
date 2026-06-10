@@ -12,6 +12,7 @@ import {
   buildTaxRequirementSets,
 } from "../lib/state-tax.ts";
 import { type BlockedOn } from "../lib/output.ts";
+import { companyHasSignatory } from "../lib/signatory.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand } from "../lib/runner.ts";
 import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 
@@ -589,6 +590,95 @@ function reasonFor(status: Exclude<StateTaxBuildStatus, "submitted">, state: str
 // Delegates to the existing pay-schedule create handler so setup is the unified
 // surface without duplicating frequency/date-math logic.
 
+// ───────────────────────────── setup signatory ─────────────────────────────
+// Assigns the company signatory as a discrete step, before form signing. Uses the
+// invite flow (name + email; the signatory completes their own PII) so it's
+// non-interactive and agent-drivable — mirroring the employee-add invite default.
+
+interface SignatoryOpts extends ContextOpts {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  title?: string;
+  dryRun?: boolean;
+  example?: boolean;
+}
+
+export function signatoryBlockers(opts: SignatoryOpts): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  if (!opts.firstName) blocked.push({ field: "first-name", reason: "required" });
+  if (!opts.lastName) blocked.push({ field: "last-name", reason: "required" });
+  if (!opts.email) blocked.push({ field: "email", reason: "required (the invite is sent here)" });
+  return blocked;
+}
+
+interface SignatoryFields {
+  firstName: string;
+  lastName: string;
+  email: string;
+  title?: string;
+}
+
+/** The signatories/invite request body. Built once so dry-run and the real POST can't drift. */
+function signatoryBody(fields: SignatoryFields): Record<string, unknown> {
+  return {
+    first_name: fields.firstName,
+    last_name: fields.lastName,
+    email: fields.email,
+    ...(fields.title ? { title: fields.title } : {}),
+  };
+}
+
+export function signatoryHandler(opts: SignatoryOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/companies/{company_uuid}/signatories/invite",
+          body: { first_name: "Ada", last_name: "Lovelace", email: "ada@example.com", title: "CEO" },
+          note: "example: invites the signatory; they complete their own PII before signing forms",
+        },
+      };
+    }
+
+    const blocked = signatoryBlockers(opts);
+    if (blocked.length > 0) return missingArgs(blocked);
+    const { firstName, lastName, email } = opts;
+    // blockers guarantee these; re-check narrows the types without assertions.
+    if (!firstName || !lastName || !email) return missingArgs(blocked);
+    const fields: SignatoryFields = { firstName, lastName, email, ...(opts.title ? { title: opts.title } : {}) };
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/companies/{company_uuid}/signatories/invite",
+          body: signatoryBody(fields),
+        },
+      };
+    }
+
+    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+      const signatory = (
+        await ctx.client.post<{ uuid?: string }>(
+          `/v1/companies/${ctx.companyUuid}/signatories/invite`,
+          signatoryBody(fields),
+        )
+      ).body;
+      return {
+        ok: true,
+        data: {
+          signatory,
+          message: `Invited ${firstName} ${lastName} as the company signatory.`,
+        },
+      };
+    });
+  };
+}
+
 // ───────────────────────────── company forms ─────────────────────────────
 
 interface FormsOpts extends ContextOpts {
@@ -622,6 +712,22 @@ async function hostedSigningFlow(
   openBrowser: (url: string) => Promise<void>,
 ): Promise<CommandResult> {
   return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    // Signatory must exist before signing: the hosted flow signs on behalf of the
+    // signatory, and without one the flow folds signatory setup into what should be
+    // a pure signing experience. Refuse early with an actionable next step so the
+    // agent assigns the signatory first (AINT-618) rather than landing in the
+    // bundled flow.
+    if (!(await companyHasSignatory(ctx.client, ctx.companyUuid))) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Blocked,
+        error: {
+          code: "signatory_required",
+          message:
+            "No signatory assigned. Run `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` before signing forms — the hosted flow signs on behalf of the signatory.",
+        },
+      };
+    }
     const body = {
       flow_type: "sign_all_forms",
       ...(opts.note ? { options: { note: opts.note } } : {}),
@@ -794,6 +900,21 @@ export function registerCompanySetup(company: Command, parent: Command): void {
     .option(...EXAMPLE_OPT)
     .action((opts: PayScheduleCreateOpts) =>
       runCommand("gusto company setup pay-schedule", readGlobalFlags(parent.opts()), payScheduleCreateHandler(opts)),
+    );
+
+  withContextOptions(
+    setup
+      .command("signatory")
+      .description("Assign the company signatory (invite) before signing forms")
+      .option("--first-name <name>", "Signatory's first name")
+      .option("--last-name <name>", "Signatory's last name")
+      .option("--email <email>", "Email the signatory invite is sent to")
+      .option("--title <title>", "Signatory's title, e.g. CEO, Owner"),
+  )
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .action((opts: SignatoryOpts) =>
+      runCommand("gusto company setup signatory", readGlobalFlags(parent.opts()), signatoryHandler(opts)),
     );
 }
 

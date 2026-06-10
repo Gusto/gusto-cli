@@ -12,7 +12,8 @@ import { companyUuidFromTokenInfo } from "../lib/oauth/login.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
-import { type OnboardingStatus, extractBlockers } from "../lib/onboarding-map.ts";
+import { type OnboardingStatus, extractBlockers, withSignatoryBlocker } from "../lib/onboarding-map.ts";
+import { companyHasSignatory } from "../lib/signatory.ts";
 import { type CommandHandler, type CommandResult, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
 
@@ -162,7 +163,25 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       const status = (
         await ctx.client.get<OnboardingStatus | null>(`/v1/companies/${ctx.companyUuid}/onboarding_status`)
       ).body;
-      const blockedOn = extractBlockers(status);
+      const apiBlockers = extractBlockers(status);
+
+      // The API's onboarding_status never lists a signatory step, yet form signing
+      // needs a signatory to exist first. When sign_all_forms is still pending,
+      // check for a signatory and inject a synthetic blocker ahead of it so the
+      // agent assigns one before being sent into the signing flow. A failed check
+      // is recorded as a partial error rather than fabricating a (possibly false)
+      // blocker that could wedge the loop forever.
+      let blockedOn = apiBlockers;
+      let signatoryError: string | undefined;
+      if (apiBlockers.some((b) => b.id === "sign_all_forms")) {
+        try {
+          const hasSignatory = await companyHasSignatory(ctx.client, ctx.companyUuid);
+          blockedOn = withSignatoryBlocker(apiBlockers, hasSignatory);
+        } catch (err) {
+          signatoryError = errMsg(err);
+        }
+      }
+
       const isComplete = status?.onboarding_completed === true;
       // A malformed-but-200 response (no onboarding_steps) must not read as
       // "no blockers" -> ready_to_finish; treat a missing step list as unknown.
@@ -182,6 +201,7 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
           suggested_action: suggested,
           next_command: suggested?.command ?? null,
           onboarding_status: status,
+          ...(signatoryError ? { partial_errors: [{ label: "signatories", error: signatoryError }] } : {}),
         },
       };
     });
