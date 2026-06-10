@@ -121,11 +121,10 @@ describe("runCommand", () => {
   });
 
   test("filters an empty-array result to [] instead of flagging the fields as unknown", async () => {
-    const result = await runWithExitCapture(
-      "test",
-      async () => ({ ok: true, data: [] }),
-      { ...flags, fields: { mode: "select", keys: ["uuid"] } },
-    );
+    const result = await runWithExitCapture("test", async () => ({ ok: true, data: [] }), {
+      ...flags,
+      fields: { mode: "select", keys: ["uuid"] },
+    });
     expect(result.exitCode).toBe(ExitCode.Success);
     expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: [] });
   });
@@ -135,10 +134,7 @@ describe("runCommand", () => {
       "test",
       async () => ({
         ok: true,
-        data: [
-          { uuid: "u1", email: "a@b.com" },
-          { uuid: "u2" },
-        ],
+        data: [{ uuid: "u1", email: "a@b.com" }, { uuid: "u2" }],
       }),
       { ...flags, fields: { mode: "select", keys: ["uuid", "email"] } },
     );
