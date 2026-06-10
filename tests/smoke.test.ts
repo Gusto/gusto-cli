@@ -164,11 +164,13 @@ describe("dry-run works without auth", () => {
   });
 
   test("pay-schedule create maps every frequency alias to its canonical Gusto value", async () => {
-    // V1 ships weekly + biweekly only (AINT-605); monthly/semi-monthly tracked in AINT-606.
     const cases: [string, string][] = [
       ["weekly", "Every week"],
       ["biweekly", "Every other week"],
       ["bi-weekly", "Every other week"],
+      ["semi-monthly", "Twice per month"],
+      ["semimonthly", "Twice per month"],
+      ["monthly", "Monthly"],
     ];
     for (const [alias, canonical] of cases) {
       const result = await run([
@@ -178,9 +180,13 @@ describe("dry-run works without auth", () => {
         alias,
         "--first-payday",
         "2026-07-03",
-        // Week-based frequencies require it; harmless for the month-based ones.
         "--anchor-end-of-pay-period",
         "2026-06-26",
+        // Required by month-based frequencies; ignored by the week-based ones.
+        "--day-1",
+        "15",
+        "--day-2",
+        "30",
         "--dry-run",
       ]);
       expect(result.exitCode).toBe(0);

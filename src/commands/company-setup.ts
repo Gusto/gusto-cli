@@ -13,7 +13,7 @@ import {
 } from "../lib/state-tax.ts";
 import { type BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand } from "../lib/runner.ts";
-import { type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
+import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 
 interface ContextOpts {
   companyUuid?: string;
@@ -786,13 +786,9 @@ export function registerCompanySetup(company: Command, parent: Command): void {
     );
 
   withContextOptions(
-    setup
-      .command("pay-schedule")
-      .description("Create the company pay schedule (frequency + anchor dates)")
-      .option("--frequency <freq>", "Pay frequency: weekly, biweekly (V1; monthly + semi-monthly tracked in AINT-606)")
-      .option("--first-payday <date>", "First payday (YYYY-MM-DD); the API names this anchor_pay_date")
-      .option("--anchor-pay-date <date>", "Alias for --first-payday")
-      .option("--anchor-end-of-pay-period <date>", "Anchor end-of-period (YYYY-MM-DD)"),
+    addPayScheduleOptions(
+      setup.command("pay-schedule").description("Create the company pay schedule (frequency + anchor dates)"),
+    ),
   )
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
