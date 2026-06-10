@@ -86,7 +86,8 @@ describe("toResult 403 scope handling", () => {
           {
             error_key: "request",
             category: "missing_oauth_scopes",
-            message: "You do not have the necessary OAuth scopes for this request. Please reach out to developer@gusto.com for assistance.",
+            message:
+              "You do not have the necessary OAuth scopes for this request. Please reach out to developer@gusto.com for assistance.",
           },
         ],
       },
