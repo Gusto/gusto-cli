@@ -53,7 +53,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, macos-13]
+        # macos-14 = Apple Silicon (arm64); macos-15-intel = x86_64 darwin coverage.
+        # (macos-13 hosted runners were retired by GitHub, so those jobs queued forever.)
+        os: [ubuntu-latest, macos-14, macos-15-intel]
     steps:
       # No `actions/checkout` here: these runners aren't on the org IP allowlist,
       # so cloning github.com 403s. Source arrives via the artifact from `check`.
