@@ -1,6 +1,5 @@
 import type { Command } from "commander";
 import { fetchResource } from "../lib/api-context.ts";
-import { getAccessToken } from "../lib/env.ts";
 import { type Environment, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
@@ -8,13 +7,12 @@ import type { OAuthHttpOptions } from "../lib/oauth/endpoints.ts";
 import { type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
 import { revokeToken } from "../lib/oauth/revoke.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
-import { getValidUserToken } from "../lib/oauth/session.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
 import { hasClientCreds } from "../lib/oauth/types.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface AuthOpts {
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 // commander negatable flag: `--no-browser` sets `browser: false` (default true).
@@ -48,7 +46,7 @@ export function registerAuthCommand(parent: Command): void {
   cmd
     .command("whoami")
     .description("Show token identity + granted scopes via /v1/token_info")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
     .action((opts: AuthOpts) =>
       runReadCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
     );
@@ -84,17 +82,6 @@ export async function performLogout(
   return { revoked };
 }
 
-/** An explicit override (--token / GUSTO_ACCESS_TOKEN) wins; otherwise the stored user token. */
-export function resolveWhoamiToken(
-  http: OAuthHttpOptions,
-  store: TokenStore,
-  env: Environment,
-  override: string | null,
-): Promise<string | null> {
-  if (override) return Promise.resolve(override);
-  return getValidUserToken(store, env, http);
-}
-
 function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
   return async ({ globals }) => {
     try {
@@ -122,20 +109,9 @@ function authLogoutHandler(): CommandHandler {
 }
 
 export function authWhoamiHandler(opts: AuthOpts): CommandHandler {
+  // Token resolution (session > env > --token-stdin) is handled by fetchResource.
   return async ({ globals }) => {
-    let token: string | undefined;
-    try {
-      token =
-        (await resolveWhoamiToken(
-          oauthHttp(globals),
-          resolveStore(),
-          resolveEnv(globals),
-          getAccessToken(opts.token),
-        )) ?? undefined;
-    } catch (err) {
-      return toResult(err);
-    }
-    const result = await fetchResource<TokenInfo>(globals, { token }, () => "/v1/token_info");
+    const result = await fetchResource<TokenInfo>(globals, { tokenStdin: opts.tokenStdin }, () => "/v1/token_info");
     if (!result.ok) return result;
 
     const info = result.data;

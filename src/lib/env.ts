@@ -34,8 +34,7 @@ export function resolveApiVersion(source: EnvSource = process.env as EnvSource):
   return source.GUSTO_API_VERSION ?? DEFAULT_API_VERSION;
 }
 
-export function getAccessToken(override?: string, source: EnvSource = process.env as EnvSource): string | null {
-  if (override && override.length > 0) return override;
+export function getAccessToken(source: EnvSource = process.env as EnvSource): string | null {
   const token = source.GUSTO_ACCESS_TOKEN;
   return token && token.length > 0 ? token : null;
 }

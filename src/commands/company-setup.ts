@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { type CompanyApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { ApiError } from "../lib/api-client.ts";
 import { bankCreateNoUuidError } from "../lib/bank-account.ts";
-import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_OPT } from "../lib/cli-options.ts";
+import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -20,7 +20,7 @@ import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHan
 
 interface ContextOpts {
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 function asArray<T>(body: unknown): T[] {
@@ -157,7 +157,7 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
       };
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}/federal_tax_details`;
 
       const attempt = async (ein: string): Promise<unknown> => {
@@ -274,7 +274,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
       };
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}/bank_accounts`;
       const bank = (await ctx.client.post<{ uuid?: string }>(base, bankAccountBody(fields))).body;
       if (!bank.uuid) {
@@ -380,7 +380,7 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
     }
 
     // 3-step orchestrator: discover states -> submit requirements -> read back readiness.
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const { states, errors: discoverErrors } = await discoverEmployeeStates(ctx);
       const partialErrors: PartialError[] = [...discoverErrors];
       if (states.size === 0) {
@@ -659,7 +659,7 @@ export function signatoryHandler(opts: SignatoryOpts): CommandHandler {
       };
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const signatory = (
         await ctx.client.post<{ uuid?: string }>(
           `/v1/companies/${ctx.companyUuid}/signatories/invite`,
@@ -901,7 +901,7 @@ async function hostedSigningFlow(
   isTty: boolean,
   openBrowser: (url: string) => Promise<void>,
 ): Promise<CommandResult> {
-  return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+  return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
     // Signatory must exist before signing: the hosted flow signs on behalf of the
     // signatory, and without one the flow folds signatory setup into what should be
     // a pure signing experience. Refuse early with an actionable next step so the
@@ -980,7 +980,7 @@ async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandR
   // caller-supplied IP, which would let the signer's location be spoofed in the
   // audit trail.
   const ip = "127.0.0.1";
-  return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+  return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
     const forms = asArray<FormRec>((await ctx.client.get(`/v1/companies/${ctx.companyUuid}/forms`)).body);
     const unsigned = forms.filter((f) => !f.signed_at && f.requires_signing === true);
     if (unsigned.length === 0) {
@@ -1027,9 +1027,9 @@ async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandR
 
 // ───────────────────────────── registration ─────────────────────────────
 
-/** The --company-uuid / --token override options every company command shares. */
+/** The --company-uuid / --token-stdin auth options every company command shares. */
 export function withContextOptions(cmd: Command): Command {
-  return cmd.option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)").option(...TOKEN_OPT);
+  return cmd.option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)").option(...TOKEN_STDIN_OPT);
 }
 
 export function registerCompanySetup(company: Command, parent: Command): void {

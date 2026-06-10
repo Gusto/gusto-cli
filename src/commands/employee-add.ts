@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
 import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { bankCreateNoUuidError } from "../lib/bank-account.ts";
-import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_OPT } from "../lib/cli-options.ts";
+import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -16,13 +16,13 @@ import { type CommandHandler, type CommandResult, missingArgs, runCommand, valid
 // blockers() validator, and a body builder. The `state-tax` and `payment-method` commands carry a
 // little orchestration (discovery / bank-account create) behind their single command.
 
-/** Every subcommand takes a --token override. */
+/** Every subcommand accepts --token-stdin (auth: session > env > stdin). */
 interface TokenOpts {
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 /** Only the company-scoped create (`personal-details`) registers and reads --company-uuid; the
- * per-employee subcommands take just a token (they act on an employee uuid, not the company). */
+ * per-employee subcommands act on an employee uuid, not the company. */
 interface CompanyContextOpts extends TokenOpts {
   companyUuid?: string;
 }
@@ -77,7 +77,7 @@ function employeeCreateHandler(opts: EmployeeCreateOpts): CommandHandler {
     const blocked = employeeCreateBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
     return createCompanyResource(globals, "employees", employeeCreateBody(opts), {
-      token: opts.token,
+      tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
@@ -340,7 +340,7 @@ function jobHandler(employeeUuid: string | undefined, opts: JobOpts): CommandHan
       if (comp) steps.push({ method: "PUT", path: "/v1/compensations/{compensation_uuid}", body: comp });
       return { ok: true, data: { steps } };
     }
-    return withEmployeeClient(globals, opts.token, (client) => runJob(client, employeeUuid, opts));
+    return withEmployeeClient(globals, opts.tokenStdin, (client) => runJob(client, employeeUuid, opts));
   };
 }
 
@@ -440,7 +440,7 @@ function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpt
         },
       };
     }
-    return withEmployeeClient(globals, opts.token, (client) => runFederalTax(client, employeeUuid, opts));
+    return withEmployeeClient(globals, opts.tokenStdin, (client) => runFederalTax(client, employeeUuid, opts));
   };
 }
 
@@ -578,7 +578,7 @@ function paymentMethodHandler(employeeUuid: string | undefined, opts: PaymentMet
         },
       };
     }
-    return withEmployeeClient(globals, opts.token, (client) => runPaymentMethod(client, employeeUuid, opts));
+    return withEmployeeClient(globals, opts.tokenStdin, (client) => runPaymentMethod(client, employeeUuid, opts));
   };
 }
 
@@ -876,7 +876,7 @@ function stateTaxHandler(
     const empUuid = employeeUuid;
     const parsed = parseAnswerFlags(opts.answer ?? []);
     if (!parsed.ok) return validationFailure("invalid --answer", parsed.blocked);
-    return withEmployeeClient(globals, opts.token, async (client) => {
+    return withEmployeeClient(globals, opts.tokenStdin, async (client) => {
       if (parsed.answers.length > 0) return runStateTax(client, empUuid, parsed.answers, opts.dryRun);
       // No --answer: prompt interactively on a TTY, else return the questions for an agent to fill.
       // --dry-run skips the prompt (a dry-run that asks questions is surprising) and just lists them.
@@ -940,10 +940,10 @@ async function putVersioned(
  * mapping any API/network error it throws. Sibling of `withCompanyContext` for `/v1/employees/...`. */
 async function withEmployeeClient(
   globals: GlobalFlags,
-  token: string | undefined,
+  tokenStdin: boolean | undefined,
   fn: (client: ApiClient) => Promise<CommandResult>,
 ): Promise<CommandResult> {
-  const ctx = await resolveApiContext(globals, { tokenOverride: token, requireCompany: false });
+  const ctx = await resolveApiContext(globals, { tokenStdin, requireCompany: false });
   if (!ctx.ok) return ctx.result;
   try {
     return await fn(ctx.ctx.client);
@@ -954,7 +954,7 @@ async function withEmployeeClient(
 
 /** Shared shape for the address subcommands: validate, honor --dry-run, else POST the body. */
 function postSubdomainHandler(
-  opts: { token?: string; dryRun?: boolean },
+  opts: { tokenStdin?: boolean; dryRun?: boolean },
   blockers: () => BlockedOn[],
   path: string,
   body: () => Record<string, unknown>,
@@ -963,7 +963,7 @@ function postSubdomainHandler(
     const blocked = blockers();
     if (blocked.length > 0) return missingArgs(blocked);
     if (opts.dryRun) return { ok: true, data: { method: "POST", path, body: body() } };
-    return withEmployeeClient(globals, opts.token, async (client) => {
+    return withEmployeeClient(globals, opts.tokenStdin, async (client) => {
       const res = await client.post(path, body());
       return { ok: true, data: res.body };
     });
@@ -1004,7 +1004,7 @@ Examples:
     .option("--date-of-birth <date>", "Date of birth (YYYY-MM-DD)")
     .option("--admin-driven", "Caller supplies all employee data (default: send a self-onboarding invite)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
     .action((opts: EmployeeCreateOpts) =>
@@ -1020,7 +1020,7 @@ Examples:
     .option("--state <state>", "2-letter state code")
     .option("--zip <zip>", "ZIP code")
     .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .action((employeeUuid: string, opts: HomeAddressOpts) =>
       runCommand(
@@ -1035,7 +1035,7 @@ Examples:
     .description("Set the employee's work address (a company location)")
     .option("--location-uuid <uuid>", "Company location UUID")
     .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .action((employeeUuid: string, opts: WorkAddressOpts) =>
       runCommand(
@@ -1053,7 +1053,7 @@ Examples:
     .option("--rate <rate>", "Compensation rate (requires --payment-unit and --flsa-status)")
     .option("--payment-unit <unit>", "Hour, Week, Month, Year, Paycheck")
     .option("--flsa-status <status>", "Exempt, Nonexempt, ...")
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: JobOpts) =>
@@ -1070,7 +1070,7 @@ Examples:
     .option("--other-income <amt>", "W-4 other income")
     .option("--extra-withholding <amt>", "W-4 extra withholding")
     .option("--deductions <amt>", "W-4 deductions")
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: FederalTaxOpts) =>
@@ -1089,7 +1089,7 @@ Examples:
     .option("--routing-number <num>", "9-digit US routing number (direct-deposit)")
     .option("--account-number <num>", "Bank account number (direct-deposit)")
     .option("--account-type <type>", "Checking or Savings (direct-deposit)")
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: PaymentMethodOpts) =>
@@ -1109,7 +1109,7 @@ Examples:
       collectAnswer,
       [],
     )
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(

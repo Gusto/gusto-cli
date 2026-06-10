@@ -66,17 +66,14 @@ describe("resolveApiVersion", () => {
 });
 
 describe("getAccessToken", () => {
-  test("returns null when neither override nor env is set", () => {
-    expect(getAccessToken(undefined, {})).toBeNull();
+  test("returns null when GUSTO_ACCESS_TOKEN is unset", () => {
+    expect(getAccessToken({})).toBeNull();
   });
-  test("override beats env", () => {
-    expect(getAccessToken("OVERRIDE", { GUSTO_ACCESS_TOKEN: "ENV" })).toBe("OVERRIDE");
+  test("returns the GUSTO_ACCESS_TOKEN value", () => {
+    expect(getAccessToken({ GUSTO_ACCESS_TOKEN: "ENV" })).toBe("ENV");
   });
-  test("falls back to env when no override", () => {
-    expect(getAccessToken(undefined, { GUSTO_ACCESS_TOKEN: "ENV" })).toBe("ENV");
-  });
-  test("treats empty string as missing", () => {
-    expect(getAccessToken("", { GUSTO_ACCESS_TOKEN: "" })).toBeNull();
+  test("treats an empty GUSTO_ACCESS_TOKEN as missing", () => {
+    expect(getAccessToken({ GUSTO_ACCESS_TOKEN: "" })).toBeNull();
   });
 });
 

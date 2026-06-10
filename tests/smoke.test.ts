@@ -10,8 +10,12 @@ const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
 const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
 
-async function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
-  return spawnCapture([BIN_PATH, ...args], { ...stripGustoEnv(process.env), XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env });
+async function run(args: string[], env: Record<string, string> = {}, stdin?: string): Promise<Run> {
+  return spawnCapture(
+    [BIN_PATH, ...args],
+    { ...stripGustoEnv(process.env), XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env },
+    { stdin },
+  );
 }
 
 function stripGustoEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -616,5 +620,76 @@ describe("api request", () => {
     const result = await run(["api", "request", "POST", "/v1/things", "--data", "{not json", "--dry-run"]);
     expect(result.exitCode).toBe(7);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_json");
+  });
+});
+
+// AINT-588: the inline `--token <value>` flag was dropped (it leaks secrets into
+// ps/shell history/audit logs). Tokens now come from a stored session, the
+// GUSTO_ACCESS_TOKEN env var, or `--token-stdin`.
+describe("token-stdin authentication", () => {
+  test("the removed --token <value> flag is rejected as an unknown option (exit 2)", async () => {
+    const result = await run(["employee", "list", "--token", "abc"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("unknown option");
+  });
+
+  test("help advertises --token-stdin and no longer mentions --token <token>", async () => {
+    const result = await run(["employee", "add", "personal-details", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("--token-stdin");
+    expect(result.stdout).not.toContain("--token <");
+  });
+
+  test("a token piped to --token-stdin resolves auth (no session/env present)", async () => {
+    // No stored session (isolated config) and no GUSTO_ACCESS_TOKEN, so a piped token
+    // is the only possible source. A dry-run create interpolates the real company path
+    // (and drops the "not required" note) only when auth actually resolved - so this
+    // proves the piped token was used, with no network call.
+    const result = await run(
+      [
+        "employee",
+        "add",
+        "personal-details",
+        "--first-name",
+        "Jane",
+        "--last-name",
+        "Doe",
+        "--email",
+        "j@example.com",
+        "--token-stdin",
+        "--dry-run",
+      ],
+      { GUSTO_COMPANY_UUID: "co-1" },
+      "piped-secret-token\n",
+    );
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.path).toBe("/v1/companies/co-1/employees");
+    expect(envelope.data.note).toBeUndefined();
+  });
+
+  test("without --token-stdin (and no session/env) the same dry-run reports token not required", async () => {
+    // Mirror of the above with no token source: auth fails, so the dry-run falls back to
+    // the placeholder path and the explanatory note - confirming stdin wasn't read.
+    const result = await run(
+      [
+        "employee",
+        "add",
+        "personal-details",
+        "--first-name",
+        "Jane",
+        "--last-name",
+        "Doe",
+        "--email",
+        "j@example.com",
+        "--dry-run",
+      ],
+      { GUSTO_COMPANY_UUID: "co-1" },
+    );
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.path).toBe("/v1/companies/{company_uuid}/employees");
+    expect(envelope.data.note).toContain("token/company not required");
   });
 });

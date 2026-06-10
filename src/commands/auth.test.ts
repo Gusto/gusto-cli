@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { TEST_CONTEXT as ctx, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore, mockHttp as http } from "../lib/oauth/test-support.ts";
-import { authWhoamiHandler, loginResultData, performLogout, resolveWhoamiToken } from "./auth.ts";
+import { authWhoamiHandler, loginResultData, performLogout } from "./auth.ts";
+
+// whoami's token resolution (session > env > --token-stdin) is delegated to
+// fetchResource and covered by api-context.test.ts; the cases below cover the
+// capabilities summary it layers on top. (AINT-588 dropped the --token override.)
 
 const noFetch = (() => {
   throw new Error("network must not be hit");
@@ -61,28 +65,6 @@ describe("performLogout", () => {
   });
 });
 
-describe("resolveWhoamiToken", () => {
-  test("an override wins and the store is never consulted", async () => {
-    expect(
-      await resolveWhoamiToken(
-        { baseUrl: "https://api.test", fetchImpl: noFetch },
-        memoryStore(),
-        "sandbox",
-        "OVERRIDE",
-      ),
-    ).toBe("OVERRIDE");
-  });
-
-  test("falls back to the stored user token when there is no override", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "stored-at", expiresAt: 9_999_999_999 } });
-    expect(await resolveWhoamiToken(http({ status: 200 }), store, "sandbox", null)).toBe("stored-at");
-  });
-
-  test("returns null with no override and no stored session", async () => {
-    expect(await resolveWhoamiToken(http({ status: 200 }), memoryStore(), "sandbox", null)).toBeNull();
-  });
-});
-
 describe("authWhoamiHandler", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());
@@ -94,7 +76,7 @@ describe("authWhoamiHandler", () => {
       resource: { type: "Company", uuid: "co-1" },
     };
     restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
-    const result = await authWhoamiHandler({ token: "tkn" })(ctx);
+    const result = await authWhoamiHandler({})(ctx);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     const data = result.data as Record<string, unknown>;
@@ -105,7 +87,7 @@ describe("authWhoamiHandler", () => {
 
   test("propagates a token_info error and skips the capabilities summary", async () => {
     restore = stubGlobalFetch([{ status: 401, body: { error: "invalid_token" } }]).restore;
-    const result = await authWhoamiHandler({ token: "tkn" })(ctx);
+    const result = await authWhoamiHandler({})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("api_client_error");

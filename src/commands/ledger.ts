@@ -47,7 +47,7 @@ interface LedgerShowOpts extends GeneralLedgerOpts {
   /** Commander negation of `--no-wait`: true by default, false when `--no-wait` is passed. */
   wait?: boolean;
   timeout?: string;
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 export function registerLedgerCommand(parent: Command): void {
@@ -60,7 +60,7 @@ export function registerLedgerCommand(parent: Command): void {
     .option("--integration-type <type>", "Accounting integration format for the report")
     .option("--no-wait", "Return the report request_uuid immediately instead of polling for completion")
     .option("--timeout <seconds>", "Max seconds to poll for completion when waiting (default 120)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
     .addHelpText(
       "after",
       `
@@ -184,7 +184,7 @@ function ledgerShowHandler(payrollUuid: string, opts: LedgerShowOpts): CommandHa
       };
     }
 
-    const resolved = await resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
+    const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
     if (!resolved.ok) return resolved.result;
 
     return executeLedgerShow(resolved.ctx.client, payrollUuid, {

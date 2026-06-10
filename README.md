@@ -30,11 +30,13 @@ export GUSTO_COMPANY_UUID="..."
 gusto employee list
 ```
 
-Or per-invocation:
+Or pipe the token on stdin (for automation - keeps the secret out of argv, shell history, and `set -x`/audit logs):
 
 ```sh
-gusto employee list --token <token> --company-uuid <uuid>
+echo "$TOKEN" | gusto employee list --token-stdin --company-uuid <uuid>
 ```
+
+Token resolution order: stored login session (`gusto auth login`) > `GUSTO_ACCESS_TOKEN` > `--token-stdin`.
 
 `--env sandbox` (default) hits `https://api.gusto-demo.com`. `--env production` hits `https://api.gusto.com`. `GUSTO_API_BASE_URL` overrides both for testing.
 

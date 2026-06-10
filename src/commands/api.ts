@@ -10,7 +10,7 @@ type Method = (typeof SUPPORTED_METHODS)[number];
 
 interface ApiRequestOpts {
   data?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
 }
 
@@ -21,7 +21,7 @@ export function registerApiCommand(parent: Command): void {
     .command("request <method> <path>")
     .description("Raw call to a Gusto REST endpoint; returns the response unchanged")
     .option("--data <json>", "Request body as a JSON string")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
     .option("--dry-run", "Build the request without sending")
     .addHelpText(
       "after",
@@ -67,7 +67,7 @@ function apiRequestHandler(rawMethod: string, path: string, opts: ApiRequestOpts
       return { ok: true, data: { method, path, body } };
     }
 
-    const ctx = await resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
+    const ctx = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
     if (!ctx.ok) return ctx.result;
 
     try {
