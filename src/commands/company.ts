@@ -44,7 +44,11 @@ export function registerCompanyCommand(parent: Command): void {
       .command("onboarding-status")
       .description("Onboarding state + structured blocked_on list (the agent's navigation hook)"),
   ).action((opts: CompanyShowOpts) =>
-    runReadCommand("gusto company onboarding-status", readGlobalFlags(parent.opts()), companyOnboardingStatusHandler(opts)),
+    runReadCommand(
+      "gusto company onboarding-status",
+      readGlobalFlags(parent.opts()),
+      companyOnboardingStatusHandler(opts),
+    ),
   );
 
   withContextOptions(

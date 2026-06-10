@@ -43,10 +43,7 @@ describe("selectFields", () => {
   });
 
   test("omits an absent key per-row when arrays are non-uniform", () => {
-    const rows = [
-      { uuid: "u1", email: "a@b.com" },
-      { uuid: "u2" },
-    ];
+    const rows = [{ uuid: "u1", email: "a@b.com" }, { uuid: "u2" }];
     expect(selectFields(rows, ["uuid", "email"])).toEqual([{ uuid: "u1", email: "a@b.com" }, { uuid: "u2" }]);
   });
 
@@ -105,10 +102,7 @@ describe("partitionFields", () => {
   });
 
   test("treats a key present in only some array rows as known (it is in the union)", () => {
-    const rows = [
-      { uuid: "u1", email: "a@b.com" },
-      { uuid: "u2" },
-    ];
+    const rows = [{ uuid: "u1", email: "a@b.com" }, { uuid: "u2" }];
     expect(partitionFields(rows, ["uuid", "email"]).unknown).toEqual([]);
   });
 

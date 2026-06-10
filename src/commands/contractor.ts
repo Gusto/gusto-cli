@@ -225,7 +225,11 @@ export function registerContractorCommand(parent: Command): void {
     .description("Read contractor record")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .action((contractorUuid: string, opts: ContractorShowOpts) =>
-      runReadCommand("gusto contractor show", readGlobalFlags(parent.opts()), contractorShowHandler(contractorUuid, opts)),
+      runReadCommand(
+        "gusto contractor show",
+        readGlobalFlags(parent.opts()),
+        contractorShowHandler(contractorUuid, opts),
+      ),
     );
 
   cmd
