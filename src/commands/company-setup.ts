@@ -1,6 +1,8 @@
 import type { Command } from "commander";
 import { type CompanyApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { ApiError } from "../lib/api-client.ts";
+import { bankCreateNoUuidError } from "../lib/bank-account.ts";
+import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -276,11 +278,7 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
       const base = `/v1/companies/${ctx.companyUuid}/bank_accounts`;
       const bank = (await ctx.client.post<{ uuid?: string }>(base, bankAccountBody(fields))).body;
       if (!bank.uuid) {
-        return {
-          ok: false,
-          exitCode: ExitCode.ApiServer,
-          error: { code: "bank_create_no_uuid", message: "bank account create returned no uuid", details: bank },
-        };
+        return bankCreateNoUuidError(bank);
       }
       const bankUuid = bank.uuid;
 
@@ -400,7 +398,12 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
       const { statuses: stateStatuses, errors: readinessErrors } = await loadReadiness(ctx);
       partialErrors.push(...readinessErrors);
       const found = [...states];
-      const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true);
+      // `ready` reconciles the readback against this run's submit results. A state
+      // whose submit errored this run can never count as ready, even if the
+      // readback reports ready_to_run_payroll (that reflects out-of-band state and
+      // would otherwise mask the failure — AINT-609 secondary issue).
+      const erroredStates = new Set(results.filter((r) => r.status === "error").map((r) => r.state));
+      const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true && !erroredStates.has(s));
 
       return {
         ok: true,
@@ -834,13 +837,8 @@ async function demoSign(opts: FormsOpts, globals: GlobalFlags): Promise<CommandR
 
 /** The --company-uuid / --token override options every company command shares. */
 export function withContextOptions(cmd: Command): Command {
-  return cmd
-    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)");
+  return cmd.option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)").option(...TOKEN_OPT);
 }
-
-const DRY_RUN_OPT = ["--dry-run", "Build the request without sending"] as const;
-const EXAMPLE_OPT = ["--example", "Print a canned sample payload without calling the API"] as const;
 
 export function registerCompanySetup(company: Command, parent: Command): void {
   const setup = company.command("setup").description("Provide information for an onboarding sub-domain");

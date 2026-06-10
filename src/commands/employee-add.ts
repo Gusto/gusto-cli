@@ -2,6 +2,8 @@ import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
 import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { bankCreateNoUuidError } from "../lib/bank-account.ts";
+import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -13,14 +15,20 @@ import { type CommandHandler, type CommandResult, missingArgs, runCommand, valid
 // blockers() validator, and a body builder. The `state-tax` and `payment-method` commands carry a
 // little orchestration (discovery / bank-account create) behind their single command.
 
-interface ContextOpts {
-  companyUuid?: string;
+/** Every subcommand takes a --token override. */
+interface TokenOpts {
   token?: string;
+}
+
+/** Only the company-scoped create (`personal-details`) registers and reads --company-uuid; the
+ * per-employee subcommands take just a token (they act on an employee uuid, not the company). */
+interface CompanyContextOpts extends TokenOpts {
+  companyUuid?: string;
 }
 
 // ───────────────────────────── add (create) ─────────────────────────────
 
-export interface EmployeeCreateOpts extends ContextOpts {
+export interface EmployeeCreateOpts extends CompanyContextOpts {
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -77,7 +85,7 @@ function employeeCreateHandler(opts: EmployeeCreateOpts): CommandHandler {
 
 // ───────────────────────────── add home-address ─────────────────────────────
 
-export interface HomeAddressOpts extends ContextOpts {
+export interface HomeAddressOpts extends TokenOpts {
   street1?: string;
   street2?: string;
   city?: string;
@@ -118,7 +126,7 @@ function homeAddressHandler(employeeUuid: string, opts: HomeAddressOpts): Comman
 
 // ───────────────────────────── add work-address ─────────────────────────────
 
-export interface WorkAddressOpts extends ContextOpts {
+export interface WorkAddressOpts extends TokenOpts {
   locationUuid?: string;
   effectiveDate?: string;
   dryRun?: boolean;
@@ -146,7 +154,7 @@ function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts): Comman
 
 // ───────────────────────────── add job (+ compensation) ─────────────────────────────
 
-export interface JobOpts extends ContextOpts {
+export interface JobOpts extends TokenOpts {
   title?: string;
   hireDate?: string;
   rate?: string;
@@ -267,7 +275,7 @@ function jobHandler(employeeUuid: string, opts: JobOpts): CommandHandler {
 
 // ───────────────────────────── add federal-tax ─────────────────────────────
 
-export interface FederalTaxOpts extends ContextOpts {
+export interface FederalTaxOpts extends TokenOpts {
   filingStatus?: string;
   w4DataType?: string;
   twoJobs?: boolean;
@@ -344,7 +352,7 @@ function federalTaxHandler(employeeUuid: string, opts: FederalTaxOpts): CommandH
 
 // ───────────────────────────── add payment-method (absorbs bank-account) ─────────────────────────────
 
-export interface PaymentMethodOpts extends ContextOpts {
+export interface PaymentMethodOpts extends TokenOpts {
   type?: string;
   name?: string;
   routingNumber?: string;
@@ -422,11 +430,7 @@ export async function runPaymentMethod(
   }
   const bankUuid = readString(bank, "uuid");
   if (!bankUuid) {
-    return {
-      ok: false,
-      exitCode: ExitCode.ApiServer,
-      error: { code: "bank_create_no_uuid", message: "bank account create returned no uuid", details: bank },
-    };
+    return bankCreateNoUuidError(bank);
   }
 
   try {
@@ -590,9 +594,38 @@ interface StateTaxStateOut {
   state: string;
   questions: StateTaxAnswerOut[];
 }
-export type StateTaxBuildResult =
+export type EmployeeStateTaxBuildResult =
   | { ok: true; body: { states: StateTaxStateOut[] } }
   | { ok: false; blocked: BlockedOn[] };
+
+/** Answers that matched no discovered question (unknown key, or scoped to the wrong state) — almost
+ * always a typo. `matched` is the set of answers a question consumed; the rest are checked here.
+ * An unscoped answer is known if any state has the key; a scoped one only if that state has it. */
+function findUnknownAnswers(
+  states: StateTaxStateRec[],
+  answers: ParsedAnswer[],
+  matched: Set<ParsedAnswer>,
+): BlockedOn[] {
+  const keysByState = new Map<string, Set<string>>();
+  const allKeys = new Set<string>();
+  for (const st of states) {
+    const keys = new Set((st.questions ?? []).map((q) => q.key));
+    keysByState.set(st.state, keys);
+    for (const k of keys) allKeys.add(k);
+  }
+  const blocked: BlockedOn[] = [];
+  for (const a of answers) {
+    if (matched.has(a)) continue;
+    const known = a.state !== undefined ? (keysByState.get(a.state)?.has(a.key) ?? false) : allKeys.has(a.key);
+    if (!known) {
+      blocked.push({
+        field: a.state ? `${a.state}:${a.key}` : a.key,
+        reason: "no such state-tax question for this employee",
+      });
+    }
+  }
+  return blocked;
+}
 
 /** Map parsed `--answer` flags onto the discovered questions, producing the state_taxes PUT body.
  * A required question (no existing answer) with no supplied answer blocks; an invalid value blocks
@@ -604,7 +637,7 @@ export type StateTaxBuildResult =
  * applies the answers it's given and leaves everything else untouched (verified against sandbox:
  * PUTting one question for a state preserved that state's other answers, so omitting a whole state
  * can't wipe it). */
-export function buildStateTaxBody(states: StateTaxStateRec[], answers: ParsedAnswer[]): StateTaxBuildResult {
+export function buildStateTaxBody(states: StateTaxStateRec[], answers: ParsedAnswer[]): EmployeeStateTaxBuildResult {
   const blocked: BlockedOn[] = [];
   const matched = new Set<ParsedAnswer>();
   const outStates: StateTaxStateOut[] = [];
@@ -632,23 +665,7 @@ export function buildStateTaxBody(states: StateTaxStateRec[], answers: ParsedAns
   }
 
   // Flag answers that matched no question (unknown key, or wrong state) so typos surface.
-  const keysByState = new Map<string, Set<string>>();
-  const allKeys = new Set<string>();
-  for (const st of states) {
-    const keys = new Set((st.questions ?? []).map((q) => q.key));
-    keysByState.set(st.state, keys);
-    for (const k of keys) allKeys.add(k);
-  }
-  for (const a of answers) {
-    if (matched.has(a)) continue;
-    const known = a.state !== undefined ? (keysByState.get(a.state)?.has(a.key) ?? false) : allKeys.has(a.key);
-    if (!known) {
-      blocked.push({
-        field: a.state ? `${a.state}:${a.key}` : a.key,
-        reason: "no such state-tax question for this employee",
-      });
-    }
-  }
+  blocked.push(...findUnknownAnswers(states, answers, matched));
 
   if (blocked.length > 0) return { ok: false, blocked };
   return { ok: true, body: { states: outStates } };
@@ -736,7 +753,7 @@ async function promptStateTaxAnswers(client: ApiClient, employeeUuid: string): P
   return collected;
 }
 
-interface StateTaxOpts extends ContextOpts {
+interface StateTaxOpts extends TokenOpts {
   answer?: string[];
 }
 
@@ -842,10 +859,6 @@ function postSubdomainHandler(
 }
 
 // ───────────────────────────── registration ─────────────────────────────
-
-const DRY_RUN_OPT = ["--dry-run", "Build the request(s) without sending"] as const;
-const EXAMPLE_OPT = ["--example", "Print a canned sample payload without calling the API"] as const;
-const TOKEN_OPT = ["--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)"] as const;
 
 const collectAnswer = (value: string, previous: string[]): string[] => previous.concat(value);
 
