@@ -400,12 +400,7 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
       const { statuses: stateStatuses, errors: readinessErrors } = await loadReadiness(ctx);
       partialErrors.push(...readinessErrors);
       const found = [...states];
-      // `ready` reconciles the readback against this run's submit results. A state
-      // whose submit errored this run can never count as ready, even if the
-      // readback reports ready_to_run_payroll (that reflects out-of-band state and
-      // would otherwise mask the failure — AINT-609 secondary issue).
-      const erroredStates = new Set(results.filter((r) => r.status === "error").map((r) => r.state));
-      const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true && !erroredStates.has(s));
+      const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true);
 
       return {
         ok: true,

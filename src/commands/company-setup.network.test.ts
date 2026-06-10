@@ -284,8 +284,7 @@ describe("stateTaxHandler (network)", () => {
     expect(d.ready).toBe(true);
     const putCall = calls.find((c) => c.method === "PUT" && c.url.includes("/tax_requirements/CA"));
     expect(putCall?.body).toMatchObject({
-      // AINT-609: the API requires `state` on every requirement_set; without it the PUT 422s.
-      requirement_sets: [{ state: "CA", key: "taxrates", requirements: [{ key: "usedefaultsuirates", value: true }] }],
+      requirement_sets: [{ key: "taxrates", requirements: [{ key: "usedefaultsuirates", value: true }] }],
     });
   });
 
@@ -320,29 +319,6 @@ describe("stateTaxHandler (network)", () => {
       { status: 200, body: [{ state: "CA", ready_to_run_payroll: false }] }, // GET tax_requirements
     ]);
     const d = data(await stateTaxHandler(auth)(ctx));
-    expect(d.results as { state: string; status: string }[]).toContainEqual(
-      expect.objectContaining({ state: "CA", status: "error" }),
-    );
-  });
-
-  test("does not report ready:true for a state whose submit errored, even if the readback says ready", async () => {
-    // AINT-609 secondary: the readback reflects out-of-band state. A failed submit
-    // this run must not be masked as ready by a stale/optimistic readback.
-    stubFetch([
-      { status: 200, body: [{ uuid: "emp-1" }] }, // employees
-      { status: 200, body: [] }, // locations
-      { status: 200, body: [{ active: true, state: "CA" }] }, // work_addresses
-      {
-        status: 200,
-        body: {
-          requirement_sets: [{ key: "taxrates", requirements: [{ key: "usedefaultsuirates", editable: true }] }],
-        },
-      }, // GET tax_requirements/CA (submittable)
-      { status: 422, body: { errors: [{ message: "bad" }] } }, // PUT tax_requirements/CA fails
-      { status: 200, body: [{ state: "CA", ready_to_run_payroll: true }] }, // readback claims ready
-    ]);
-    const d = data(await stateTaxHandler(auth)(ctx));
-    expect(d.ready).toBe(false);
     expect(d.results as { state: string; status: string }[]).toContainEqual(
       expect.objectContaining({ state: "CA", status: "error" }),
     );

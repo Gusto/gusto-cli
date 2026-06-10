@@ -148,6 +148,7 @@ describe("dry-run works without auth", () => {
     const result = await run([
       "employee",
       "add",
+      "personal-details",
       "--first-name",
       "Jane",
       "--last-name",
@@ -214,8 +215,8 @@ describe("dry-run works without auth", () => {
     expect(envelope.data.body.anchor_pay_date).toBe("2026-07-03");
   });
 
-  test("employee add validates required args before auth", async () => {
-    const result = await run(["employee", "add", "--first-name", "Jane"]);
+  test("employee add personal-details validates required args before auth", async () => {
+    const result = await run(["employee", "add", "personal-details", "--first-name", "Jane"]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("validation");
@@ -223,10 +224,152 @@ describe("dry-run works without auth", () => {
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "email" }));
   });
 
-  test("employee add with all required args + no token returns no_access_token", async () => {
-    const result = await run(["employee", "add", "--first-name", "Jane", "--last-name", "Doe", "--email", "j@x.com"]);
+  test("employee add personal-details with all required args + no token returns no_access_token", async () => {
+    const result = await run([
+      "employee",
+      "add",
+      "personal-details",
+      "--first-name",
+      "Jane",
+      "--last-name",
+      "Doe",
+      "--email",
+      "j@x.com",
+    ]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+});
+
+describe("employee add per-domain subcommands", () => {
+  const EMP = "emp-123";
+
+  test("home-address --dry-run emits the POST without auth", async () => {
+    const result = await run([
+      "employee",
+      "add",
+      "home-address",
+      EMP,
+      "--street-1",
+      "300 3rd St",
+      "--city",
+      "San Francisco",
+      "--state",
+      "CA",
+      "--zip",
+      "94107",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout.trim()).data;
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe(`/v1/employees/${EMP}/home_addresses`);
+    expect(data.body.street_1).toBe("300 3rd St");
+  });
+
+  test("job with compensation --dry-run emits the ordered steps plan", async () => {
+    const result = await run([
+      "employee",
+      "add",
+      "job",
+      EMP,
+      "--title",
+      "Engineer",
+      "--hire-date",
+      "2026-01-06",
+      "--rate",
+      "120000",
+      "--payment-unit",
+      "Year",
+      "--flsa-status",
+      "Exempt",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout.trim()).data;
+    expect(data.steps.map((s: { method: string; path: string }) => `${s.method} ${s.path}`)).toEqual([
+      `POST /v1/employees/${EMP}/jobs`,
+      "PUT /v1/compensations/{compensation_uuid}",
+    ]);
+  });
+
+  test("federal-tax --dry-run emits the version-guarded PUT", async () => {
+    const result = await run([
+      "employee",
+      "add",
+      "federal-tax",
+      EMP,
+      "--filing-status",
+      "Single",
+      "--w4-data-type",
+      "rev_2020_w4",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout.trim()).data;
+    expect(data.method).toBe("PUT");
+    expect(data.path).toBe(`/v1/employees/${EMP}/federal_taxes`);
+    expect(data.body.filing_status).toBe("Single");
+  });
+
+  test("payment-method direct-deposit --dry-run emits create-bank then set-method steps", async () => {
+    const result = await run([
+      "employee",
+      "add",
+      "payment-method",
+      EMP,
+      "--type",
+      "direct-deposit",
+      "--name",
+      "Checking",
+      "--routing-number",
+      "266905059",
+      "--account-number",
+      "5809431207",
+      "--account-type",
+      "Checking",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout.trim()).data;
+    expect(data.steps.map((s: { method: string; path: string }) => `${s.method} ${s.path}`)).toEqual([
+      `POST /v1/employees/${EMP}/bank_accounts`,
+      `PUT /v1/employees/${EMP}/payment_method`,
+    ]);
+  });
+
+  test("home-address with no fields blocks before auth (exit 7)", async () => {
+    const result = await run(["employee", "add", "home-address", EMP, "--dry-run"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "street-1" }));
+  });
+
+  test("payment-method direct-deposit without the bank fields blocks (exit 7)", async () => {
+    const result = await run(["employee", "add", "payment-method", EMP, "--type", "direct-deposit", "--dry-run"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "routing-number" }));
+  });
+
+  test("state-tax with a malformed --answer blocks before auth (exit 7)", async () => {
+    const result = await run(["employee", "add", "state-tax", EMP, "--answer", "bogus"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "answer" }));
+  });
+
+  test("employee status <uuid> without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["employee", "status", "emp-123"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("a nested subcommand missing its <employee_uuid> exits CliUsage (2), not a raw crash", async () => {
+    const result = await run(["employee", "add", "home-address", "--street-1", "X"]);
+    expect(result.exitCode).toBe(2);
   });
 });
 
@@ -303,8 +446,8 @@ describe("validation returns structured blocked_on before auth (exit 7)", () => 
 });
 
 describe("--example prints canonical payloads without auth or args", () => {
-  test("employee add --example", async () => {
-    const result = await run(["employee", "add", "--example"]);
+  test("employee add personal-details --example", async () => {
+    const result = await run(["employee", "add", "personal-details", "--example"]);
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
@@ -422,7 +565,7 @@ describe("skill commands work without auth", () => {
 
 describe("--fields filters success output", () => {
   test("employee add --example --fields method,path keeps only those keys", async () => {
-    const result = await run(["employee", "add", "--example", "--fields", "method,path"]);
+    const result = await run(["employee", "add", "personal-details", "--example", "--fields", "method,path"]);
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
@@ -433,7 +576,7 @@ describe("--fields filters success output", () => {
     // Bare `--fields` (discovery) is gated to read commands; it must not run a mutating handler
     // just to introspect output. `--example` doesn't change that — `employee add` is a write
     // command either way, so discovery is rejected before the handler runs.
-    const result = await run(["employee", "add", "--example", "--fields"]);
+    const result = await run(["employee", "add", "personal-details", "--example", "--fields"]);
     expect(result.exitCode).toBe(2);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(false);
