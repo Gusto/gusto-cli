@@ -98,4 +98,34 @@ describe("login", () => {
     expect(store.data.sandbox?.accessToken).toBe("new-at");
     expect(store.data.sandbox?.companyUuid).toBeUndefined();
   });
+
+  test("persists granted scopes from token_info", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange (no scope)
+      {
+        status: 200,
+        body: {
+          scope: "employees:read companies:read",
+          resource: { type: "Company", uuid: "comp-9" },
+          resource_owner: { type: "PayrollAdmin", uuid: "po-1" },
+        },
+      }, // token_info
+    ]);
+    const openBrowser = async (authorizeUrl: string): Promise<void> => {
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      await globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+    };
+
+    await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      openBrowser,
+      print: () => {},
+    });
+
+    expect(store.data.sandbox?.scopes).toEqual(["companies:read", "employees:read"]); // parseScopes sorts + de-dupes
+  });
 });

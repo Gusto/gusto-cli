@@ -3,6 +3,7 @@ import type { Environment } from "../global-flags.ts";
 import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
 import { buildAuthorizeUrl, exchangeCode, generatePkce, randomState, startLoopbackServer } from "./pkce.ts";
+import { parseScopes } from "./scopes.ts";
 import { ensureClientCreds } from "./session.ts";
 import type { TokenStore } from "./token-store.ts";
 
@@ -52,6 +53,7 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
     const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
     const info = await fetchTokenInfo(http, tokens.accessToken);
     const companyUuid = companyUuidFromTokenInfo(info);
+    const grantedScopes = parseScopes(tokens.scope ?? info.scope);
 
     // Rebuild from the new token (don't spread the prior session) so a stale
     // companyUuid can't survive a re-login that yields a non-company token.
@@ -61,6 +63,7 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
       refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
       ...(companyUuid ? { companyUuid } : {}),
+      ...(grantedScopes.length > 0 ? { scopes: grantedScopes } : {}),
     });
     return info;
   } finally {
