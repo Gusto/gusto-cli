@@ -33,6 +33,18 @@ jobs:
       - run: bun run format:check
       - run: bun run test
       - run: bun run test:install
+      # Hand the source to the smoke matrix as an artifact. Those runners are
+      # GitHub-hosted (rotating IPs), so a raw `actions/checkout` of github.com
+      # 403s against the org IP allowlist while the repo is internal. Artifact
+      # storage is reachable, so we package here (allowlisted) and download there.
+      - name: Package source for smoke matrix
+        run: git archive --format=tar.gz -o cli-source.tar.gz HEAD src tests package.json bun.lock
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-source
+          path: cli-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
 
   smoke:
     name: Smoke test (${{ matrix.os }})
@@ -43,7 +55,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, macos-13]
     steps:
-      - uses: actions/checkout@v4
+      # No `actions/checkout` here: these runners aren't on the org IP allowlist,
+      # so cloning github.com 403s. Source arrives via the artifact from `check`.
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-source
+      - run: tar -xzf cli-source.tar.gz
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2, pinned to the SHA on Gusto's org Actions allowlist
         with:
           bun-version: ${{ env.BUN_VERSION }}
