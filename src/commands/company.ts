@@ -1,13 +1,10 @@
-import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
-import { defaultOpenBrowser } from "../lib/browser.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
-import { companyUuidFromTokenInfo } from "../lib/oauth/login.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
@@ -44,7 +41,11 @@ export function registerCompanyCommand(parent: Command): void {
       .command("onboarding-status")
       .description("Onboarding state + structured blocked_on list (the agent's navigation hook)"),
   ).action((opts: CompanyShowOpts) =>
-    runReadCommand("gusto company onboarding-status", readGlobalFlags(parent.opts()), companyOnboardingStatusHandler(opts)),
+    runReadCommand(
+      "gusto company onboarding-status",
+      readGlobalFlags(parent.opts()),
+      companyOnboardingStatusHandler(opts),
+    ),
   );
 
   withContextOptions(
@@ -176,13 +177,17 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
 
 export interface ProvisionData {
   account_claim_url: string;
-  company_uuid: string | null;
+  next_command: string;
+  next_step: string;
 }
 
+// provision no longer logs in, so there's no company UUID to return yet - it
+// comes from the Mode 2 token that `gusto auth login` mints after the claim.
 export function provisionResultData(result: ProvisionResult): ProvisionData {
   return {
     account_claim_url: result.accountClaimUrl,
-    company_uuid: companyUuidFromTokenInfo(result.tokenInfo) ?? null,
+    next_command: "gusto auth login",
+    next_step: "Claim the account in your browser, then run `gusto auth login` to authenticate.",
   };
 }
 
@@ -211,24 +216,10 @@ export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
       const result = await provision(resolveEnv(globals), payload, {
         store: resolveStore(),
         http: oauthHttp(globals),
-        openBrowser: defaultOpenBrowser,
-        confirmClaim: waitForEnter,
       });
       return { ok: true, data: provisionResultData(result) };
     } catch (err) {
       return toResult(err);
     }
   };
-}
-
-export async function waitForEnter(): Promise<void> {
-  if (!process.stdin.isTTY) return;
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    await rl.question("Press Enter once you've finished claiming the account in your browser...");
-  } catch {
-    // stdin closed/EOF before Enter (disconnected TTY etc.) - treat as continue rather than hang.
-  } finally {
-    rl.close();
-  }
 }

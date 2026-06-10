@@ -16,13 +16,25 @@ interface AuthOpts {
   token?: string;
 }
 
+// commander negatable flag: `--no-browser` sets `browser: false` (default true).
+interface LoginOpts {
+  browser?: boolean;
+}
+
 export function registerAuthCommand(parent: Command): void {
   const cmd = parent.command("auth").description("OAuth identity (login, logout, whoami)");
 
   cmd
     .command("login")
     .description("Open the browser for OAuth PKCE login and store the token")
-    .action(() => runCommand("gusto auth login", readGlobalFlags(parent.opts()), authLoginHandler()));
+    .option("--no-browser", "Print the sign-in URL instead of opening a browser (for agent/headless use)")
+    .action((opts: LoginOpts) =>
+      runCommand(
+        "gusto auth login",
+        readGlobalFlags(parent.opts()),
+        authLoginHandler({ noBrowser: opts.browser === false }),
+      ),
+    );
 
   cmd
     .command("logout")
@@ -79,10 +91,14 @@ export function resolveWhoamiToken(
   return getValidUserToken(store, env, http);
 }
 
-function authLoginHandler(): CommandHandler {
+function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
   return async ({ globals }) => {
     try {
-      const info = await login(resolveEnv(globals), { store: resolveStore(), http: oauthHttp(globals) });
+      const info = await login(resolveEnv(globals), {
+        store: resolveStore(),
+        http: oauthHttp(globals),
+        noBrowser: opts.noBrowser,
+      });
       return { ok: true, data: loginResultData(info) };
     } catch (err) {
       return toResult(err);
