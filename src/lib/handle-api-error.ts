@@ -2,36 +2,26 @@ import { ApiError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
 
-/** Pull a scope name out of a 403 body when the server names one. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** Pull a scope name out of a 403 body when the server names one (RFC 6750 `scope`). */
 function scopeFromBody(body: unknown): string | undefined {
-  if (body && typeof body === "object") {
-    const b = body as Record<string, unknown>;
-    if (typeof b.scope === "string") return b.scope;
-    if (Array.isArray(b.required_scopes) && typeof b.required_scopes[0] === "string") {
-      return b.required_scopes.join(", ");
-    }
-  }
-  return undefined;
+  return isObject(body) && typeof body.scope === "string" ? body.scope : undefined;
 }
 
 /** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
- * The Gusto API returns `{ errors: [{ category: "missing_oauth_scopes", ... }] }`;
- * the other shapes are RFC 6750 fallbacks in case another endpoint differs. */
+ * Detects Gusto's `{ errors: [{ category: "missing_oauth_scopes" }] }` (the shape
+ * this API returns, confirmed live) and the RFC 6750 `error: "insufficient_scope"`
+ * standard. Deliberately narrow - fuzzier matches (e.g. a regex over a message)
+ * risk catching unrelated 403s. */
 function isInsufficientScope(body: unknown): boolean {
-  if (body && typeof body === "object") {
-    const b = body as Record<string, unknown>;
-    if (Array.isArray(b.errors) && b.errors.some((e) => isObject(e) && e.category === "missing_oauth_scopes")) {
-      return true;
-    }
-    if (b.error === "insufficient_scope") return true;
-    if (typeof b.error_description === "string" && /scope/i.test(b.error_description)) return true;
-    if (typeof b.scope === "string" || Array.isArray(b.required_scopes)) return true;
+  if (!isObject(body)) return false;
+  if (Array.isArray(body.errors) && body.errors.some((e) => isObject(e) && e.category === "missing_oauth_scopes")) {
+    return true;
   }
-  return false;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return body.error === "insufficient_scope";
 }
 
 export function toResult(err: unknown): CommandResult<never> {
