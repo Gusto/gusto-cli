@@ -21,6 +21,7 @@ export interface TaxRequirement {
 
 export interface RequirementSet {
   key: string;
+  state?: string;
   effective_from?: string;
   requirements?: TaxRequirement[];
 }
@@ -62,7 +63,7 @@ export function buildTaxRequirementSets(
       sentKeys.add(dep.key);
     }
     requirements.push({ key: "usedefaultsuirates", value: true });
-    const built: RequirementSet = { key: reqSet.key, requirements };
+    const built: RequirementSet = { state, key: reqSet.key, requirements };
     if (reqSet.effective_from !== undefined) built.effective_from = reqSet.effective_from;
     requirementSets.push(built);
   }
