@@ -7,7 +7,9 @@ describe("parseScopes", () => {
       "companies:read",
       "employees:read",
     ]);
+    expect(parseScopes("a a")).toEqual(["a"]);
     expect(parseScopes(undefined)).toEqual([]);
+    expect(parseScopes(null)).toEqual([]);
     expect(parseScopes("   ")).toEqual([]);
   });
 });

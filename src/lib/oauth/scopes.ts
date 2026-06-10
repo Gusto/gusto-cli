@@ -16,6 +16,7 @@ export interface ResourceCapability {
 export function summarizeGrantedScopes(granted: string[]): ResourceCapability[] {
   const byResource = new Map<string, Set<string>>();
   for (const s of granted) {
+    // lastIndexOf so a future multi-segment resource (e.g. "a:b:read") keys on everything before the final colon.
     const idx = s.lastIndexOf(":");
     if (idx <= 0 || idx === s.length - 1) continue;
     const resource = s.slice(0, idx);
