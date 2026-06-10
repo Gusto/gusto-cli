@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { TEST_CONTEXT as ctx, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore, mockHttp as http } from "../lib/oauth/test-support.ts";
-import { loginResultData, performLogout, resolveWhoamiToken } from "./auth.ts";
+import { authWhoamiHandler, loginResultData, performLogout, resolveWhoamiToken } from "./auth.ts";
 
 const noFetch = (() => {
   throw new Error("network must not be hit");
@@ -79,5 +80,26 @@ describe("resolveWhoamiToken", () => {
 
   test("returns null with no override and no stored session", async () => {
     expect(await resolveWhoamiToken(http({ status: 200 }), memoryStore(), "sandbox", null)).toBeNull();
+  });
+});
+
+describe("authWhoamiHandler", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("augments token_info with a capabilities summary derived from scope", async () => {
+    const tokenInfo = {
+      scope: "employees:read employees:write pay_schedules:read",
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+      resource: { type: "Company", uuid: "co-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({ token: "tkn" })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const data = result.data as Record<string, unknown>;
+    const capabilities = data.capabilities as Array<{ resource: string; access: string[] }>;
+    expect(capabilities).toContainEqual({ resource: "employees", access: ["read", "write"] });
+    expect(capabilities).toContainEqual({ resource: "pay_schedules", access: ["read"] });
   });
 });

@@ -7,6 +7,7 @@ import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import type { OAuthHttpOptions } from "../lib/oauth/endpoints.ts";
 import { type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
 import { revokeToken } from "../lib/oauth/revoke.ts";
+import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { getValidUserToken } from "../lib/oauth/session.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
 import { hasClientCreds } from "../lib/oauth/types.ts";
@@ -101,7 +102,7 @@ function authLogoutHandler(): CommandHandler {
   };
 }
 
-function authWhoamiHandler(opts: AuthOpts): CommandHandler {
+export function authWhoamiHandler(opts: AuthOpts): CommandHandler {
   return async ({ globals }) => {
     let token: string | undefined;
     try {
@@ -115,6 +116,13 @@ function authWhoamiHandler(opts: AuthOpts): CommandHandler {
     } catch (err) {
       return toResult(err);
     }
-    return fetchResource(globals, { token }, () => "/v1/token_info");
+    const result = await fetchResource(globals, { token }, () => "/v1/token_info");
+    if (!result.ok) return result;
+
+    const info = result.data as TokenInfo;
+    return {
+      ok: true,
+      data: { ...info, capabilities: summarizeGrantedScopes(parseScopes(info.scope)) },
+    };
   };
 }
