@@ -68,6 +68,7 @@ interface CompanyRecord {
   tier?: string;
   ein?: string;
   entity_type?: string;
+  is_partner_managed?: boolean;
 }
 interface PaymentConfig {
   payment_speed?: string;
@@ -105,8 +106,14 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       const paymentConfig = paymentR.ok ? paymentR.data : null;
       const paySchedules = scheduleR.ok ? scheduleR.data : null;
       const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
+      // payment_configs is gated on an active PartnerCompanyMapping; non-partner-managed
+      // companies (e.g. those reached via `gusto auth login` rather than `provision`) always
+      // 404 here, which reads as a bug to anyone watching the output. Drop that one error
+      // when the company response tells us it's expected.
+      const suppressPaymentConfigError = company?.is_partner_managed === false;
       const errors = [companyR, paymentR, scheduleR]
         .filter((r): r is { ok: false; label: string; error: string } => !r.ok)
+        .filter((r) => !(r.label === "payment_config" && suppressPaymentConfigError))
         .map(({ label, error }) => ({ label, error }));
 
       return {
