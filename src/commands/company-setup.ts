@@ -784,7 +784,7 @@ export function registerCompanySetup(company: Command, parent: Command): void {
     setup
       .command("pay-schedule")
       .description("Create the company pay schedule (frequency + anchor dates)")
-      .option("--frequency <freq>", "Pay frequency: weekly, biweekly, semi-monthly, monthly")
+      .option("--frequency <freq>", "Pay frequency: weekly, biweekly (V1; monthly + semi-monthly tracked in AINT-606)")
       .option("--first-payday <date>", "First payday (YYYY-MM-DD); the API names this anchor_pay_date")
       .option("--anchor-pay-date <date>", "Alias for --first-payday")
       .option("--anchor-end-of-pay-period <date>", "Anchor end-of-period (YYYY-MM-DD)"),
