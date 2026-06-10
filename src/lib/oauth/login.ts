@@ -94,7 +94,7 @@ export async function openOrPrint(
   }
 }
 
-export function printManualUrl(url: string, print: (line: string) => void): void {
+function printManualUrl(url: string, print: (line: string) => void): void {
   print("Open this URL in your browser to sign in:");
   print(`  ${url}`);
 }
