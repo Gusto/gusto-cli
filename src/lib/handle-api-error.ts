@@ -6,6 +6,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+/** The optional `details`/`request_id` an error envelope carries from an ApiError. */
+function apiErrorExtras(err: ApiError): { details?: unknown; request_id?: string } {
+  return {
+    ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
+    ...(err.requestId ? { request_id: err.requestId } : {}),
+  };
+}
+
 /** Pull a scope name out of a 403 body when the server names one (RFC 6750 `scope`). */
 function scopeFromBody(body: unknown): string | undefined {
   return isObject(body) && typeof body.scope === "string" ? body.scope : undefined;
@@ -35,8 +43,7 @@ export function toResult(err: unknown): CommandResult<never> {
         error: {
           code: "insufficient_scope",
           message: `your token is missing the OAuth scope${needs} this command needs. Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`,
-          ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
-          ...(err.requestId ? { request_id: err.requestId } : {}),
+          ...apiErrorExtras(err),
         },
       };
     }
@@ -46,8 +53,7 @@ export function toResult(err: unknown): CommandResult<never> {
       error: {
         code: err.status >= 500 ? "api_server_error" : "api_client_error",
         message: err.message,
-        ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
-        ...(err.requestId ? { request_id: err.requestId } : {}),
+        ...apiErrorExtras(err),
       },
     };
   }

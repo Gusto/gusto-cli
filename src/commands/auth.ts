@@ -116,13 +116,13 @@ export function authWhoamiHandler(opts: AuthOpts): CommandHandler {
     } catch (err) {
       return toResult(err);
     }
-    const result = await fetchResource(globals, { token }, () => "/v1/token_info");
+    const result = await fetchResource<TokenInfo>(globals, { token }, () => "/v1/token_info");
     if (!result.ok) return result;
 
-    const info = result.data as TokenInfo;
+    const info = result.data;
     return {
       ok: true,
-      data: { ...info, capabilities: summarizeGrantedScopes(parseScopes(info.scope)) },
+      data: { ...info, capabilities: summarizeGrantedScopes(parseScopes(info?.scope)) },
     };
   };
 }
