@@ -14,15 +14,24 @@ function scopeFromBody(body: unknown): string | undefined {
   return undefined;
 }
 
-/** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL). */
+/** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
+ * The Gusto API returns `{ errors: [{ category: "missing_oauth_scopes", ... }] }`;
+ * the other shapes are RFC 6750 fallbacks in case another endpoint differs. */
 function isInsufficientScope(body: unknown): boolean {
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
+    if (Array.isArray(b.errors) && b.errors.some((e) => isObject(e) && e.category === "missing_oauth_scopes")) {
+      return true;
+    }
     if (b.error === "insufficient_scope") return true;
     if (typeof b.error_description === "string" && /scope/i.test(b.error_description)) return true;
     if (typeof b.scope === "string" || Array.isArray(b.required_scopes)) return true;
   }
   return false;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function toResult(err: unknown): CommandResult<never> {
