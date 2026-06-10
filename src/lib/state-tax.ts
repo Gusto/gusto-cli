@@ -21,7 +21,6 @@ export interface TaxRequirement {
 
 export interface RequirementSet {
   key: string;
-  state?: string;
   effective_from?: string;
   requirements?: TaxRequirement[];
 }
@@ -30,12 +29,22 @@ export interface TaxRequirementsResponse {
   requirement_sets?: RequirementSet[];
 }
 
+/** A requirement_set in the tax_requirements PUT payload. Unlike the response
+ * shape (`RequirementSet`), the API requires `state` on every set (AINT-609), so
+ * it is mandatory here — the compiler rejects a built set that omits it. */
+export interface TaxRequirementSetPayload {
+  state: string;
+  key: string;
+  effective_from?: string;
+  requirements: { key: string; value: unknown }[];
+}
+
 export type StateTaxBuildStatus = "submitted" | "needs_manual_setup" | "no_default_rate_question";
 
 // Discriminated on status: requirement_sets only exists (and is only meaningful)
 // on the "submitted" branch.
 export type StateTaxBuildResult =
-  | { status: "submitted"; requirement_sets: RequirementSet[] }
+  | { status: "submitted"; requirement_sets: TaxRequirementSetPayload[] }
   | { status: "needs_manual_setup" | "no_default_rate_question" };
 
 /** Build the requirement_sets that enable the new-employer default SUI rate
@@ -49,7 +58,7 @@ export function buildTaxRequirementSets(
     return { status: "needs_manual_setup" };
   }
 
-  const requirementSets: RequirementSet[] = [];
+  const requirementSets: TaxRequirementSetPayload[] = [];
   for (const reqSet of reqs.requirement_sets ?? []) {
     if (reqSet.key !== "taxrates") continue;
     const useDefault = (reqSet.requirements ?? []).find((r) => r.key === "usedefaultsuirates" && r.editable === true);
@@ -63,7 +72,7 @@ export function buildTaxRequirementSets(
       sentKeys.add(dep.key);
     }
     requirements.push({ key: "usedefaultsuirates", value: true });
-    const built: RequirementSet = { state, key: reqSet.key, requirements };
+    const built: TaxRequirementSetPayload = { state, key: reqSet.key, requirements };
     if (reqSet.effective_from !== undefined) built.effective_from = reqSet.effective_from;
     requirementSets.push(built);
   }
