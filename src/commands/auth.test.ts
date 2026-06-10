@@ -102,4 +102,13 @@ describe("authWhoamiHandler", () => {
     expect(capabilities).toContainEqual({ resource: "employees", access: ["read", "write"] });
     expect(capabilities).toContainEqual({ resource: "pay_schedules", access: ["read"] });
   });
+
+  test("propagates a token_info error and skips the capabilities summary", async () => {
+    restore = stubGlobalFetch([{ status: 401, body: { error: "invalid_token" } }]).restore;
+    const result = await authWhoamiHandler({ token: "tkn" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("api_client_error");
+    expect("data" in result).toBe(false);
+  });
 });
