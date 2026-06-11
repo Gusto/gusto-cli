@@ -20,7 +20,7 @@ const SKILLS: Record<string, Skill> = {
   "cash-forecasting": {
     name: "cash-forecasting",
     description:
-      "Forecast upcoming payroll cash needs from scheduled payrolls, processed-payroll history, and ledger data. Read-only.",
+      "Forecast upcoming payroll cash needs from processed-payroll history, ledger data, and the pay-schedule cadence. Read-only.",
     content: cashForecasting,
   },
 };
