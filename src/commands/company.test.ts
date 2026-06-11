@@ -41,4 +41,34 @@ describe("companyProvisionHandler", () => {
     expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
     expect((result as { data: { method: string; path: string } }).data.path).toBe("/v1/provision");
   });
+
+  test("bare invocation returns the standard missing-args envelope with blocked_on", async () => {
+    const result = await companyProvisionHandler({})({ command: "gusto company provision", globals });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: {
+        code: "validation",
+        message: "missing required arguments",
+        blocked_on: [
+          {
+            field: "input",
+            reason: "provide --input <file.json> with a {user, company} payload, or --example for a sample run",
+          },
+        ],
+      },
+    });
+  });
+
+  test("an unreadable --input still returns the invalid_input shape (not blocked_on)", async () => {
+    const result = await companyProvisionHandler({ input: "/does/not/exist.json" })({
+      command: "gusto company provision",
+      globals,
+    });
+    expect(result.ok).toBe(false);
+    const err = result as { ok: false; exitCode: number; error: { code: string; message: string } };
+    expect(err.exitCode).toBe(ExitCode.Validation);
+    expect(err.error.code).toBe("invalid_input");
+    expect(err.error.message).toContain("/does/not/exist.json");
+  });
 });

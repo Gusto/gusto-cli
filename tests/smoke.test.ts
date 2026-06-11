@@ -125,11 +125,12 @@ describe("payroll/ledger validate before auth (exit 7)", () => {
 });
 
 describe("company provision input handling (offline)", () => {
-  test("no --input/--example is a validation error", async () => {
+  test("no --input/--example is a missing-args validation envelope", async () => {
     const result = await run(["company", "provision"]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.error.code).toBe("invalid_input");
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "input" }));
   });
 
   test("--dry-run --example emits the unwrapped request without auth", async () => {
