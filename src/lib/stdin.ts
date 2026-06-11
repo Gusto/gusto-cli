@@ -8,8 +8,14 @@
  * when nothing (or only whitespace) was piped. Only the first line is used: a
  * token never spans lines, and an embedded newline would corrupt the
  * `Authorization` header it ends up in.
+ *
+ * On an interactive terminal there's nothing to read - `for await` would block on
+ * stdin until EOF (Ctrl-D), a hang the command runner can't catch. Fast-fail to
+ * null instead; this is an automation-first CLI. Piped/redirected stdin is not a
+ * TTY, so the normal read path runs there.
  */
 export async function readTokenFromStdin(input: AsyncIterable<unknown> = process.stdin): Promise<string | null> {
+  if ((input as { isTTY?: boolean }).isTTY) return null;
   const chunks: Buffer[] = [];
   for await (const chunk of input) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));

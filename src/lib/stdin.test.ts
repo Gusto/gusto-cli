@@ -23,6 +23,18 @@ describe("readTokenFromStdin", () => {
     expect(await readTokenFromStdin(Readable.from(["\n\nreal-token\n"]))).toBe("real-token");
   });
 
+  test("fast-fails to null on an interactive TTY without blocking on stdin", async () => {
+    // isTTY set + an iterator that throws if touched: proves we never start reading.
+    const tty = {
+      isTTY: true,
+      async *[Symbol.asyncIterator]() {
+        throw new Error("stdin must not be read on a TTY");
+        yield Buffer.from(""); // unreachable; satisfies the generator signature
+      },
+    } as unknown as AsyncIterable<unknown>;
+    expect(await readTokenFromStdin(tty)).toBeNull();
+  });
+
   test("returns null for empty input", async () => {
     expect(await readTokenFromStdin(Readable.from([]))).toBeNull();
   });
