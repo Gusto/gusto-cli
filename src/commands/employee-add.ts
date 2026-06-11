@@ -410,7 +410,16 @@ export async function runFederalTax(
     const body = federalTaxBody(opts);
     const cur = current.body as Record<string, unknown> | null;
     for (const field of CARRY_OVER_FEDERAL_TAX_FIELDS) {
-      if (body[field] === undefined && cur?.[field] !== undefined) body[field] = cur[field];
+      if (body[field] === undefined && cur?.[field] != null) body[field] = cur[field];
+    }
+    // The rev_2020_w4 form requires its four numeric fields to be numbers, but a fresh record
+    // supplies none — so a `--filing-status`-only PUT 422s. Default any still-unset numeric field to
+    // "0" (the same default the server stores). Only for rev_2020_w4: these fields don't exist on the
+    // pre_2020_w4 form, which uses allowances instead.
+    if (body.w4_data_type === "rev_2020_w4") {
+      for (const field of NUMERIC_W4_FIELDS) {
+        if (body[field] == null) body[field] = "0";
+      }
     }
     const res = await client.put(path, withVersion(body, readString(current.body, "version")));
     return { ok: true, data: res.body };
@@ -429,6 +438,11 @@ const CARRY_OVER_FEDERAL_TAX_FIELDS = [
   "extra_withholding",
   "deductions",
 ] as const;
+
+/** The rev_2020_w4 numeric (dollar-amount) fields. The API validates each as a number, so when
+ * neither the caller nor the current record supplies one, default it to "0" (the server's own
+ * default) rather than 422. This is the complete set of numeric fields on the 2020 W-4. */
+const NUMERIC_W4_FIELDS = ["dependents_amount", "other_income", "extra_withholding", "deductions"] as const;
 
 function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpts): CommandHandler {
   return async ({ globals }) => {
@@ -606,7 +620,9 @@ function paymentMethodHandler(employeeUuid: string | undefined, opts: PaymentMet
 // `--answer` and a TTY we prompt interactively; otherwise we return the questions for an agent.
 
 interface StateTaxOption {
-  value: string;
+  // Discovery lists Select option values as strings, but some questions use booleans or numbers
+  // (e.g. file_new_hire_report → { value: true }). Keep the original type so it round-trips.
+  value: string | number | boolean;
   label: string;
 }
 interface StateTaxQuestion {
@@ -662,11 +678,13 @@ function asStateArray(body: unknown): StateTaxStateRec[] {
 function resolveAnswerValue(
   q: StateTaxQuestion,
   value: string,
-): { ok: true; value: string } | { ok: false; reason: string } {
+): { ok: true; value: string | number | boolean } | { ok: false; reason: string } {
   const type = q.input_question_format?.type;
   if (type === "Select") {
     const options = q.input_question_format?.options ?? [];
-    const match = options.find((o) => o.value === value || o.label.toLowerCase() === value.toLowerCase());
+    // Match on the stringified option value (so a boolean `true` accepts "true") or the human label,
+    // then return the option's ORIGINAL value so its type round-trips back to the API.
+    const match = options.find((o) => String(o.value) === value || o.label.toLowerCase() === value.toLowerCase());
     if (!match) return { ok: false, reason: `must be one of: ${options.map((o) => o.label).join(", ")}` };
     return { ok: true, value: match.value };
   }
@@ -692,7 +710,7 @@ function requiredReason(q: StateTaxQuestion): string {
 
 interface StateTaxAnswerOut {
   key: string;
-  answers: { value: string }[];
+  answers: { value: string | number | boolean }[];
 }
 interface StateTaxStateOut {
   state: string;
@@ -904,6 +922,190 @@ function stateTaxHandler(
       return introspectStateTax(client, empUuid);
     });
   };
+}
+
+// ───────────────────────────── manage (update + onboarding-mode) ─────────────────────────────
+// `employee manage <uuid>` admin-completes an existing employee the `add` flow can't reach: it
+// updates identity (name/SSN/DOB, a version-guarded PUT /v1/employees/{uuid}) and/or switches the
+// onboarding mode (--admin / --invite, a PUT /v1/employees/{uuid}/onboarding_status). Either or
+// both may be passed; when both are, the mode switch runs first so the identity update lands in the
+// target mode.
+
+/** The onboarding_status each mode flag selects. Values verified against the Gusto API's
+ * onboarding_status enum (the only two an admin sets to move an employee between modes). */
+const MANAGE_MODE_STATUS = {
+  admin: "admin_onboarding_incomplete",
+  invite: "self_onboarding_pending_invite",
+} as const;
+
+export interface ManageOpts extends TokenOpts {
+  firstName?: string;
+  lastName?: string;
+  ssn?: string;
+  dateOfBirth?: string;
+  admin?: boolean;
+  invite?: boolean;
+  dryRun?: boolean;
+  example?: boolean;
+}
+
+/** The version-guarded employee PUT body: only the identity flags that were supplied. */
+export function manageIdentityBody(opts: ManageOpts): Record<string, unknown> {
+  return {
+    ...(opts.firstName !== undefined ? { first_name: opts.firstName } : {}),
+    ...(opts.lastName !== undefined ? { last_name: opts.lastName } : {}),
+    ...(opts.ssn !== undefined ? { ssn: opts.ssn } : {}),
+    ...(opts.dateOfBirth !== undefined ? { date_of_birth: opts.dateOfBirth } : {}),
+  };
+}
+
+/** The onboarding_status the mode flags select: `null` when neither was passed (no mode change);
+ * blocked when both are passed (ambiguous). */
+export function resolveManageMode(
+  opts: ManageOpts,
+): { ok: true; status: string | null } | { ok: false; blocked: BlockedOn[] } {
+  if (opts.admin && opts.invite)
+    return { ok: false, blocked: [{ field: "mode", reason: "pass only one of --admin or --invite" }] };
+  if (opts.admin) return { ok: true, status: MANAGE_MODE_STATUS.admin };
+  if (opts.invite) return { ok: true, status: MANAGE_MODE_STATUS.invite };
+  return { ok: true, status: null };
+}
+
+export function manageBlockers(opts: ManageOpts): BlockedOn[] {
+  const mode = resolveManageMode(opts);
+  if (!mode.ok) return mode.blocked;
+  const hasIdentity = Object.keys(manageIdentityBody(opts)).length > 0;
+  if (!hasIdentity && mode.status === null) {
+    return [
+      {
+        field: "fields",
+        reason: "nothing to manage: pass --first-name/--last-name/--ssn/--date-of-birth and/or --admin/--invite",
+      },
+    ];
+  }
+  return [];
+}
+
+/** Switch onboarding mode (if a mode flag was passed) then version-guard the identity PUT (if any
+ * identity flag was passed). A failed identity PUT after a successful mode switch surfaces the
+ * completed switch so a retry only re-runs the identity update. */
+export async function runManage(client: ApiClient, employeeUuid: string, opts: ManageOpts): Promise<CommandResult> {
+  const mode = resolveManageMode(opts);
+  if (!mode.ok) return validationFailure("invalid onboarding mode", mode.blocked);
+  const data: Record<string, unknown> = {};
+
+  if (mode.status !== null) {
+    try {
+      const res = await client.put(`/v1/employees/${employeeUuid}/onboarding_status`, {
+        onboarding_status: mode.status,
+      });
+      data.onboarding_status = res.body;
+    } catch (err) {
+      return toResult(err);
+    }
+  }
+
+  const identity = manageIdentityBody(opts);
+  if (Object.keys(identity).length > 0) {
+    try {
+      const res = await putVersioned(client, `/v1/employees/${employeeUuid}`, identity);
+      data.employee = res.body;
+    } catch (err) {
+      if (mode.status === null) return toResult(err);
+      return partialFailureResult(err, {
+        code: "manage_identity_failed",
+        message: "onboarding mode switched but updating the employee failed",
+        completedDomain: "onboarding_status",
+        completedData: data.onboarding_status,
+        failedDomain: "employee",
+      });
+    }
+  }
+
+  return { ok: true, data };
+}
+
+function manageExample(): CommandResult {
+  return {
+    ok: true,
+    data: {
+      steps: [
+        {
+          method: "PUT",
+          path: "/v1/employees/{employee_uuid}/onboarding_status",
+          body: { onboarding_status: "admin_onboarding_incomplete" },
+        },
+        {
+          method: "PUT",
+          path: "/v1/employees/{employee_uuid}",
+          body: { ssn: "123-45-6789", date_of_birth: "1990-01-01" },
+        },
+      ],
+      note: "example: --admin/--invite switch onboarding mode; identity flags version-guard PUT the employee. Pass either or both.",
+    },
+  };
+}
+
+function manageHandler(employeeUuid: string | undefined, opts: ManageOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) return manageExample();
+    if (!employeeUuid) return missingEmployeeUuid();
+    const blocked = manageBlockers(opts);
+    if (blocked.length > 0) return validationFailure("nothing to manage or conflicting flags", blocked);
+    if (opts.dryRun) {
+      const mode = resolveManageMode(opts);
+      const steps: Record<string, unknown>[] = [];
+      // mode.ok is guaranteed here — manageBlockers already rejected the conflicting-flags case.
+      if (mode.ok && mode.status !== null) {
+        steps.push({
+          method: "PUT",
+          path: `/v1/employees/${employeeUuid}/onboarding_status`,
+          body: { onboarding_status: mode.status },
+        });
+      }
+      const identity = manageIdentityBody(opts);
+      if (Object.keys(identity).length > 0) {
+        steps.push({
+          method: "PUT",
+          path: `/v1/employees/${employeeUuid}`,
+          body: identity,
+          note: "version read from current employee at send time",
+        });
+      }
+      return { ok: true, data: { steps } };
+    }
+    return withEmployeeClient(globals, opts.token, (client) => runManage(client, employeeUuid, opts));
+  };
+}
+
+export function registerEmployeeManage(employee: Command, parent: Command): void {
+  employee
+    .command("manage [employee_uuid]")
+    .description("Update an existing employee's name/SSN/DOB and/or switch onboarding mode (admin ↔ invite)")
+    .option("--first-name <name>", "Employee first name")
+    .option("--last-name <name>", "Employee last name")
+    .option("--ssn <ssn>", "Social Security Number")
+    .option("--date-of-birth <date>", "Date of birth (YYYY-MM-DD)")
+    .option("--admin", "Switch to admin-driven onboarding (admin_onboarding_incomplete)")
+    .option("--invite", "Switch to a self-onboarding invite (self_onboarding_pending_invite)")
+    .option(...TOKEN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  # complete an invited employee the admin is driving: switch to admin mode, then set SSN/DOB
+  $ gusto employee manage <employee_uuid> --admin --ssn 123-45-6789 --date-of-birth 1990-01-01
+  # hand an admin-created employee back to self-onboarding
+  $ gusto employee manage <employee_uuid> --invite
+  # fix a name on an existing employee
+  $ gusto employee manage <employee_uuid> --first-name Jane
+`,
+    )
+    .action((employeeUuid: string | undefined, opts: ManageOpts) =>
+      runCommand("gusto employee manage", readGlobalFlags(parent.opts()), manageHandler(employeeUuid, opts)),
+    );
 }
 
 // ───────────────────────────── shared helpers ─────────────────────────────
