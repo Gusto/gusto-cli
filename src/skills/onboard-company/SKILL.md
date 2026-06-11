@@ -30,12 +30,15 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
    - `gusto company setup bank-account --routing <num> --account-number <num> --account-type <Checking|Savings>` (connects + verifies in one shot)
    - `gusto company setup state-tax` (run _after_ step 5 - it reads states off employee work addresses, so it needs employees first; opts into new-employer default rates for CA/TX/FL)
    - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD> --anchor-end-of-pay-period <YYYY-MM-DD>` (all frequencies need `--anchor-end-of-pay-period`; monthly also needs `--day-1 <n>`, semi-monthly needs `--day-1 <n> --day-2 <n>`)
+   - `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` (assign the person who signs payroll forms; runs _before_ `company forms`)
 
 5. **Add the first W-2 employee.** Run `gusto employee add ...` (see `gusto employee add --help`). The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
 
-6. **Sign forms.** Run `gusto company forms`. This opens the hosted gws-flows signing URL (8655 + state agreements) for the signatory to click. Surface the URL to the user; don't sign on their behalf.
+6. **Assign the signatory.** Run `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` (add `--title` if known). This is the person who signs the company's payroll forms; the form-signing flow signs _on their behalf_, so they must exist first. `onboarding-status` surfaces this as an `assign_signatory` blocker ahead of `sign_all_forms`, and `gusto company forms` refuses to start until a signatory is assigned. The invite lets the signatory complete their own PII.
 
-7. **Re-check.** Run `gusto company onboarding-status` again - when `blocked_on` is empty, `stage` is `ready_to_finish`. There's no separate finish command in V1: at `ready_to_finish` every required step is done and the company is set up. Gusto marks `onboarding_completed` on its side once it processes the final steps (re-run onboarding-status to see `stage: done`). Running actual payroll is out of V1 scope.
+7. **Sign forms.** Run `gusto company forms`. With a signatory already assigned, this opens the hosted gws-flows signing URL (8655 + state agreements) straight into signing - no signatory setup inside the flow. Surface the URL to the signatory to click; don't sign on their behalf.
+
+8. **Re-check.** Run `gusto company onboarding-status` again - when `blocked_on` is empty, `stage` is `ready_to_finish`. There's no separate finish command in V1: at `ready_to_finish` every required step is done and the company is set up. Gusto marks `onboarding_completed` on its side once it processes the final steps (re-run onboarding-status to see `stage: done`). Running actual payroll is out of V1 scope.
 
 ## Pause points (user input required)
 

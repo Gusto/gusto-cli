@@ -172,4 +172,61 @@ describe("companyOnboardingStatusHandler", () => {
     expect(d.blocked_on).toEqual([]);
     expect(d.next_command).toBeNull();
   });
+
+  // The API never lists a signatory step; when sign_all_forms is pending the
+  // handler GETs /signatories and synthesizes the blocker (AINT-618).
+  const SIGN_FORMS_PENDING = {
+    onboarding_completed: false,
+    onboarding_steps: [{ id: "sign_all_forms", title: "Sign forms", required: true, completed: false }],
+  };
+
+  test("injects an assign_signatory blocker ahead of sign_all_forms when no signatory exists", async () => {
+    routeFetch([
+      { match: "/onboarding_status", status: 200, body: SIGN_FORMS_PENDING },
+      { match: "/signatories", status: 200, body: [] }, // no signatory yet
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["assign_signatory", "sign_all_forms"]);
+    // sign_all_forms is gated: the signatory step is what surfaces as next.
+    expect(d.next_command).toBe("gusto company setup signatory");
+    expect(d.ready_to_finish).toBe(false);
+  });
+
+  test("does not inject when a signatory already exists; sign_all_forms is next", async () => {
+    routeFetch([
+      { match: "/onboarding_status", status: 200, body: SIGN_FORMS_PENDING },
+      { match: "/signatories", status: 200, body: [{ uuid: "sig-1" }] },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["sign_all_forms"]);
+    expect(d.next_command).toBe("gusto company forms");
+  });
+
+  test("a failed signatories check records a partial error and does not fabricate a blocker", async () => {
+    routeFetch([
+      { match: "/onboarding_status", status: 200, body: SIGN_FORMS_PENDING },
+      { match: "/signatories", status: 404, body: { error: "not found" } }, // 404 = not retried
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["sign_all_forms"]);
+    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["signatories"]);
+  });
+
+  test("does not check signatories when sign_all_forms is not pending", async () => {
+    // Only a /onboarding_status route is registered; a stray /signatories GET would 404
+    // and surface as a partial error. Asserting none proves the call was skipped.
+    routeFetch([
+      {
+        match: "/onboarding_status",
+        status: 200,
+        body: {
+          onboarding_completed: false,
+          onboarding_steps: [{ id: "federal_tax_setup", required: true, completed: false }],
+        },
+      },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["federal_tax_setup"]);
+    expect(d.partial_errors).toBeUndefined();
+  });
 });

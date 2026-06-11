@@ -19,6 +19,10 @@ interface MapEntry {
   optional_flags: string[];
 }
 
+/** Step id for the signatory assignment blocker. Synthetic: the API's
+ * onboarding_status doesn't surface it, so the CLI injects it. */
+export const SIGNATORY_STEP_ID = "assign_signatory";
+
 // add_bank_info and verify_bank_info are both resolved by the one compound
 // connect command (create + test deposits + verify), so they share an entry.
 const BANK_CONNECT: MapEntry = {
@@ -52,6 +56,16 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
     // Deliberately NOT advertising --demo-sign: agents should use the hosted
     // signing flow (the legally-defensible path), not the demo escape hatch.
     optional_flags: ["--note"],
+  },
+  // Synthetic step (no matching API onboarding_step). The signatory must exist
+  // before form signing is meaningful — the hosted flow signs on behalf of the
+  // signatory — but the API's onboarding_status never lists it. We inject it
+  // ahead of sign_all_forms so an agent assigns the signatory first. See
+  // withSignatoryBlocker and SIGNATORY_STEP_ID.
+  [SIGNATORY_STEP_ID]: {
+    command: "gusto company setup signatory",
+    required_flags: ["--first-name", "--last-name", "--email"],
+    optional_flags: ["--title"],
   },
   add_employees: {
     command: "gusto employee add",
@@ -103,4 +117,25 @@ export function extractBlockers(status: OnboardingStatus | null | undefined): Bl
       requirements: s.requirements ?? [],
       suggested_action: suggestedActionFor(s.id),
     }));
+}
+
+/** Inject the synthetic signatory blocker when forms still need signing and no
+ * signatory is assigned yet. It's placed immediately before `sign_all_forms` so
+ * it gates signing in the agent's `next_command` loop — the same shape as a real
+ * blocker, with a `suggested_action` pointing at `gusto company setup signatory`.
+ *
+ * No-op when a signatory exists, or when `sign_all_forms` isn't an active blocker
+ * (forms already signed, or not yet surfaced): the signatory only matters as a
+ * precondition for signing, so there's nothing to gate otherwise. */
+export function withSignatoryBlocker(blockers: Blocker[], hasSignatory: boolean): Blocker[] {
+  if (hasSignatory) return blockers;
+  const signIdx = blockers.findIndex((b) => b.id === "sign_all_forms");
+  if (signIdx === -1) return blockers;
+  const signatory: Blocker = {
+    id: SIGNATORY_STEP_ID,
+    title: "Assign a signatory",
+    requirements: [],
+    suggested_action: suggestedActionFor(SIGNATORY_STEP_ID),
+  };
+  return [...blockers.slice(0, signIdx), signatory, ...blockers.slice(signIdx)];
 }

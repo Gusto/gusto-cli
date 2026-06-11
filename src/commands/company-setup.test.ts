@@ -10,6 +10,8 @@ import {
   federalTaxHandler,
   formsHandler,
   resolveTaxableAsScorp,
+  signatoryBlockers,
+  signatoryHandler,
   stateTaxHandler,
 } from "./company-setup.ts";
 
@@ -131,6 +133,39 @@ describe("stateTaxHandler", () => {
   test("--no-temporary-rates is reflected", async () => {
     const d = data(await stateTaxHandler({ dryRun: true, temporaryRates: false })(ctx));
     expect(d.use_temporary_rates).toBe(false);
+  });
+});
+
+describe("signatoryBlockers + handler", () => {
+  test("flags every missing field", () => {
+    expect(signatoryBlockers({}).map((b) => b.field)).toEqual(["first-name", "last-name", "email"]);
+  });
+
+  test("no blockers when name + email present (title optional)", () => {
+    expect(signatoryBlockers({ firstName: "Ada", lastName: "Lovelace", email: "ada@example.com" })).toEqual([]);
+  });
+
+  test("missing args refuse with a structured blocked_on", async () => {
+    const result = await signatoryHandler({})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(result.error.blocked_on).toHaveLength(3);
+  });
+
+  test("dry-run builds the invite POST shape without sending", async () => {
+    const d = data(
+      await signatoryHandler({ firstName: "Ada", lastName: "Lovelace", email: "ada@example.com", dryRun: true })(ctx),
+    );
+    expect(d.method).toBe("POST");
+    expect(d.path).toBe("/v1/companies/{company_uuid}/signatories/invite");
+    expect(d.body).toEqual({ first_name: "Ada", last_name: "Lovelace", email: "ada@example.com" });
+  });
+
+  test("--example returns a canned payload", async () => {
+    const d = data(await signatoryHandler({ example: true })(ctx));
+    expect(d.method).toBe("POST");
+    expect(d.path).toContain("/signatories/invite");
   });
 });
 
