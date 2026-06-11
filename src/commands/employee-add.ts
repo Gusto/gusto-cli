@@ -268,7 +268,7 @@ export async function runJob(
         error: {
           code: "job_compensation_check_failed",
           message:
-            "job was created but checking whether its compensation was attached failed; retry the same command or inspect the job manually",
+            "job was created (uuid in details.job_uuid) but the follow-up GET to verify its compensation failed. Do NOT retry this command - the job already exists; another retry would create a duplicate. Inspect the job via `gusto api request GET /v1/jobs/{job_uuid}` or in the Gusto dashboard; if it has a rate, you're done.",
           details: { job, job_uuid: jobUuid, check_error: errMsg(refetchErr) },
         },
       };
