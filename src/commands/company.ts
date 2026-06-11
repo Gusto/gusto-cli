@@ -11,7 +11,7 @@ import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-inpu
 import { resolveStore } from "../lib/oauth/token-store.ts";
 import { type OnboardingStatus, extractBlockers, withSignatoryBlocker } from "../lib/onboarding-map.ts";
 import { companyHasSignatory } from "../lib/signatory.ts";
-import { type CommandHandler, type CommandResult, runCommand, runReadCommand } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, missingArgs, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
 
 interface CompanyShowOpts {
@@ -230,6 +230,15 @@ export function provisionPayloadError(err: unknown): CommandResult<never> {
 
 export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
   return async ({ globals }) => {
+    if (!opts.input && !opts.example) {
+      return missingArgs([
+        {
+          field: "input",
+          reason: "provide --input <file.json> with a {user, company} payload, or --example for a sample run",
+        },
+      ]);
+    }
+
     let payload;
     try {
       payload = await resolveProvisionPayload({ input: opts.input, example: opts.example }, (p) => Bun.file(p).text());
