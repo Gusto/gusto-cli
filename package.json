@@ -1,6 +1,6 @@
 {
   "name": "gusto-cli",
-  "version": "0.0.1-alpha.1",
+  "version": "0.0.1-alpha.2",
   "private": true,
   "description": "Gusto CLI - agent-friendly developer interface for Gusto payroll",
   "license": "MIT",

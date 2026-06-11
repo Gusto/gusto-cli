@@ -10,6 +10,7 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 ## Preconditions
 
 - Gusto CLI installed (`curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh`)
+- User has the company's details for the provision payload: company name, EIN, primary work address, and the admin user's name/email (see step 1 - `provision` has no default payload)
 - User has their first hire's name and email (other PII is collected via self-onboard invite, not in chat)
 - User is willing to verify their identity in a browser tab during the flow
 
@@ -19,7 +20,7 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 ## Steps
 
-1. **Provision the company.** Run `gusto company provision`. It creates the company, returns an `account_claim_url`, and exits - it does not open a browser or log you in. The response's `next_command` points at the login step. Surface the `account_claim_url` to the user.
+1. **Provision the company.** Run `gusto company provision --input <file.json>`, where the file holds a `{user, company}` payload. There is no default payload: bare `gusto company provision` errors with exit 7 (`invalid_input`) demanding `--input` or `--example`. Get the exact shape from `gusto company provision --help`, and preview the request body with `gusto company provision --dry-run --input <file>` before sending. `--example` fills in a canned sample payload (Ada Lovelace / Analytical Engines LLC) - but it _sends_, creating a real company, so it's only for throwaway test runs; `--dry-run` is the only non-mutating preview. On success it creates the company, returns an `account_claim_url`, and exits - it does not open a browser or log you in. The response's `next_command` points at the login step. Surface the `account_claim_url` to the user.
 
 2. **Claim the account, then log in.** The user opens the `account_claim_url` and verifies identity (Google SSO is the magical path; email magic-link works too). Once they've claimed it, run `gusto auth login --no-browser` - that prints the sign-in URL for you to surface instead of trying to open a browser on the machine the agent runs on. `auth login` mints and persists the OAuth token; the company UUID becomes available here (off the Mode 2 token), not from `provision`.
 
@@ -57,7 +58,7 @@ Always pass `--agent` to every CLI call so the output is parseable JSON. The CLI
 
 ## Risk and rollback
 
-- `gusto company provision` creates server-side state before the user has logged in (it returns the `account_claim_url` and exits). If `auth login` fails or is interrupted after provision, just rerun `gusto auth login` once the account is claimed - no need to re-provision (re-running provision creates a second company).
+- `gusto company provision` creates server-side state before the user has logged in (it returns the `account_claim_url` and exits). Both `--input` and `--example` send; only `--dry-run` is non-mutating, so preview there first. If `auth login` fails or is interrupted after provision, just rerun `gusto auth login` once the account is claimed - no need to re-provision (re-running provision, or running `--example` to "see what it does", creates a second company).
 - Employee invites are reversible - the user can cancel an invite in the dashboard if they sent it to the wrong address.
 - Pay-schedule creation is reversible until the first pay run.
 - Form signing is a legally-binding attestation; the signatory must complete it in the hosted flow. Don't auto-sign.
