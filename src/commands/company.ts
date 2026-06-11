@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
+import { ApiError } from "../lib/api-client.ts";
 import { withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
@@ -68,6 +69,7 @@ interface CompanyRecord {
   tier?: string;
   ein?: string;
   entity_type?: string;
+  is_partner_managed?: boolean;
 }
 interface PaymentConfig {
   payment_speed?: string;
@@ -87,11 +89,12 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       const safe = async <T>(
         label: string,
         fn: () => Promise<T>,
-      ): Promise<{ ok: true; data: T } | { ok: false; label: string; error: string }> => {
+      ): Promise<{ ok: true; data: T } | { ok: false; label: string; error: string; status?: number }> => {
         try {
           return { ok: true, data: await fn() };
         } catch (err) {
-          return { ok: false, label, error: errMsg(err) };
+          const status = err instanceof ApiError ? err.status : undefined;
+          return { ok: false, label, error: errMsg(err), status };
         }
       };
 
@@ -105,8 +108,14 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       const paymentConfig = paymentR.ok ? paymentR.data : null;
       const paySchedules = scheduleR.ok ? scheduleR.data : null;
       const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
+      // payment_configs is gated on an active PartnerCompanyMapping; non-partner-managed
+      // companies (e.g. those reached via `gusto auth login` rather than `provision`) always
+      // 404 here, which reads as a bug to anyone watching the output. Drop only the 404 -
+      // a 5xx or network error against the same endpoint is still a real failure.
+      const suppressPaymentConfig404 = company?.is_partner_managed === false;
       const errors = [companyR, paymentR, scheduleR]
-        .filter((r): r is { ok: false; label: string; error: string } => !r.ok)
+        .filter((r): r is { ok: false; label: string; error: string; status?: number } => !r.ok)
+        .filter((r) => !(r.label === "payment_config" && r.status === 404 && suppressPaymentConfig404))
         .map(({ label, error }) => ({ label, error }));
 
       return {
