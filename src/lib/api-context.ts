@@ -212,11 +212,11 @@ export async function withCompanyContext(
 /** Resolve auth context only (no company required), GET the path, and map API/network errors.
  * Use for resource endpoints where the resource UUID is already in the path
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
-export async function fetchResource(
+export async function fetchResource<T = unknown>(
   globals: GlobalFlags,
   opts: { token?: string; store?: TokenStore; http?: OAuthHttpOptions; now?: () => number },
   buildPath: () => string,
-): Promise<CommandResult> {
+): Promise<CommandResult<T>> {
   const resolved = await resolveApiContext(globals, {
     tokenOverride: opts.token,
     requireCompany: false,
@@ -227,7 +227,7 @@ export async function fetchResource(
   if (!resolved.ok) return resolved.result;
 
   try {
-    const response = await resolved.ctx.client.get(buildPath());
+    const response = await resolved.ctx.client.get<T>(buildPath());
     return { ok: true, data: response.body };
   } catch (err) {
     return toResult(err);

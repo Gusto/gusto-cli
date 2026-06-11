@@ -29,7 +29,7 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
    - `gusto company setup federal-tax --ein <ein> --tax-payer-type <type> --filing-form <941|944> --legal-name <name>`
    - `gusto company setup bank-account --routing <num> --account-number <num> --account-type <Checking|Savings>` (connects + verifies in one shot)
    - `gusto company setup state-tax` (run _after_ step 5 - it reads states off employee work addresses, so it needs employees first; opts into new-employer default rates for CA/TX/FL)
-   - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD>` (add `--anchor-end-of-pay-period <YYYY-MM-DD>` for weekly/biweekly)
+   - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD> --anchor-end-of-pay-period <YYYY-MM-DD>` (all frequencies need `--anchor-end-of-pay-period`; monthly also needs `--day-1 <n>`, semi-monthly needs `--day-1 <n> --day-2 <n>`)
 
 5. **Add the first W-2 employee.** Run `gusto employee add ...` (see `gusto employee add --help`). The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
 

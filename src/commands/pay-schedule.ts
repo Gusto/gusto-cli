@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { fetchCompanyResource } from "../lib/api-context.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { FREQUENCY_MAP, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
+import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface PayScheduleShowOpts {
@@ -12,13 +12,9 @@ interface PayScheduleShowOpts {
 export function registerPayScheduleCommand(parent: Command): void {
   const cmd = parent.command("pay-schedule").description("Create and inspect pay schedules");
 
-  cmd
-    .command("create")
-    .description("Create a pay schedule (handles Gusto's frequency + date-math rules)")
-    .option("--frequency <freq>", `Pay frequency: ${Object.keys(FREQUENCY_MAP).join(", ")}`)
-    .option("--first-payday <date>", "First payday (YYYY-MM-DD); the API names this `anchor_pay_date`")
-    .option("--anchor-pay-date <date>", "Alias for --first-payday")
-    .option("--anchor-end-of-pay-period <date>", "Anchor end-of-period (YYYY-MM-DD)")
+  addPayScheduleOptions(
+    cmd.command("create").description("Create a pay schedule (handles Gusto's frequency + date-math rules)"),
+  )
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
     .option("--dry-run", "Build the request without sending")
