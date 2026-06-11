@@ -100,10 +100,45 @@ describe("startLoopbackServer", () => {
   test("captures the code when state matches", async () => {
     const server = await startLoopbackServer("good-state");
     const codeP = server.waitForCode();
-    const res = await fetch(`${server.redirectUri}?code=the-code&state=good-state`);
-    expect(res.status).toBe(200);
+    const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(await codeP).toBe("the-code");
+    // The loopback now holds the response until the caller signals the outcome;
+    // close it out so the fetch resolves and the test doesn't hang.
+    server.complete({ ok: true });
+    const res = await resP;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("login complete");
     expect(server.redirectUri).toBe(redirectUriForPort(server.port));
+  });
+
+  test("renders a neutral 'returning to terminal' page before complete() is called", async () => {
+    const server = await startLoopbackServer("good-state");
+    const codeP = server.waitForCode();
+    const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
+    expect(await codeP).toBe("the-code");
+    // No complete() call: simulate the caller bailing out. close() should flush
+    // a neutral page so the browser tab doesn't hang on an unfinished response.
+    server.close();
+    const res = await resP;
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain("login complete");
+    expect(body).toMatch(/returning to your terminal/i);
+  });
+
+  test("complete({ ok: false }) flips the held response to a failure body", async () => {
+    const server = await startLoopbackServer("good-state");
+    const codeP = server.waitForCode();
+    const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
+    expect(await codeP).toBe("the-code");
+    server.complete({ ok: false });
+    const res = await resP;
+    // Status was already 200 by the time we knew the outcome; the body carries
+    // the human-readable failure note.
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("login failed");
+    expect(body).not.toContain("login complete");
   });
 
   test("rejects on state mismatch", async () => {

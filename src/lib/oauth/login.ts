@@ -55,20 +55,31 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
     print("Waiting for you to finish signing in...");
 
     const code = await server.waitForCode();
-    const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
-    const info = await fetchTokenInfo(http, tokens.accessToken);
-    const companyUuid = companyUuidFromTokenInfo(info);
+    try {
+      const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
+      const info = await fetchTokenInfo(http, tokens.accessToken);
+      const companyUuid = companyUuidFromTokenInfo(info);
 
-    // Rebuild from the new token (don't spread the prior session) so a stale
-    // companyUuid can't survive a re-login that yields a non-company token.
-    await store.save(env, {
-      ...creds,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresAt: tokens.expiresAt,
-      ...(companyUuid ? { companyUuid } : {}),
-    });
-    return info;
+      // Rebuild from the new token (don't spread the prior session) so a stale
+      // companyUuid can't survive a re-login that yields a non-company token.
+      await store.save(env, {
+        ...creds,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: tokens.expiresAt,
+        ...(companyUuid ? { companyUuid } : {}),
+      });
+      // Token is persisted - safe to claim success in the browser tab.
+      server.complete({ ok: true });
+      return info;
+    } catch (err) {
+      // Token exchange or token_info failed: the loopback tab is still holding
+      // a "returning to your terminal..." response. Flip it to a failure page
+      // so the user doesn't see a misleading "login complete" before they
+      // switch back to the CLI and read the actual error.
+      server.complete({ ok: false });
+      throw err;
+    }
   } finally {
     server.close();
   }

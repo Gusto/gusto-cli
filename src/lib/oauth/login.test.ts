@@ -53,11 +53,16 @@ describe("login", () => {
       }, // token_info
     ]);
 
-    const openBrowser = async (authorizeUrl: string): Promise<void> => {
+    // Fire-and-forget the loopback hit so openBrowser returns immediately - in
+    // real usage `open` spawns the browser and returns; it doesn't block on the
+    // OAuth response. The loopback now holds the response open until the caller
+    // signals the outcome, so awaiting the fetch here would deadlock login.
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
       const u = new URL(authorizeUrl);
       const redirect = u.searchParams.get("redirect_uri") as string;
       const state = u.searchParams.get("state") as string;
-      await globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      return Promise.resolve();
     };
 
     const info = await login("sandbox", {
@@ -116,11 +121,12 @@ describe("login", () => {
       { status: 200, body: { access_token: "new-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange
       { status: 200, body: { resource: { type: "Employee", uuid: "emp-1" } } }, // token_info: not Company-scoped
     ]);
-    const openBrowser = async (authorizeUrl: string): Promise<void> => {
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
       const u = new URL(authorizeUrl);
       const redirect = u.searchParams.get("redirect_uri") as string;
       const state = u.searchParams.get("state") as string;
-      await globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      return Promise.resolve();
     };
 
     await login("sandbox", {
@@ -132,5 +138,71 @@ describe("login", () => {
 
     expect(store.data.sandbox?.accessToken).toBe("new-at");
     expect(store.data.sandbox?.companyUuid).toBeUndefined();
+  });
+
+  test("AINT-625: browser tab shows 'login complete' only after the token exchange succeeds", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
+    ]);
+
+    // Capture the browser's view of the callback response by holding the fetch
+    // promise across the whole login flow.
+    let callbackResponse: Promise<Response> | undefined;
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      callbackResponse = globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      return Promise.resolve();
+    };
+
+    await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      openBrowser,
+      print: () => {},
+    });
+
+    const res = await callbackResponse!;
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // The success page is only flushed once the token persisted - if we'd
+    // rendered it on the callback the user would see it before the exchange
+    // even ran.
+    expect(body).toContain("login complete");
+  });
+
+  test("AINT-625: browser tab shows a failure page when the token exchange returns non-200", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    // The 400 the ticket reproduced: token endpoint rejects the exchange.
+    const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
+
+    let callbackResponse: Promise<Response> | undefined;
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      callbackResponse = globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      return Promise.resolve();
+    };
+
+    await expect(
+      login("sandbox", {
+        store,
+        http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+        openBrowser,
+        print: () => {},
+      }),
+    ).rejects.toThrow();
+
+    const res = await callbackResponse!;
+    const body = await res.text();
+    expect(body).toContain("login failed");
+    expect(body).not.toContain("login complete");
+    // The original symptom was the opposite: the user saw "login complete"
+    // even though no token was persisted.
+    expect(store.data.sandbox?.accessToken).toBeUndefined();
   });
 });
