@@ -2,6 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { companyUuidFromTokenInfo, login, openOrPrint } from "./login.ts";
 import { memoryStore, mockFetch } from "./test-support.ts";
 
+function driveCallback(): {
+  openBrowser: (authorizeUrl: string) => Promise<void>;
+  response: () => Promise<Response>;
+} {
+  let responsePromise: Promise<Response> | undefined;
+  const openBrowser = (authorizeUrl: string): Promise<void> => {
+    const u = new URL(authorizeUrl);
+    const redirect = u.searchParams.get("redirect_uri") as string;
+    const state = u.searchParams.get("state") as string;
+    responsePromise = globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+    return Promise.resolve();
+  };
+  return { openBrowser, response: () => responsePromise as Promise<Response> };
+}
+
 describe("companyUuidFromTokenInfo", () => {
   test("returns resource.uuid for a Company-scoped token", () => {
     expect(companyUuidFromTokenInfo({ resource: { type: "Company", uuid: "comp-1" } })).toBe("comp-1");
@@ -53,19 +68,10 @@ describe("login", () => {
       }, // token_info
     ]);
 
-    // Fire-and-forget; loopback now holds the response, so awaiting would deadlock.
-    const openBrowser = (authorizeUrl: string): Promise<void> => {
-      const u = new URL(authorizeUrl);
-      const redirect = u.searchParams.get("redirect_uri") as string;
-      const state = u.searchParams.get("state") as string;
-      void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
-      return Promise.resolve();
-    };
-
     const info = await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
-      openBrowser,
+      openBrowser: driveCallback().openBrowser,
       print: () => {},
     });
 
@@ -118,18 +124,10 @@ describe("login", () => {
       { status: 200, body: { access_token: "new-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange
       { status: 200, body: { resource: { type: "Employee", uuid: "emp-1" } } }, // token_info: not Company-scoped
     ]);
-    const openBrowser = (authorizeUrl: string): Promise<void> => {
-      const u = new URL(authorizeUrl);
-      const redirect = u.searchParams.get("redirect_uri") as string;
-      const state = u.searchParams.get("state") as string;
-      void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
-      return Promise.resolve();
-    };
-
     await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
-      openBrowser,
+      openBrowser: driveCallback().openBrowser,
       print: () => {},
     });
 
@@ -144,23 +142,15 @@ describe("login", () => {
       { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
     ]);
 
-    let callbackResponse: Promise<Response> | undefined;
-    const openBrowser = (authorizeUrl: string): Promise<void> => {
-      const u = new URL(authorizeUrl);
-      const redirect = u.searchParams.get("redirect_uri") as string;
-      const state = u.searchParams.get("state") as string;
-      callbackResponse = globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
-      return Promise.resolve();
-    };
-
+    const driver = driveCallback();
     await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
-      openBrowser,
+      openBrowser: driver.openBrowser,
       print: () => {},
     });
 
-    const res = await callbackResponse!;
+    const res = await driver.response();
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("login complete");
@@ -170,25 +160,17 @@ describe("login", () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
     const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
 
-    let callbackResponse: Promise<Response> | undefined;
-    const openBrowser = (authorizeUrl: string): Promise<void> => {
-      const u = new URL(authorizeUrl);
-      const redirect = u.searchParams.get("redirect_uri") as string;
-      const state = u.searchParams.get("state") as string;
-      callbackResponse = globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
-      return Promise.resolve();
-    };
-
+    const driver = driveCallback();
     await expect(
       login("sandbox", {
         store,
         http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
-        openBrowser,
+        openBrowser: driver.openBrowser,
         print: () => {},
       }),
     ).rejects.toThrow();
 
-    const res = await callbackResponse!;
+    const res = await driver.response();
     const body = await res.text();
     expect(body).toContain("login failed");
     expect(body).not.toContain("login complete");

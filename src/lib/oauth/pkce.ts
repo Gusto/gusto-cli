@@ -50,6 +50,10 @@ export function parseCallback(requestUrl: string): CallbackResult {
   };
 }
 
+function isValidCallback(parsed: CallbackResult, expectedState: string): parsed is { code: string; state: string } {
+  return parsed.code != null && parsed.error == null && parsed.state === expectedState;
+}
+
 export async function exchangeCode(
   opts: OAuthHttpOptions,
   args: { code: string; verifier: string; redirectUri: string; creds: ClientCreds },
@@ -129,9 +133,8 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
 
     const server: Server = createServer((req, res) => {
       const parsed = parseCallback(req.url ?? "/");
-      const validCallback = parsed.code != null && parsed.error == null && parsed.state === expectedState;
 
-      if (!validCallback) {
+      if (!isValidCallback(parsed, expectedState)) {
         res.writeHead(400, { "Content-Type": "text/plain" });
         res.end(FAILURE_PAGE);
         if (parsed.error) return fail(new Error(`authorization failed: ${parsed.error}`));
@@ -146,7 +149,7 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
       res.on("close", () => {
         if (pendingRes === res) pendingRes = undefined;
       });
-      succeed(parsed.code as string);
+      succeed(parsed.code);
     });
 
     function settle(): boolean {
