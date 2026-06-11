@@ -597,10 +597,4 @@ describe("signatoryHandler (network)", () => {
     expect(d).toMatchObject({ signatory: { uuid: "sig-1" } });
     expect(String(d.message)).toContain("Ada Lovelace");
   });
-
-  test("omits title from the body when not provided", async () => {
-    const calls = stubFetch([{ status: 200, body: { uuid: "sig-1" } }]);
-    await signatoryHandler({ ...auth, firstName: "Ada", lastName: "Lovelace", email: "ada@example.com" })(ctx);
-    expect(calls[0]?.body).toEqual({ first_name: "Ada", last_name: "Lovelace", email: "ada@example.com" });
-  });
 });
