@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import cashForecasting from "../skills/cash-forecasting/SKILL.md" with { type: "text" };
 import onboardCompany from "../skills/onboard-company/SKILL.md" with { type: "text" };
 
 export interface Skill {
@@ -15,6 +16,12 @@ const SKILLS: Record<string, Skill> = {
     name: "onboard-company",
     description: "Onboard a new Gusto company end-to-end - provision, add first hire, set up pay schedule, finalize.",
     content: onboardCompany,
+  },
+  "cash-forecasting": {
+    name: "cash-forecasting",
+    description:
+      "Forecast upcoming payroll cash needs from scheduled payrolls, processed-payroll history, and ledger data. Read-only.",
+    content: cashForecasting,
   },
 };
 
