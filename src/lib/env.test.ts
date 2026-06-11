@@ -14,6 +14,46 @@ describe("resolveBaseUrl", () => {
   test("GUSTO_API_BASE_URL overrides both", () => {
     expect(resolveBaseUrl("production", { GUSTO_API_BASE_URL: "https://example.test" })).toBe("https://example.test");
   });
+  test("rejects http URL without escape hatch", () => {
+    expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "http://localhost:3000" })).toThrow(
+      "GUSTO_API_BASE_URL must be https:// (set GUSTO_ALLOW_HTTP=1 to allow http for local testing)",
+    );
+  });
+  test("allows http URL when GUSTO_ALLOW_HTTP=1", () => {
+    expect(resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "http://localhost:3000", GUSTO_ALLOW_HTTP: "1" })).toBe(
+      "http://localhost:3000",
+    );
+  });
+  test("allows http URL when GUSTO_ALLOW_HTTP=true (case-insensitive)", () => {
+    expect(resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "http://localhost:3000", GUSTO_ALLOW_HTTP: "TRUE" })).toBe(
+      "http://localhost:3000",
+    );
+  });
+  test("allows http URL when GUSTO_ALLOW_HTTP=yes", () => {
+    expect(resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "http://localhost:3000", GUSTO_ALLOW_HTTP: "yes" })).toBe(
+      "http://localhost:3000",
+    );
+  });
+  test("rejects http URL when GUSTO_ALLOW_HTTP=0", () => {
+    expect(() =>
+      resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "http://localhost:3000", GUSTO_ALLOW_HTTP: "0" }),
+    ).toThrow("GUSTO_API_BASE_URL must be https://");
+  });
+  test("malformed URL throws an error that names the env var", () => {
+    expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "not-a-url" })).toThrow(
+      "GUSTO_API_BASE_URL is not a valid URL: not-a-url",
+    );
+  });
+  test("rejects non-http schemes even with GUSTO_ALLOW_HTTP=1 (file://)", () => {
+    expect(() =>
+      resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "file:///etc/passwd", GUSTO_ALLOW_HTTP: "1" }),
+    ).toThrow("GUSTO_API_BASE_URL must be https://");
+  });
+  test("rejects non-http schemes even with GUSTO_ALLOW_HTTP=1 (ftp://)", () => {
+    expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "ftp://example.com", GUSTO_ALLOW_HTTP: "1" })).toThrow(
+      "GUSTO_API_BASE_URL must be https://",
+    );
+  });
 });
 
 describe("resolveApiVersion", () => {
