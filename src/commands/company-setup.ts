@@ -677,6 +677,198 @@ export function signatoryHandler(opts: SignatoryOpts): CommandHandler {
   };
 }
 
+// ───────────────────────────── setup address ─────────────────────────────
+
+interface AddressOpts extends ContextOpts {
+  street1?: string;
+  street2?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  country?: string;
+  phone?: string;
+  // commander negatable flags: default true, --no-filing-address / --no-mailing-address opt out.
+  filingAddress?: boolean;
+  mailingAddress?: boolean;
+  dryRun?: boolean;
+  example?: boolean;
+}
+
+export function addressBlockers(opts: AddressOpts): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  if (!opts.street1) blocked.push({ field: "street-1", reason: "required (street address line 1)" });
+  if (!opts.city) blocked.push({ field: "city", reason: "required" });
+  if (!opts.state) blocked.push({ field: "state", reason: "required (2-letter state code, e.g. CA)" });
+  if (!opts.zip) blocked.push({ field: "zip", reason: "required" });
+  return blocked;
+}
+
+interface AddressFields {
+  street1: string;
+  city: string;
+  state: string;
+  zip: string;
+  street2?: string;
+  country?: string;
+  phone?: string;
+  filingAddress: boolean;
+  mailingAddress: boolean;
+}
+
+/** The locations create body. Built once so dry-run and the real POST can't drift.
+ * `filing_address`/`mailing_address` default true: the onboarding primary location
+ * doubles as the filing + mailing address, and the filing address is what completes
+ * `federal_tax_setup` (the step requires a company filing address, not just the EIN). */
+function addressBody(fields: AddressFields): Record<string, unknown> {
+  return {
+    street_1: fields.street1,
+    ...(fields.street2 ? { street_2: fields.street2 } : {}),
+    city: fields.city,
+    state: fields.state,
+    zip: fields.zip,
+    ...(fields.country ? { country: fields.country } : {}),
+    ...(fields.phone ? { phone_number: fields.phone } : {}),
+    filing_address: fields.filingAddress,
+    mailing_address: fields.mailingAddress,
+  };
+}
+
+export function addressHandler(opts: AddressOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/companies/{company_uuid}/locations",
+          body: {
+            street_1: "300 3rd St",
+            city: "San Francisco",
+            state: "CA",
+            zip: "94107",
+            filing_address: true,
+            mailing_address: true,
+          },
+          note: "example: the company's primary location; filing_address completes federal_tax_setup, the location clears add_addresses",
+        },
+      };
+    }
+
+    const blocked = addressBlockers(opts);
+    if (blocked.length > 0) return missingArgs(blocked);
+    const { street1, city, state, zip } = opts;
+    // blockers guarantee these; re-check narrows the types without assertions.
+    if (!street1 || !city || !state || !zip) return missingArgs(blocked);
+    const fields: AddressFields = {
+      street1,
+      city,
+      state,
+      zip,
+      ...(opts.street2 ? { street2: opts.street2 } : {}),
+      ...(opts.country ? { country: opts.country } : {}),
+      ...(opts.phone ? { phone: opts.phone } : {}),
+      filingAddress: opts.filingAddress !== false,
+      mailingAddress: opts.mailingAddress !== false,
+    };
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: { method: "POST", path: "/v1/companies/{company_uuid}/locations", body: addressBody(fields) },
+      };
+    }
+
+    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+      const location = (
+        await ctx.client.post<{ uuid?: string }>(`/v1/companies/${ctx.companyUuid}/locations`, addressBody(fields))
+      ).body;
+      return {
+        ok: true,
+        data: {
+          location,
+          message: `Company address added in ${city}, ${state}${fields.filingAddress ? " (filing address)" : ""}.`,
+        },
+      };
+    });
+  };
+}
+
+// ───────────────────────────── setup industry ─────────────────────────────
+
+interface IndustryOpts extends ContextOpts {
+  naicsCode?: string;
+  title?: string;
+  sicCode?: string[];
+  dryRun?: boolean;
+  example?: boolean;
+}
+
+export function industryBlockers(opts: IndustryOpts): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  if (!opts.naicsCode) blocked.push({ field: "naics-code", reason: "required (NAICS industry code, e.g. 541511)" });
+  return blocked;
+}
+
+interface IndustryFields {
+  naicsCode: string;
+  title?: string;
+  sicCodes?: string[];
+}
+
+/** The industry_selection body. Built once so dry-run and the real PUT can't drift.
+ * Title + SIC codes are optional - the API derives them from the NAICS code when omitted. */
+function industryBody(fields: IndustryFields): Record<string, unknown> {
+  return {
+    naics_code: fields.naicsCode,
+    ...(fields.title ? { title: fields.title } : {}),
+    ...(fields.sicCodes && fields.sicCodes.length > 0 ? { sic_codes: fields.sicCodes } : {}),
+  };
+}
+
+export function industryHandler(opts: IndustryOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/companies/{company_uuid}/industry_selection",
+          body: { naics_code: "541511", title: "Custom Computer Programming Services" },
+          note: "example: title + sic_codes are derived from the NAICS code when omitted",
+        },
+      };
+    }
+
+    const blocked = industryBlockers(opts);
+    if (blocked.length > 0) return missingArgs(blocked);
+    const { naicsCode } = opts;
+    // blockers guarantee this; re-check narrows the type without an assertion.
+    if (!naicsCode) return missingArgs(blocked);
+    const fields: IndustryFields = {
+      naicsCode,
+      ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.sicCode && opts.sicCode.length > 0 ? { sicCodes: opts.sicCode } : {}),
+    };
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: { method: "PUT", path: "/v1/companies/{company_uuid}/industry_selection", body: industryBody(fields) },
+      };
+    }
+
+    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+      const industry = (
+        await ctx.client.put<{ naics_code?: string }>(
+          `/v1/companies/${ctx.companyUuid}/industry_selection`,
+          industryBody(fields),
+        )
+      ).body;
+      return { ok: true, data: { industry, message: `Industry set to NAICS ${naicsCode}.` } };
+    });
+  };
+}
+
 // ───────────────────────────── company forms ─────────────────────────────
 
 interface FormsOpts extends ContextOpts {
@@ -908,6 +1100,42 @@ export function registerCompanySetup(company: Command, parent: Command): void {
     .option(...EXAMPLE_OPT)
     .action((opts: SignatoryOpts) =>
       runCommand("gusto company setup signatory", readGlobalFlags(parent.opts()), signatoryHandler(opts)),
+    );
+
+  withContextOptions(
+    setup
+      .command("address")
+      .description(
+        "Add the company's primary location (completes add_addresses + the federal_tax_setup filing address)",
+      )
+      .option("--street-1 <street>", "Street address line 1")
+      .option("--street-2 <street>", "Street address line 2")
+      .option("--city <city>", "City")
+      .option("--state <state>", "2-letter state code, e.g. CA")
+      .option("--zip <zip>", "ZIP code")
+      .option("--country <country>", "Country (defaults to USA server-side)")
+      .option("--phone <phone>", "Location phone number")
+      .option("--no-filing-address", "Don't use this location as the company's filing address")
+      .option("--no-mailing-address", "Don't use this location as the company's mailing address"),
+  )
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .action((opts: AddressOpts) =>
+      runCommand("gusto company setup address", readGlobalFlags(parent.opts()), addressHandler(opts)),
+    );
+
+  withContextOptions(
+    setup
+      .command("industry")
+      .description("Select the company's industry (completes select_industry)")
+      .option("--naics-code <code>", "NAICS industry code, e.g. 541511")
+      .option("--title <title>", "Industry title (derived from the NAICS code when omitted)")
+      .option("--sic-code <codes...>", "SIC code(s) (derived from the NAICS code when omitted)"),
+  )
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .action((opts: IndustryOpts) =>
+      runCommand("gusto company setup industry", readGlobalFlags(parent.opts()), industryHandler(opts)),
     );
 }
 

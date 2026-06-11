@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import {
+  addressHandler,
   bankAccountHandler,
   federalTaxHandler,
   formsHandler,
+  industryHandler,
   signatoryHandler,
   stateTaxHandler,
 } from "./company-setup.ts";
@@ -596,5 +598,79 @@ describe("signatoryHandler (network)", () => {
     });
     expect(d).toMatchObject({ signatory: { uuid: "sig-1" } });
     expect(String(d.message)).toContain("Ada Lovelace");
+  });
+});
+
+describe("addressHandler (network)", () => {
+  test("POSTs /locations with the flat body; filing + mailing default true", async () => {
+    const calls = stubFetch([{ status: 201, body: { uuid: "loc-1", street_1: "300 3rd St" } }]);
+
+    const d = data(
+      await addressHandler({ ...auth, street1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107" })(ctx),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toContain("/companies/co-1/locations");
+    expect(calls[0]?.body).toEqual({
+      street_1: "300 3rd St",
+      city: "San Francisco",
+      state: "CA",
+      zip: "94107",
+      filing_address: true,
+      mailing_address: true,
+    });
+    expect(d).toMatchObject({ location: { uuid: "loc-1" } });
+    expect(String(d.message)).toContain("San Francisco, CA (filing address)");
+  });
+
+  test("includes street_2 / country / phone when provided and respects --no-filing-address", async () => {
+    const calls = stubFetch([{ status: 201, body: { uuid: "loc-2" } }]);
+
+    await addressHandler({
+      ...auth,
+      street1: "1 Main St",
+      street2: "Suite 5",
+      city: "Austin",
+      state: "TX",
+      zip: "73301",
+      country: "USA",
+      phone: "5125550100",
+      filingAddress: false,
+    })(ctx);
+
+    expect(calls[0]?.body).toEqual({
+      street_1: "1 Main St",
+      street_2: "Suite 5",
+      city: "Austin",
+      state: "TX",
+      zip: "73301",
+      country: "USA",
+      phone_number: "5125550100",
+      filing_address: false,
+      mailing_address: true,
+    });
+  });
+});
+
+describe("industryHandler (network)", () => {
+  test("PUTs /industry_selection with just naics_code when title/sic omitted", async () => {
+    const calls = stubFetch([{ status: 201, body: { naics_code: "541511" } }]);
+
+    const d = data(await industryHandler({ ...auth, naicsCode: "541511" })(ctx));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("PUT");
+    expect(calls[0]?.url).toContain("/companies/co-1/industry_selection");
+    expect(calls[0]?.body).toEqual({ naics_code: "541511" });
+    expect(d).toMatchObject({ industry: { naics_code: "541511" } });
+  });
+
+  test("sends title + sic_codes when provided", async () => {
+    const calls = stubFetch([{ status: 201, body: { naics_code: "541511" } }]);
+
+    await industryHandler({ ...auth, naicsCode: "541511", title: "Software", sicCode: ["7372"] })(ctx);
+
+    expect(calls[0]?.body).toEqual({ naics_code: "541511", title: "Software", sic_codes: ["7372"] });
   });
 });

@@ -32,6 +32,17 @@ const BANK_CONNECT: MapEntry = {
 };
 
 const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
+  add_addresses: {
+    command: "gusto company setup address",
+    required_flags: ["--street-1", "--city", "--state", "--zip"],
+    // The primary location defaults to the filing + mailing address; --no-* opt out.
+    optional_flags: ["--street-2", "--country", "--phone", "--no-filing-address", "--no-mailing-address"],
+  },
+  select_industry: {
+    command: "gusto company setup industry",
+    required_flags: ["--naics-code"],
+    optional_flags: ["--title", "--sic-code"],
+  },
   federal_tax_setup: {
     command: "gusto company setup federal-tax",
     required_flags: ["--ein", "--tax-payer-type", "--filing-form", "--legal-name"],

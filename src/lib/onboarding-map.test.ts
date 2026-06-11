@@ -18,7 +18,25 @@ describe("suggestedActionFor", () => {
   });
 
   test("returns null for an unmapped step", () => {
-    expect(suggestedActionFor("select_industry")).toBeNull();
+    expect(suggestedActionFor("some_unmapped_future_step")).toBeNull();
+  });
+
+  test("maps add_addresses to setup address", () => {
+    expect(suggestedActionFor("add_addresses")).toEqual({
+      command: "gusto company setup address",
+      required_flags: ["--street-1", "--city", "--state", "--zip"],
+      optional_flags: ["--street-2", "--country", "--phone", "--no-filing-address", "--no-mailing-address"],
+      source: "cli_static_map",
+    });
+  });
+
+  test("maps select_industry to setup industry", () => {
+    expect(suggestedActionFor("select_industry")).toEqual({
+      command: "gusto company setup industry",
+      required_flags: ["--naics-code"],
+      optional_flags: ["--title", "--sic-code"],
+      source: "cli_static_map",
+    });
   });
 
   test("maps the synthetic signatory step to setup signatory", () => {
@@ -57,11 +75,11 @@ describe("extractBlockers", () => {
       onboarding_steps: [
         { id: "federal_tax_setup", title: "Federal tax", required: true, completed: false },
         { id: "add_bank_info", title: "Bank", required: true, completed: true },
-        { id: "select_industry", title: "Industry", required: true, completed: false },
+        { id: "some_unmapped_future_step", title: "Future", required: true, completed: false },
         { id: "optional_thing", required: false, completed: false },
       ],
     });
-    expect(blockers.map((b) => b.id)).toEqual(["federal_tax_setup", "select_industry"]);
+    expect(blockers.map((b) => b.id)).toEqual(["federal_tax_setup", "some_unmapped_future_step"]);
     expect(blockers[0]?.suggested_action?.command).toBe("gusto company setup federal-tax");
     // Unmapped step still surfaces, without a command guess.
     expect(blockers[1]?.suggested_action).toBeNull();
