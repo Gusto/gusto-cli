@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
-import { bankAccountHandler, federalTaxHandler, formsHandler, stateTaxHandler } from "./company-setup.ts";
+import {
+  bankAccountHandler,
+  federalTaxHandler,
+  formsHandler,
+  signatoryHandler,
+  stateTaxHandler,
+} from "./company-setup.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import {
   type MockResponse,
@@ -444,26 +450,44 @@ describe("stateTaxHandler (network)", () => {
 });
 
 describe("formsHandler", () => {
-  test("hosted flow creates a signing URL via POST /flows", async () => {
-    const calls = stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+  // The hosted flow first checks for a signatory (GET /signatories), then POSTs
+  // /flows. A present signatory is a non-empty list.
+  const SIGNATORY_PRESENT: MockResponse = { status: 200, body: [{ uuid: "sig-1" }] };
+
+  test("hosted flow checks for a signatory, then creates a signing URL via POST /flows", async () => {
+    const calls = stubFetch([SIGNATORY_PRESENT, { status: 200, body: { url: "https://flows.example/abc" } }]);
     const d = data(await formsHandler(auth, false)(ctx));
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.method).toBe("POST");
-    expect(calls[0]?.url).toContain("/companies/co-1/flows");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.url).toContain("/companies/co-1/signatories");
+    expect(calls[1]?.method).toBe("POST");
+    expect(calls[1]?.url).toContain("/companies/co-1/flows");
     expect(d).toMatchObject({ flow_type: "sign_all_forms", url: "https://flows.example/abc" });
   });
 
+  test("hosted flow is refused when no signatory is assigned (no /flows POST)", async () => {
+    const calls = stubFetch([{ status: 200, body: [] }]); // GET /signatories -> empty
+    const result = await formsHandler(auth, false)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("signatory_required");
+    expect(calls).toHaveLength(1); // never reached POST /flows
+    expect(calls.some((c) => c.url.includes("/flows"))).toBe(false);
+  });
+
   test("--note is passed through as options.note in the /flows body", async () => {
-    const calls = stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    const calls = stubFetch([SIGNATORY_PRESENT, { status: 200, body: { url: "https://flows.example/abc" } }]);
     await formsHandler({ ...auth, note: "please sign by Friday" }, false)(ctx);
-    expect(calls[0]?.body).toMatchObject({
+    const flows = calls.find((c) => c.url.includes("/flows"));
+    expect(flows?.body).toMatchObject({
       flow_type: "sign_all_forms",
       options: { note: "please sign by Friday" },
     });
   });
 
   test("interactive TTY mode opens the signing URL in a browser", async () => {
-    stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    stubFetch([SIGNATORY_PRESENT, { status: 200, body: { url: "https://flows.example/abc" } }]);
     const ttyCtx = { command: "test", globals: { ...globals, agent: false, json: false } };
     const opened: string[] = [];
     const d = data(
@@ -477,7 +501,7 @@ describe("formsHandler", () => {
   });
 
   test("a failed browser open still surfaces the URL and flags browser_opened:false", async () => {
-    stubFetch([{ status: 200, body: { url: "https://flows.example/abc" } }]);
+    stubFetch([SIGNATORY_PRESENT, { status: 200, body: { url: "https://flows.example/abc" } }]);
     const ttyCtx = { command: "test", globals: { ...globals, agent: false, json: false } };
     const d = data(await formsHandler(auth, true, () => Promise.reject(new Error("no browser here")))(ttyCtx));
     expect(d).toMatchObject({ url: "https://flows.example/abc", browser_opened: false });
@@ -485,7 +509,7 @@ describe("formsHandler", () => {
   });
 
   test("hosted flow with no url in the response fails with flow_no_url", async () => {
-    stubFetch([{ status: 200, body: {} }]); // POST /flows returns no url
+    stubFetch([SIGNATORY_PRESENT, { status: 200, body: {} }]); // POST /flows returns no url
     const result = await formsHandler(auth, false)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -546,5 +570,31 @@ describe("formsHandler", () => {
     expect(result.exitCode).toBe(ExitCode.Blocked);
     expect(result.error.code).toBe("demo_only");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("signatoryHandler (network)", () => {
+  test("invites the signatory via POST /signatories/invite", async () => {
+    const calls = stubFetch([{ status: 200, body: { uuid: "sig-1" } }]);
+    const d = data(
+      await signatoryHandler({
+        ...auth,
+        firstName: "Ada",
+        lastName: "Lovelace",
+        email: "ada@example.com",
+        title: "CEO",
+      })(ctx),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toContain("/companies/co-1/signatories/invite");
+    expect(calls[0]?.body).toEqual({
+      first_name: "Ada",
+      last_name: "Lovelace",
+      email: "ada@example.com",
+      title: "CEO",
+    });
+    expect(d).toMatchObject({ signatory: { uuid: "sig-1" } });
+    expect(String(d.message)).toContain("Ada Lovelace");
   });
 });

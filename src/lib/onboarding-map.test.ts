@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { extractBlockers, suggestedActionFor } from "./onboarding-map.ts";
+import { SIGNATORY_STEP_ID, extractBlockers, suggestedActionFor, withSignatoryBlocker } from "./onboarding-map.ts";
+import type { Blocker } from "./onboarding-map.ts";
 
 describe("suggestedActionFor", () => {
   test("maps a known step to a setup command", () => {
@@ -18,6 +19,35 @@ describe("suggestedActionFor", () => {
 
   test("returns null for an unmapped step", () => {
     expect(suggestedActionFor("select_industry")).toBeNull();
+  });
+
+  test("maps the synthetic signatory step to setup signatory", () => {
+    expect(suggestedActionFor(SIGNATORY_STEP_ID)).toEqual({
+      command: "gusto company setup signatory",
+      required_flags: ["--first-name", "--last-name", "--email"],
+      optional_flags: ["--title"],
+      source: "cli_static_map",
+    });
+  });
+});
+
+describe("withSignatoryBlocker", () => {
+  const blocker = (id: string): Blocker => ({ id, requirements: [], suggested_action: suggestedActionFor(id) });
+
+  test("injects the signatory blocker immediately before sign_all_forms", () => {
+    const result = withSignatoryBlocker([blocker("federal_tax_setup"), blocker("sign_all_forms")], false);
+    expect(result.map((b) => b.id)).toEqual(["federal_tax_setup", SIGNATORY_STEP_ID, "sign_all_forms"]);
+    expect(result[1]?.suggested_action?.command).toBe("gusto company setup signatory");
+  });
+
+  test("no-op when a signatory already exists", () => {
+    const input = [blocker("sign_all_forms")];
+    expect(withSignatoryBlocker(input, true)).toEqual(input);
+  });
+
+  test("no-op when sign_all_forms is not an active blocker", () => {
+    const input = [blocker("federal_tax_setup")];
+    expect(withSignatoryBlocker(input, false)).toEqual(input);
   });
 });
 
