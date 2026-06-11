@@ -209,7 +209,21 @@ describe("partialFailure", () => {
     expect("response" in (result.error.details as object)).toBe(false);
   });
 
-  test("non-ApiError falls back to exit General and still records the message", () => {
+  test("NetworkError keeps its network exit code (matches toResult), not General", () => {
+    // A follow-up-step network failure (e.g. /approve timing out) must classify
+    // the same as a first-step one through toResult - both exit Network.
+    const err = new NetworkError("connection reset");
+    const result = partialFailure("approve_failed", "finished but approve failed", err, { onboarding_completed: true });
+    const viaToResult = toResult(err);
+    if (result.ok || viaToResult.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Network);
+    expect(result.exitCode).toBe(viaToResult.exitCode);
+    expect(result.error.code).toBe("approve_failed");
+    // NetworkError has no body, so response is omitted but the message is kept.
+    expect(result.error.details).toEqual({ onboarding_completed: true, error: "connection reset" });
+  });
+
+  test("unknown non-Error throwable falls back to exit General and still records the message", () => {
     const result = partialFailure("c", "m", new Error("boom"));
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.General);

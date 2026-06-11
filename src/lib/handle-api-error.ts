@@ -107,7 +107,10 @@ export function partialFailure(
   const apiBody = err instanceof ApiError ? err.body : undefined;
   return {
     ok: false,
-    exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
+    // Mirror toResult's classification: a follow-up-step NetworkError (e.g. a
+    // timeout hitting /approve) must keep its ExitCode.Network, not collapse to
+    // General, so scripts branch on the same exit code regardless of which step failed.
+    exitCode: err instanceof ApiError || err instanceof NetworkError ? err.exitCode : ExitCode.General,
     error: {
       code,
       message,
