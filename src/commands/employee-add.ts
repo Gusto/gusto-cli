@@ -836,7 +836,8 @@ function stateTaxHandler(
     return withEmployeeClient(globals, opts.token, async (client) => {
       if (parsed.answers.length > 0) return runStateTax(client, empUuid, parsed.answers, opts.dryRun);
       // No --answer: prompt interactively on a TTY, else return the questions for an agent to fill.
-      if (isTty && !globals.agent && !globals.json) {
+      // --dry-run skips the prompt (a dry-run that asks questions is surprising) and just lists them.
+      if (isTty && !globals.agent && !globals.json && !opts.dryRun) {
         const collected = await promptStateTaxAnswers(client, empUuid);
         if (collected.length > 0) return runStateTax(client, empUuid, collected, opts.dryRun);
       }
