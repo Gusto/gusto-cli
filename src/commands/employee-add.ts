@@ -237,7 +237,13 @@ export async function runJob(client: ApiClient, employeeUuid: string, opts: JobO
   }
 }
 
-function jobHandler(employeeUuid: string, opts: JobOpts): CommandHandler {
+/** The positional employee_uuid is optional on subcommands that take `--example` (so a canned
+ * sample needs no real uuid); every non-example path requires it. */
+function missingEmployeeUuid(): CommandResult<never> {
+  return missingArgs([{ field: "employee_uuid", reason: "required" }]);
+}
+
+function jobHandler(employeeUuid: string | undefined, opts: JobOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
       return {
@@ -259,6 +265,7 @@ function jobHandler(employeeUuid: string, opts: JobOpts): CommandHandler {
         },
       };
     }
+    if (!employeeUuid) return missingEmployeeUuid();
     const blocked = jobBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
     if (opts.dryRun) {
@@ -312,15 +319,25 @@ export async function runFederalTax(
   employeeUuid: string,
   opts: FederalTaxOpts,
 ): Promise<CommandResult> {
+  const path = `/v1/employees/${employeeUuid}/federal_taxes`;
   try {
-    const res = await putVersioned(client, `/v1/employees/${employeeUuid}/federal_taxes`, federalTaxBody(opts));
+    // The federal_taxes PUT replaces the record and 422s on a missing w4_data_type, so read the
+    // current record (for both the version and w4_data_type) and carry w4_data_type over when
+    // --w4-data-type wasn't supplied — lets an update touch only --filing-status etc.
+    const current = await client.get(path);
+    const body = federalTaxBody(opts);
+    if (body.w4_data_type === undefined) {
+      const existing = readString(current.body, "w4_data_type");
+      if (existing !== undefined) body.w4_data_type = existing;
+    }
+    const res = await client.put(path, withVersion(body, readString(current.body, "version")));
     return { ok: true, data: res.body };
   } catch (err) {
     return toResult(err);
   }
 }
 
-function federalTaxHandler(employeeUuid: string, opts: FederalTaxOpts): CommandHandler {
+function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
       return {
@@ -329,10 +346,11 @@ function federalTaxHandler(employeeUuid: string, opts: FederalTaxOpts): CommandH
           method: "PUT",
           path: "/v1/employees/{employee_uuid}/federal_taxes",
           body: { filing_status: "Single", w4_data_type: "rev_2020_w4" },
-          note: "example: version is read from current federal_taxes at send time",
+          note: "example: w4_data_type and version are read from current federal_taxes at send time",
         },
       };
     }
+    if (!employeeUuid) return missingEmployeeUuid();
     const blocked = federalTaxBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
     if (opts.dryRun) {
@@ -457,7 +475,7 @@ export async function runPaymentMethod(
   }
 }
 
-function paymentMethodHandler(employeeUuid: string, opts: PaymentMethodOpts): CommandHandler {
+function paymentMethodHandler(employeeUuid: string | undefined, opts: PaymentMethodOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
       return {
@@ -470,6 +488,7 @@ function paymentMethodHandler(employeeUuid: string, opts: PaymentMethodOpts): Co
         },
       };
     }
+    if (!employeeUuid) return missingEmployeeUuid();
     const blocked = paymentMethodBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
     if (opts.dryRun) {
@@ -650,13 +669,13 @@ export function buildStateTaxBody(states: StateTaxStateRec[], answers: ParsedAns
         answers.find((a) => a.key === q.key && a.state === st.state) ??
         answers.find((a) => a.key === q.key && a.state === undefined);
       if (!ans) {
-        if (required) blocked.push({ field: `${st.state}.${q.key}`, reason: requiredReason(q) });
+        if (required) blocked.push({ field: `${st.state}:${q.key}`, reason: requiredReason(q) });
         continue;
       }
       matched.add(ans);
       const resolved = resolveAnswerValue(q, ans.value);
       if (!resolved.ok) {
-        blocked.push({ field: `${st.state}.${q.key}`, reason: resolved.reason });
+        blocked.push({ field: `${st.state}:${q.key}`, reason: resolved.reason });
         continue;
       }
       outQuestions.push({ key: q.key, answers: [{ value: resolved.value }] });
@@ -709,6 +728,7 @@ export async function runStateTax(
   client: ApiClient,
   employeeUuid: string,
   answers: ParsedAnswer[],
+  dryRun: boolean = false,
 ): Promise<CommandResult> {
   let states: StateTaxStateRec[];
   try {
@@ -722,8 +742,13 @@ export async function runStateTax(
   if (build.body.states.length === 0) {
     return { ok: true, data: { message: "no state-tax answers needed", states: renderStateTaxQuestions(states) } };
   }
+  const path = `/v1/employees/${employeeUuid}/state_taxes`;
+  if (dryRun) {
+    // The body is built from the discovered questions (one GET), then shown rather than PUT.
+    return { ok: true, data: { method: "PUT", path, body: build.body, note: "dry-run: built but not sent" } };
+  }
   try {
-    const res = await client.put(`/v1/employees/${employeeUuid}/state_taxes`, build.body);
+    const res = await client.put(path, build.body);
     return { ok: true, data: res.body };
   } catch (err) {
     return toResult(err);
@@ -755,24 +780,42 @@ async function promptStateTaxAnswers(client: ApiClient, employeeUuid: string): P
 
 interface StateTaxOpts extends TokenOpts {
   answer?: string[];
+  dryRun?: boolean;
+  example?: boolean;
+}
+
+/** Canned state-tax sample: the discovery → answer → PUT shape, without calling the API. */
+function stateTaxExample(): CommandResult {
+  return {
+    ok: true,
+    data: {
+      method: "PUT",
+      path: "/v1/employees/{employee_uuid}/state_taxes",
+      body: { states: [{ state: "CA", questions: [{ key: "filing_status", answers: [{ value: "S" }] }] }] },
+      note: "example: run with no --answer first to discover each state's questions, then --answer STATE:key=value",
+    },
+  };
 }
 
 function stateTaxHandler(
-  employeeUuid: string,
+  employeeUuid: string | undefined,
   opts: StateTaxOpts,
   isTty: boolean = process.stdin.isTTY === true,
 ): CommandHandler {
   return async ({ globals }) => {
+    if (opts.example) return stateTaxExample();
+    if (!employeeUuid) return missingEmployeeUuid();
+    const empUuid = employeeUuid;
     const parsed = parseAnswerFlags(opts.answer ?? []);
     if (!parsed.ok) return validationFailure("invalid --answer", parsed.blocked);
     return withEmployeeClient(globals, opts.token, async (client) => {
-      if (parsed.answers.length > 0) return runStateTax(client, employeeUuid, parsed.answers);
+      if (parsed.answers.length > 0) return runStateTax(client, empUuid, parsed.answers, opts.dryRun);
       // No --answer: prompt interactively on a TTY, else return the questions for an agent to fill.
       if (isTty && !globals.agent && !globals.json) {
-        const collected = await promptStateTaxAnswers(client, employeeUuid);
-        if (collected.length > 0) return runStateTax(client, employeeUuid, collected);
+        const collected = await promptStateTaxAnswers(client, empUuid);
+        if (collected.length > 0) return runStateTax(client, empUuid, collected, opts.dryRun);
       }
-      return introspectStateTax(client, employeeUuid);
+      return introspectStateTax(client, empUuid);
     });
   };
 }
@@ -934,7 +977,7 @@ Examples:
     );
 
   add
-    .command("job <employee_uuid>")
+    .command("job [employee_uuid]")
     .description("Create a job; --rate/--payment-unit/--flsa-status also set its compensation")
     .option("--title <title>", "Job title")
     .option("--hire-date <date>", "Hire date (YYYY-MM-DD)")
@@ -944,12 +987,12 @@ Examples:
     .option(...TOKEN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
-    .action((employeeUuid: string, opts: JobOpts) =>
+    .action((employeeUuid: string | undefined, opts: JobOpts) =>
       runCommand("gusto employee add job", readGlobalFlags(parent.opts()), jobHandler(employeeUuid, opts)),
     );
 
   add
-    .command("federal-tax <employee_uuid>")
+    .command("federal-tax [employee_uuid]")
     .description("Set the employee's federal W-4 withholding (version-guarded)")
     .option("--filing-status <status>", "W-4 filing status")
     .option("--w4-data-type <type>", "e.g. rev_2020_w4")
@@ -961,7 +1004,7 @@ Examples:
     .option(...TOKEN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
-    .action((employeeUuid: string, opts: FederalTaxOpts) =>
+    .action((employeeUuid: string | undefined, opts: FederalTaxOpts) =>
       runCommand(
         "gusto employee add federal-tax",
         readGlobalFlags(parent.opts()),
@@ -970,7 +1013,7 @@ Examples:
     );
 
   add
-    .command("payment-method <employee_uuid>")
+    .command("payment-method [employee_uuid]")
     .description("Set how the employee is paid: check, or direct-deposit (also creates the bank account)")
     .option("--type <type>", '"check" or "direct-deposit"')
     .option("--name <name>", "Bank account nickname (direct-deposit)")
@@ -980,7 +1023,7 @@ Examples:
     .option(...TOKEN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
-    .action((employeeUuid: string, opts: PaymentMethodOpts) =>
+    .action((employeeUuid: string | undefined, opts: PaymentMethodOpts) =>
       runCommand(
         "gusto employee add payment-method",
         readGlobalFlags(parent.opts()),
@@ -989,7 +1032,7 @@ Examples:
     );
 
   add
-    .command("state-tax <employee_uuid>")
+    .command("state-tax [employee_uuid]")
     .description("Set state withholding. With no --answer: lists the questions (or prompts on a TTY)")
     .option(
       "--answer <STATE:key=value>",
@@ -998,6 +1041,8 @@ Examples:
       [],
     )
     .option(...TOKEN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",
       `
@@ -1009,7 +1054,7 @@ Select answers accept either the human label ("Single") or the API value ("S"). 
 (--answer filing_status=Single) applies to every state that asks it; STATE:key scopes it to one.
 `,
     )
-    .action((employeeUuid: string, opts: StateTaxOpts) =>
+    .action((employeeUuid: string | undefined, opts: StateTaxOpts) =>
       runCommand("gusto employee add state-tax", readGlobalFlags(parent.opts()), stateTaxHandler(employeeUuid, opts)),
     );
 }

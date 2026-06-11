@@ -289,6 +289,28 @@ describe("runFederalTax", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
+
+  test("carries over the current w4_data_type when --w4-data-type is omitted (the PUT requires it)", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v1", w4_data_type: "rev_2020_w4" }],
+      "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
+    });
+    const result = await runFederalTax(client, "emp-1", { filingStatus: "Married" });
+    expect(result.ok).toBe(true);
+    const put = calls.find((c) => c.method === "PUT");
+    expect((put?.body as Record<string, unknown>).w4_data_type).toBe("rev_2020_w4");
+    expect((put?.body as Record<string, unknown>).filing_status).toBe("Married");
+  });
+
+  test("an explicit --w4-data-type overrides the current value", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v1", w4_data_type: "rev_2020_w4" }],
+      "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
+    });
+    await runFederalTax(client, "emp-1", { filingStatus: "Single", w4DataType: "pre_2020_w4" });
+    const put = calls.find((c) => c.method === "PUT");
+    expect((put?.body as Record<string, unknown>).w4_data_type).toBe("pre_2020_w4");
+  });
 });
 
 describe("paymentMethodBlockers", () => {
@@ -511,11 +533,11 @@ describe("buildStateTaxBody", () => {
     expect(r.ok).toBe(true);
   });
 
-  test("a missing required question is blocked with STATE.key", () => {
+  test("a missing required question is blocked with STATE:key", () => {
     const r = buildStateTaxBody([CA_STATE], [{ key: "filing_status", value: "Single" }]);
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.blocked.map((b) => b.field)).toContain("CA.withholding_allowance");
+    expect(r.blocked.map((b) => b.field)).toContain("CA:withholding_allowance");
   });
 
   test("an invalid Select choice is blocked and echoes the allowed labels", () => {
@@ -528,7 +550,7 @@ describe("buildStateTaxBody", () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    const fs = r.blocked.find((b) => b.field === "CA.filing_status");
+    const fs = r.blocked.find((b) => b.field === "CA:filing_status");
     expect(fs?.reason).toMatch(/Single/);
   });
 
@@ -613,7 +635,7 @@ describe("buildStateTaxBody", () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.blocked.find((b) => b.field === "ZZ.num_q")?.reason).toMatch(/number/i);
+    expect(r.blocked.find((b) => b.field === "ZZ:num_q")?.reason).toMatch(/number/i);
   });
 
   test("a non-numeric Currency is blocked", () => {
@@ -627,7 +649,7 @@ describe("buildStateTaxBody", () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.blocked.find((b) => b.field === "ZZ.cur_q")?.reason).toMatch(/number/i);
+    expect(r.blocked.find((b) => b.field === "ZZ:cur_q")?.reason).toMatch(/number/i);
   });
 
   test("a malformed Date (not YYYY-MM-DD) is blocked", () => {
@@ -641,7 +663,7 @@ describe("buildStateTaxBody", () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.blocked.find((b) => b.field === "ZZ.date_q")?.reason).toMatch(/date/i);
+    expect(r.blocked.find((b) => b.field === "ZZ:date_q")?.reason).toMatch(/date/i);
   });
 });
 
@@ -720,6 +742,27 @@ describe("runStateTax", () => {
     const data = result.data as { message: string; states: unknown[] };
     expect(data.message).toMatch(/no state-tax answers needed/);
     expect(data.states).toHaveLength(1);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("dry-run GETs and builds the body but never PUTs", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1/state_taxes": [200, [CA_STATE]],
+    });
+    const result = await runStateTax(
+      client,
+      "emp-1",
+      [
+        { key: "filing_status", value: "Single" },
+        { key: "withholding_allowance", value: "2" },
+      ],
+      true,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const data = result.data as { method: string; path: string; body: unknown };
+    expect(data.method).toBe("PUT");
+    expect(data.path).toBe("/v1/employees/emp-1/state_taxes");
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
 });
