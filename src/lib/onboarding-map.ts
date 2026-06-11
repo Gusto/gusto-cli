@@ -68,9 +68,9 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
     optional_flags: ["--title"],
   },
   add_employees: {
-    command: "gusto employee add",
+    command: "gusto employee add personal-details",
     required_flags: ["--first-name", "--last-name", "--email"],
-    optional_flags: ["--role", "--comp", "--admin-driven"],
+    optional_flags: ["--admin-driven", "--ssn", "--date-of-birth", "--company-uuid"],
   },
 };
 
