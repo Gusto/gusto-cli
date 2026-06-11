@@ -311,6 +311,19 @@ describe("companyFinishOnboardingHandler", () => {
     expect((result.error.details as { onboarding_completed?: boolean }).onboarding_completed).toBe(true);
   });
 
+  test("a malformed (empty 200) finish body degrades to null, not an internal_error throw", async () => {
+    // A 200 with no body deserializes to null. Reading onboarding_completed off it
+    // must not throw past the handler (which would surface as exit-1 internal_error).
+    stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200 }; // empty body -> null
+      if (u.includes("/approve")) return { status: 200, body: { company_status: "Approved" } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler(auth)(ctx));
+    expect(d.onboarding_completed).toBeNull();
+    expect(d.approved).toBe(true);
+  });
+
   test("dry-run lists both PUTs in sandbox and sends nothing", async () => {
     const s = stub(() => ({ status: 500 })); // any real call would fail the test
     const d = data(await companyFinishOnboardingHandler({ ...auth, dryRun: true })(ctx));

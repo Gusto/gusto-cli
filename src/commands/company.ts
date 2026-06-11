@@ -273,9 +273,14 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
       // finish_onboarding flips onboarding_completed -> true (stage 'done'). A 422
       // here means the API considers a required step unsatisfied; toResult surfaces
       // the upstream body so the agent sees which one rather than a bare "422".
-      let onboarding: FinishOnboardingResult;
+      // A 200 can still carry an empty/malformed body (deserializes to null), so
+      // every read below is null-safe - the same malformed-but-200 discipline the
+      // onboarding-status and bank-account handlers use. Without it, a null body
+      // would throw a TypeError past the try and surface as an opaque
+      // internal_error (exit 1) instead of a structured result.
+      let onboarding: FinishOnboardingResult | null;
       try {
-        onboarding = (await ctx.client.put<FinishOnboardingResult>(`${base}/finish_onboarding`)).body;
+        onboarding = (await ctx.client.put<FinishOnboardingResult | null>(`${base}/finish_onboarding`)).body;
       } catch (err) {
         return toResult(err);
       }
@@ -284,7 +289,7 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
         return {
           ok: true,
           data: {
-            onboarding_completed: onboarding.onboarding_completed ?? null,
+            onboarding_completed: onboarding?.onboarding_completed ?? null,
             approved: false,
             finish_onboarding: onboarding,
             message:
@@ -299,9 +304,9 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
       // run payroll. Onboarding has already been finished by this point, so a
       // failure here is a partial - tell the agent to re-run this command (finish
       // is idempotent once steps are satisfied) rather than redo onboarding steps.
-      let company: ApproveResult;
+      let company: ApproveResult | null;
       try {
-        company = (await ctx.client.put<ApproveResult>(`${base}/approve`)).body;
+        company = (await ctx.client.put<ApproveResult | null>(`${base}/approve`)).body;
       } catch (err) {
         const apiBody = err instanceof ApiError ? err.body : undefined;
         return {
@@ -312,7 +317,7 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
             message:
               "Onboarding finished, but the sandbox auto-approve failed. Re-run `gusto company finish` to retry approval; do not redo onboarding steps.",
             details: {
-              onboarding_completed: onboarding.onboarding_completed ?? null,
+              onboarding_completed: onboarding?.onboarding_completed ?? null,
               error: errMsg(err),
               ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
             },
@@ -323,12 +328,12 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
       return {
         ok: true,
         data: {
-          onboarding_completed: onboarding.onboarding_completed ?? null,
-          approved: company.company_status === "Approved",
-          company_status: company.company_status ?? null,
+          onboarding_completed: onboarding?.onboarding_completed ?? null,
+          approved: company?.company_status === "Approved",
+          company_status: company?.company_status ?? null,
           finish_onboarding: onboarding,
           approve: company,
-          message: `Onboarding finished and company approved (company_status: ${company.company_status ?? "unknown"}).`,
+          message: `Onboarding finished and company approved (company_status: ${company?.company_status ?? "unknown"}).`,
         },
       };
     });
