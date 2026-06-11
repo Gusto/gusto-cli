@@ -10,11 +10,15 @@ export type EnvSource = Record<string, string | undefined>;
 export function resolveBaseUrl(env: Environment | undefined, source: EnvSource = process.env as EnvSource): string {
   const override = source.GUSTO_API_BASE_URL;
   if (override) {
-    const parsed = new URL(override);
-    if (parsed.protocol !== "https:" && !isTruthy(source.GUSTO_ALLOW_HTTP)) {
-      throw new Error("GUSTO_API_BASE_URL must be https:// (set GUSTO_ALLOW_HTTP=1 to allow http for local testing)");
+    let parsed: URL;
+    try {
+      parsed = new URL(override);
+    } catch {
+      throw new Error(`GUSTO_API_BASE_URL is not a valid URL: ${override}`);
     }
-    return override;
+    if (parsed.protocol === "https:") return override;
+    if (parsed.protocol === "http:" && isTruthy(source.GUSTO_ALLOW_HTTP)) return override;
+    throw new Error("GUSTO_API_BASE_URL must be https:// (set GUSTO_ALLOW_HTTP=1 to allow http for local testing)");
   }
   if (env === "production") return PRODUCTION_BASE_URL;
   return SANDBOX_BASE_URL;

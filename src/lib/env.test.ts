@@ -39,8 +39,20 @@ describe("resolveBaseUrl", () => {
       resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "http://localhost:3000", GUSTO_ALLOW_HTTP: "0" }),
     ).toThrow("GUSTO_API_BASE_URL must be https://");
   });
-  test("throws on malformed URL", () => {
-    expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "not-a-url" })).toThrow();
+  test("malformed URL throws an error that names the env var", () => {
+    expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "not-a-url" })).toThrow(
+      "GUSTO_API_BASE_URL is not a valid URL: not-a-url",
+    );
+  });
+  test("rejects non-http schemes even with GUSTO_ALLOW_HTTP=1 (file://)", () => {
+    expect(() =>
+      resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "file:///etc/passwd", GUSTO_ALLOW_HTTP: "1" }),
+    ).toThrow("GUSTO_API_BASE_URL must be https://");
+  });
+  test("rejects non-http schemes even with GUSTO_ALLOW_HTTP=1 (ftp://)", () => {
+    expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "ftp://example.com", GUSTO_ALLOW_HTTP: "1" })).toThrow(
+      "GUSTO_API_BASE_URL must be https://",
+    );
   });
 });
 
