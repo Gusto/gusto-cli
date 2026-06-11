@@ -116,6 +116,42 @@ describe("login", () => {
     expect(info.resource?.uuid).toBe("comp-1");
   });
 
+  test("emitEvent fires with the sign-in URL before the OAuth callback completes", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
+    ]);
+
+    const eventOrder: string[] = [];
+    const events: { event: string; sign_in_url: string; state: string }[] = [];
+    const openBrowser = async (authorizeUrl: string): Promise<void> => {
+      eventOrder.push("callback");
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      await globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+    };
+
+    await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      openBrowser,
+      emitEvent: (e) => {
+        eventOrder.push("emitEvent");
+        events.push(e);
+      },
+      print: () => {},
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe("sign_in_url");
+    expect(events[0].sign_in_url).toMatch(/oauth\/authorize/);
+    expect(events[0].state).toBeTruthy();
+    // emitEvent must fire BEFORE the callback so an agent can surface the URL up front.
+    expect(eventOrder).toEqual(["emitEvent", "callback"]);
+  });
+
   test("clears a stale companyUuid when re-login yields a non-company token", async () => {
     const store = memoryStore({
       sandbox: { clientId: "cid", clientSecret: "sec", accessToken: "prev", companyUuid: "old-co" },

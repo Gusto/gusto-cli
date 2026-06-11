@@ -86,10 +86,21 @@ export async function performLogout(
 function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
   return async ({ globals }) => {
     try {
+      // Under --agent / --json, emit the sign-in URL as a JSON line on stdout
+      // the moment the loopback server binds, before blocking on the OAuth
+      // callback. Agent harnesses that buffer the subprocess can read line 1
+      // immediately, surface the URL, and keep reading for the final envelope.
+      const inAgentMode = globals.agent || globals.json;
+      const emitEvent = inAgentMode
+        ? (event: { event: string; sign_in_url: string; state: string }): void => {
+            process.stdout.write(`${JSON.stringify(event)}\n`);
+          }
+        : undefined;
       const info = await login(resolveEnv(globals), {
         store: resolveStore(),
         http: oauthHttp(globals),
         noBrowser: opts.noBrowser,
+        emitEvent,
       });
       return { ok: true, data: loginResultData(info) };
     } catch (err) {
