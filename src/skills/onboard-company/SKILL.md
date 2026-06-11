@@ -14,6 +14,15 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 - User has their first hire's name and email (other PII is collected via self-onboard invite, not in chat)
 - User is willing to verify their identity in a browser tab during the flow
 
+## Who is the user onboarding?
+
+Before driving the flow, figure out which persona the user is. This determines whether to use invite-based or admin-driven paths for the signatory (step 6) and the first employee (step 5).
+
+- **Multi-person team** - admin, signatory, and first employee are different people (or at least different inboxes). Default to the invite flow throughout: the CLI sends an email to each person and they self-complete their own PII / SSN / banking. This is the lowest-friction path when the admin doesn't have everyone's SSN on hand.
+- **Sole owner / single-member LLC** - the user is the admin AND the intended signatory AND the only employee (very common founder case). The invite path dead-ends here: signatory-by-invite rejects the admin's own email, and employee-by-invite blocks waiting for the user to "accept" their own invite. **Branch into the admin-driven path** for both signatory and employee: the user supplies their own SSN / DOB / address up front. Steps 5 and 6 below describe both paths; pick the right branch.
+
+If you're not sure, ask: _"Are you onboarding yourself as the only employee (sole owner / single-member LLC), or onboarding a team where the signatory and first employee are other people?"_
+
 ## Discovering commands
 
 The command shapes below are a guide, not a spec. Confirm exact flags with `gusto <command> --help` (e.g. `gusto company setup bank-account --help`) rather than trusting hardcoded examples - `--help` is generated from the CLI and stays accurate as commands evolve.
@@ -33,16 +42,26 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
    - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD> --anchor-end-of-pay-period <YYYY-MM-DD>` (all frequencies need `--anchor-end-of-pay-period`; monthly also needs `--day-1 <n>`, semi-monthly needs `--day-1 <n> --day-2 <n>`)
    - Note: signatory assignment is its own step (step 6) because it has to come before `company forms`. `onboarding-status` will list `assign_signatory` as a blocker; don't try to clear it here.
 
-5. **Add the first W-2 employee.** Run `gusto employee add personal-details --first-name … --last-name … --email …` to create the employee, then configure sub-domains with `gusto employee add <domain> <employee_uuid>` (see `gusto employee add --help`). The default sends an invite so the employee fills in their own PII / address / banking. Founders adding their first hires rarely have the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
+5. **Add the first W-2 employee.** Branch on persona:
+
+   **Multi-person team (default).** Run `gusto employee add personal-details --first-name … --last-name … --email …` and let the CLI send a self-onboarding invite. The employee fills in their own SSN / address / banking. Don't ask the admin for the new hire's PII - they likely don't have it. After the invite is sent, the rest of step 5 is "wait for them to accept" (which can happen out of band; you can move on and re-check `onboarding-status` later).
+
+   **Sole owner.** Add `--admin-driven` to bypass the invite and create the employee with the user's own data in one pass. Ask the user for SSN and date of birth before calling - you'll need both: `gusto employee add personal-details --first-name … --last-name … --email … --admin-driven --ssn <ssn> --date-of-birth YYYY-MM-DD`. Then run the rest of the sub-domains (`home-address`, `work-address`, `job`, `federal-tax`, `state-tax`, `payment-method`) with the user's own values - they have the data; don't wait on an invite.
+
+   Add employees before `setup state-tax` - it reads states off their work addresses.
 
    **Sub-domain papercuts to know about:**
    - `employee add work-address` requires `--effective-date YYYY-MM-DD` even though `--help` doesn't mark it required. Default to today's date if you don't have a better one.
    - `employee add federal-tax` 422s if optional W-4 numeric flags (e.g. `--dependents-amount`, `--other-income`, `--deductions`) are omitted. Pass `0` for each unless the user provides actual values.
    - Always run `gusto employee add <subdomain> --help` before invoking a sub-domain - the help is the source of truth for what flags are accepted right now. If a command returns `exit 7` with a `blocked_on` envelope, that's the CLI telling you exactly which flags it still needs.
 
-6. **Assign the signatory.** Run `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` (add `--title` if known). This is the person who signs the company's payroll forms; the form-signing flow signs _on their behalf_, so they must exist first. `onboarding-status` surfaces this as an `assign_signatory` blocker ahead of `sign_all_forms`, and `gusto company forms` refuses to start until a signatory is assigned. The invite lets the signatory complete their own PII.
+6. **Assign the signatory.** Branch on persona:
 
-   **Sole-owner workaround.** Today, `setup signatory` rejects the authenticated admin's own email - the signatory is invite-only and must be a different person. If the user IS the intended signatory (very common founder case - admin = signatory = first employee), ask them for a temporary alternate email (e.g. their personal address vs the work address they used as the admin). They can reassign signatory to themselves from the Gusto dashboard after onboarding. Don't paper this over by silently using a made-up email.
+   **Multi-person team (default).** Run `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` (add `--title` if known). This invites the signatory by email; they complete their own PII through the invite. The form-signing flow signs _on their behalf_, so the signatory must exist before `gusto company forms`.
+
+   **Sole owner.** `setup signatory` is invite-only and rejects the admin's own email, so it can't self-assign. Use the raw API endpoint to create the signatory directly with the user's own data: `gusto api request POST /v1/companies/{company_uuid}/signatories --data '{"first_name":"…","last_name":"…","email":"…","title":"…"}'`. Get `{company_uuid}` from `gusto auth whoami` (it's on the token's resource). The endpoint accepts the admin's own email; the invite endpoint is the one that rejects it. After the POST, `onboarding-status` will move past the `assign_signatory` blocker and `gusto company forms` will work.
+
+   `onboarding-status` surfaces signatory as an `assign_signatory` blocker ahead of `sign_all_forms`, and `gusto company forms` refuses to start until a signatory exists. Don't try to clear `assign_signatory` from inside step 4.
 
 7. **Sign forms.** Run `gusto company forms`. With a signatory already assigned, this opens the hosted Gusto signing URL (Form 8655 + state agreements) straight into signing - no signatory setup inside the flow. Surface the URL to the signatory to click; don't sign on their behalf.
 
@@ -58,7 +77,7 @@ These are the only times the agent should stop and wait for the user:
 - **Account claim + sign-in** (step 2 - the user claims the company in the browser, then `gusto auth login` needs them to finish signing in)
 - **Bank account routing + account numbers** (step 4 bank-account - ask the user for real values; never use dummy/example numbers, the API connects immediately)
 - **ACH e-signature** for the bank-connection step (legally binding)
-- **Signatory email** (step 6 - if the user IS the signatory, ask for an alternate email they can use temporarily)
+- **Employee SSN and date of birth** (step 5, sole-owner branch only - the admin-driven path needs both up front; pause and ask, don't fabricate)
 - **Signatory attestation** (the person who signs payroll forms must confirm in person)
 - **Form 8655 + state agreements** (multi-page e-signatures)
 
