@@ -2,27 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { InputError } from "../lib/oauth/provision-input.ts";
-import { companyProvisionHandler, provisionPayloadError, provisionResultData, waitForEnter } from "./company.ts";
+import { companyProvisionHandler, provisionPayloadError, provisionResultData } from "./company.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 
 describe("provisionResultData", () => {
-  test("maps the claim url + company uuid from a company-scoped result", () => {
-    expect(
-      provisionResultData({
-        accountClaimUrl: "https://claim/co-1",
-        tokenInfo: { resource: { type: "Company", uuid: "co-1" } },
-      }),
-    ).toEqual({ account_claim_url: "https://claim/co-1", company_uuid: "co-1" });
-  });
-
-  test("company_uuid is null when the result token isn't company-scoped", () => {
-    expect(
-      provisionResultData({
-        accountClaimUrl: "https://claim/x",
-        tokenInfo: { resource: { type: "Employee", uuid: "e-1" } },
-      }).company_uuid,
-    ).toBeNull();
+  test("returns the claim url and points at `auth login` as the next step", () => {
+    expect(provisionResultData({ accountClaimUrl: "https://claim/co-1" })).toEqual({
+      account_claim_url: "https://claim/co-1",
+      next_command: "gusto auth login",
+      next_step: "Claim the account in your browser, then run `gusto auth login` to authenticate.",
+    });
   });
 });
 
@@ -50,17 +40,5 @@ describe("companyProvisionHandler", () => {
     expect(result.ok).toBe(true);
     expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
     expect((result as { data: { method: string; path: string } }).data.path).toBe("/v1/provision");
-  });
-});
-
-describe("waitForEnter", () => {
-  test("resolves immediately without prompting when stdin is not a TTY", async () => {
-    const original = process.stdin.isTTY;
-    try {
-      Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
-      await expect(waitForEnter()).resolves.toBeUndefined();
-    } finally {
-      Object.defineProperty(process.stdin, "isTTY", { value: original, configurable: true });
-    }
   });
 });

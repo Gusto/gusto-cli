@@ -73,6 +73,41 @@ describe("login", () => {
     expect(store.data.sandbox?.companyUuid).toBe("comp-9");
   });
 
+  test("noBrowser prints the sign-in URL instead of opening a browser", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } }, // token_info
+    ]);
+
+    const lines: string[] = [];
+    let opened = false;
+    // With --no-browser the URL is only printed; drive the loopback off the printed line.
+    const print = (l: string): void => {
+      lines.push(l);
+      const m = l.match(/(https?:\/\/\S+\/oauth\/authorize\S*)/);
+      if (m) {
+        const u = new URL(m[1]);
+        void globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
+      }
+    };
+
+    const info = await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      openBrowser: () => {
+        opened = true;
+        return Promise.resolve();
+      },
+      noBrowser: true,
+      print,
+    });
+
+    expect(opened).toBe(false);
+    expect(lines.join("\n")).toMatch(/Open this URL in your browser/);
+    expect(info.resource?.uuid).toBe("comp-1");
+  });
+
   test("clears a stale companyUuid when re-login yields a non-company token", async () => {
     const store = memoryStore({
       sandbox: { clientId: "cid", clientSecret: "sec", accessToken: "prev", companyUuid: "old-co" },

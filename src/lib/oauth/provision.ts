@@ -1,43 +1,41 @@
 import type { Environment } from "../global-flags.ts";
 import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
-import { type LoginDeps, type TokenInfo, login } from "./login.ts";
 import type { ProvisionPayload } from "./provision-input.ts";
 import { ensureClientCreds } from "./session.ts";
 import { mintSystemAccess } from "./system-access.ts";
+import type { TokenStore } from "./token-store.ts";
 import type { ClientCreds } from "./types.ts";
 
 interface ProvisionResponse {
   account_claim_url?: unknown;
 }
 
-export interface ProvisionDeps extends LoginDeps {
-  confirmClaim?: () => Promise<void>;
+export interface ProvisionDeps {
+  store: TokenStore;
+  http: OAuthHttpOptions;
 }
 
 export interface ProvisionResult {
   accountClaimUrl: string;
-  tokenInfo: TokenInfo;
 }
 
+/**
+ * Create the company and return its claim URL - nothing more. Provision is
+ * deliberately non-blocking and agent-drivable: it does NOT open a browser,
+ * wait for the user to claim, or run OAuth. The caller (or the agent) claims
+ * the account in the browser and then runs `gusto auth login` separately to
+ * obtain the company-scoped Mode 2 token.
+ */
 export async function provision(
   env: Environment,
   payload: ProvisionPayload,
   deps: ProvisionDeps,
 ): Promise<ProvisionResult> {
   const { store, http } = deps;
-  const print = deps.print ?? ((l: string) => process.stderr.write(`${l}\n`));
-
   const creds = await ensureClientCreds(store, env, http);
   const accountClaimUrl = await callProvision(http, creds, payload);
-
-  print("Company created. Finish claiming the account in your browser:");
-  print(`  ${accountClaimUrl}`);
-  await openClaim(accountClaimUrl, deps.openBrowser, print);
-  if (deps.confirmClaim) await deps.confirmClaim();
-
-  const tokenInfo = await login(env, deps); // Mode 2: gated on the claim being done
-  return { accountClaimUrl, tokenInfo };
+  return { accountClaimUrl };
 }
 
 /**
@@ -59,17 +57,4 @@ export async function callProvision(
   const url = res.body?.account_claim_url;
   if (typeof url !== "string") throw new Error("/v1/provision response missing account_claim_url");
   return url;
-}
-
-async function openClaim(
-  url: string,
-  openBrowser: ((url: string) => Promise<void>) | undefined,
-  print: (line: string) => void,
-): Promise<void> {
-  if (!openBrowser) return;
-  try {
-    await openBrowser(url);
-  } catch {
-    print("(couldn't open a browser automatically - use the URL above)");
-  }
 }

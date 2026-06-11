@@ -24,6 +24,8 @@ export interface LoginDeps {
   store: TokenStore;
   http: OAuthHttpOptions;
   openBrowser?: (url: string) => Promise<void>;
+  /** Print the sign-in URL instead of opening a browser. For agent/headless use. */
+  noBrowser?: boolean;
   print?: (line: string) => void;
   now?: () => number;
 }
@@ -45,7 +47,11 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
       challenge,
       state,
     });
-    await openOrPrint(authorizeUrl, deps.openBrowser, print);
+    if (deps.noBrowser) {
+      printManualUrl(authorizeUrl, print);
+    } else {
+      await openOrPrint(authorizeUrl, deps.openBrowser, print);
+    }
     print("Waiting for you to finish signing in...");
 
     const code = await server.waitForCode();
@@ -84,7 +90,11 @@ export async function openOrPrint(
     print("Opened your browser to sign in. If it didn't open, visit:");
     print(`  ${url}`);
   } catch {
-    print("Open this URL in your browser to sign in:");
-    print(`  ${url}`);
+    printManualUrl(url, print);
   }
+}
+
+function printManualUrl(url: string, print: (line: string) => void): void {
+  print("Open this URL in your browser to sign in:");
+  print(`  ${url}`);
 }

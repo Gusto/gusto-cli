@@ -46,33 +46,23 @@ describe("callProvision", () => {
 });
 
 describe("provision", () => {
-  test("drives mint -> /v1/provision -> claim -> Mode 2 login and returns the claim url + identity", async () => {
+  test("mints, POSTs /v1/provision, and returns the claim url without running OAuth", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } }); // creds present -> no DCR
-    const { fetch: apiFetch } = mockFetch([
+    const { fetch: apiFetch, captured } = mockFetch([
       SYSTEM_ACCESS, // system_access mint
       { status: 201, body: { account_claim_url: "https://claim/co-1" } }, // POST /v1/provision
-      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } }, // Mode 2 code exchange
-      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } }, // token_info
     ]);
-
-    // Drive only the Mode 2 authorize URL through the loopback; the claim URL is a no-op.
-    const openBrowser = async (url: string): Promise<void> => {
-      if (!url.includes("/oauth/authorize")) return;
-      const u = new URL(url);
-      await globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
-    };
 
     const result = await provision("sandbox", EXAMPLE_PAYLOAD, {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
-      openBrowser,
-      confirmClaim: () => Promise.resolve(),
-      print: () => {},
     });
 
     expect(result.accountClaimUrl).toBe("https://claim/co-1");
-    expect(result.tokenInfo.resource?.uuid).toBe("comp-1");
-    expect(store.data.sandbox?.accessToken).toBe("user-at");
-    expect(store.data.sandbox?.companyUuid).toBe("comp-1");
+    // Non-blocking: provision does the mint + create and nothing else - no browser,
+    // no claim wait, no OAuth code exchange.
+    expect(captured.urls).toEqual(["https://api.test/v1/mcp/oauth/token", "https://api.test/v1/provision"]);
+    // It must not log the user in: the store stays creds-only, no access token.
+    expect(store.data.sandbox?.accessToken).toBeUndefined();
   });
 });
