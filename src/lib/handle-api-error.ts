@@ -1,4 +1,5 @@
 import { ApiError, NetworkError } from "./api-client.ts";
+import { errMsg } from "./errors.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import type { CommandResult } from "./runner.ts";
@@ -88,5 +89,33 @@ export function toResult(err: unknown): CommandResult<never> {
     ok: false,
     exitCode: ExitCode.General,
     error: { code: "internal_error", message },
+  };
+}
+
+/** Envelope for a partial failure: an earlier step succeeded, then a follow-up
+ * API call failed, leaving the caller in a known intermediate state worth
+ * reporting (e.g. onboarding finished but auto-approve failed). Carries the
+ * server response body (when present) and a human-readable error alongside
+ * caller-supplied context. `extras` keys lead `details`, then `error`, then
+ * `response` - matching the order each call site emitted before extraction. */
+export function partialFailure(
+  code: string,
+  message: string,
+  err: unknown,
+  extras: Record<string, unknown> = {},
+): CommandResult<never> {
+  const apiBody = err instanceof ApiError ? err.body : undefined;
+  return {
+    ok: false,
+    exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
+    error: {
+      code,
+      message,
+      details: {
+        ...extras,
+        error: errMsg(err),
+        ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
+      },
+    },
   };
 }

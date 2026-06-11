@@ -274,6 +274,19 @@ describe("companyFinishOnboardingHandler", () => {
     expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
   });
 
+  test("production: even an explicit approve:true cannot issue an approve request", async () => {
+    // There is no --approve flag, but lock the invariant: nothing (flag or opt)
+    // can make the demo-only approve endpoint fire against production.
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      if (u.includes("/approve")) return { status: 200, body: { company_status: "Approved" } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler({ ...auth, approve: true })(prodCtx));
+    expect(d.approved).toBe(false);
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+  });
+
   test("--no-approve in sandbox finishes only and skips approve", async () => {
     const s = stub((u) => {
       if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };

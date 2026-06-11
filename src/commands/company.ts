@@ -4,7 +4,7 @@ import { withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
+import { partialFailure, toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
@@ -241,12 +241,13 @@ interface ApproveResult {
 
 export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): CommandHandler {
   return async ({ globals }) => {
-    // The approve step is a non-production demo affordance: `PUT .../approve`
-    // only exists in the demo/sandbox env. In production, approval is a manual
-    // Gusto risk review that happens out of band, so we never call it there
-    // (and --no-approve is moot) - calling it would just 404. Mirrors the
-    // production guards on --demo-sign and EIN rotation elsewhere.
-    const wantApprove = opts.approve !== false && globals.env !== "production";
+    // The approve step is a demo/sandbox-only affordance: `PUT .../approve`
+    // exists only in the demo/sandbox env. Production approval is a manual Gusto
+    // risk review done out of band, so approve must NEVER be issued there - and
+    // no flag can force it (there is no --approve, only --no-approve). Mirrors
+    // the production guards on --demo-sign and EIN rotation elsewhere.
+    const isProduction = globals.env === "production";
+    const wantApprove = opts.approve !== false && !isProduction;
 
     if (opts.dryRun) {
       return {
@@ -300,6 +301,23 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
         };
       }
 
+      // Hard production stop, local to the call site: wantApprove already excludes
+      // production (so this is unreachable today), but assert it again right where
+      // the request is issued so a future change to that logic can never let an
+      // approve call reach production. Same defensive-recheck style as the
+      // federal-tax handler's post-validation narrowing.
+      if (isProduction) {
+        return {
+          ok: false,
+          exitCode: ExitCode.Blocked,
+          error: {
+            code: "approve_blocked_in_production",
+            message:
+              "`approve` is a demo/sandbox-only endpoint and is never called in production. Onboarding was finished; approval is left to Gusto's manual risk review.",
+          },
+        };
+      }
+
       // Sandbox-only: approve flips company_status -> 'Approved' so the company can
       // run payroll. Onboarding has already been finished by this point, so a
       // failure here is a partial - tell the agent to re-run this command (finish
@@ -308,21 +326,12 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
       try {
         company = (await ctx.client.put<ApproveResult | null>(`${base}/approve`)).body;
       } catch (err) {
-        const apiBody = err instanceof ApiError ? err.body : undefined;
-        return {
-          ok: false,
-          exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
-          error: {
-            code: "approve_failed",
-            message:
-              "Onboarding finished, but the sandbox auto-approve failed. Re-run `gusto company finish` to retry approval; do not redo onboarding steps.",
-            details: {
-              onboarding_completed: onboarding?.onboarding_completed ?? null,
-              error: errMsg(err),
-              ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
-            },
-          },
-        };
+        return partialFailure(
+          "approve_failed",
+          "Onboarding finished, but the sandbox auto-approve failed. Re-run `gusto company finish` to retry approval; do not redo onboarding steps.",
+          err,
+          { onboarding_completed: onboarding?.onboarding_completed ?? null },
+        );
       }
 
       return {

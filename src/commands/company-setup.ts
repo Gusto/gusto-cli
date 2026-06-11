@@ -5,6 +5,7 @@ import { bankCreateNoUuidError } from "../lib/bank-account.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
+import { partialFailure } from "../lib/handle-api-error.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { defaultOpenBrowser } from "../lib/browser.ts";
 import {
@@ -308,23 +309,15 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
           deposit_2: Number(deposits.deposit_2),
         });
       } catch (err) {
-        // Preserve the server response body (e.g. a 422's errors[].message) so the
-        // agent gets the actual reason verify failed, not just "PUT ... -> 422".
-        const apiBody = err instanceof ApiError ? err.body : undefined;
-        return {
-          ok: false,
-          exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
-          error: {
-            code: "bank_verification_failed",
-            message: `Bank account ${bankUuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
-            details: {
-              bank_account_uuid: bankUuid,
-              phase,
-              error: errMsg(err),
-              ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
-            },
-          },
-        };
+        // partialFailure preserves the server response body (e.g. a 422's
+        // errors[].message) so the agent gets the actual reason verify failed,
+        // not just "PUT ... -> 422".
+        return partialFailure(
+          "bank_verification_failed",
+          `Bank account ${bankUuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
+          err,
+          { bank_account_uuid: bankUuid, phase },
+        );
       }
 
       const last4 = (opts.accountNumber ?? "").slice(-4);

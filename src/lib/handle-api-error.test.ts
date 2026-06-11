@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
-import { toResult } from "./handle-api-error.ts";
+import { partialFailure, toResult } from "./handle-api-error.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 
 describe("toResult", () => {
@@ -170,5 +170,49 @@ describe("toResult OAuthError handling", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect("details" in result.error).toBe(false);
+  });
+});
+
+describe("partialFailure", () => {
+  test("ApiError: takes its exitCode and carries extras, error, and response (in that order)", () => {
+    const err = new ApiError(422, { errors: ["nope"] }, ExitCode.ApiClient, "PUT /x -> 422");
+    const result = partialFailure("approve_failed", "finished but approve failed", err, { onboarding_completed: true });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.ApiClient,
+      error: {
+        code: "approve_failed",
+        message: "finished but approve failed",
+        details: { onboarding_completed: true, error: "PUT /x -> 422", response: { errors: ["nope"] } },
+      },
+    });
+    // extras precede error precede response
+    expect(Object.keys((result as { error: { details: object } }).error.details)).toEqual([
+      "onboarding_completed",
+      "error",
+      "response",
+    ]);
+  });
+
+  test("5xx ApiError carries its server exitCode", () => {
+    const err = new ApiError(500, { e: 1 }, ExitCode.ApiServer, "PUT /x -> 500");
+    const result = partialFailure("approve_failed", "m", err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiServer);
+  });
+
+  test("ApiError with null body omits the response key", () => {
+    const err = new ApiError(422, null, ExitCode.ApiClient, "PUT /x -> 422");
+    const result = partialFailure("c", "m", err, { phase: "verify" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.details).toEqual({ phase: "verify", error: "PUT /x -> 422" });
+    expect("response" in (result.error.details as object)).toBe(false);
+  });
+
+  test("non-ApiError falls back to exit General and still records the message", () => {
+    const result = partialFailure("c", "m", new Error("boom"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.General);
+    expect((result.error.details as { error: string }).error).toBe("boom");
   });
 });
