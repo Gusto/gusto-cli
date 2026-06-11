@@ -292,23 +292,19 @@ async function refetchJob(client: ApiClient, job: unknown): Promise<RefetchResul
 
 async function rollbackOrphanJob(client: ApiClient, job: unknown): Promise<CommandResult<never>> {
   const jobUuid = readString(job, "uuid");
-  if (jobUuid) {
-    let deleteErr: unknown;
-    try {
-      await client.delete(`/v1/jobs/${jobUuid}`);
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiServer,
-        error: {
-          code: "job_created_without_compensation_rolled_back",
-          message:
-            "job was created without a current compensation (a known intermittent API issue) and has been deleted; retry the same command",
-          details: { rolled_back_job: job },
-        },
-      };
-    } catch (err) {
-      deleteErr = err;
-    }
+  try {
+    await client.delete(`/v1/jobs/${jobUuid}`);
+    return {
+      ok: false,
+      exitCode: ExitCode.ApiServer,
+      error: {
+        code: "job_created_without_compensation_rolled_back",
+        message:
+          "job was created without a current compensation (a known intermittent API issue) and has been deleted; retry the same command",
+        details: { rolled_back_job: job },
+      },
+    };
+  } catch (err) {
     return {
       ok: false,
       exitCode: ExitCode.ApiServer,
@@ -316,20 +312,10 @@ async function rollbackOrphanJob(client: ApiClient, job: unknown): Promise<Comma
         code: "job_created_without_compensation",
         message:
           "job was created without a current compensation and could not be deleted automatically; delete it manually before retrying or the rate-less job will block onboarding completion",
-        details: { orphan_job: job, delete_error: errMsg(deleteErr) },
+        details: { orphan_job: job, delete_error: errMsg(err) },
       },
     };
   }
-  return {
-    ok: false,
-    exitCode: ExitCode.ApiServer,
-    error: {
-      code: "job_created_without_compensation",
-      message:
-        "job was created without a current compensation and could not be deleted automatically; delete it manually before retrying or the rate-less job will block onboarding completion",
-      details: { orphan_job: job },
-    },
-  };
 }
 
 /** The positional employee_uuid is optional on subcommands that take `--example` (so a canned
