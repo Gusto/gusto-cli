@@ -31,7 +31,7 @@ describe("readTokenFromStdin", () => {
         throw new Error("stdin must not be read on a TTY");
         yield Buffer.from(""); // unreachable; satisfies the generator signature
       },
-    } as unknown as AsyncIterable<unknown>;
+    } as unknown as AsyncIterable<Buffer | string>;
     expect(await readTokenFromStdin(tty)).toBeNull();
   });
 

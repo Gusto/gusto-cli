@@ -14,11 +14,13 @@
  * null instead; this is an automation-first CLI. Piped/redirected stdin is not a
  * TTY, so the normal read path runs there.
  */
-export async function readTokenFromStdin(input: AsyncIterable<unknown> = process.stdin): Promise<string | null> {
+export async function readTokenFromStdin(
+  input: AsyncIterable<Buffer | string> = process.stdin,
+): Promise<string | null> {
   if ((input as { isTTY?: boolean }).isTTY) return null;
   const chunks: Buffer[] = [];
   for await (const chunk of input) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   const firstLine = Buffer.concat(chunks).toString("utf8").trim().split(/\r?\n/, 1)[0] ?? "";
   const token = firstLine.trim();
