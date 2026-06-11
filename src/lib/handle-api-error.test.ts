@@ -125,11 +125,8 @@ describe("toResult 403 scope handling", () => {
   });
 });
 
-describe("toResult OAuthError handling (AINT-625)", () => {
+describe("toResult OAuthError handling", () => {
   test("a 4xx OAuthError surfaces the response body + request_id instead of collapsing to internal_error", () => {
-    // Was the AINT-625 symptom: a 400 from /v1/mcp/oauth/token surfaced as just
-    // `{ code: "internal_error", message: "/v1/mcp/oauth/token -> 400" }` with
-    // no body, no request_id, nothing to debug from.
     const err = new OAuthError(
       400,
       { error: "invalid_grant", error_description: "auth code already redeemed" },

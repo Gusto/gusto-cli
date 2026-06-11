@@ -53,10 +53,7 @@ describe("login", () => {
       }, // token_info
     ]);
 
-    // Fire-and-forget the loopback hit so openBrowser returns immediately - in
-    // real usage `open` spawns the browser and returns; it doesn't block on the
-    // OAuth response. The loopback now holds the response open until the caller
-    // signals the outcome, so awaiting the fetch here would deadlock login.
+    // Fire-and-forget; loopback now holds the response, so awaiting would deadlock.
     const openBrowser = (authorizeUrl: string): Promise<void> => {
       const u = new URL(authorizeUrl);
       const redirect = u.searchParams.get("redirect_uri") as string;
@@ -140,15 +137,13 @@ describe("login", () => {
     expect(store.data.sandbox?.companyUuid).toBeUndefined();
   });
 
-  test("AINT-625: browser tab shows 'login complete' only after the token exchange succeeds", async () => {
+  test("browser tab shows 'login complete' only after the token exchange succeeds", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
     const { fetch: apiFetch } = mockFetch([
       { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
       { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
     ]);
 
-    // Capture the browser's view of the callback response by holding the fetch
-    // promise across the whole login flow.
     let callbackResponse: Promise<Response> | undefined;
     const openBrowser = (authorizeUrl: string): Promise<void> => {
       const u = new URL(authorizeUrl);
@@ -168,15 +163,11 @@ describe("login", () => {
     const res = await callbackResponse!;
     expect(res.status).toBe(200);
     const body = await res.text();
-    // The success page is only flushed once the token persisted - if we'd
-    // rendered it on the callback the user would see it before the exchange
-    // even ran.
     expect(body).toContain("login complete");
   });
 
-  test("AINT-625: browser tab shows a failure page when the token exchange returns non-200", async () => {
+  test("browser tab shows a failure page when the token exchange returns non-200", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
-    // The 400 the ticket reproduced: token endpoint rejects the exchange.
     const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
 
     let callbackResponse: Promise<Response> | undefined;
@@ -201,8 +192,6 @@ describe("login", () => {
     const body = await res.text();
     expect(body).toContain("login failed");
     expect(body).not.toContain("login complete");
-    // The original symptom was the opposite: the user saw "login complete"
-    // even though no token was persisted.
     expect(store.data.sandbox?.accessToken).toBeUndefined();
   });
 });

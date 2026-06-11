@@ -102,8 +102,6 @@ describe("startLoopbackServer", () => {
     const codeP = server.waitForCode();
     const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(await codeP).toBe("the-code");
-    // The loopback now holds the response until the caller signals the outcome;
-    // close it out so the fetch resolves and the test doesn't hang.
     server.complete({ ok: true });
     const res = await resP;
     expect(res.status).toBe(200);
@@ -116,8 +114,6 @@ describe("startLoopbackServer", () => {
     const codeP = server.waitForCode();
     const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(await codeP).toBe("the-code");
-    // No complete() call: simulate the caller bailing out. close() should flush
-    // a neutral page so the browser tab doesn't hang on an unfinished response.
     server.close();
     const res = await resP;
     expect(res.status).toBe(200);
@@ -133,8 +129,6 @@ describe("startLoopbackServer", () => {
     expect(await codeP).toBe("the-code");
     server.complete({ ok: false });
     const res = await resP;
-    // Status was already 200 by the time we knew the outcome; the body carries
-    // the human-readable failure note.
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("login failed");

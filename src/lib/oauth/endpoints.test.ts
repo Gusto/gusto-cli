@@ -32,7 +32,7 @@ describe("toTokenSet", () => {
   });
 });
 
-describe("OAuthError (AINT-625)", () => {
+describe("OAuthError on non-2xx responses", () => {
   test("a non-2xx token response throws OAuthError with the body + request_id", async () => {
     const fetchImpl = (() =>
       Promise.resolve(

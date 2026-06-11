@@ -69,14 +69,9 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
         expiresAt: tokens.expiresAt,
         ...(companyUuid ? { companyUuid } : {}),
       });
-      // Token is persisted - safe to claim success in the browser tab.
       server.complete({ ok: true });
       return info;
     } catch (err) {
-      // Token exchange or token_info failed: the loopback tab is still holding
-      // a "returning to your terminal..." response. Flip it to a failure page
-      // so the user doesn't see a misleading "login complete" before they
-      // switch back to the CLI and read the actual error.
       server.complete({ ok: false });
       throw err;
     }

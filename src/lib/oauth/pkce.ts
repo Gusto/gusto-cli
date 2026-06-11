@@ -97,19 +97,13 @@ export interface LoopbackServer {
   redirectUri: string;
   port: number;
   waitForCode(): Promise<string>;
-  /** Render the final browser page once the caller knows the real outcome. The
-   * loopback holds the callback response open until this is called so the user
-   * never sees "login complete" before the token exchange has actually succeeded.
-   * Safe to call once; subsequent calls are no-ops. Calling `close()` without
-   * `complete()` finishes the response with a neutral "Returning to CLI..." page. */
+  /** Flush the held callback response with a pass/fail page. The server keeps
+   * the response open after `waitForCode()` resolves so the browser tab can't
+   * claim "login complete" before the token exchange has actually run. */
   complete(result: { ok: boolean; message?: string }): void;
   close(): void;
 }
 
-/** A neutral page rendered the instant the loopback receives the callback. The
- * outcome is unknown at this point - the token exchange hasn't happened yet -
- * so we deliberately avoid claiming success. `complete()` flips this to a real
- * pass/fail message once the caller knows. */
 const RETURNING_PAGE = "Gusto CLI: returning to your terminal...";
 
 /** Bind the loopback callback server first (so the caller learns the port and
@@ -136,8 +130,6 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
       const validCallback = parsed.code != null && parsed.error == null && parsed.state === expectedState;
 
       if (!validCallback) {
-        // Fail fast on the wire - no need to hold the connection open. Caller
-        // hasn't started a token exchange yet because there's no code to use.
         res.writeHead(400, { "Content-Type": "text/plain" });
         res.end("Gusto CLI: login failed. Return to your terminal.");
         if (parsed.error) return fail(new Error(`authorization failed: ${parsed.error}`));
@@ -145,13 +137,11 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
         return fail(new Error("callback missing authorization code"));
       }
 
-      // Hold the response open until the caller signals the real outcome via
-      // complete(). Stream the headers + a "returning" body so the browser tab
-      // isn't blank while the token exchange runs.
+      // Hold the response open; complete() flushes the body once the caller
+      // knows whether the token exchange succeeded.
       res.writeHead(200, { "Content-Type": "text/plain" });
       pendingRes = res;
       res.on("close", () => {
-        // Browser closed early; drop the handle so complete() can't write to it.
         if (pendingRes === res) pendingRes = undefined;
       });
       succeed(parsed.code as string);
@@ -186,13 +176,13 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
       try {
         res.end(body);
       } catch {
-        // Browser tab closed; nothing to write to.
+        // Browser tab closed before flush.
       }
     }
 
     function closeHandle(): void {
-      // If the caller is bailing without ever calling complete(), flush a
-      // neutral page so the browser tab doesn't hang on a half-written response.
+      // Caller bailed (Ctrl-C) without calling complete(); flush a neutral
+      // page so the browser tab doesn't hang.
       if (pendingRes && !completed) {
         completed = true;
         try {

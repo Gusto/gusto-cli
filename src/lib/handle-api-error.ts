@@ -7,7 +7,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** The optional `details`/`request_id` an error envelope carries from an ApiError or OAuthError. */
 function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
   return {
     ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
@@ -66,10 +65,7 @@ export function toResult(err: unknown): CommandResult<never> {
     };
   }
   if (err instanceof OAuthError) {
-    // status 0 means a network-level failure inside the OAuth client; everything
-    // else is a real HTTP response from the OAuth/DCR endpoints. Surface the
-    // response body + request_id so a 400 from /v1/mcp/oauth/token doesn't
-    // collapse to a bare "/v1/mcp/oauth/token -> 400" with no signal.
+    // OAuthError uses status 0 as a sentinel for fetch-level failures.
     if (err.status === 0) {
       return {
         ok: false,
