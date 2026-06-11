@@ -27,7 +27,10 @@ export function registerAuthCommand(parent: Command): void {
   cmd
     .command("login")
     .description("Open the browser for OAuth PKCE login and store the token")
-    .option("--no-browser", "Print the sign-in URL instead of opening a browser (for agent/headless use)")
+    .option(
+      "--no-browser",
+      "Print the sign-in URL instead of opening a browser (local headless use - the OAuth callback returns to 127.0.0.1 on this machine)",
+    )
     .action((opts: LoginOpts) =>
       runCommand(
         "gusto auth login",
