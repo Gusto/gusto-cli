@@ -3,12 +3,16 @@ import { ApiError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { TEST_CONTEXT as ctx, okData as data } from "../lib/test-support.ts";
 import {
+  addressBlockers,
+  addressHandler,
   bankAccountBlockers,
   bankAccountHandler,
   einAlreadyInUse,
   federalTaxBlockers,
   federalTaxHandler,
   formsHandler,
+  industryBlockers,
+  industryHandler,
   resolveTaxableAsScorp,
   signatoryBlockers,
   signatoryHandler,
@@ -176,5 +180,92 @@ describe("formsHandler --demo-sign", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(result.error.blocked_on?.[0]?.field).toBe("signature-text");
+  });
+});
+
+describe("addressBlockers + handler", () => {
+  test("flags every missing field", () => {
+    expect(addressBlockers({}).map((b) => b.field)).toEqual(["street-1", "city", "state", "zip"]);
+  });
+
+  test("no blockers when street/city/state/zip present", () => {
+    expect(addressBlockers({ street1: "1 Main St", city: "SF", state: "CA", zip: "94107" })).toEqual([]);
+  });
+
+  test("missing args refuse with a structured blocked_on", async () => {
+    const result = await addressHandler({})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(result.error.blocked_on).toHaveLength(4);
+  });
+
+  test("dry-run builds the POST shape; filing + mailing default true", async () => {
+    const d = data(
+      await addressHandler({ street1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107", dryRun: true })(
+        ctx,
+      ),
+    );
+    expect(d.method).toBe("POST");
+    expect(d.path).toBe("/v1/companies/{company_uuid}/locations");
+    expect(d.body).toEqual({
+      street_1: "300 3rd St",
+      city: "San Francisco",
+      state: "CA",
+      zip: "94107",
+      filing_address: true,
+      mailing_address: true,
+    });
+  });
+
+  test("--no-filing-address / --no-mailing-address opt out", async () => {
+    const d = data(
+      await addressHandler({
+        street1: "300 3rd St",
+        city: "San Francisco",
+        state: "CA",
+        zip: "94107",
+        filingAddress: false,
+        mailingAddress: false,
+        dryRun: true,
+      })(ctx),
+    );
+    expect(d.body).toMatchObject({ filing_address: false, mailing_address: false });
+  });
+
+  test("--example returns a canned payload", async () => {
+    const d = data(await addressHandler({ example: true })(ctx));
+    expect(d.method).toBe("POST");
+    expect(d.path).toContain("/locations");
+  });
+});
+
+describe("industryBlockers + handler", () => {
+  test("flags missing naics-code", () => {
+    expect(industryBlockers({}).map((b) => b.field)).toEqual(["naics-code"]);
+  });
+
+  test("no blockers when naics-code present (title + sic optional)", () => {
+    expect(industryBlockers({ naicsCode: "541511" })).toEqual([]);
+  });
+
+  test("dry-run builds the PUT shape; title + sic omitted when absent", async () => {
+    const d = data(await industryHandler({ naicsCode: "541511", dryRun: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/companies/{company_uuid}/industry_selection");
+    expect(d.body).toEqual({ naics_code: "541511" });
+  });
+
+  test("dry-run includes title + sic_codes when provided", async () => {
+    const d = data(
+      await industryHandler({ naicsCode: "541511", title: "Software", sicCode: ["7372", "7371"], dryRun: true })(ctx),
+    );
+    expect(d.body).toEqual({ naics_code: "541511", title: "Software", sic_codes: ["7372", "7371"] });
+  });
+
+  test("--example returns a canned payload", async () => {
+    const d = data(await industryHandler({ example: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toContain("/industry_selection");
   });
 });
