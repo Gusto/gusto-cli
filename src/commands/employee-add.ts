@@ -243,17 +243,21 @@ export async function runJob(
   // employee's only active job ("must have at least one active job" 422), so if
   // the comp never materializes the only path forward is manual fix in the dashboard.
   const sleep = (ms: number): Promise<void> => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
+  const jobUuid = readString(job, "uuid");
   let current = currentCompensation(job);
   let refetchErr: unknown;
-  for (let attempt = 0; !current?.uuid && attempt < refetchDelaysMs.length; attempt++) {
-    await sleep(refetchDelaysMs[attempt]);
-    const refresh = await refetchJob(client, job);
-    if (!refresh.ok) {
-      refetchErr = refresh.err;
-      break;
+  if (!current?.uuid && jobUuid) {
+    for (let attempt = 0; !current?.uuid && attempt < refetchDelaysMs.length; attempt++) {
+      await sleep(refetchDelaysMs[attempt]);
+      try {
+        const res = await client.get(`/v1/jobs/${jobUuid}`);
+        job = res.body;
+        current = currentCompensation(res.body);
+      } catch (err) {
+        refetchErr = err;
+        break;
+      }
     }
-    job = refresh.job;
-    current = currentCompensation(refresh.job);
   }
 
   if (!current?.uuid) {
@@ -265,7 +269,7 @@ export async function runJob(
           code: "job_compensation_check_failed",
           message:
             "job was created but checking whether its compensation was attached failed; retry the same command or inspect the job manually",
-          details: { job, check_error: errMsg(refetchErr) },
+          details: { job, job_uuid: jobUuid, check_error: errMsg(refetchErr) },
         },
       };
     }
@@ -276,7 +280,7 @@ export async function runJob(
         code: "job_created_without_compensation",
         message:
           "job was created but its compensation never appeared after retries; fix the rate manually in the Gusto dashboard - the job can't be deleted via API while it is the employee's only active job",
-        details: { job },
+        details: { job, job_uuid: jobUuid },
       },
     };
   }
@@ -294,19 +298,6 @@ export async function runJob(
       completedData: job,
       failedDomain: "compensation",
     });
-  }
-}
-
-type RefetchResult = { ok: true; job: unknown } | { ok: false; err: unknown };
-
-async function refetchJob(client: ApiClient, job: unknown): Promise<RefetchResult> {
-  const jobUuid = readString(job, "uuid");
-  if (!jobUuid) return { ok: false, err: new Error("job has no uuid to refetch") };
-  try {
-    const res = await client.get(`/v1/jobs/${jobUuid}`);
-    return { ok: true, job: res.body };
-  } catch (err) {
-    return { ok: false, err };
   }
 }
 

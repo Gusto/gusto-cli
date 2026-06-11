@@ -282,8 +282,32 @@ describe("runJob", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("job_created_without_compensation");
     expect(calls.map((c) => `${c.method} ${c.url}`)).not.toContain("DELETE /v1/jobs/job-7");
-    const details = result.error.details as { job: { uuid: string } };
-    expect(details.job.uuid).toBe("job-7");
+    const details = result.error.details as { job: { uuid: string }; job_uuid: string };
+    expect(details.job_uuid).toBe("job-7");
+    // POST + 3 GETs, no DELETE
+    expect(calls.filter((c) => c.method === "GET" && c.url === "/v1/jobs/job-7")).toHaveLength(3);
+  });
+
+  test("retries exhaust the full delay schedule even when GET returns a sparse body without uuid", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/employees/emp-1/jobs": [201, { uuid: "job-7" }],
+      "GET /v1/jobs/job-7": [200, {}],
+    });
+    const result = await runJob(
+      client,
+      "emp-1",
+      { title: "Engineer", hireDate: "2026-01-06", rate: "120000", paymentUnit: "Year", flsaStatus: "Exempt" },
+      [0, 0, 0],
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("job_created_without_compensation");
+    // The stable jobUuid from the POST response is preserved in details even though
+    // the latest GET body is empty, so the user can still recover manually.
+    const details = result.error.details as { job_uuid: string };
+    expect(details.job_uuid).toBe("job-7");
+    // All three GETs ran - the sparse body didn't short-circuit the retry loop.
+    expect(calls.filter((c) => c.method === "GET" && c.url === "/v1/jobs/job-7")).toHaveLength(3);
   });
 
   test("when the refetch GET fails (network / 5xx), surfaces a check-failed error WITHOUT deleting the job", async () => {
