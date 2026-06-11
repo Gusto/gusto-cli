@@ -4,6 +4,7 @@ import type { ApiClient } from "../lib/api-client.ts";
 import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { bankCreateNoUuidError } from "../lib/bank-account.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_OPT } from "../lib/cli-options.ts";
+import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -233,10 +234,26 @@ export async function runJob(client: ApiClient, employeeUuid: string, opts: JobO
   // it a moment later. Re-fetch once before treating the job as orphaned.
   let current = currentCompensation(job);
   if (!current?.uuid) {
-    const refreshed = await refetchJob(client, job);
-    if (refreshed) {
-      job = refreshed;
-      current = currentCompensation(refreshed);
+    const refresh = await refetchJob(client, job);
+    if (refresh.ok) {
+      const refreshedCurrent = currentCompensation(refresh.job);
+      if (refreshedCurrent?.uuid) {
+        job = refresh.job;
+        current = refreshedCurrent;
+      }
+    } else {
+      // GET failed (network / 5xx / auth). The job may be perfectly healthy; don't roll it
+      // back blindly. Surface the failed check so the caller can retry deliberately.
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiServer,
+        error: {
+          code: "job_compensation_check_failed",
+          message:
+            "job was created but checking whether its compensation was attached failed; retry the same command or inspect the job manually before deciding to delete it",
+          details: { job, check_error: errMsg(refresh.err) },
+        },
+      };
     }
   }
 
@@ -260,20 +277,23 @@ export async function runJob(client: ApiClient, employeeUuid: string, opts: JobO
   }
 }
 
-async function refetchJob(client: ApiClient, job: unknown): Promise<unknown | undefined> {
+type RefetchResult = { ok: true; job: unknown } | { ok: false; err: unknown };
+
+async function refetchJob(client: ApiClient, job: unknown): Promise<RefetchResult> {
   const jobUuid = readString(job, "uuid");
-  if (!jobUuid) return undefined;
+  if (!jobUuid) return { ok: false, err: new Error("job has no uuid to refetch") };
   try {
     const res = await client.get(`/v1/jobs/${jobUuid}`);
-    return res.body;
-  } catch {
-    return undefined;
+    return { ok: true, job: res.body };
+  } catch (err) {
+    return { ok: false, err };
   }
 }
 
 async function rollbackOrphanJob(client: ApiClient, job: unknown): Promise<CommandResult<never>> {
   const jobUuid = readString(job, "uuid");
   if (jobUuid) {
+    let deleteErr: unknown;
     try {
       await client.delete(`/v1/jobs/${jobUuid}`);
       return {
@@ -286,9 +306,19 @@ async function rollbackOrphanJob(client: ApiClient, job: unknown): Promise<Comma
           details: { rolled_back_job: job },
         },
       };
-    } catch {
-      /* fall through */
+    } catch (err) {
+      deleteErr = err;
     }
+    return {
+      ok: false,
+      exitCode: ExitCode.ApiServer,
+      error: {
+        code: "job_created_without_compensation",
+        message:
+          "job was created without a current compensation and could not be deleted automatically; delete it manually before retrying or the rate-less job will block onboarding completion",
+        details: { orphan_job: job, delete_error: errMsg(deleteErr) },
+      },
+    };
   }
   return {
     ok: false,
