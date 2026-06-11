@@ -15,6 +15,14 @@ describe("readTokenFromStdin", () => {
     expect(await readTokenFromStdin(Readable.from(["abc", "def\n"]))).toBe("abcdef");
   });
 
+  test("uses only the first line when several are piped", async () => {
+    expect(await readTokenFromStdin(Readable.from(["real-token\nextra-junk\n"]))).toBe("real-token");
+  });
+
+  test("ignores leading blank lines", async () => {
+    expect(await readTokenFromStdin(Readable.from(["\n\nreal-token\n"]))).toBe("real-token");
+  });
+
   test("returns null for empty input", async () => {
     expect(await readTokenFromStdin(Readable.from([]))).toBeNull();
   });
