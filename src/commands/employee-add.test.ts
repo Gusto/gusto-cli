@@ -290,16 +290,35 @@ describe("runFederalTax", () => {
     expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 
-  test("carries over the current w4_data_type when --w4-data-type is omitted (the PUT requires it)", async () => {
+  test("carries over every unset W-4 field on a partial update (the PUT replaces the record)", async () => {
     const { client, calls } = stubApiClient({
-      "GET /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v1", w4_data_type: "rev_2020_w4" }],
+      "GET /v1/employees/emp-1/federal_taxes": [
+        200,
+        {
+          version: "fed-v1",
+          w4_data_type: "rev_2020_w4",
+          two_jobs: true,
+          dependents_amount: "2000.0",
+          other_income: "500.0",
+          extra_withholding: "50.0",
+          deductions: "100.0",
+        },
+      ],
       "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
     });
+    // Only --filing-status changes; the rest must be carried over, not zeroed.
     const result = await runFederalTax(client, "emp-1", { filingStatus: "Married" });
     expect(result.ok).toBe(true);
-    const put = calls.find((c) => c.method === "PUT");
-    expect((put?.body as Record<string, unknown>).w4_data_type).toBe("rev_2020_w4");
-    expect((put?.body as Record<string, unknown>).filing_status).toBe("Married");
+    const body = calls.find((c) => c.method === "PUT")?.body as Record<string, unknown>;
+    expect(body.filing_status).toBe("Married");
+    expect(body).toMatchObject({
+      w4_data_type: "rev_2020_w4",
+      two_jobs: true,
+      dependents_amount: "2000.0",
+      other_income: "500.0",
+      extra_withholding: "50.0",
+      deductions: "100.0",
+    });
   });
 
   test("an explicit --w4-data-type overrides the current value", async () => {

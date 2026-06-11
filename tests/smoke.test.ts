@@ -371,6 +371,16 @@ describe("employee add per-domain subcommands", () => {
     const result = await run(["employee", "add", "home-address", "--street-1", "X"]);
     expect(result.exitCode).toBe(2);
   });
+
+  test("an optional-positional subcommand missing [employee_uuid] returns blocked_on (exit 7)", async () => {
+    // job/federal-tax/payment-method/state-tax take [employee_uuid] so --example needs no uuid;
+    // a non-example call without it falls to missingEmployeeUuid() rather than a commander error.
+    const result = await run(["employee", "add", "job", "--title", "X", "--hire-date", "2026-01-06"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
 });
 
 describe("validation returns structured blocked_on before auth (exit 7)", () => {

@@ -191,6 +191,31 @@ export function compensationBody(opts: JobOpts): Record<string, unknown> | undef
 /** POST the job, then (when comp flags are given) UPDATE the job's auto-created current compensation
  * in place — never POST a second one — carrying the version from the job response so the PUT can't
  * 409. Returns data keyed by domain (`job`, optionally `compensation`). */
+/** The failure shape for a two-step subdomain where step 1 created a resource but step 2 failed.
+ * Echoes the created resource plus the completed/failed domains so a retry can resume from step 2
+ * instead of recreating step 1. Built once so the code/message/details shape can't drift between
+ * `runJob` and `runPaymentMethod`. `message` is the prefix; the API error message is appended. */
+function partialFailureResult(
+  err: unknown,
+  spec: { code: string; message: string; completedDomain: string; completedData: unknown; failedDomain: string },
+): CommandResult<never> {
+  const base = toResult(err);
+  if (base.ok) throw new Error("toResult must return a failure", { cause: err });
+  return {
+    ok: false,
+    exitCode: base.exitCode,
+    error: {
+      code: spec.code,
+      message: `${spec.message}: ${base.error.message}`,
+      details: {
+        [spec.completedDomain]: spec.completedData,
+        completed: [spec.completedDomain],
+        failed: { domain: spec.failedDomain, error: base.error },
+      },
+    },
+  };
+}
+
 export async function runJob(client: ApiClient, employeeUuid: string, opts: JobOpts): Promise<CommandResult> {
   let job: unknown;
   try {
@@ -223,17 +248,13 @@ export async function runJob(client: ApiClient, employeeUuid: string, opts: JobO
   } catch (err) {
     // The job already exists. Surface it (uuid + completed steps) so a retry can target the
     // compensation update against the existing job rather than POSTing a duplicate job.
-    const base = toResult(err);
-    if (base.ok) throw new Error("toResult must return a failure", { cause: err });
-    return {
-      ok: false,
-      exitCode: base.exitCode,
-      error: {
-        code: "compensation_failed",
-        message: `job created but updating its compensation failed: ${base.error.message}`,
-        details: { job, completed: ["job"], failed: { domain: "compensation", error: base.error } },
-      },
-    };
+    return partialFailureResult(err, {
+      code: "compensation_failed",
+      message: "job created but updating its compensation failed",
+      completedDomain: "job",
+      completedData: job,
+      failedDomain: "compensation",
+    });
   }
 }
 
@@ -321,14 +342,15 @@ export async function runFederalTax(
 ): Promise<CommandResult> {
   const path = `/v1/employees/${employeeUuid}/federal_taxes`;
   try {
-    // The federal_taxes PUT replaces the record and 422s on a missing w4_data_type, so read the
-    // current record (for both the version and w4_data_type) and carry w4_data_type over when
-    // --w4-data-type wasn't supplied — lets an update touch only --filing-status etc.
+    // The federal_taxes PUT REPLACES the record (it 422s on a missing w4_data_type), so a partial
+    // update built only from the passed flags would silently zero every unset W-4 field. Read the
+    // current record and carry over each field whose flag wasn't supplied, making `--filing-status`
+    // alone a safe in-place edit. The version comes from the same GET to avoid a 409.
     const current = await client.get(path);
     const body = federalTaxBody(opts);
-    if (body.w4_data_type === undefined) {
-      const existing = readString(current.body, "w4_data_type");
-      if (existing !== undefined) body.w4_data_type = existing;
+    const cur = current.body as Record<string, unknown> | null;
+    for (const field of CARRY_OVER_FEDERAL_TAX_FIELDS) {
+      if (body[field] === undefined && cur?.[field] !== undefined) body[field] = cur[field];
     }
     const res = await client.put(path, withVersion(body, readString(current.body, "version")));
     return { ok: true, data: res.body };
@@ -336,6 +358,17 @@ export async function runFederalTax(
     return toResult(err);
   }
 }
+
+/** W-4 fields carried over from the current federal_taxes when their flag is unset, so a partial
+ * update doesn't wipe them (the PUT replaces the record). `filing_status` is required, never carried. */
+const CARRY_OVER_FEDERAL_TAX_FIELDS = [
+  "w4_data_type",
+  "two_jobs",
+  "dependents_amount",
+  "other_income",
+  "extra_withholding",
+  "deductions",
+] as const;
 
 function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpts): CommandHandler {
   return async ({ globals }) => {
@@ -346,7 +379,7 @@ function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpt
           method: "PUT",
           path: "/v1/employees/{employee_uuid}/federal_taxes",
           body: { filing_status: "Single", w4_data_type: "rev_2020_w4" },
-          note: "example: w4_data_type and version are read from current federal_taxes at send time",
+          note: "example: version and any unset W-4 fields are read from current federal_taxes at send time",
         },
       };
     }
@@ -360,7 +393,7 @@ function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpt
           method: "PUT",
           path: `/v1/employees/${employeeUuid}/federal_taxes`,
           body: federalTaxBody(opts),
-          note: "dry-run: version is read from current federal_taxes at send time",
+          note: "dry-run: version and any unset W-4 fields are read from current federal_taxes at send time",
         },
       };
     }
@@ -457,21 +490,13 @@ export async function runPaymentMethod(
   } catch (err) {
     // The bank account already exists. Surface it (uuid + completed steps) so a retry can route the
     // payment method to the existing account rather than POSTing a duplicate bank account.
-    const base = toResult(err);
-    if (base.ok) throw new Error("toResult must return a failure", { cause: err });
-    return {
-      ok: false,
-      exitCode: base.exitCode,
-      error: {
-        code: "payment_method_failed",
-        message: `bank account created but setting the payment method failed: ${base.error.message}`,
-        details: {
-          bank_account: bank,
-          completed: ["bank_account"],
-          failed: { domain: "payment_method", error: base.error },
-        },
-      },
-    };
+    return partialFailureResult(err, {
+      code: "payment_method_failed",
+      message: "bank account created but setting the payment method failed",
+      completedDomain: "bank_account",
+      completedData: bank,
+      failedDomain: "payment_method",
+    });
   }
 }
 
