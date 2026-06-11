@@ -1,3 +1,4 @@
+import { ApiClient } from "./api-client.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import type { StreamSinks } from "./output.ts";
 import type { CommandContext, CommandResult } from "./runner.ts";
@@ -80,4 +81,33 @@ export function stubGlobalFetch(plan: MockResponse[] | ((url: string) => MockRes
     });
   }) as unknown as typeof fetch;
   return { calls, restore: () => void (globalThis.fetch = original) };
+}
+
+/**
+ * ApiClient backed by a fetch stub that routes by exact `"METHOD /pathname"` and records each call
+ * (the pathname lands in `RecordedCall.url`). Returns the client plus the recorded calls. Use for
+ * tests that inject an ApiClient via `fetchImpl`; use `stubGlobalFetch` instead for handlers that
+ * build their own client internally. Retries are disabled so error paths resolve immediately.
+ */
+export function stubApiClient(routes: Record<string, [number, unknown]>): { client: ApiClient; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(url.toString());
+    const method = init?.method ?? "GET";
+    const key = `${method} ${u.pathname}`;
+    const bodyStr = typeof init?.body === "string" ? init.body : undefined;
+    calls.push({ method, url: u.pathname, body: bodyStr ? JSON.parse(bodyStr) : undefined });
+    const route = routes[key];
+    if (!route) throw new Error(`no stub route for ${key}`);
+    const [status, body] = route;
+    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  const client = new ApiClient({
+    baseUrl: "https://api.example.com",
+    token: "tok",
+    apiVersion: "2026-02-01",
+    fetchImpl,
+    retrySleepMs: () => 0,
+  });
+  return { client, calls };
 }

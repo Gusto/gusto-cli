@@ -60,12 +60,14 @@ function buildProgram(): Command {
   registerConfigCommand(program);
   registerApiCommand(program);
 
-  // Cascade exitOverride to every subcommand so commander throws CommanderError
-  // instead of calling process.exit() out from under us.
-  for (const cmd of program.commands) {
+  // Cascade exitOverride to every command at every depth (some commands, e.g. `employee add`,
+  // nest subcommands two levels deep) so commander throws CommanderError instead of calling
+  // process.exit() out from under us.
+  const cascadeExitOverride = (cmd: Command): void => {
     cmd.exitOverride();
-    for (const sub of cmd.commands) sub.exitOverride();
-  }
+    for (const sub of cmd.commands) cascadeExitOverride(sub);
+  };
+  for (const cmd of program.commands) cascadeExitOverride(cmd);
 
   return program;
 }
