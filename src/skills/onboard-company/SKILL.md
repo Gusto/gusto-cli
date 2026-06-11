@@ -10,9 +10,18 @@ Walks the user through onboarding a new Gusto company. Drives the `gusto` CLI to
 ## Preconditions
 
 - Gusto CLI installed (`curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh`)
-- User has the company's details for the provision payload: company name, EIN, primary work address, and the admin user's name/email (see step 1 - `provision` has no default payload)
+- User has the company's details for the provision payload: company name, primary work address, and the admin user's name/email (see step 1 - `provision` has no default payload). Do **not** ask for EIN here; that's collected later at the federal-tax setup step.
 - User has their first hire's name and email (other PII is collected via self-onboard invite, not in chat)
 - User is willing to verify their identity in a browser tab during the flow
+
+## Who is the user onboarding?
+
+Before driving the flow, figure out which persona the user is. This determines whether to use invite-based or admin-driven paths for the signatory (step 6) and the first employee (step 5).
+
+- **Multi-person team** - admin, signatory, and first employee are different people (or at least different inboxes). Default to the invite flow throughout: the CLI sends an email to each person and they self-complete their own PII / SSN / banking. This is the lowest-friction path when the admin doesn't have everyone's SSN on hand.
+- **Sole owner / single-member LLC** - the user is the admin AND the intended signatory AND the only employee (very common founder case). The invite path dead-ends here: signatory-by-invite rejects the admin's own email, and employee-by-invite blocks waiting for the user to "accept" their own invite. **Branch into the admin-driven path** for both signatory and employee: the user supplies their own SSN / DOB / address up front. Steps 5 and 6 below describe both paths; pick the right branch.
+
+If you're not sure, ask: _"Are you onboarding yourself as the only employee (sole owner / single-member LLC), or onboarding a team where the signatory and first employee are other people?"_
 
 ## Discovering commands
 
@@ -20,33 +29,55 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 ## Steps
 
-1. **Provision the company.** Run `gusto company provision --input <file.json>`, where the file holds a `{user, company}` payload. There is no default payload: bare `gusto company provision` errors with exit 7 (`invalid_input`) demanding `--input` or `--example`. Get the exact shape from `gusto company provision --help`, and preview the request body with `gusto company provision --dry-run --input <file>` before sending. `--example` fills in a canned sample payload (Ada Lovelace / Analytical Engines LLC) - but it _sends_, creating a real company, so it's only for throwaway test runs; `--dry-run` is the only non-mutating preview. On success it creates the company, returns an `account_claim_url`, and exits - it does not open a browser or log you in. The response's `next_command` points at the login step. Surface the `account_claim_url` to the user.
+1. **Provision the company.** Run `gusto company provision --input <file.json>`, where the file holds a `{user, company}` payload. There is no default payload: bare `gusto company provision` errors with exit 7 (`invalid_input`) demanding `--input` or `--example`. Get the exact shape from `gusto company provision --help`, and preview the request body with `gusto company provision --dry-run --input <file>` before sending. `--example` fills in a canned sample payload (Ada Lovelace / Analytical Engines LLC) - but it _sends_, creating a real company, so it's only for throwaway test runs; `--dry-run` is the only non-mutating preview. **Don't collect or pass EIN at this step** - EIN is asked for at the federal-tax setup blocker (step 4), not at provision. On success it creates the company, returns an `account_claim_url`, and exits - it does not open a browser or log you in. The response's `next_command` points at the login step. Surface the `account_claim_url` to the user.
 
-2. **Claim the account, then log in.** The user opens the `account_claim_url` and verifies identity (Google SSO is the magical path; email magic-link works too). Once they've claimed it, run `gusto auth login --no-browser` - that prints the sign-in URL for you to surface instead of trying to open a browser on the machine the agent runs on. `auth login` mints and persists the OAuth token; the company UUID becomes available here (off the Mode 2 token), not from `provision`.
+2. **Claim the account, then log in.** The user opens the `account_claim_url` and verifies identity (Google SSO is the magical path; email magic-link works too). Once they've claimed it, run `gusto auth login --no-browser` - that prints the sign-in URL for you to surface instead of trying to open a browser on the machine the agent runs on. `auth login` mints and persists the OAuth token, and the company UUID becomes available from that token (not from `provision`).
 
 3. **Check onboarding status.** Run `gusto company onboarding-status`. Read the `blocked_on` array - each entry carries a `suggested_action` with the exact command (and flags) that resolves it. `next_command` is the first step to run.
 
 4. **Clear the blockers.** Work the `blocked_on` list. Most steps map to a `gusto company setup <domain>` command:
    - `gusto company setup federal-tax --ein <ein> --tax-payer-type <type> --filing-form <941|944> --legal-name <name>`
-   - `gusto company setup bank-account --routing <num> --account-number <num> --account-type <Checking|Savings>` (connects + verifies in one shot)
+   - `gusto company setup bank-account --routing <num> --account-number <num> --account-type <Checking|Savings>` (connects + verifies in one shot). **Stop and ask the user for the real routing and account numbers - this is a pause point. Never invent or use dummy/example values here; the API connects the account immediately and a wrong number creates a real broken connection in demo.** Demo testers often don't have a real account on hand - in that case, pause and ask them to either provide one or skip the bank step for now (they can add it from the Gusto dashboard later).
    - `gusto company setup state-tax` (run _after_ step 5 - it reads states off employee work addresses, so it needs employees first; opts into new-employer default rates for CA/TX/FL)
    - `gusto company setup pay-schedule --frequency <weekly|biweekly|semi-monthly|monthly> --first-payday <YYYY-MM-DD> --anchor-end-of-pay-period <YYYY-MM-DD>` (all frequencies need `--anchor-end-of-pay-period`; monthly also needs `--day-1 <n>`, semi-monthly needs `--day-1 <n> --day-2 <n>`)
    - Note: signatory assignment is its own step (step 6) because it has to come before `company forms`. `onboarding-status` will list `assign_signatory` as a blocker; don't try to clear it here.
 
-5. **Add the first W-2 employee.** Run `gusto employee add personal-details --first-name … --last-name … --email …` to create the employee, then configure sub-domains with `gusto employee add <domain> <employee_uuid>` (see `gusto employee add --help`). The default sends an invite so the employee fills in their own PII / address / banking. The wedge cohort (founders adding first hires) rarely has the employee's SSN or banking on hand, so this is the right default. Add employees before `setup state-tax` - it reads states off their work addresses.
+5. **Add the first W-2 employee.** Branch on persona:
 
-6. **Assign the signatory.** Run `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` (add `--title` if known). This is the person who signs the company's payroll forms; the form-signing flow signs _on their behalf_, so they must exist first. `onboarding-status` surfaces this as an `assign_signatory` blocker ahead of `sign_all_forms`, and `gusto company forms` refuses to start until a signatory is assigned. The invite lets the signatory complete their own PII.
+   **Multi-person team (default).** Run `gusto employee add personal-details --first-name … --last-name … --email …` and let the CLI send a self-onboarding invite. The employee fills in their own SSN / address / banking. Don't ask the admin for the new hire's PII - they likely don't have it. After the invite is sent, the rest of step 5 is "wait for them to accept" (which can happen out of band; you can move on and re-check `onboarding-status` later).
 
-7. **Sign forms.** Run `gusto company forms`. With a signatory already assigned, this opens the hosted gws-flows signing URL (8655 + state agreements) straight into signing - no signatory setup inside the flow. Surface the URL to the signatory to click; don't sign on their behalf.
+   **Sole owner.** Add `--admin-driven` to bypass the invite and create the employee with the user's own data in one pass. Ask the user for SSN and date of birth before calling - you'll need both: `gusto employee add personal-details --first-name … --last-name … --email … --admin-driven --ssn <ssn> --date-of-birth YYYY-MM-DD`. Then run the rest of the sub-domains (`home-address`, `work-address`, `job`, `federal-tax`, `state-tax`, `payment-method`) with the user's own values - they have the data; don't wait on an invite.
 
-8. **Re-check.** Run `gusto company onboarding-status` again - when `blocked_on` is empty, `stage` is `ready_to_finish`. There's no separate finish command in V1: at `ready_to_finish` every required step is done and the company is set up. Gusto marks `onboarding_completed` on its side once it processes the final steps (re-run onboarding-status to see `stage: done`). Running actual payroll is out of V1 scope.
+   Add employees before `setup state-tax` - it reads states off their work addresses.
+
+   **Sub-domain papercuts to know about:**
+   - `employee add work-address` requires `--effective-date YYYY-MM-DD` even though `--help` doesn't mark it required. Default to today's date if you don't have a better one.
+   - `employee add federal-tax` 422s if optional W-4 numeric flags (e.g. `--dependents-amount`, `--other-income`, `--deductions`) are omitted. Pass `0` for each unless the user provides actual values.
+   - Always run `gusto employee add <subdomain> --help` before invoking a sub-domain - the help is the source of truth for what flags are accepted right now. If a command returns `exit 7` with a `blocked_on` envelope, that's the CLI telling you exactly which flags it still needs.
+
+6. **Assign the signatory.** Branch on persona:
+
+   **Multi-person team (default).** Run `gusto company setup signatory --first-name <name> --last-name <name> --email <email>` (add `--title` if known). This invites the signatory by email; they complete their own PII through the invite. The form-signing flow signs _on their behalf_, so the signatory must exist before `gusto company forms`.
+
+   **Sole owner.** `setup signatory` is invite-only and rejects the admin's own email, so it can't self-assign. Use the raw API endpoint to create the signatory directly with the user's own data: `gusto api request POST /v1/companies/{company_uuid}/signatories --data '{"first_name":"…","last_name":"…","email":"…","title":"…"}'`. Get `{company_uuid}` from `gusto auth whoami` (it's on the token's resource). The endpoint accepts the admin's own email; the invite endpoint is the one that rejects it. After the POST, `onboarding-status` will move past the `assign_signatory` blocker and `gusto company forms` will work.
+
+   `onboarding-status` surfaces signatory as an `assign_signatory` blocker ahead of `sign_all_forms`, and `gusto company forms` refuses to start until a signatory exists. Don't try to clear `assign_signatory` from inside step 4.
+
+7. **Sign forms.** Run `gusto company forms`. With a signatory already assigned, this opens the hosted Gusto signing URL (Form 8655 + state agreements) straight into signing - no signatory setup inside the flow. Surface the URL to the signatory to click; don't sign on their behalf.
+
+8. **Re-check.** Run `gusto company onboarding-status` again. A few things to know:
+   - Blockers can be briefly stale right after a step completes. The `add_employees` blocker in particular sometimes stays in `blocked_on` for a moment after `employee add` succeeds. If a blocker you just cleared still appears, re-run `onboarding-status` once more before deciding it actually failed.
+   - When `blocked_on` is empty, `stage` is `ready_to_finish`. There's no separate finish command: at `ready_to_finish` the onboarding flow is functionally complete and you should report success to the user.
+   - **`ready_to_finish` / `onboarding_completed: true` is not the same as payroll-ready.** The CLI's onboarding flow covers the core onboarding surface (taxes, bank, pay schedule, first employee, forms). Production payroll readiness has additional gates on gusto.com that aren't surfaced through the CLI today. When you report success, say "onboarding flow complete - finish anything remaining from the Gusto dashboard," not "ready to run payroll."
 
 ## Pause points (user input required)
 
 These are the only times the agent should stop and wait for the user:
 
 - **Account claim + sign-in** (step 2 - the user claims the company in the browser, then `gusto auth login` needs them to finish signing in)
+- **Bank account routing + account numbers** (step 4 bank-account - ask the user for real values; never use dummy/example numbers, the API connects immediately)
 - **ACH e-signature** for the bank-connection step (legally binding)
+- **Employee SSN and date of birth** (step 5, sole-owner branch only - the admin-driven path needs both up front; pause and ask, don't fabricate)
 - **Signatory attestation** (the person who signs payroll forms must confirm in person)
 - **Form 8655 + state agreements** (multi-page e-signatures)
 
@@ -65,7 +96,7 @@ Always pass `--agent` to every CLI call so the output is parseable JSON. The CLI
 
 ## Out of scope
 
-- Multi-company management (Embedded partner-facing surface)
+- Managing multiple companies from a single CLI session (out of scope for this skill)
 - Plan selection / pricing
-- Production environment (V1 is sandbox-only until sec/legal/compliance review lands)
-- Running actual payroll (`gusto api request` works for one-off operations but the full payroll lifecycle isn't in V1)
+- Production environment (the CLI is sandbox-only today until sec/legal/compliance review lands)
+- Running actual payroll (`gusto api request` works for one-off operations but the full payroll lifecycle isn't covered by this skill)
