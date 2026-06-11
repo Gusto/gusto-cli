@@ -30,7 +30,7 @@ export function registerCompanyCommand(parent: Command): void {
 
   cmd
     .command("provision")
-    .description("Create a Gusto company programmatically")
+    .description("Create a new Gusto company and get an account claim URL")
     .option("--input <file>", "Path to a JSON file with the {user, company} payload")
     .option("--example", "Use the canned sample payload")
     .option("--dry-run", "Build the request without sending")
