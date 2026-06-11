@@ -69,10 +69,10 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
         expiresAt: tokens.expiresAt,
         ...(companyUuid ? { companyUuid } : {}),
       });
-      server.complete({ ok: true });
+      server.complete(true);
       return info;
     } catch (err) {
-      server.complete({ ok: false });
+      server.complete(false);
       throw err;
     }
   } finally {

@@ -100,10 +100,12 @@ export interface LoopbackServer {
   /** Flush the held callback response with a pass/fail page. The server keeps
    * the response open after `waitForCode()` resolves so the browser tab can't
    * claim "login complete" before the token exchange has actually run. */
-  complete(result: { ok: boolean; message?: string }): void;
+  complete(ok: boolean): void;
   close(): void;
 }
 
+const SUCCESS_PAGE = "Gusto CLI: login complete. You can close this tab.";
+const FAILURE_PAGE = "Gusto CLI: login failed. Return to your terminal.";
 const RETURNING_PAGE = "Gusto CLI: returning to your terminal...";
 
 /** Bind the loopback callback server first (so the caller learns the port and
@@ -131,7 +133,7 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
 
       if (!validCallback) {
         res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("Gusto CLI: login failed. Return to your terminal.");
+        res.end(FAILURE_PAGE);
         if (parsed.error) return fail(new Error(`authorization failed: ${parsed.error}`));
         if (parsed.state !== expectedState) return fail(new Error("state mismatch on callback (possible CSRF)"));
         return fail(new Error("callback missing authorization code"));
@@ -162,19 +164,14 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
       if (settle()) resolveCode(code);
     }
 
-    function complete(result: { ok: boolean; message?: string }): void {
+    function complete(ok: boolean): void {
       if (completed) return;
       completed = true;
       const res = pendingRes;
       pendingRes = undefined;
       if (!res) return;
-      const body =
-        result.message ??
-        (result.ok
-          ? "Gusto CLI: login complete. You can close this tab."
-          : "Gusto CLI: login failed. Return to your terminal.");
       try {
-        res.end(body);
+        res.end(ok ? SUCCESS_PAGE : FAILURE_PAGE);
       } catch {
         // Browser tab closed before flush.
       }

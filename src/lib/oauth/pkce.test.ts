@@ -102,7 +102,7 @@ describe("startLoopbackServer", () => {
     const codeP = server.waitForCode();
     const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(await codeP).toBe("the-code");
-    server.complete({ ok: true });
+    server.complete(true);
     const res = await resP;
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("login complete");
@@ -122,12 +122,12 @@ describe("startLoopbackServer", () => {
     expect(body).toMatch(/returning to your terminal/i);
   });
 
-  test("complete({ ok: false }) flips the held response to a failure body", async () => {
+  test("complete(false) flips the held response to a failure body", async () => {
     const server = await startLoopbackServer("good-state");
     const codeP = server.waitForCode();
     const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(await codeP).toBe("the-code");
-    server.complete({ ok: false });
+    server.complete(false);
     const res = await resP;
     expect(res.status).toBe(200);
     const body = await res.text();
