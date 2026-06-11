@@ -229,17 +229,19 @@ export async function runJob(client: ApiClient, employeeUuid: string, opts: JobO
   const comp = compensationBody(opts);
   if (!comp) return { ok: true, data: { job } };
 
-  const current = currentCompensation(job);
+  // The POST response intermittently lacks current_compensation_uuid; the backend populates
+  // it a moment later. Re-fetch once before treating the job as orphaned.
+  let current = currentCompensation(job);
   if (!current?.uuid) {
-    return {
-      ok: false,
-      exitCode: ExitCode.ApiServer,
-      error: {
-        code: "job_no_current_compensation",
-        message: "job created but the response had no current compensation to update",
-        details: { job },
-      },
-    };
+    const refreshed = await refetchJob(client, job);
+    if (refreshed) {
+      job = refreshed;
+      current = currentCompensation(refreshed);
+    }
+  }
+
+  if (!current?.uuid) {
+    return rollbackOrphanJob(client, job);
   }
 
   try {
@@ -256,6 +258,48 @@ export async function runJob(client: ApiClient, employeeUuid: string, opts: JobO
       failedDomain: "compensation",
     });
   }
+}
+
+async function refetchJob(client: ApiClient, job: unknown): Promise<unknown | undefined> {
+  const jobUuid = readString(job, "uuid");
+  if (!jobUuid) return undefined;
+  try {
+    const res = await client.get(`/v1/jobs/${jobUuid}`);
+    return res.body;
+  } catch {
+    return undefined;
+  }
+}
+
+async function rollbackOrphanJob(client: ApiClient, job: unknown): Promise<CommandResult<never>> {
+  const jobUuid = readString(job, "uuid");
+  if (jobUuid) {
+    try {
+      await client.delete(`/v1/jobs/${jobUuid}`);
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiServer,
+        error: {
+          code: "job_created_without_compensation_rolled_back",
+          message:
+            "job was created without a current compensation (a known intermittent API issue) and has been deleted; retry the same command",
+          details: { rolled_back_job: job },
+        },
+      };
+    } catch {
+      /* fall through */
+    }
+  }
+  return {
+    ok: false,
+    exitCode: ExitCode.ApiServer,
+    error: {
+      code: "job_created_without_compensation",
+      message:
+        "job was created without a current compensation and could not be deleted automatically; delete it manually before retrying or the rate-less job will block onboarding completion",
+      details: { orphan_job: job },
+    },
+  };
 }
 
 /** The positional employee_uuid is optional on subcommands that take `--example` (so a canned
