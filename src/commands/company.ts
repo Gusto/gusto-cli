@@ -9,7 +9,12 @@ import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
-import { type OnboardingStatus, extractBlockers, withSignatoryBlocker } from "../lib/onboarding-map.ts";
+import {
+  FINISH_ONBOARDING_ACTION,
+  type OnboardingStatus,
+  extractBlockers,
+  withSignatoryBlocker,
+} from "../lib/onboarding-map.ts";
 import { companyHasSignatory } from "../lib/signatory.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
@@ -22,6 +27,14 @@ interface CompanyShowOpts {
 interface ProvisionOpts {
   input?: string;
   example?: boolean;
+  dryRun?: boolean;
+}
+
+interface FinishOnboardingOpts {
+  companyUuid?: string;
+  token?: string;
+  // commander's `--no-approve` sets this to false; absent/default is true.
+  approve?: boolean;
   dryRun?: boolean;
 }
 
@@ -54,6 +67,16 @@ export function registerCompanyCommand(parent: Command): void {
     cmd.command("show").description("Company overview: record, payment config, and pay schedule"),
   ).action((opts: CompanyShowOpts) =>
     runReadCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
+  );
+
+  withContextOptions(
+    cmd
+      .command("finish")
+      .description("Finalize onboarding (flips onboarding_completed); auto-approves the company in sandbox")
+      .option("--no-approve", "Skip the sandbox auto-approve step (finish only)")
+      .option("--dry-run", "Describe the requests without sending"),
+  ).action((opts: FinishOnboardingOpts) =>
+    runCommand("gusto company finish", readGlobalFlags(parent.opts()), companyFinishOnboardingHandler(opts)),
   );
 
   registerCompanySetup(cmd, parent);
@@ -185,9 +208,14 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       const hasSteps = Array.isArray(status?.onboarding_steps);
       const readyToFinish = hasSteps && blockedOn.length === 0 && !isComplete;
       const stage = onboardingStage({ isComplete, hasSteps, readyToFinish });
-      // First blocker that actually has a command - not just blockedOn[0], whose
-      // suggested_action may be null while a later blocker has one.
-      const suggested = blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null;
+      // At ready_to_finish there are no blockers left, so point the agent at the
+      // finish command — otherwise next_command is null and the loop dead-ends one
+      // step short of done (AINT-615). Otherwise use the first blocker that has a
+      // command (not just blockedOn[0], whose suggested_action may be null while a
+      // later blocker has one).
+      const suggested = readyToFinish
+        ? FINISH_ONBOARDING_ACTION
+        : (blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null);
       return {
         ok: true,
         data: {
@@ -202,6 +230,109 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
         },
       };
     });
+}
+
+interface FinishOnboardingResult {
+  onboarding_completed?: boolean;
+}
+interface ApproveResult {
+  company_status?: string;
+}
+
+export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): CommandHandler {
+  return async ({ globals }) => {
+    // The approve step is a non-production demo affordance: `PUT .../approve`
+    // only exists in the demo/sandbox env. In production, approval is a manual
+    // Gusto risk review that happens out of band, so we never call it there
+    // (and --no-approve is moot) - calling it would just 404. Mirrors the
+    // production guards on --demo-sign and EIN rotation elsewhere.
+    const wantApprove = opts.approve !== false && globals.env !== "production";
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          steps: [
+            { method: "PUT", path: "/v1/companies/{company_uuid}/finish_onboarding" },
+            ...(wantApprove ? [{ method: "PUT", path: "/v1/companies/{company_uuid}/approve" }] : []),
+          ],
+          will_approve: wantApprove,
+          note:
+            globals.env === "production"
+              ? "production: approval is a manual Gusto risk review; only finish_onboarding is called"
+              : wantApprove
+                ? "sandbox: finish_onboarding, then auto-approve (company_status -> Approved)"
+                : "finish_onboarding only (--no-approve)",
+        },
+      };
+    }
+
+    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+      const base = `/v1/companies/${ctx.companyUuid}`;
+
+      // finish_onboarding flips onboarding_completed -> true (stage 'done'). A 422
+      // here means the API considers a required step unsatisfied; toResult surfaces
+      // the upstream body so the agent sees which one rather than a bare "422".
+      let onboarding: FinishOnboardingResult;
+      try {
+        onboarding = (await ctx.client.put<FinishOnboardingResult>(`${base}/finish_onboarding`)).body;
+      } catch (err) {
+        return toResult(err);
+      }
+
+      if (!wantApprove) {
+        return {
+          ok: true,
+          data: {
+            onboarding_completed: onboarding.onboarding_completed ?? null,
+            approved: false,
+            finish_onboarding: onboarding,
+            message:
+              globals.env === "production"
+                ? "Onboarding finished. In production, Gusto reviews and approves the company out of band."
+                : "Onboarding finished. Approval skipped (--no-approve).",
+          },
+        };
+      }
+
+      // Sandbox-only: approve flips company_status -> 'Approved' so the company can
+      // run payroll. Onboarding has already been finished by this point, so a
+      // failure here is a partial - tell the agent to re-run this command (finish
+      // is idempotent once steps are satisfied) rather than redo onboarding steps.
+      let company: ApproveResult;
+      try {
+        company = (await ctx.client.put<ApproveResult>(`${base}/approve`)).body;
+      } catch (err) {
+        const apiBody = err instanceof ApiError ? err.body : undefined;
+        return {
+          ok: false,
+          exitCode: err instanceof ApiError ? err.exitCode : ExitCode.General,
+          error: {
+            code: "approve_failed",
+            message:
+              "Onboarding finished, but the sandbox auto-approve failed. Re-run `gusto company finish` to retry approval; do not redo onboarding steps.",
+            details: {
+              onboarding_completed: onboarding.onboarding_completed ?? null,
+              error: errMsg(err),
+              ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
+            },
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        data: {
+          onboarding_completed: onboarding.onboarding_completed ?? null,
+          approved: company.company_status === "Approved",
+          company_status: company.company_status ?? null,
+          finish_onboarding: onboarding,
+          approve: company,
+          message: `Onboarding finished and company approved (company_status: ${company.company_status ?? "unknown"}).`,
+        },
+      };
+    });
+  };
 }
 
 export interface ProvisionData {

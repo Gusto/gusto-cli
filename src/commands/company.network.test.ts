@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import { companyFinishOnboardingHandler, companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import type { CommandContext } from "../lib/runner.ts";
 import {
   type MockResponse,
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
+  TEST_GLOBALS,
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
@@ -153,6 +155,10 @@ describe("companyOnboardingStatusHandler", () => {
     expect(d.stage).toBe("ready_to_finish");
     expect(d.ready_to_finish).toBe(true);
     expect(d.blocked_on).toEqual([]);
+    // No blockers remain, so the navigation hook points at the finish verb rather
+    // than dead-ending at next_command: null one step short of done (AINT-615).
+    expect(d.next_command).toBe("gusto company finish");
+    expect((d.suggested_action as { command: string }).command).toBe("gusto company finish");
   });
 
   test("a malformed 200 (no onboarding_steps) is stage 'unknown', not ready_to_finish", async () => {
@@ -228,5 +234,100 @@ describe("companyOnboardingStatusHandler", () => {
     const d = data(await companyOnboardingStatusHandler(auth)(ctx));
     expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["federal_tax_setup"]);
     expect(d.partial_errors).toBeUndefined();
+  });
+});
+
+describe("companyFinishOnboardingHandler", () => {
+  const prodCtx: CommandContext = { command: "test", globals: { ...TEST_GLOBALS, env: "production" } };
+
+  /** Stub fetch with a router and return both the result and the recorded calls so a
+   * test can assert which PUTs were (or weren't) sent. */
+  function stub(router: (u: string) => MockResponse) {
+    const s = stubGlobalFetch(router);
+    restore = s.restore;
+    return s;
+  }
+
+  test("sandbox: finishes then auto-approves, reporting company_status Approved", async () => {
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      if (u.includes("/approve")) return { status: 200, body: { company_status: "Approved" } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler(auth)(ctx));
+    expect(d.onboarding_completed).toBe(true);
+    expect(d.approved).toBe(true);
+    expect(d.company_status).toBe("Approved");
+    const puts = s.calls.filter((c) => c.method === "PUT").map((c) => c.url);
+    expect(puts.some((u) => u.includes("/finish_onboarding"))).toBe(true);
+    expect(puts.some((u) => u.includes("/approve"))).toBe(true);
+  });
+
+  test("production: finishes only, never calls approve (the demo-only endpoint)", async () => {
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler(auth)(prodCtx));
+    expect(d.onboarding_completed).toBe(true);
+    expect(d.approved).toBe(false);
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+  });
+
+  test("--no-approve in sandbox finishes only and skips approve", async () => {
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler({ ...auth, approve: false })(ctx));
+    expect(d.onboarding_completed).toBe(true);
+    expect(d.approved).toBe(false);
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+  });
+
+  test("a finish_onboarding 422 surfaces the upstream body and never reaches approve", async () => {
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding"))
+        return { status: 422, body: { errors: [{ category: "finish_onboarding_incomplete" }] } };
+      return { status: 404 };
+    });
+    const result = await companyFinishOnboardingHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+    expect(result.error.details).toBeDefined();
+  });
+
+  test("finish succeeds but approve fails: partial error tells the agent to retry, not redo onboarding", async () => {
+    stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      if (u.includes("/approve")) return { status: 422, body: { errors: [{ message: "cannot approve" }] } };
+      return { status: 404 };
+    });
+    const result = await companyFinishOnboardingHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("approve_failed");
+    expect((result.error.details as { onboarding_completed?: boolean }).onboarding_completed).toBe(true);
+  });
+
+  test("dry-run lists both PUTs in sandbox and sends nothing", async () => {
+    const s = stub(() => ({ status: 500 })); // any real call would fail the test
+    const d = data(await companyFinishOnboardingHandler({ ...auth, dryRun: true })(ctx));
+    expect(d.will_approve).toBe(true);
+    expect((d.steps as { path: string }[]).map((step) => step.path)).toEqual([
+      "/v1/companies/{company_uuid}/finish_onboarding",
+      "/v1/companies/{company_uuid}/approve",
+    ]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("dry-run in production omits the approve step", async () => {
+    stub(() => ({ status: 500 }));
+    const d = data(await companyFinishOnboardingHandler({ ...auth, dryRun: true })(prodCtx));
+    expect(d.will_approve).toBe(false);
+    expect((d.steps as { path: string }[]).map((step) => step.path)).toEqual([
+      "/v1/companies/{company_uuid}/finish_onboarding",
+    ]);
   });
 });

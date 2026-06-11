@@ -69,8 +69,10 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 8. **Re-check.** Run `gusto company onboarding-status` again. A few things to know:
    - Blockers can be briefly stale right after a step completes. The `add_employees` blocker in particular sometimes stays in `blocked_on` for a moment after `employee add` succeeds. If a blocker you just cleared still appears, re-run `onboarding-status` once more before deciding it actually failed.
-   - When `blocked_on` is empty, `stage` is `ready_to_finish`. There's no separate finish command: at `ready_to_finish` the onboarding flow is functionally complete and you should report success to the user.
+   - When `blocked_on` is empty, `stage` is `ready_to_finish` and `next_command` is `gusto company finish`. `onboarding_completed` does _not_ flip on its own - an explicit finish step is required.
    - **`ready_to_finish` / `onboarding_completed: true` is not the same as payroll-ready.** The CLI's onboarding flow covers the core onboarding surface (taxes, bank, pay schedule, first employee, forms). Production payroll readiness has additional gates on gusto.com that aren't surfaced through the CLI today. When you report success, say "onboarding flow complete - finish anything remaining from the Gusto dashboard," not "ready to run payroll."
+
+9. **Finish onboarding.** Run `gusto company finish`. This calls `finish_onboarding`, which flips `onboarding_completed` to `true` and moves `stage` to `done`. That completes onboarding; the company does _not_ need to be approved for anything the CLI does. (Approval — `company_status -> Approved` — is only required to actually run payroll, which is out of V1 scope; it'll come back alongside payroll-running when that lands.)
 
 ## Pause points (user input required)
 
