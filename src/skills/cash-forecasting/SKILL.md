@@ -9,7 +9,8 @@ Projects how much cash a Gusto company needs to cover upcoming payroll. Read-onl
 
 ## Preconditions
 
-- Gusto CLI installed (`curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh`) and authenticated (`gusto auth status`).
+- Gusto CLI installed (`curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh`) and authenticated (`gusto auth whoami`).
+- The token must grant **payroll read scope** (and report read scope for the ledger breakdown). The cash figures come from `gusto payroll list --include totals` and `gusto ledger show`; without those scopes both calls fail with an `insufficient_scope` error and no forecast is possible. Run `gusto auth whoami` to see granted scopes — if `payrolls` isn't listed, the token can't drive this skill. Surface that error to the user and have them obtain a payroll-scoped token; do not fabricate figures.
 - The company has at least one pay schedule (`gusto pay-schedule show` returns a schedule). Without a schedule there's no cadence to project against.
 - For the projection method to have a baseline, the company ideally has **at least one processed payroll**. With zero processed payrolls, only scheduled (upcoming) payrolls can be forecast.
 
