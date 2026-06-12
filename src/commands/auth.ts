@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { fetchResource } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { type Environment, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
@@ -46,7 +47,7 @@ export function registerAuthCommand(parent: Command): void {
   cmd
     .command("whoami")
     .description("Show token identity + granted scopes via /v1/token_info")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .action((opts: AuthOpts) =>
       runReadCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
     );

@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
 import { registerEmployeeAdd } from "./employee-add.ts";
@@ -22,7 +23,7 @@ export function registerEmployeeCommand(parent: Command): void {
   cmd
     .command("show <employee_uuid>")
     .description("Read employee record")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand("gusto employee show", readGlobalFlags(parent.opts()), employeeShowHandler(employeeUuid, opts)),
     );
@@ -30,7 +31,7 @@ export function registerEmployeeCommand(parent: Command): void {
   cmd
     .command("status <employee_uuid>")
     .description("Show onboarding status + the completed/required steps and any blockers")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand(
         "gusto employee status",
@@ -44,7 +45,7 @@ export function registerEmployeeCommand(parent: Command): void {
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .addHelpText(
       "after",
       `

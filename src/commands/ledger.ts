@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
 import { resolveApiContext } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -60,7 +61,7 @@ export function registerLedgerCommand(parent: Command): void {
     .option("--integration-type <type>", "Accounting integration format for the report")
     .option("--no-wait", "Return the report request_uuid immediately instead of polling for completion")
     .option("--timeout <seconds>", "Max seconds to poll for completion when waiting (default 120)")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .addHelpText(
       "after",
       `

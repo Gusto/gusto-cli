@@ -778,7 +778,7 @@ export function addressHandler(opts: AddressOpts): CommandHandler {
       };
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const location = (
         await ctx.client.post<{ uuid?: string }>(`/v1/companies/${ctx.companyUuid}/locations`, addressBody(fields))
       ).body;
@@ -857,7 +857,7 @@ export function industryHandler(opts: IndustryOpts): CommandHandler {
       };
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const industry = (
         await ctx.client.put<{ naics_code?: string }>(
           `/v1/companies/${ctx.companyUuid}/industry_selection`,

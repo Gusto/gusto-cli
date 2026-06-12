@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
@@ -210,7 +211,7 @@ export function registerContractorCommand(parent: Command): void {
     .option("--hourly-rate <amount>", "Hourly rate (required when --wage-type is hourly)")
     .option("--self-onboarding", "Email the contractor a self-onboarding invite (default: admin-driven)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .option(
       "--example",
@@ -223,7 +224,7 @@ export function registerContractorCommand(parent: Command): void {
   cmd
     .command("show <contractor_uuid>")
     .description("Read contractor record")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .action((contractorUuid: string, opts: ContractorShowOpts) =>
       runReadCommand(
         "gusto contractor show",
@@ -236,7 +237,7 @@ export function registerContractorCommand(parent: Command): void {
     .command("list")
     .description("List company contractors")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .action((opts: ContractorListOpts) =>
       runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );

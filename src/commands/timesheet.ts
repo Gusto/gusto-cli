@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { createCompanyResource } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
@@ -215,7 +216,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--overtime <hours>", "Overtime hours worked")
     .option("--double-overtime <hours>", "Double-overtime hours worked")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetCreateOpts) =>
@@ -229,7 +230,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--pay-period-start <date>", "Pay period start (YYYY-MM-DD)")
     .option("--pay-period-end <date>", "Pay period end (YYYY-MM-DD)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token-stdin", "Read the access token from stdin (one line); for automation")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetSyncOpts) =>
