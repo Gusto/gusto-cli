@@ -174,63 +174,83 @@ describe("toResult OAuthError handling", () => {
 });
 
 describe("partialFailure", () => {
-  test("ApiError: takes its exitCode and carries extras, error, and response (in that order)", () => {
+  test("ApiError: classifies via toResult, appends the error message, nests the body under failed.error", () => {
     const err = new ApiError(422, { errors: ["nope"] }, ExitCode.ApiClient, "PUT /x -> 422");
-    const result = partialFailure("bank_verification_failed", "created but verify failed", err, {
-      bank_account_uuid: "ba-1",
+    const result = partialFailure({
+      code: "bank_verification_failed",
+      message: "bank account created but verify failed",
+      err,
+      completed: { bank_account: "ba-1" },
+      failedDomain: "verify",
     });
     expect(result).toEqual({
       ok: false,
       exitCode: ExitCode.ApiClient,
       error: {
         code: "bank_verification_failed",
-        message: "created but verify failed",
-        details: { bank_account_uuid: "ba-1", error: "PUT /x -> 422", response: { errors: ["nope"] } },
+        message: "bank account created but verify failed: PUT /x -> 422",
+        details: {
+          bank_account: "ba-1",
+          completed: ["bank_account"],
+          // The server's 422 body is preserved (structured) under failed.error.details.
+          failed: {
+            domain: "verify",
+            error: { code: "api_client_error", message: "PUT /x -> 422", details: { errors: ["nope"] } },
+          },
+        },
       },
     });
-    // extras precede error precede response
-    expect(Object.keys((result as { error: { details: object } }).error.details)).toEqual([
-      "bank_account_uuid",
-      "error",
-      "response",
-    ]);
   });
 
   test("5xx ApiError carries its server exitCode", () => {
     const err = new ApiError(500, { e: 1 }, ExitCode.ApiServer, "PUT /x -> 500");
-    const result = partialFailure("bank_verification_failed", "m", err);
+    const result = partialFailure({ code: "c", message: "m", err, completed: { job: { uuid: "j-1" } }, failedDomain: "compensation" });
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
   });
 
-  test("ApiError with null body omits the response key", () => {
+  test("lists every completed domain and echoes its data", () => {
     const err = new ApiError(422, null, ExitCode.ApiClient, "PUT /x -> 422");
-    const result = partialFailure("c", "m", err, { phase: "verify" });
+    const result = partialFailure({
+      code: "c",
+      message: "m",
+      err,
+      completed: { job: { uuid: "j-1" }, bank_account: "ba-1" },
+      failedDomain: "payment_method",
+    });
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.details).toEqual({ phase: "verify", error: "PUT /x -> 422" });
-    expect("response" in (result.error.details as object)).toBe(false);
+    expect(result.error.details).toEqual({
+      job: { uuid: "j-1" },
+      bank_account: "ba-1",
+      completed: ["job", "bank_account"],
+      failed: { domain: "payment_method", error: { code: "api_client_error", message: "PUT /x -> 422" } },
+    });
   });
 
   test("NetworkError keeps its network exit code (matches toResult), not General", () => {
     // A follow-up-step network failure (e.g. /verify timing out) must classify
     // the same as a first-step one through toResult - both exit Network.
     const err = new NetworkError("connection reset");
-    const result = partialFailure("bank_verification_failed", "created but verify failed", err, {
-      bank_account_uuid: "ba-1",
+    const result = partialFailure({
+      code: "bank_verification_failed",
+      message: "bank account created but verify failed",
+      err,
+      completed: { bank_account: "ba-1" },
+      failedDomain: "verify",
     });
     const viaToResult = toResult(err);
     if (result.ok || viaToResult.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Network);
     expect(result.exitCode).toBe(viaToResult.exitCode);
     expect(result.error.code).toBe("bank_verification_failed");
-    // NetworkError has no body, so response is omitted but the message is kept.
-    expect(result.error.details).toEqual({ bank_account_uuid: "ba-1", error: "connection reset" });
+    expect(result.error.message).toBe("bank account created but verify failed: connection reset");
+    expect((result.error.details as { failed: { error: { code: string } } }).failed.error.code).toBe("network_error");
   });
 
-  test("unknown non-Error throwable falls back to exit General and still records the message", () => {
-    const result = partialFailure("c", "m", new Error("boom"));
+  test("unknown non-Error throwable falls back to exit General and records the message", () => {
+    const result = partialFailure({ code: "c", message: "m", err: "boom", completed: {}, failedDomain: "step" });
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.General);
-    expect((result.error.details as { error: string }).error).toBe("boom");
+    expect(result.error.message).toBe("m: boom");
   });
 });

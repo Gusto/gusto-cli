@@ -7,7 +7,7 @@ import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
-import { toResult } from "../lib/handle-api-error.ts";
+import { partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
@@ -192,30 +192,6 @@ export function compensationBody(opts: JobOpts): Record<string, unknown> | undef
 /** POST the job, then (when comp flags are given) UPDATE the job's auto-created current compensation
  * in place — never POST a second one — carrying the version from the job response so the PUT can't
  * 409. Returns data keyed by domain (`job`, optionally `compensation`). */
-/** The failure shape for a two-step subdomain where step 1 created a resource but step 2 failed.
- * Echoes the created resource plus the completed/failed domains so a retry can resume from step 2
- * instead of recreating step 1. Built once so the code/message/details shape can't drift between
- * `runJob` and `runPaymentMethod`. `message` is the prefix; the API error message is appended. */
-function partialFailureResult(
-  err: unknown,
-  spec: { code: string; message: string; completedDomain: string; completedData: unknown; failedDomain: string },
-): CommandResult<never> {
-  const base = toResult(err);
-  if (base.ok) throw new Error("toResult must return a failure", { cause: err });
-  return {
-    ok: false,
-    exitCode: base.exitCode,
-    error: {
-      code: spec.code,
-      message: `${spec.message}: ${base.error.message}`,
-      details: {
-        [spec.completedDomain]: spec.completedData,
-        completed: [spec.completedDomain],
-        failed: { domain: spec.failedDomain, error: base.error },
-      },
-    },
-  };
-}
 
 const JOB_REFETCH_DELAYS_MS = [250, 500, 1000];
 
@@ -291,11 +267,11 @@ export async function runJob(
   } catch (err) {
     // The job already exists. Surface it (uuid + completed steps) so a retry can target the
     // compensation update against the existing job rather than POSTing a duplicate job.
-    return partialFailureResult(err, {
+    return partialFailure({
       code: "compensation_failed",
       message: "job created but updating its compensation failed",
-      completedDomain: "job",
-      completedData: job,
+      err,
+      completed: { job },
       failedDomain: "compensation",
     });
   }
@@ -547,11 +523,11 @@ export async function runPaymentMethod(
   } catch (err) {
     // The bank account already exists. Surface it (uuid + completed steps) so a retry can route the
     // payment method to the existing account rather than POSTing a duplicate bank account.
-    return partialFailureResult(err, {
+    return partialFailure({
       code: "payment_method_failed",
       message: "bank account created but setting the payment method failed",
-      completedDomain: "bank_account",
-      completedData: bank,
+      err,
+      completed: { bank_account: bank },
       failedDomain: "payment_method",
     });
   }

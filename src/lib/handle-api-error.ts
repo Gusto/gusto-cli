@@ -1,5 +1,4 @@
 import { ApiError, NetworkError } from "./api-client.ts";
-import { errMsg } from "./errors.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import type { CommandResult } from "./runner.ts";
@@ -92,32 +91,39 @@ export function toResult(err: unknown): CommandResult<never> {
   };
 }
 
-/** Envelope for a partial failure: an earlier step succeeded, then a follow-up
- * API call failed, leaving the caller in a known intermediate state worth
- * reporting (e.g. a bank account was created but its verification call failed). Carries the
- * server response body (when present) and a human-readable error alongside
- * caller-supplied context. `extras` keys lead `details`, then `error`, then
- * `response` - matching the order each call site emitted before extraction. */
-export function partialFailure(
-  code: string,
-  message: string,
-  err: unknown,
-  extras: Record<string, unknown> = {},
-): CommandResult<never> {
-  const apiBody = err instanceof ApiError ? err.body : undefined;
+/** Envelope for a partial failure: one or more earlier steps succeeded, then a
+ * follow-up step failed, leaving the caller in a known intermediate state worth
+ * reporting (e.g. a bank account was created but its verification failed, or an
+ * employee's job was created but its compensation update failed). A retry can
+ * resume from the failed step instead of redoing the completed ones.
+ *
+ * The underlying error is classified by `toResult`, so the exit code and the
+ * nested `error` envelope match every other failure path in the CLI: a
+ * NetworkError exits `Network`, an ApiError keeps its status-derived code and
+ * carries its response body under `error.details`, and so on. `message` is a
+ * prefix - the underlying error message is appended. `completed` maps each
+ * domain/step that succeeded to the data it produced; `details` echoes that
+ * data, lists those domains under `completed`, and names the step that failed
+ * (with its structured error) under `failed`. */
+export function partialFailure(spec: {
+  code: string;
+  message: string;
+  err: unknown;
+  completed: Record<string, unknown>;
+  failedDomain: string;
+}): CommandResult<never> {
+  const base = toResult(spec.err);
+  if (base.ok) throw new Error("toResult must return a failure", { cause: spec.err });
   return {
     ok: false,
-    // Mirror toResult's classification: a follow-up-step NetworkError (e.g. a
-    // timeout hitting /approve) must keep its ExitCode.Network, not collapse to
-    // General, so scripts branch on the same exit code regardless of which step failed.
-    exitCode: err instanceof ApiError || err instanceof NetworkError ? err.exitCode : ExitCode.General,
+    exitCode: base.exitCode,
     error: {
-      code,
-      message,
+      code: spec.code,
+      message: `${spec.message}: ${base.error.message}`,
       details: {
-        ...extras,
-        error: errMsg(err),
-        ...(apiBody !== undefined && apiBody !== null ? { response: apiBody } : {}),
+        ...spec.completed,
+        completed: Object.keys(spec.completed),
+        failed: { domain: spec.failedDomain, error: base.error },
       },
     },
   };

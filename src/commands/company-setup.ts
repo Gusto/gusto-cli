@@ -309,15 +309,16 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
           deposit_2: Number(deposits.deposit_2),
         });
       } catch (err) {
-        // partialFailure preserves the server response body (e.g. a 422's
-        // errors[].message) so the agent gets the actual reason verify failed,
-        // not just "PUT ... -> 422".
-        return partialFailure(
-          "bank_verification_failed",
-          `Bank account ${bankUuid} was created but ${phase} failed. Retry verification on this account rather than re-creating it.`,
+        // partialFailure routes through toResult, so the server response body
+        // (e.g. a 422's errors[].message) is preserved under failed.error.details -
+        // the agent gets the actual reason verify failed, not just "PUT ... -> 422".
+        return partialFailure({
+          code: "bank_verification_failed",
+          message: `Bank account ${bankUuid} was created but ${phase} failed; retry verification on this account rather than re-creating it`,
           err,
-          { bank_account_uuid: bankUuid, phase },
-        );
+          completed: { bank_account: bankUuid },
+          failedDomain: phase,
+        });
       }
 
       const last4 = (opts.accountNumber ?? "").slice(-4);

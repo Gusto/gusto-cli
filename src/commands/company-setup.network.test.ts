@@ -170,7 +170,7 @@ describe("bankAccountHandler (network)", () => {
     expect(d).toMatchObject({ bank_account_uuid: "bank-1", verification_status: "verified" });
   });
 
-  test("surfaces bank_account_uuid + phase when verify fails after create", async () => {
+  test("surfaces the completed bank account + failed phase when verify fails after create", async () => {
     stubFetch([
       { status: 201, body: { uuid: "bank-1" } }, // create
       { status: 200, body: { deposit_1: "0.02", deposit_2: "0.03" } }, // send_test_deposits
@@ -186,10 +186,13 @@ describe("bankAccountHandler (network)", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("bank_verification_failed");
     expect(result.error.details).toMatchObject({
-      bank_account_uuid: "bank-1",
-      phase: "verify",
-      // The server's 422 body is preserved so the agent sees the real reason.
-      response: { errors: [{ message: "amounts do not match" }] },
+      bank_account: "bank-1",
+      completed: ["bank_account"],
+      failed: {
+        domain: "verify",
+        // The server's 422 body is preserved (structured) under failed.error.details.
+        error: { details: { errors: [{ message: "amounts do not match" }] } },
+      },
     });
   });
 
@@ -210,7 +213,7 @@ describe("bankAccountHandler (network)", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("bank_verification_failed");
     // Error is attributed to the send_test_deposits phase, not verify.
-    expect(result.error.details).toMatchObject({ phase: "send_test_deposits" });
+    expect(result.error.details).toMatchObject({ failed: { domain: "send_test_deposits" } });
     // No verify PUT should have been attempted with bad amounts.
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
