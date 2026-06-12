@@ -1,13 +1,13 @@
 import { ApiError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
+import { OAuthError } from "./oauth/endpoints.ts";
 import type { CommandResult } from "./runner.ts";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** The optional `details`/`request_id` an error envelope carries from an ApiError. */
-function apiErrorExtras(err: ApiError): { details?: unknown; request_id?: string } {
+function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
   return {
     ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
     ...(err.requestId ? { request_id: err.requestId } : {}),
@@ -43,7 +43,7 @@ export function toResult(err: unknown): CommandResult<never> {
         error: {
           code: "insufficient_scope",
           message: `your token is missing the OAuth scope${needs} this command needs. Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`,
-          ...apiErrorExtras(err),
+          ...errorExtras(err),
         },
       };
     }
@@ -53,7 +53,7 @@ export function toResult(err: unknown): CommandResult<never> {
       error: {
         code: err.status >= 500 ? "api_server_error" : "api_client_error",
         message: err.message,
-        ...apiErrorExtras(err),
+        ...errorExtras(err),
       },
     };
   }
@@ -62,6 +62,25 @@ export function toResult(err: unknown): CommandResult<never> {
       ok: false,
       exitCode: err.exitCode,
       error: { code: "network_error", message: err.message },
+    };
+  }
+  if (err instanceof OAuthError) {
+    // OAuthError uses status 0 as a sentinel for fetch-level failures.
+    if (err.status === 0) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Network,
+        error: { code: "network_error", message: err.message },
+      };
+    }
+    return {
+      ok: false,
+      exitCode: err.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient,
+      error: {
+        code: err.status >= 500 ? "oauth_server_error" : "oauth_client_error",
+        message: err.message,
+        ...errorExtras(err),
+      },
     };
   }
   const message = err instanceof Error ? err.message : String(err);

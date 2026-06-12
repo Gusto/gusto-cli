@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ApiError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { toResult } from "./handle-api-error.ts";
+import { OAuthError } from "./oauth/endpoints.ts";
 
 describe("toResult", () => {
   test("4xx ApiError maps to api_client_error and carries body + request_id", () => {
@@ -121,5 +122,53 @@ describe("toResult 403 scope handling", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("api_client_error");
+  });
+});
+
+describe("toResult OAuthError handling", () => {
+  test("a 4xx OAuthError surfaces the response body + request_id instead of collapsing to internal_error", () => {
+    const err = new OAuthError(
+      400,
+      { error: "invalid_grant", error_description: "auth code already redeemed" },
+      "/v1/mcp/oauth/token -> 400",
+      "req-abc",
+    );
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("oauth_client_error");
+    expect(result.error.message).toBe("/v1/mcp/oauth/token -> 400");
+    expect(result.error.details).toEqual({
+      error: "invalid_grant",
+      error_description: "auth code already redeemed",
+    });
+    expect(result.error.request_id).toBe("req-abc");
+  });
+
+  test("a 5xx OAuthError maps to oauth_server_error / api_server exit code", () => {
+    const err = new OAuthError(503, { error: "temporarily_unavailable" }, "/v1/mcp/oauth/token -> 503");
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiServer);
+    expect(result.error.code).toBe("oauth_server_error");
+  });
+
+  test("a status-0 OAuthError (network failure inside the OAuth client) maps to network_error", () => {
+    const err = new OAuthError(0, null, "network error calling /v1/mcp/oauth/token: ECONNREFUSED");
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Network);
+    expect(result.error.code).toBe("network_error");
+  });
+
+  test("an OAuthError without a body omits details (no `details: null` noise)", () => {
+    const err = new OAuthError(400, null, "/v1/mcp/oauth/token -> 400");
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect("details" in result.error).toBe(false);
   });
 });

@@ -15,11 +15,13 @@ export const DEFAULT_OAUTH_TIMEOUT_MS = 30_000;
 export class OAuthError extends Error {
   readonly status: number;
   readonly body: unknown;
-  constructor(status: number, body: unknown, message: string) {
+  readonly requestId?: string;
+  constructor(status: number, body: unknown, message: string, requestId?: string) {
     super(message);
     this.name = "OAuthError";
     this.status = status;
     this.body = body;
+    this.requestId = requestId;
   }
 }
 
@@ -48,10 +50,11 @@ async function send(opts: OAuthHttpOptions, path: string, init: RequestInit): Pr
     const msg = err instanceof Error ? err.message : String(err);
     throw new OAuthError(0, null, `network error calling ${path}: ${msg}`);
   }
+  const requestId = response.headers.get("x-request-id") ?? undefined;
   const text = await response.text();
   const body: unknown = text.length === 0 ? null : safeJson(text);
   if (!response.ok) {
-    throw new OAuthError(response.status, body, `${path} -> ${response.status}`);
+    throw new OAuthError(response.status, body, `${path} -> ${response.status}`, requestId);
   }
   return body;
 }

@@ -100,10 +100,39 @@ describe("startLoopbackServer", () => {
   test("captures the code when state matches", async () => {
     const server = await startLoopbackServer("good-state");
     const codeP = server.waitForCode();
-    const res = await fetch(`${server.redirectUri}?code=the-code&state=good-state`);
-    expect(res.status).toBe(200);
+    const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
     expect(await codeP).toBe("the-code");
+    server.complete(true);
+    const res = await resP;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("login complete");
     expect(server.redirectUri).toBe(redirectUriForPort(server.port));
+  });
+
+  test("renders a neutral 'returning to terminal' page before complete() is called", async () => {
+    const server = await startLoopbackServer("good-state");
+    const codeP = server.waitForCode();
+    const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
+    expect(await codeP).toBe("the-code");
+    server.close();
+    const res = await resP;
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain("login complete");
+    expect(body).toMatch(/returning to your terminal/i);
+  });
+
+  test("complete(false) flips the held response to a failure body", async () => {
+    const server = await startLoopbackServer("good-state");
+    const codeP = server.waitForCode();
+    const resP = fetch(`${server.redirectUri}?code=the-code&state=good-state`);
+    expect(await codeP).toBe("the-code");
+    server.complete(false);
+    const res = await resP;
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("login failed");
+    expect(body).not.toContain("login complete");
   });
 
   test("rejects on state mismatch", async () => {

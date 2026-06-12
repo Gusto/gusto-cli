@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { type Server, createServer } from "node:http";
+import { type Server, type ServerResponse, createServer } from "node:http";
 import { OAUTH_PATHS, type OAuthHttpOptions, basicAuth, postForm, toTokenSet } from "./endpoints.ts";
 import { CALLBACK_PATH } from "./dcr.ts";
 import type { ClientCreds, TokenSet } from "./types.ts";
@@ -50,6 +50,10 @@ export function parseCallback(requestUrl: string): CallbackResult {
   };
 }
 
+function isValidCallback(parsed: CallbackResult, expectedState: string): parsed is { code: string; state: string } {
+  return parsed.code != null && parsed.error == null && parsed.state === expectedState;
+}
+
 export async function exchangeCode(
   opts: OAuthHttpOptions,
   args: { code: string; verifier: string; redirectUri: string; creds: ClientCreds },
@@ -97,8 +101,16 @@ export interface LoopbackServer {
   redirectUri: string;
   port: number;
   waitForCode(): Promise<string>;
+  /** Flush the held callback response with a pass/fail page. The server keeps
+   * the response open after `waitForCode()` resolves so the browser tab can't
+   * claim "login complete" before the token exchange has actually run. */
+  complete(ok: boolean): void;
   close(): void;
 }
+
+const SUCCESS_PAGE = "Gusto CLI: login complete. You can close this tab.";
+const FAILURE_PAGE = "Gusto CLI: login failed. Return to your terminal.";
+const RETURNING_PAGE = "Gusto CLI: returning to your terminal...";
 
 /** Bind the loopback callback server first (so the caller learns the port and
  * can build the authorize URL), then await the redirect via `waitForCode()`.
@@ -110,6 +122,8 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
   return new Promise<LoopbackServer>((resolveServer, rejectServer) => {
     let settled = false;
     let listening = false;
+    let completed = false;
+    let pendingRes: ServerResponse | undefined;
     let resolveCode!: (code: string) => void;
     let rejectCode!: (err: Error) => void;
     const codePromise = new Promise<string>((res, rej) => {
@@ -119,14 +133,22 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
 
     const server: Server = createServer((req, res) => {
       const parsed = parseCallback(req.url ?? "/");
-      const ok = parsed.code != null && parsed.error == null && parsed.state === expectedState;
-      res.writeHead(ok ? 200 : 400, { "Content-Type": "text/plain" });
-      res.end(
-        ok ? "Gusto CLI: login complete. You can close this tab." : "Gusto CLI: login failed. Return to your terminal.",
-      );
-      if (parsed.error) return fail(new Error(`authorization failed: ${parsed.error}`));
-      if (parsed.state !== expectedState) return fail(new Error("state mismatch on callback (possible CSRF)"));
-      if (!parsed.code) return fail(new Error("callback missing authorization code"));
+
+      if (!isValidCallback(parsed, expectedState)) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end(FAILURE_PAGE);
+        if (parsed.error) return fail(new Error(`authorization failed: ${parsed.error}`));
+        if (parsed.state !== expectedState) return fail(new Error("state mismatch on callback (possible CSRF)"));
+        return fail(new Error("callback missing authorization code"));
+      }
+
+      // Hold the response open; complete() flushes the body once the caller
+      // knows whether the token exchange succeeded.
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      pendingRes = res;
+      res.on("close", () => {
+        if (pendingRes === res) pendingRes = undefined;
+      });
       succeed(parsed.code);
     });
 
@@ -145,6 +167,34 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
       if (settle()) resolveCode(code);
     }
 
+    function complete(ok: boolean): void {
+      if (completed) return;
+      completed = true;
+      const res = pendingRes;
+      pendingRes = undefined;
+      if (!res) return;
+      try {
+        res.end(ok ? SUCCESS_PAGE : FAILURE_PAGE);
+      } catch {
+        // Browser tab closed before flush.
+      }
+    }
+
+    function closeHandle(): void {
+      // Caller bailed (Ctrl-C) without calling complete(); flush a neutral
+      // page so the browser tab doesn't hang.
+      if (pendingRes && !completed) {
+        completed = true;
+        try {
+          pendingRes.end(RETURNING_PAGE);
+        } catch {
+          // Browser tab closed.
+        }
+        pendingRes = undefined;
+      }
+      fail(new Error("login cancelled"));
+    }
+
     server.on("error", (err) => {
       if (!listening) rejectServer(err);
       else fail(err);
@@ -158,7 +208,8 @@ export function startLoopbackServer(expectedState: string, opts: { host?: string
         redirectUri: redirectUriForPort(port, host),
         port,
         waitForCode: () => codePromise,
-        close: () => fail(new Error("login cancelled")),
+        complete,
+        close: closeHandle,
       });
     });
   });
