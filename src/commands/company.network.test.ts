@@ -255,10 +255,22 @@ describe("companyFinishOnboardingHandler", () => {
     });
     const d = data(await companyFinishOnboardingHandler(auth)(ctx));
     expect(d.onboarding_completed).toBe(true);
+    expect(d.message).toContain("onboarding_completed -> true");
     const puts = s.calls.filter((c) => c.method === "PUT").map((c) => c.url);
     expect(puts.some((u) => u.includes("/finish_onboarding"))).toBe(true);
     // approve was dropped (re-add when payroll-running lands) - it must never be called.
     expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+  });
+
+  test("a 200 that hasn't flipped the flag reports accepted-but-unconfirmed, not a false success", async () => {
+    stub((u) =>
+      u.includes("/finish_onboarding") ? { status: 200, body: { onboarding_completed: false } } : { status: 404 },
+    );
+    const d = data(await companyFinishOnboardingHandler(auth)(ctx));
+    expect(d.onboarding_completed).toBe(false);
+    // The message must not claim completion when the API didn't confirm it.
+    expect(d.message).not.toContain("-> true");
+    expect(d.message).toMatch(/onboarding-status/);
   });
 
   test("behaves identically in production - finish only, still no approve call", async () => {
@@ -292,6 +304,8 @@ describe("companyFinishOnboardingHandler", () => {
     });
     const d = data(await companyFinishOnboardingHandler(auth)(ctx));
     expect(d.onboarding_completed).toBeNull();
+    // A null flag is unconfirmed, so the message must not claim completion either.
+    expect(d.message).not.toContain("-> true");
   });
 
   test("dry-run lists only finish_onboarding and sends nothing", async () => {

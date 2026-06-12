@@ -204,7 +204,13 @@ describe("partialFailure", () => {
 
   test("5xx ApiError carries its server exitCode", () => {
     const err = new ApiError(500, { e: 1 }, ExitCode.ApiServer, "PUT /x -> 500");
-    const result = partialFailure({ code: "c", message: "m", err, completed: { job: { uuid: "j-1" } }, failedDomain: "compensation" });
+    const result = partialFailure({
+      code: "c",
+      message: "m",
+      err,
+      completed: { job: { uuid: "j-1" } },
+      failedDomain: "compensation",
+    });
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
   });

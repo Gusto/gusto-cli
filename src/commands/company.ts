@@ -263,12 +263,19 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
         return toResult(err);
       }
 
+      // A 200 doesn't guarantee the flag flipped: the body can be empty/malformed (null) or the API
+      // can accept the request and complete onboarding asynchronously (onboarding_completed false).
+      // Only claim completion when the flag actually reads true; otherwise report it as accepted-but-
+      // unconfirmed so an agent doesn't tell the user onboarding is done when the API never said so.
+      const completed = onboarding?.onboarding_completed === true;
       return {
         ok: true,
         data: {
           onboarding_completed: onboarding?.onboarding_completed ?? null,
           finish_onboarding: onboarding,
-          message: "Onboarding finished (onboarding_completed -> true).",
+          message: completed
+            ? "Onboarding finished (onboarding_completed -> true)."
+            : "finish_onboarding accepted, but onboarding_completed isn't confirmed yet - re-check with `gusto company onboarding-status`.",
         },
       };
     });
