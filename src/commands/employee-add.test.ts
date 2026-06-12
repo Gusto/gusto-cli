@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ApiClient } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { stubApiClient } from "../lib/test-support.ts";
 import {
@@ -215,49 +216,98 @@ describe("runJob", () => {
     ]);
   });
 
-  test("rolls back the orphan job when neither the POST nor refetch surface a current compensation", async () => {
-    const { client, calls } = stubApiClient({
-      "POST /v1/employees/emp-1/jobs": [201, { uuid: "job-7" }],
-      "GET /v1/jobs/job-7": [200, { uuid: "job-7" }],
-      "DELETE /v1/jobs/job-7": [204, {}],
+  test("retries GET when the comp pointer is missing and PUTs once it surfaces", async () => {
+    const getResponses: [number, unknown][] = [
+      [200, { uuid: "job-7" }],
+      [200, { uuid: "job-7" }],
+      [
+        200,
+        { uuid: "job-7", current_compensation_uuid: "comp-9", compensations: [{ uuid: "comp-9", version: "v-comp" }] },
+      ],
+    ];
+    const calls: { method: string; url: string }[] = [];
+    let getIdx = 0;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = new URL(url.toString());
+      const method = init?.method ?? "GET";
+      calls.push({ method, url: u.pathname });
+      if (method === "POST" && u.pathname === "/v1/employees/emp-1/jobs") {
+        return new Response(JSON.stringify({ uuid: "job-7" }), { status: 201 });
+      }
+      if (method === "GET" && u.pathname === "/v1/jobs/job-7") {
+        const [s, b] = getResponses[Math.min(getIdx++, getResponses.length - 1)];
+        return new Response(JSON.stringify(b), { status: s });
+      }
+      if (method === "PUT" && u.pathname === "/v1/compensations/comp-9") {
+        return new Response(JSON.stringify({ uuid: "comp-9", rate: "120000.00" }), { status: 200 });
+      }
+      throw new Error(`unexpected ${method} ${u.pathname}`);
+    }) as unknown as typeof fetch;
+    const client = new ApiClient({
+      baseUrl: "https://api.example.com",
+      token: "tok",
+      apiVersion: "2026-02-01",
+      fetchImpl,
+      retrySleepMs: () => 0,
     });
-    const result = await runJob(client, "emp-1", {
-      title: "Engineer",
-      hireDate: "2026-01-06",
-      rate: "120000",
-      paymentUnit: "Year",
-      flsaStatus: "Exempt",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("job_created_without_compensation_rolled_back");
+    const result = await runJob(
+      client,
+      "emp-1",
+      { title: "Engineer", hireDate: "2026-01-06", rate: "120000", paymentUnit: "Year", flsaStatus: "Exempt" },
+      [0, 0, 0],
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       "POST /v1/employees/emp-1/jobs",
       "GET /v1/jobs/job-7",
-      "DELETE /v1/jobs/job-7",
+      "GET /v1/jobs/job-7",
+      "GET /v1/jobs/job-7",
+      "PUT /v1/compensations/comp-9",
     ]);
   });
 
-  test("when delete of an orphan job fails, surfaces the orphan uuid and delete error for manual cleanup", async () => {
-    const { client } = stubApiClient({
+  test("exhausts retries without ever deleting the job and surfaces job_created_without_compensation", async () => {
+    const { client, calls } = stubApiClient({
       "POST /v1/employees/emp-1/jobs": [201, { uuid: "job-7" }],
       "GET /v1/jobs/job-7": [200, { uuid: "job-7" }],
-      "DELETE /v1/jobs/job-7": [422, { error: "cannot delete" }],
     });
-    const result = await runJob(client, "emp-1", {
-      title: "Engineer",
-      hireDate: "2026-01-06",
-      rate: "120000",
-      paymentUnit: "Year",
-      flsaStatus: "Exempt",
-    });
+    const result = await runJob(
+      client,
+      "emp-1",
+      { title: "Engineer", hireDate: "2026-01-06", rate: "120000", paymentUnit: "Year", flsaStatus: "Exempt" },
+      [0, 0, 0],
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("job_created_without_compensation");
-    const details = result.error.details as { orphan_job: { uuid: string }; delete_error: string };
-    expect(details.orphan_job.uuid).toBe("job-7");
-    expect(details.delete_error).toBeTruthy();
-    expect(details.delete_error).toContain("422");
+    expect(calls.map((c) => `${c.method} ${c.url}`)).not.toContain("DELETE /v1/jobs/job-7");
+    const details = result.error.details as { job: { uuid: string }; job_uuid: string };
+    expect(details.job_uuid).toBe("job-7");
+    // POST + 3 GETs, no DELETE
+    expect(calls.filter((c) => c.method === "GET" && c.url === "/v1/jobs/job-7")).toHaveLength(3);
+  });
+
+  test("retries exhaust the full delay schedule even when GET returns a sparse body without uuid", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/employees/emp-1/jobs": [201, { uuid: "job-7" }],
+      "GET /v1/jobs/job-7": [200, {}],
+    });
+    const result = await runJob(
+      client,
+      "emp-1",
+      { title: "Engineer", hireDate: "2026-01-06", rate: "120000", paymentUnit: "Year", flsaStatus: "Exempt" },
+      [0, 0, 0],
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("job_created_without_compensation");
+    // The stable jobUuid from the POST response is preserved in details even though
+    // the latest GET body is empty, so the user can still recover manually.
+    const details = result.error.details as { job_uuid: string };
+    expect(details.job_uuid).toBe("job-7");
+    // All three GETs ran - the sparse body didn't short-circuit the retry loop.
+    expect(calls.filter((c) => c.method === "GET" && c.url === "/v1/jobs/job-7")).toHaveLength(3);
   });
 
   test("when the refetch GET fails (network / 5xx), surfaces a check-failed error WITHOUT deleting the job", async () => {
@@ -265,13 +315,12 @@ describe("runJob", () => {
       "POST /v1/employees/emp-1/jobs": [201, { uuid: "job-7" }],
       "GET /v1/jobs/job-7": [500, { error: "transient" }],
     });
-    const result = await runJob(client, "emp-1", {
-      title: "Engineer",
-      hireDate: "2026-01-06",
-      rate: "120000",
-      paymentUnit: "Year",
-      flsaStatus: "Exempt",
-    });
+    const result = await runJob(
+      client,
+      "emp-1",
+      { title: "Engineer", hireDate: "2026-01-06", rate: "120000", paymentUnit: "Year", flsaStatus: "Exempt" },
+      [0, 0, 0],
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("job_compensation_check_failed");
@@ -279,25 +328,6 @@ describe("runJob", () => {
     const details = result.error.details as { job: { uuid: string }; check_error: string };
     expect(details.job.uuid).toBe("job-7");
     expect(details.check_error).toBeTruthy();
-  });
-
-  test("when the refetched body lacks a uuid, falls back to the original job uuid for rollback", async () => {
-    const { client, calls } = stubApiClient({
-      "POST /v1/employees/emp-1/jobs": [201, { uuid: "job-7" }],
-      "GET /v1/jobs/job-7": [200, {}],
-      "DELETE /v1/jobs/job-7": [204, {}],
-    });
-    const result = await runJob(client, "emp-1", {
-      title: "Engineer",
-      hireDate: "2026-01-06",
-      rate: "120000",
-      paymentUnit: "Year",
-      flsaStatus: "Exempt",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("job_created_without_compensation_rolled_back");
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toContain("DELETE /v1/jobs/job-7");
   });
 
   test("a job POST failure surfaces the API error", async () => {
