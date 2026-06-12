@@ -4,7 +4,7 @@ import { withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { partialFailure, toResult } from "../lib/handle-api-error.ts";
+import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
@@ -33,8 +33,6 @@ interface ProvisionOpts {
 interface FinishOnboardingOpts {
   companyUuid?: string;
   token?: string;
-  // commander's `--no-approve` sets this to false; absent/default is true.
-  approve?: boolean;
   dryRun?: boolean;
 }
 
@@ -72,9 +70,8 @@ export function registerCompanyCommand(parent: Command): void {
   withContextOptions(
     cmd
       .command("finish")
-      .description("Finalize onboarding (flips onboarding_completed); auto-approves the company in sandbox")
-      .option("--no-approve", "Skip the sandbox auto-approve step (finish only)")
-      .option("--dry-run", "Describe the requests without sending"),
+      .description("Finalize onboarding (flips onboarding_completed -> true)")
+      .option("--dry-run", "Describe the request without sending"),
   ).action((opts: FinishOnboardingOpts) =>
     runCommand("gusto company finish", readGlobalFlags(parent.opts()), companyFinishOnboardingHandler(opts)),
   );
@@ -235,35 +232,15 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
 interface FinishOnboardingResult {
   onboarding_completed?: boolean;
 }
-interface ApproveResult {
-  company_status?: string;
-}
 
 export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): CommandHandler {
   return async ({ globals }) => {
-    // The approve step is a demo/sandbox-only affordance: `PUT .../approve`
-    // exists only in the demo/sandbox env. Production approval is a manual Gusto
-    // risk review done out of band, so approve must NEVER be issued there - and
-    // no flag can force it (there is no --approve, only --no-approve). Mirrors
-    // the production guards on --demo-sign and EIN rotation elsewhere.
-    const isProduction = globals.env === "production";
-    const wantApprove = opts.approve !== false && !isProduction;
-
     if (opts.dryRun) {
       return {
         ok: true,
         data: {
-          steps: [
-            { method: "PUT", path: "/v1/companies/{company_uuid}/finish_onboarding" },
-            ...(wantApprove ? [{ method: "PUT", path: "/v1/companies/{company_uuid}/approve" }] : []),
-          ],
-          will_approve: wantApprove,
-          note:
-            globals.env === "production"
-              ? "production: approval is a manual Gusto risk review; only finish_onboarding is called"
-              : wantApprove
-                ? "sandbox: finish_onboarding, then auto-approve (company_status -> Approved)"
-                : "finish_onboarding only (--no-approve)",
+          steps: [{ method: "PUT", path: "/v1/companies/{company_uuid}/finish_onboarding" }],
+          note: "finish_onboarding flips onboarding_completed -> true (stage 'done')",
         },
       };
     }
@@ -274,8 +251,8 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
       // finish_onboarding flips onboarding_completed -> true (stage 'done'). A 422
       // here means the API considers a required step unsatisfied; toResult surfaces
       // the upstream body so the agent sees which one rather than a bare "422".
-      // A 200 can still carry an empty/malformed body (deserializes to null), so
-      // every read below is null-safe - the same malformed-but-200 discipline the
+      // A 200 can still carry an empty/malformed body (deserializes to null), so the
+      // read below is null-safe - the same malformed-but-200 discipline the
       // onboarding-status and bank-account handlers use. Without it, a null body
       // would throw a TypeError past the try and surface as an opaque
       // internal_error (exit 1) instead of a structured result.
@@ -286,63 +263,12 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
         return toResult(err);
       }
 
-      if (!wantApprove) {
-        return {
-          ok: true,
-          data: {
-            onboarding_completed: onboarding?.onboarding_completed ?? null,
-            approved: false,
-            finish_onboarding: onboarding,
-            message:
-              globals.env === "production"
-                ? "Onboarding finished. In production, Gusto reviews and approves the company out of band."
-                : "Onboarding finished. Approval skipped (--no-approve).",
-          },
-        };
-      }
-
-      // Hard production stop, local to the call site: wantApprove already excludes
-      // production (so this is unreachable today), but assert it again right where
-      // the request is issued so a future change to that logic can never let an
-      // approve call reach production. Same defensive-recheck style as the
-      // federal-tax handler's post-validation narrowing.
-      if (isProduction) {
-        return {
-          ok: false,
-          exitCode: ExitCode.Blocked,
-          error: {
-            code: "approve_blocked_in_production",
-            message:
-              "`approve` is a demo/sandbox-only endpoint and is never called in production. Onboarding was finished; approval is left to Gusto's manual risk review.",
-          },
-        };
-      }
-
-      // Sandbox-only: approve flips company_status -> 'Approved' so the company can
-      // run payroll. Onboarding has already been finished by this point, so a
-      // failure here is a partial - tell the agent to re-run this command (finish
-      // is idempotent once steps are satisfied) rather than redo onboarding steps.
-      let company: ApproveResult | null;
-      try {
-        company = (await ctx.client.put<ApproveResult | null>(`${base}/approve`)).body;
-      } catch (err) {
-        return partialFailure(
-          "approve_failed",
-          "Onboarding finished, but the sandbox auto-approve failed. Re-run `gusto company finish` to retry approval; do not redo onboarding steps.",
-          err,
-          { onboarding_completed: onboarding?.onboarding_completed ?? null },
-        );
-      }
-
       return {
         ok: true,
         data: {
           onboarding_completed: onboarding?.onboarding_completed ?? null,
-          approved: company?.company_status === "Approved",
-          company_status: company?.company_status ?? null,
           finish_onboarding: onboarding,
-          approve: company,
-          message: `Onboarding finished and company approved (company_status: ${company?.company_status ?? "unknown"}).`,
+          message: "Onboarding finished (onboarding_completed -> true).",
         },
       };
     });

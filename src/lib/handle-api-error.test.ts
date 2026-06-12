@@ -176,19 +176,21 @@ describe("toResult OAuthError handling", () => {
 describe("partialFailure", () => {
   test("ApiError: takes its exitCode and carries extras, error, and response (in that order)", () => {
     const err = new ApiError(422, { errors: ["nope"] }, ExitCode.ApiClient, "PUT /x -> 422");
-    const result = partialFailure("approve_failed", "finished but approve failed", err, { onboarding_completed: true });
+    const result = partialFailure("bank_verification_failed", "created but verify failed", err, {
+      bank_account_uuid: "ba-1",
+    });
     expect(result).toEqual({
       ok: false,
       exitCode: ExitCode.ApiClient,
       error: {
-        code: "approve_failed",
-        message: "finished but approve failed",
-        details: { onboarding_completed: true, error: "PUT /x -> 422", response: { errors: ["nope"] } },
+        code: "bank_verification_failed",
+        message: "created but verify failed",
+        details: { bank_account_uuid: "ba-1", error: "PUT /x -> 422", response: { errors: ["nope"] } },
       },
     });
     // extras precede error precede response
     expect(Object.keys((result as { error: { details: object } }).error.details)).toEqual([
-      "onboarding_completed",
+      "bank_account_uuid",
       "error",
       "response",
     ]);
@@ -196,7 +198,7 @@ describe("partialFailure", () => {
 
   test("5xx ApiError carries its server exitCode", () => {
     const err = new ApiError(500, { e: 1 }, ExitCode.ApiServer, "PUT /x -> 500");
-    const result = partialFailure("approve_failed", "m", err);
+    const result = partialFailure("bank_verification_failed", "m", err);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
   });
@@ -210,17 +212,19 @@ describe("partialFailure", () => {
   });
 
   test("NetworkError keeps its network exit code (matches toResult), not General", () => {
-    // A follow-up-step network failure (e.g. /approve timing out) must classify
+    // A follow-up-step network failure (e.g. /verify timing out) must classify
     // the same as a first-step one through toResult - both exit Network.
     const err = new NetworkError("connection reset");
-    const result = partialFailure("approve_failed", "finished but approve failed", err, { onboarding_completed: true });
+    const result = partialFailure("bank_verification_failed", "created but verify failed", err, {
+      bank_account_uuid: "ba-1",
+    });
     const viaToResult = toResult(err);
     if (result.ok || viaToResult.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Network);
     expect(result.exitCode).toBe(viaToResult.exitCode);
-    expect(result.error.code).toBe("approve_failed");
+    expect(result.error.code).toBe("bank_verification_failed");
     // NetworkError has no body, so response is omitted but the message is kept.
-    expect(result.error.details).toEqual({ onboarding_completed: true, error: "connection reset" });
+    expect(result.error.details).toEqual({ bank_account_uuid: "ba-1", error: "connection reset" });
   });
 
   test("unknown non-Error throwable falls back to exit General and still records the message", () => {

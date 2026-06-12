@@ -248,58 +248,31 @@ describe("companyFinishOnboardingHandler", () => {
     return s;
   }
 
-  test("sandbox: finishes then auto-approves, reporting company_status Approved", async () => {
+  test("finishes onboarding via finish_onboarding only - the approve endpoint is gone", async () => {
     const s = stub((u) => {
       if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
-      if (u.includes("/approve")) return { status: 200, body: { company_status: "Approved" } };
       return { status: 404 };
     });
     const d = data(await companyFinishOnboardingHandler(auth)(ctx));
     expect(d.onboarding_completed).toBe(true);
-    expect(d.approved).toBe(true);
-    expect(d.company_status).toBe("Approved");
     const puts = s.calls.filter((c) => c.method === "PUT").map((c) => c.url);
     expect(puts.some((u) => u.includes("/finish_onboarding"))).toBe(true);
-    expect(puts.some((u) => u.includes("/approve"))).toBe(true);
+    // approve was dropped (re-add when payroll-running lands) - it must never be called.
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
   });
 
-  test("production: finishes only, never calls approve (the demo-only endpoint)", async () => {
+  test("behaves identically in production - finish only, still no approve call", async () => {
     const s = stub((u) => {
       if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
       return { status: 404 };
     });
     const d = data(await companyFinishOnboardingHandler(auth)(prodCtx));
     expect(d.onboarding_completed).toBe(true);
-    expect(d.approved).toBe(false);
     expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
   });
 
-  test("production: even an explicit approve:true cannot issue an approve request", async () => {
-    // There is no --approve flag, but lock the invariant: nothing (flag or opt)
-    // can make the demo-only approve endpoint fire against production.
-    const s = stub((u) => {
-      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
-      if (u.includes("/approve")) return { status: 200, body: { company_status: "Approved" } };
-      return { status: 404 };
-    });
-    const d = data(await companyFinishOnboardingHandler({ ...auth, approve: true })(prodCtx));
-    expect(d.approved).toBe(false);
-    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
-  });
-
-  test("--no-approve in sandbox finishes only and skips approve", async () => {
-    const s = stub((u) => {
-      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
-      return { status: 404 };
-    });
-    const d = data(await companyFinishOnboardingHandler({ ...auth, approve: false })(ctx));
-    expect(d.onboarding_completed).toBe(true);
-    expect(d.approved).toBe(false);
-    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
-  });
-
-  test("a finish_onboarding 422 surfaces the upstream body and never reaches approve", async () => {
-    const s = stub((u) => {
+  test("a finish_onboarding 422 surfaces the upstream body", async () => {
+    stub((u) => {
       if (u.includes("/finish_onboarding"))
         return { status: 422, body: { errors: [{ category: "finish_onboarding_incomplete" }] } };
       return { status: 404 };
@@ -307,21 +280,7 @@ describe("companyFinishOnboardingHandler", () => {
     const result = await companyFinishOnboardingHandler(auth)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
     expect(result.error.details).toBeDefined();
-  });
-
-  test("finish succeeds but approve fails: partial error tells the agent to retry, not redo onboarding", async () => {
-    stub((u) => {
-      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
-      if (u.includes("/approve")) return { status: 422, body: { errors: [{ message: "cannot approve" }] } };
-      return { status: 404 };
-    });
-    const result = await companyFinishOnboardingHandler(auth)(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.error.code).toBe("approve_failed");
-    expect((result.error.details as { onboarding_completed?: boolean }).onboarding_completed).toBe(true);
   });
 
   test("a malformed (empty 200) finish body degrades to null, not an internal_error throw", async () => {
@@ -329,31 +288,18 @@ describe("companyFinishOnboardingHandler", () => {
     // must not throw past the handler (which would surface as exit-1 internal_error).
     stub((u) => {
       if (u.includes("/finish_onboarding")) return { status: 200 }; // empty body -> null
-      if (u.includes("/approve")) return { status: 200, body: { company_status: "Approved" } };
       return { status: 404 };
     });
     const d = data(await companyFinishOnboardingHandler(auth)(ctx));
     expect(d.onboarding_completed).toBeNull();
-    expect(d.approved).toBe(true);
   });
 
-  test("dry-run lists both PUTs in sandbox and sends nothing", async () => {
+  test("dry-run lists only finish_onboarding and sends nothing", async () => {
     const s = stub(() => ({ status: 500 })); // any real call would fail the test
     const d = data(await companyFinishOnboardingHandler({ ...auth, dryRun: true })(ctx));
-    expect(d.will_approve).toBe(true);
     expect((d.steps as { path: string }[]).map((step) => step.path)).toEqual([
       "/v1/companies/{company_uuid}/finish_onboarding",
-      "/v1/companies/{company_uuid}/approve",
     ]);
     expect(s.calls).toHaveLength(0);
-  });
-
-  test("dry-run in production omits the approve step", async () => {
-    stub(() => ({ status: 500 }));
-    const d = data(await companyFinishOnboardingHandler({ ...auth, dryRun: true })(prodCtx));
-    expect(d.will_approve).toBe(false);
-    expect((d.steps as { path: string }[]).map((step) => step.path)).toEqual([
-      "/v1/companies/{company_uuid}/finish_onboarding",
-    ]);
   });
 });

@@ -94,7 +94,7 @@ export function toResult(err: unknown): CommandResult<never> {
 
 /** Envelope for a partial failure: an earlier step succeeded, then a follow-up
  * API call failed, leaving the caller in a known intermediate state worth
- * reporting (e.g. onboarding finished but auto-approve failed). Carries the
+ * reporting (e.g. a bank account was created but its verification call failed). Carries the
  * server response body (when present) and a human-readable error alongside
  * caller-supplied context. `extras` keys lead `details`, then `error`, then
  * `response` - matching the order each call site emitted before extraction. */

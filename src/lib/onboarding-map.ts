@@ -92,8 +92,7 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
 export const FINISH_ONBOARDING_ACTION: SuggestedAction = {
   command: "gusto company finish",
   required_flags: [],
-  // In sandbox the command also auto-approves; --no-approve opts out.
-  optional_flags: ["--no-approve"],
+  optional_flags: [],
   source: "cli_static_map",
 };
 
