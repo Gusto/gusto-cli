@@ -31,16 +31,16 @@ Estimate cash needs from the company's **processed-payroll history**, projected 
    ```
    gusto ledger show <payroll_uuid>
    ```
-   Use the `payroll_uuid` from the processed-payroll list. This generates the general-ledger report and polls until it's ready.
+   Use the `payroll_uuid` from the processed-payroll list. This generates the general-ledger report and polls until it's ready. **Note the return shape:** `ledger show` does _not_ emit the breakdown inline — it returns `data.report_urls`, a list of presigned S3 URLs pointing at a generated general-ledger JSON file. To use the GL split you must fetch one of those URLs and parse it; the URLs are short-lived (they expire in minutes). For most forecasts you don't need this step at all: the `totals` object from `payroll list --include totals` already carries the same cash split (`net_pay`, `employee_taxes`, `employer_taxes`, `benefits`, `tax_debit`, `net_pay_debit`, …), so prefer `totals` for the net-pay/taxes/benefits breakdown and reach for `ledger show` only when you need the full account-level general ledger.
 3. Read the cadence from `gusto pay-schedule show` (frequency + anchor/check dates) and walk future check dates forward to the requested horizon (default ~6 months), assigning the baseline debit to each. These rows are **estimates**: they assume hours, headcount, rates, and tax liabilities stay flat.
 
 ## Steps
 
 1. **Cadence.** `gusto pay-schedule show` — record each active schedule's frequency and its check dates.
 2. **Headcount context.** `gusto employee list` — note `data.summary.total` and the active/onboarding/terminated breakdown. Compensation is _not_ in this response, so the forecast is driven by payroll totals, not by summing per-employee pay; call this out so the user knows headcount is context, not an input.
-3. **Baseline + breakdown.** `gusto payroll list --processing-status processed --include totals --sort-order desc` for the baseline debit; `gusto ledger show <payroll_uuid>` on the most recent processed payroll for the GL split. Mark processed rows as source `actual`.
+3. **Baseline + breakdown.** `gusto payroll list --processing-status processed --include totals --sort-order desc` for the baseline debit _and_ the cash split — the `totals` object already contains `net_pay`, `employee_taxes`, `employer_taxes`, `benefits`, etc. Mark processed rows as source `actual`. Only run `gusto ledger show <payroll_uuid>` if you need the full account-level general ledger; remember it returns presigned `report_urls` to fetch, not an inline breakdown (see [Forecast method](#forecast-method) step 2).
 4. **Extrapolate.** Walk the pay-schedule check dates forward from today out to the horizon (default ~6 months); assign the baseline debit to each, source `projected`.
-5. **Present.** A table sorted by check date — `check_date | source (actual|projected) | cash_needed` — followed by rolling totals (per month and per quarter) and the ledger-derived split (net pay / taxes / benefits) for the baseline. Flag clearly where `projected` rows begin.
+5. **Present.** A table sorted by check date — `check_date | source (actual|projected) | cash_needed` — followed by rolling totals (per month and per quarter) and the `totals`-derived split (net pay / taxes / benefits) for the baseline. Flag clearly where `projected` rows begin.
 
 ## Output mode
 
@@ -50,7 +50,7 @@ Always pass `--agent` to every CLI call so the output is parseable JSON (`{ "ok"
 
 - `actual` rows are real Gusto figures (processed payrolls). `projected` rows are a flat-baseline heuristic and will drift from reality as hours, new hires, terminations, off-cycle payrolls, bonuses, and tax/benefit rate changes occur. Always label projected rows and state the assumption.
 - The company debit can vary between otherwise-identical pay periods (e.g. quarterly tax true-ups, benefit enrollment changes). Treat a single baseline as an estimate; averaging the last few processed payrolls is more robust than using one.
-- `gusto ledger show` reports a _processed_ payroll's general ledger — it's historical, used here for the cash breakdown, not for future periods.
+- `gusto ledger show` reports a _processed_ payroll's general ledger — it's historical, not usable for future periods. It returns presigned `report_urls` (a generated GL JSON you must fetch), not an inline breakdown, and is optional here: the `totals` object already provides the net-pay/taxes/benefits split for the baseline.
 
 ## Limitations
 
