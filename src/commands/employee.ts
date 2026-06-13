@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
-import { registerEmployeeAdd } from "./employee-add.ts";
+import { registerEmployeeAdd, registerEmployeeManage } from "./employee-add.ts";
 
 interface EmployeeListOpts {
   status?: string;
@@ -18,6 +18,7 @@ export function registerEmployeeCommand(parent: Command): void {
   const cmd = parent.command("employee").description("Add and inspect W-2 employees");
 
   registerEmployeeAdd(cmd, parent);
+  registerEmployeeManage(cmd, parent);
 
   cmd
     .command("show <employee_uuid>")

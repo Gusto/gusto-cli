@@ -14,10 +14,14 @@ import {
   introspectStateTax,
   jobBlockers,
   jobBody,
+  manageBlockers,
+  manageIdentityBody,
   parseAnswerFlags,
   paymentMethodBlockers,
+  resolveManageMode,
   runFederalTax,
   runJob,
+  runManage,
   runPaymentMethod,
   runStateTax,
   workAddressBlockers,
@@ -455,6 +459,61 @@ describe("runFederalTax", () => {
     const put = calls.find((c) => c.method === "PUT");
     expect((put?.body as Record<string, unknown>).w4_data_type).toBe("pre_2020_w4");
   });
+
+  // A fresh rev_2020_w4 record has no values for the four numeric W-4 fields, so a
+  // `--filing-status`-only PUT 422s ("...should be a number"). Default them to "0" so the common
+  // case works without forcing the caller to pass --other-income 0 --extra-withholding 0 ... etc.
+  test("defaults the 2020 W-4 numeric fields to 0 on a fresh record", async () => {
+    const { client, calls } = stubApiClient({
+      // Fresh record: a version but none of the numeric fields set yet.
+      "GET /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v1" }],
+      "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
+    });
+    const result = await runFederalTax(client, "emp-1", { filingStatus: "Single", w4DataType: "rev_2020_w4" });
+    expect(result.ok).toBe(true);
+    const body = calls.find((c) => c.method === "PUT")?.body as Record<string, unknown>;
+    expect(body).toMatchObject({
+      dependents_amount: "0",
+      other_income: "0",
+      extra_withholding: "0",
+      deductions: "0",
+    });
+  });
+
+  test("a null numeric W-4 field on the current record is defaulted to 0 (not carried as null)", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1/federal_taxes": [
+        200,
+        { version: "fed-v1", w4_data_type: "rev_2020_w4", other_income: null },
+      ],
+      "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
+    });
+    await runFederalTax(client, "emp-1", { filingStatus: "Single" });
+    const body = calls.find((c) => c.method === "PUT")?.body as Record<string, unknown>;
+    expect(body.other_income).toBe("0");
+  });
+
+  test("an explicitly-passed numeric W-4 flag is not overwritten by the 0 default", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v1" }],
+      "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
+    });
+    await runFederalTax(client, "emp-1", { filingStatus: "Single", w4DataType: "rev_2020_w4", otherIncome: "500.0" });
+    const body = calls.find((c) => c.method === "PUT")?.body as Record<string, unknown>;
+    expect(body.other_income).toBe("500.0");
+  });
+
+  test("does not inject the 2020 numeric fields for a pre_2020_w4 form", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v1" }],
+      "PUT /v1/employees/emp-1/federal_taxes": [200, { version: "fed-v2" }],
+    });
+    await runFederalTax(client, "emp-1", { filingStatus: "Single", w4DataType: "pre_2020_w4" });
+    const body = calls.find((c) => c.method === "PUT")?.body as Record<string, unknown>;
+    expect(body.other_income).toBeUndefined();
+    expect(body.dependents_amount).toBeUndefined();
+    expect(body.deductions).toBeUndefined();
+  });
 });
 
 describe("paymentMethodBlockers", () => {
@@ -675,6 +734,51 @@ describe("buildStateTaxBody", () => {
       ],
     );
     expect(r.ok).toBe(true);
+  });
+
+  // Some Select questions list boolean (or numeric) option values in discovery, e.g.
+  // file_new_hire_report → { value: true, label: "Yes, file..." }. The CLI must accept the listed
+  // value, coerce it for matching, and PUT it back with its original (boolean) type.
+  const NEW_HIRE_STATE = {
+    state: "CA",
+    questions: [
+      {
+        key: "file_new_hire_report",
+        label: "File new hire report",
+        input_question_format: {
+          type: "Select",
+          options: [
+            { value: true, label: "Yes, file the state new hire report for me." },
+            { value: false, label: "No, I have already filed." },
+          ],
+        },
+        answers: [],
+      },
+    ],
+  };
+
+  test("a boolean Select value is accepted and preserved as a boolean in the body", () => {
+    const r = buildStateTaxBody(NEW_HIRE_STATE.questions ? [NEW_HIRE_STATE] : [], [
+      { state: "CA", key: "file_new_hire_report", value: "true" },
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.body.states[0]?.questions[0]?.answers[0]?.value).toBe(true);
+  });
+
+  test("a boolean Select question still accepts the human label", () => {
+    const r = buildStateTaxBody(
+      [NEW_HIRE_STATE],
+      [{ state: "CA", key: "file_new_hire_report", value: "No, I have already filed." }],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.body.states[0]?.questions[0]?.answers[0]?.value).toBe(false);
+  });
+
+  test("an unmatched value for a boolean Select is blocked", () => {
+    const r = buildStateTaxBody([NEW_HIRE_STATE], [{ state: "CA", key: "file_new_hire_report", value: "maybe" }]);
+    expect(r.ok).toBe(false);
   });
 
   test("a missing required question is blocked with STATE:key", () => {
@@ -908,5 +1012,152 @@ describe("runStateTax", () => {
     expect(data.method).toBe("PUT");
     expect(data.path).toBe("/v1/employees/emp-1/state_taxes");
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+});
+
+// `employee manage <uuid>` updates an existing employee's identity (name/SSN/DOB, version-guarded
+// PUT /v1/employees/{uuid}) and/or switches onboarding mode (--mode admin|invite, PUT
+// /v1/employees/{uuid}/onboarding_status). Both may be passed in one call.
+
+describe("manageIdentityBody", () => {
+  test("maps only the supplied identity flags to snake_case", () => {
+    expect(manageIdentityBody({ ssn: "123-45-6789", dateOfBirth: "1990-01-01" })).toEqual({
+      ssn: "123-45-6789",
+      date_of_birth: "1990-01-01",
+    });
+  });
+
+  test("includes name fields when present", () => {
+    expect(manageIdentityBody({ firstName: "Jane", lastName: "Doe" })).toEqual({
+      first_name: "Jane",
+      last_name: "Doe",
+    });
+  });
+
+  test("is empty when no identity flag is passed", () => {
+    expect(manageIdentityBody({ mode: "admin" })).toEqual({});
+  });
+});
+
+describe("resolveManageMode", () => {
+  test("--mode admin selects admin_onboarding_incomplete", () => {
+    expect(resolveManageMode({ mode: "admin" })).toEqual({ ok: true, status: "admin_onboarding_incomplete" });
+  });
+
+  test("--mode invite selects self_onboarding_pending_invite", () => {
+    expect(resolveManageMode({ mode: "invite" })).toEqual({ ok: true, status: "self_onboarding_pending_invite" });
+  });
+
+  test("no --mode yields a null status (no mode change)", () => {
+    expect(resolveManageMode({ ssn: "123-45-6789" })).toEqual({ ok: true, status: null });
+  });
+
+  test("an unknown --mode value is blocked", () => {
+    const r = resolveManageMode({ mode: "bogus" });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.blocked[0]?.field).toBe("mode");
+  });
+});
+
+describe("manageBlockers", () => {
+  test("nothing to manage is blocked", () => {
+    expect(manageBlockers({}).map((b) => b.field)).toEqual(["fields"]);
+  });
+
+  test("an unknown --mode value is blocked", () => {
+    expect(manageBlockers({ mode: "bogus" }).map((b) => b.field)).toEqual(["mode"]);
+  });
+
+  test("an identity-only call is allowed", () => {
+    expect(manageBlockers({ ssn: "123-45-6789" })).toEqual([]);
+  });
+
+  test("a mode-only call is allowed", () => {
+    expect(manageBlockers({ mode: "admin" })).toEqual([]);
+  });
+
+  test("a mixed identity + mode call is allowed", () => {
+    expect(manageBlockers({ firstName: "Jane", mode: "invite" })).toEqual([]);
+  });
+});
+
+describe("runManage", () => {
+  test("identity only → version-guarded PUT to the employee, no onboarding_status call", async () => {
+    const { client, calls } = stubApiClient({
+      "GET /v1/employees/emp-1": [200, { version: "emp-v1" }],
+      "PUT /v1/employees/emp-1": [200, { version: "emp-v2", uuid: "emp-1" }],
+    });
+    const result = await runManage(client, "emp-1", { ssn: "123-45-6789", dateOfBirth: "1990-01-01" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["employee"]);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/v1/employees/emp-1");
+    expect(put?.body).toMatchObject({ ssn: "123-45-6789", date_of_birth: "1990-01-01", version: "emp-v1" });
+    expect(calls.some((c) => c.url.includes("/onboarding_status"))).toBe(false);
+  });
+
+  test("mode only (--mode admin) → PUTs onboarding_status, never touches the employee record", async () => {
+    const { client, calls } = stubApiClient({
+      "PUT /v1/employees/emp-1/onboarding_status": [200, { onboarding_status: "admin_onboarding_incomplete" }],
+    });
+    const result = await runManage(client, "emp-1", { mode: "admin" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["onboarding_status"]);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/v1/employees/emp-1/onboarding_status");
+    expect(put?.body).toEqual({ onboarding_status: "admin_onboarding_incomplete" });
+    expect(calls.some((c) => c.url === "/v1/employees/emp-1")).toBe(false);
+  });
+
+  test("mixed → switches onboarding mode first, then version-guards the identity PUT", async () => {
+    const { client, calls } = stubApiClient({
+      "PUT /v1/employees/emp-1/onboarding_status": [200, { onboarding_status: "admin_onboarding_incomplete" }],
+      "GET /v1/employees/emp-1": [200, { version: "emp-v1" }],
+      "PUT /v1/employees/emp-1": [200, { version: "emp-v2" }],
+    });
+    const result = await runManage(client, "emp-1", { mode: "admin", ssn: "123-45-6789" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["onboarding_status", "employee"]);
+    // The onboarding_status PUT must precede the employee PUT.
+    const puts = calls.filter((c) => c.method === "PUT").map((c) => c.url);
+    expect(puts).toEqual(["/v1/employees/emp-1/onboarding_status", "/v1/employees/emp-1"]);
+  });
+
+  test("a mode-only API error is surfaced as-is", async () => {
+    const { client } = stubApiClient({
+      "PUT /v1/employees/emp-1/onboarding_status": [422, { error: "invalid transition" }],
+    });
+    const result = await runManage(client, "emp-1", { mode: "admin" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
+
+  test("mode succeeds but the identity PUT fails → reports the completed mode switch for a clean retry", async () => {
+    const { client } = stubApiClient({
+      "PUT /v1/employees/emp-1/onboarding_status": [200, { onboarding_status: "admin_onboarding_incomplete" }],
+      "GET /v1/employees/emp-1": [200, { version: "emp-v1" }],
+      "PUT /v1/employees/emp-1": [422, { error: "bad ssn" }],
+    });
+    const result = await runManage(client, "emp-1", { mode: "admin", ssn: "bad" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("manage_identity_failed");
+    const details = result.error.details as { completed: string[]; failed: { domain: string } };
+    expect(details.completed).toEqual(["onboarding_status"]);
+    expect(details.failed.domain).toBe("employee");
+  });
+
+  test("an unknown --mode value blocks before any call", async () => {
+    const { client, calls } = stubApiClient({});
+    const result = await runManage(client, "emp-1", { mode: "bogus" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(calls.length).toBe(0);
   });
 });
