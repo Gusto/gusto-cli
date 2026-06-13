@@ -430,7 +430,7 @@ describe("runFederalTax", () => {
     expect((put?.body as Record<string, unknown>).w4_data_type).toBe("pre_2020_w4");
   });
 
-  // AINT-637 #3: a fresh rev_2020_w4 record has no values for the four numeric W-4 fields, so a
+  // A fresh rev_2020_w4 record has no values for the four numeric W-4 fields, so a
   // `--filing-status`-only PUT 422s ("...should be a number"). Default them to "0" so the common
   // case works without forcing the caller to pass --other-income 0 --extra-withholding 0 ... etc.
   test("defaults the 2020 W-4 numeric fields to 0 on a fresh record", async () => {
@@ -706,7 +706,7 @@ describe("buildStateTaxBody", () => {
     expect(r.ok).toBe(true);
   });
 
-  // AINT-637 #4: some Select questions list boolean (or numeric) option values in discovery, e.g.
+  // Some Select questions list boolean (or numeric) option values in discovery, e.g.
   // file_new_hire_report → { value: true, label: "Yes, file..." }. The CLI must accept the listed
   // value, coerce it for matching, and PUT it back with its original (boolean) type.
   const NEW_HIRE_STATE = {
@@ -985,9 +985,9 @@ describe("runStateTax", () => {
   });
 });
 
-// AINT-637 #1 + #2: `employee manage <uuid>` updates an existing employee's identity (name/SSN/DOB,
-// version-guarded PUT /v1/employees/{uuid}) and/or switches onboarding mode (--admin / --invite,
-// PUT /v1/employees/{uuid}/onboarding_status). Both may be passed in one call.
+// `employee manage <uuid>` updates an existing employee's identity (name/SSN/DOB, version-guarded
+// PUT /v1/employees/{uuid}) and/or switches onboarding mode (--mode admin|invite, PUT
+// /v1/employees/{uuid}/onboarding_status). Both may be passed in one call.
 
 describe("manageIdentityBody", () => {
   test("maps only the supplied identity flags to snake_case", () => {
@@ -1005,25 +1005,25 @@ describe("manageIdentityBody", () => {
   });
 
   test("is empty when no identity flag is passed", () => {
-    expect(manageIdentityBody({ admin: true })).toEqual({});
+    expect(manageIdentityBody({ mode: "admin" })).toEqual({});
   });
 });
 
 describe("resolveManageMode", () => {
-  test("--admin selects admin_onboarding_incomplete", () => {
-    expect(resolveManageMode({ admin: true })).toEqual({ ok: true, status: "admin_onboarding_incomplete" });
+  test("--mode admin selects admin_onboarding_incomplete", () => {
+    expect(resolveManageMode({ mode: "admin" })).toEqual({ ok: true, status: "admin_onboarding_incomplete" });
   });
 
-  test("--invite selects self_onboarding_pending_invite", () => {
-    expect(resolveManageMode({ invite: true })).toEqual({ ok: true, status: "self_onboarding_pending_invite" });
+  test("--mode invite selects self_onboarding_pending_invite", () => {
+    expect(resolveManageMode({ mode: "invite" })).toEqual({ ok: true, status: "self_onboarding_pending_invite" });
   });
 
-  test("no mode flag yields a null status (no mode change)", () => {
+  test("no --mode yields a null status (no mode change)", () => {
     expect(resolveManageMode({ ssn: "123-45-6789" })).toEqual({ ok: true, status: null });
   });
 
-  test("--admin and --invite together are blocked", () => {
-    const r = resolveManageMode({ admin: true, invite: true });
+  test("an unknown --mode value is blocked", () => {
+    const r = resolveManageMode({ mode: "bogus" });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.blocked[0]?.field).toBe("mode");
@@ -1035,8 +1035,8 @@ describe("manageBlockers", () => {
     expect(manageBlockers({}).map((b) => b.field)).toEqual(["fields"]);
   });
 
-  test("conflicting mode flags are blocked", () => {
-    expect(manageBlockers({ admin: true, invite: true }).map((b) => b.field)).toEqual(["mode"]);
+  test("an unknown --mode value is blocked", () => {
+    expect(manageBlockers({ mode: "bogus" }).map((b) => b.field)).toEqual(["mode"]);
   });
 
   test("an identity-only call is allowed", () => {
@@ -1044,11 +1044,11 @@ describe("manageBlockers", () => {
   });
 
   test("a mode-only call is allowed", () => {
-    expect(manageBlockers({ admin: true })).toEqual([]);
+    expect(manageBlockers({ mode: "admin" })).toEqual([]);
   });
 
   test("a mixed identity + mode call is allowed", () => {
-    expect(manageBlockers({ firstName: "Jane", invite: true })).toEqual([]);
+    expect(manageBlockers({ firstName: "Jane", mode: "invite" })).toEqual([]);
   });
 });
 
@@ -1068,11 +1068,11 @@ describe("runManage", () => {
     expect(calls.some((c) => c.url.includes("/onboarding_status"))).toBe(false);
   });
 
-  test("mode only (--admin) → PUTs onboarding_status, never touches the employee record", async () => {
+  test("mode only (--mode admin) → PUTs onboarding_status, never touches the employee record", async () => {
     const { client, calls } = stubApiClient({
       "PUT /v1/employees/emp-1/onboarding_status": [200, { onboarding_status: "admin_onboarding_incomplete" }],
     });
-    const result = await runManage(client, "emp-1", { admin: true });
+    const result = await runManage(client, "emp-1", { mode: "admin" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["onboarding_status"]);
@@ -1088,7 +1088,7 @@ describe("runManage", () => {
       "GET /v1/employees/emp-1": [200, { version: "emp-v1" }],
       "PUT /v1/employees/emp-1": [200, { version: "emp-v2" }],
     });
-    const result = await runManage(client, "emp-1", { admin: true, ssn: "123-45-6789" });
+    const result = await runManage(client, "emp-1", { mode: "admin", ssn: "123-45-6789" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["onboarding_status", "employee"]);
@@ -1101,7 +1101,7 @@ describe("runManage", () => {
     const { client } = stubApiClient({
       "PUT /v1/employees/emp-1/onboarding_status": [422, { error: "invalid transition" }],
     });
-    const result = await runManage(client, "emp-1", { admin: true });
+    const result = await runManage(client, "emp-1", { mode: "admin" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
@@ -1113,7 +1113,7 @@ describe("runManage", () => {
       "GET /v1/employees/emp-1": [200, { version: "emp-v1" }],
       "PUT /v1/employees/emp-1": [422, { error: "bad ssn" }],
     });
-    const result = await runManage(client, "emp-1", { admin: true, ssn: "bad" });
+    const result = await runManage(client, "emp-1", { mode: "admin", ssn: "bad" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("manage_identity_failed");
@@ -1122,9 +1122,9 @@ describe("runManage", () => {
     expect(details.failed.domain).toBe("employee");
   });
 
-  test("conflicting --admin and --invite block before any call", async () => {
+  test("an unknown --mode value blocks before any call", async () => {
     const { client, calls } = stubApiClient({});
-    const result = await runManage(client, "emp-1", { admin: true, invite: true });
+    const result = await runManage(client, "emp-1", { mode: "bogus" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);

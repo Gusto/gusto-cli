@@ -927,11 +927,11 @@ function stateTaxHandler(
 // ───────────────────────────── manage (update + onboarding-mode) ─────────────────────────────
 // `employee manage <uuid>` admin-completes an existing employee the `add` flow can't reach: it
 // updates identity (name/SSN/DOB, a version-guarded PUT /v1/employees/{uuid}) and/or switches the
-// onboarding mode (--admin / --invite, a PUT /v1/employees/{uuid}/onboarding_status). Either or
+// onboarding mode (--mode admin|invite, a PUT /v1/employees/{uuid}/onboarding_status). Either or
 // both may be passed; when both are, the mode switch runs first so the identity update lands in the
 // target mode.
 
-/** The onboarding_status each mode flag selects. Values verified against the Gusto API's
+/** The onboarding_status each `--mode` value selects. Values verified against the Gusto API's
  * onboarding_status enum (the only two an admin sets to move an employee between modes). */
 const MANAGE_MODE_STATUS = {
   admin: "admin_onboarding_incomplete",
@@ -943,8 +943,7 @@ export interface ManageOpts extends TokenOpts {
   lastName?: string;
   ssn?: string;
   dateOfBirth?: string;
-  admin?: boolean;
-  invite?: boolean;
+  mode?: string;
   dryRun?: boolean;
   example?: boolean;
 }
@@ -959,16 +958,14 @@ export function manageIdentityBody(opts: ManageOpts): Record<string, unknown> {
   };
 }
 
-/** The onboarding_status the mode flags select: `null` when neither was passed (no mode change);
- * blocked when both are passed (ambiguous). */
+/** The onboarding_status `--mode` selects: `null` when unset (no mode change); blocked when the
+ * value isn't a known mode. */
 export function resolveManageMode(
   opts: ManageOpts,
 ): { ok: true; status: string | null } | { ok: false; blocked: BlockedOn[] } {
-  if (opts.admin && opts.invite)
-    return { ok: false, blocked: [{ field: "mode", reason: "pass only one of --admin or --invite" }] };
-  if (opts.admin) return { ok: true, status: MANAGE_MODE_STATUS.admin };
-  if (opts.invite) return { ok: true, status: MANAGE_MODE_STATUS.invite };
-  return { ok: true, status: null };
+  if (opts.mode === undefined) return { ok: true, status: null };
+  if (opts.mode === "admin" || opts.mode === "invite") return { ok: true, status: MANAGE_MODE_STATUS[opts.mode] };
+  return { ok: false, blocked: [{ field: "mode", reason: 'must be "admin" or "invite"' }] };
 }
 
 export function manageBlockers(opts: ManageOpts): BlockedOn[] {
@@ -979,7 +976,7 @@ export function manageBlockers(opts: ManageOpts): BlockedOn[] {
     return [
       {
         field: "fields",
-        reason: "nothing to manage: pass --first-name/--last-name/--ssn/--date-of-birth and/or --admin/--invite",
+        reason: "nothing to manage: pass --first-name/--last-name/--ssn/--date-of-birth and/or --mode admin|invite",
       },
     ];
   }
@@ -1041,7 +1038,7 @@ function manageExample(): CommandResult {
           body: { ssn: "123-45-6789", date_of_birth: "1990-01-01" },
         },
       ],
-      note: "example: --admin/--invite switch onboarding mode; identity flags version-guard PUT the employee. Pass either or both.",
+      note: "example: --mode admin|invite switches onboarding mode; identity flags version-guard PUT the employee. Pass either or both.",
     },
   };
 }
@@ -1051,11 +1048,11 @@ function manageHandler(employeeUuid: string | undefined, opts: ManageOpts): Comm
     if (opts.example) return manageExample();
     if (!employeeUuid) return missingEmployeeUuid();
     const blocked = manageBlockers(opts);
-    if (blocked.length > 0) return validationFailure("nothing to manage or conflicting flags", blocked);
+    if (blocked.length > 0) return validationFailure("nothing to manage or invalid --mode", blocked);
     if (opts.dryRun) {
       const mode = resolveManageMode(opts);
       const steps: Record<string, unknown>[] = [];
-      // mode.ok is guaranteed here — manageBlockers already rejected the conflicting-flags case.
+      // mode.ok is guaranteed here — manageBlockers already rejected an invalid --mode.
       if (mode.ok && mode.status !== null) {
         steps.push({
           method: "PUT",
@@ -1086,8 +1083,7 @@ export function registerEmployeeManage(employee: Command, parent: Command): void
     .option("--last-name <name>", "Employee last name")
     .option("--ssn <ssn>", "Social Security Number")
     .option("--date-of-birth <date>", "Date of birth (YYYY-MM-DD)")
-    .option("--admin", "Switch to admin-driven onboarding (admin_onboarding_incomplete)")
-    .option("--invite", "Switch to a self-onboarding invite (self_onboarding_pending_invite)")
+    .option("--mode <mode>", 'Switch onboarding mode: "admin" (admin-driven) or "invite" (self-onboarding)')
     .option(...TOKEN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
@@ -1096,9 +1092,9 @@ export function registerEmployeeManage(employee: Command, parent: Command): void
       `
 Examples:
   # complete an invited employee the admin is driving: switch to admin mode, then set SSN/DOB
-  $ gusto employee manage <employee_uuid> --admin --ssn 123-45-6789 --date-of-birth 1990-01-01
+  $ gusto employee manage <employee_uuid> --mode admin --ssn 123-45-6789 --date-of-birth 1990-01-01
   # hand an admin-created employee back to self-onboarding
-  $ gusto employee manage <employee_uuid> --invite
+  $ gusto employee manage <employee_uuid> --mode invite
   # fix a name on an existing employee
   $ gusto employee manage <employee_uuid> --first-name Jane
 `,
