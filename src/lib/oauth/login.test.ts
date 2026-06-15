@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { companyUuidFromTokenInfo, login, openOrPrint } from "./login.ts";
+import { companyUuidFromTokenInfo, formatUrlForTerminal, login, openOrPrint } from "./login.ts";
 import { memoryStore, mockFetch } from "./test-support.ts";
 
 function driveCallback(): {
@@ -27,7 +27,28 @@ describe("companyUuidFromTokenInfo", () => {
   });
 });
 
+describe("formatUrlForTerminal", () => {
+  test("wraps the URL in an OSC 8 hyperlink on a TTY", () => {
+    const out = formatUrlForTerminal("https://auth.test/go", true);
+    expect(out).toBe("\x1b]8;;https://auth.test/go\x1b\\https://auth.test/go\x1b]8;;\x1b\\");
+  });
+  test("falls back to the bare URL when not a TTY", () => {
+    expect(formatUrlForTerminal("https://auth.test/go", false)).toBe("https://auth.test/go");
+  });
+});
+
 describe("openOrPrint", () => {
+  test("emits an OSC 8 hyperlink for the URL when stderr is a TTY", async () => {
+    const lines: string[] = [];
+    await openOrPrint(
+      "https://auth.test/go",
+      () => Promise.resolve(),
+      (l) => lines.push(l),
+      true,
+    );
+    expect(lines.join("\n")).toContain("\x1b]8;;https://auth.test/go\x1b\\");
+  });
+
   test("prints the opened-browser hint when the opener succeeds", async () => {
     const lines: string[] = [];
     await openOrPrint(
