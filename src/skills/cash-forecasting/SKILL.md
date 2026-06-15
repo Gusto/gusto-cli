@@ -52,7 +52,7 @@ A processed payroll is the only place real figures exist, so the skill needs at 
    - Stable accounts (regular wages, health/dental/vision benefit contributions, Medicare employer tax) → hold at the recent average.
    - Declining accounts (employer Social Security, 401(k) match, anything trending down) → continue the observed trend toward its floor; never below zero.
    - Already-floored accounts (FUTA / state SUI / ETT once near zero) → hold at floor.
-   This is a trajectory heuristic, not a tax engine — state that, and that it can't anticipate a wage-base cap that hasn't started bending the series.
+   This is a trajectory heuristic, not a tax engine — state that.
 6. **Per-employee trajectories.** From the block-1 series, project per-employee employer cost using the same trajectory logic. Only **gross wages** and **employer benefit contributions** are name-tagged in block 1 (the description ends in `… for <Name>`); **employer taxes are listed unlabeled** (e.g. `Social Security - employer tax`, no name) and so can be attributed to an employee only positionally/pro-rata, not reliably by name — keep employer tax at the company level or flag any per-employee tax split as an estimate. Block 1 also does **not** carry per-employee net pay or employee withholding (those appear only as company-level `DebitNetPay` / `DebitTax`), so per-employee figures are employer cost, not take-home.
 7. **Reconcile + extrapolate.** Per projected period: **Gusto bank debit** = projected `DebitNetPay + DebitTax` (this is `company_debit`); **total employer cost** = projected debit-side accounts (wages + PTO + employer taxes + employer benefit contributions); **benefit-liability outflow** = projected `BenefitLiability` (employer contributions + employee deductions remitted to carriers/401(k) — separate from the Gusto debit). Walk the pay-schedule check dates forward from today to the horizon, source `projected`.
 8. **Present.**
@@ -66,10 +66,10 @@ A processed payroll is the only place real figures exist, so the skill needs at 
 
 These are the only times the skill should stop and wait for the user. Everything else — the cadence, which payrolls exist, how each account trends — is read or inferred from the data and should be narrated, not interrogated.
 
-- **History window + forecast horizon** (up front) — ask before forecasting, even though both have defaults; see [Interactive inputs](#interactive-inputs). Skip only if the user already supplied them, or if no user can answer.
+- **History window + forecast horizon** (up front) — ask before forecasting; see [Interactive inputs](#interactive-inputs).
 - **Off-cycle payroll inclusion** (step 3) — if any processed off-cycle runs exist in the window, stop and ask whether to fold them into the baseline; they materially change every projected period.
 
-When no user is present (a headless or subagent run), don't block: use the documented defaults at each pause point and state which defaults you used.
+When no user is present (a headless or subagent run), don't block at either pause point: use the documented defaults and state which you used.
 
 ## Output mode
 
@@ -79,9 +79,8 @@ Always pass `--agent` to every CLI call so the output is parseable JSON (`{ "ok"
 
 - `actual` rows are real Gusto figures (processed payrolls). `projected` rows are heuristic and will drift from reality as hours, new hires, terminations, off-cycle payrolls, bonuses, and tax/benefit rate changes occur. Always label projected rows and state the assumption.
 - The accounting projection extrapolates each account's **observed trajectory**. It captures declines already in progress (e.g. employer Social Security easing as earners near the annual wage base, FUTA/SUI floored mid-year) but **cannot foresee a cap-out that hasn't started bending the numbers** — e.g. a high earner who will hit the Social Security wage base later in the year but whose per-period tax still looks flat today. Call this out; it is the deliberate trade-off for not maintaining wage-base tables.
-- `gusto ledger show` returns presigned `report_urls` (a GL JSON you must fetch), not an inline breakdown, and the URLs expire in ~10 minutes — fetch each promptly and re-request if one expires.
 - The company debit can vary between otherwise-identical pay periods (e.g. quarterly tax true-ups, benefit enrollment changes). Averaging the last few processed payrolls is more robust than using one.
-- The per-employee GL block (block 1) name-tags only **gross wages** and **employer benefit contributions**; employer payroll taxes appear there unlabeled, and net pay / employee withholding aren't broken out per person at all. So per-employee output is wages + employer benefit contributions by name, with employer tax handled at the company level (or split pro-rata and flagged as an estimate).
+- Per-employee output is **employer cost, not take-home** (wages + employer benefit contributions by name; employer tax stays company-level) — see step 6.
 
 ## Limitations
 
