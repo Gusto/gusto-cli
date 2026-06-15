@@ -1,13 +1,14 @@
 import type { Command } from "commander";
 import { fetchResource } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
-import { type Environment, readGlobalFlags } from "../lib/global-flags.ts";
+import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import type { OAuthHttpOptions } from "../lib/oauth/endpoints.ts";
-import { type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
+import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
 import { revokeToken } from "../lib/oauth/revoke.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
+import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
 import { hasClientCreds } from "../lib/oauth/types.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
@@ -83,24 +84,26 @@ export async function performLogout(
   return { revoked };
 }
 
-function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
-  return async ({ globals }) => {
+/** Agent mode (explicit --agent/--json OR auto-on when stdout is piped) gets a callback
+ * that writes a JSON line for `login` to fire the moment the loopback server binds, before
+ * blocking on the OAuth callback. Returns undefined in human mode so the URL is only printed. */
+export function buildSignInUrlEmitter(
+  globals: GlobalFlags,
+  sinks: StreamSinks | undefined,
+): ((event: SignInUrlEvent) => void) | undefined {
+  if (resolveOutputMode(globals) !== "agent") return undefined;
+  const stdout = sinks?.stdout ?? process.stdout;
+  return (event) => stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
+  return async ({ globals, sinks }) => {
     try {
-      // Under --agent / --json, emit the sign-in URL as a JSON line on stdout
-      // the moment the loopback server binds, before blocking on the OAuth
-      // callback. Agent harnesses that buffer the subprocess can read line 1
-      // immediately, surface the URL, and keep reading for the final envelope.
-      const inAgentMode = globals.agent || globals.json;
-      const emitEvent = inAgentMode
-        ? (event: { event: string; sign_in_url: string; state: string }): void => {
-            process.stdout.write(`${JSON.stringify(event)}\n`);
-          }
-        : undefined;
       const info = await login(resolveEnv(globals), {
         store: resolveStore(),
         http: oauthHttp(globals),
         noBrowser: opts.noBrowser,
-        emitEvent,
+        emitEvent: buildSignInUrlEmitter(globals, sinks),
       });
       return { ok: true, data: loginResultData(info) };
     } catch (err) {

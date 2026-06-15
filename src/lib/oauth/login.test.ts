@@ -123,14 +123,17 @@ describe("login", () => {
       { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
     ]);
 
+    // AINT-625 holds the loopback callback response open until server.complete();
+    // fire-and-forget the fetch (don't await) so login can progress past openBrowser.
     const eventOrder: string[] = [];
     const events: { event: string; sign_in_url: string; state: string }[] = [];
-    const openBrowser = async (authorizeUrl: string): Promise<void> => {
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
       eventOrder.push("callback");
       const u = new URL(authorizeUrl);
       const redirect = u.searchParams.get("redirect_uri") as string;
       const state = u.searchParams.get("state") as string;
-      await globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      return Promise.resolve();
     };
 
     await login("sandbox", {

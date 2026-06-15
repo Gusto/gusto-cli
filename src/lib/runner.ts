@@ -6,6 +6,10 @@ import { type BlockedOn, type EnvelopeError, type StreamSinks, emit, outputOptio
 export interface CommandContext {
   command: string;
   globals: GlobalFlags;
+  /** Runner-resolved stream sinks. Always present when called by the runner;
+   * tests that construct ctx by hand may omit it (handlers should fall back to
+   * `process.stdout`/`process.stderr`). */
+  sinks?: StreamSinks;
 }
 
 export type CommandResult<T = unknown> =
@@ -83,9 +87,11 @@ async function run<T>(
     return deps.exit(ExitCode.CliUsage);
   }
 
+  const sinks: StreamSinks = deps.sinks ?? { stdout: process.stdout, stderr: process.stderr };
+
   let code: ExitCodeValue;
   try {
-    const result = await handler({ command, globals });
+    const result = await handler({ command, globals, sinks });
     if (!result.ok) {
       emit(output, { ok: false, error: result.error }, deps.sinks);
       code = result.exitCode;

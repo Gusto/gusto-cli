@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { TEST_CONTEXT as ctx, stubGlobalFetch } from "../lib/test-support.ts";
+import type { GlobalFlags } from "../lib/global-flags.ts";
+import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore, mockHttp as http } from "../lib/oauth/test-support.ts";
-import { authWhoamiHandler, loginResultData, performLogout } from "./auth.ts";
+import { authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
 
 // whoami's token resolution (session > env > --token-stdin) is delegated to
 // fetchResource and covered by api-context.test.ts; the cases below cover the
@@ -62,6 +63,46 @@ describe("performLogout", () => {
       revoked: false,
     });
     expect(store.data.sandbox).toBeUndefined();
+  });
+});
+
+describe("buildSignInUrlEmitter", () => {
+  const human: GlobalFlags = { ...TEST_GLOBALS, agent: false, human: true, json: false };
+
+  test("returns undefined in human mode", () => {
+    const { sinks } = captureSinks();
+    expect(buildSignInUrlEmitter(human, sinks)).toBeUndefined();
+  });
+
+  test("explicit --agent writes a newline-terminated JSON line to stdout", () => {
+    const { sinks, stdout } = captureSinks();
+    const emit = buildSignInUrlEmitter({ ...human, agent: true, human: false }, sinks);
+    expect(emit).toBeDefined();
+    emit?.({ event: "sign_in_url", sign_in_url: "https://auth.test/x", state: "s1" });
+    expect(stdout.buffer).toBe(
+      `${JSON.stringify({ event: "sign_in_url", sign_in_url: "https://auth.test/x", state: "s1" })}\n`,
+    );
+  });
+
+  // Auto-on agent mode (piped stdout) is what makes the AINT-644 event reachable
+  // for harnesses that don't pass --agent explicitly. The flags carry agent=false
+  // and human=false; resolveOutputMode reads the TTY to decide. Stub the TTY check
+  // via the writable stream to assert the resolver routes piped runs to agent mode.
+  test("piped stdout (auto-on agent mode) still emits", () => {
+    const { sinks, stdout } = captureSinks();
+    // Simulate the runner's resolveOutputMode by passing flags that leave the
+    // decision to TTY-detection and stubbing process.stdout.isTTY = false.
+    const originalIsTTY = process.stdout.isTTY;
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+      const piped: GlobalFlags = { ...TEST_GLOBALS, agent: false, human: false, json: false };
+      const emit = buildSignInUrlEmitter(piped, sinks);
+      expect(emit).toBeDefined();
+      emit?.({ event: "sign_in_url", sign_in_url: "https://auth.test/y", state: "s2" });
+      expect(stdout.buffer).toContain('"sign_in_url"');
+    } finally {
+      Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
+    }
   });
 });
 

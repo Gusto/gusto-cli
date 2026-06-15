@@ -20,6 +20,16 @@ export function companyUuidFromTokenInfo(info: TokenInfo): string | undefined {
   return undefined;
 }
 
+/** Structured event emitted by `login` the moment the sign-in URL is ready, before
+ * blocking on the OAuth callback. Consumed by the `--agent` surface to write a JSON
+ * line to stdout so agent harnesses can surface the URL without buffering the whole
+ * subprocess. */
+export interface SignInUrlEvent {
+  event: "sign_in_url";
+  sign_in_url: string;
+  state: string;
+}
+
 export interface LoginDeps {
   store: TokenStore;
   http: OAuthHttpOptions;
@@ -27,11 +37,7 @@ export interface LoginDeps {
   /** Print the sign-in URL instead of opening a browser. For agent/headless use. */
   noBrowser?: boolean;
   print?: (line: string) => void;
-  /** Emit a structured event the moment the sign-in URL is ready - before blocking
-   * on the OAuth callback. Used by the `--agent` surface to write a JSON line to
-   * stdout so agent harnesses can surface the URL to the user without buffering
-   * the whole subprocess. Receives `{ event: "sign_in_url", sign_in_url, state }`. */
-  emitEvent?: (event: { event: string; sign_in_url: string; state: string }) => void;
+  emitEvent?: (event: SignInUrlEvent) => void;
   now?: () => number;
 }
 
