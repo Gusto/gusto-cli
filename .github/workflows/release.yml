@@ -55,6 +55,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          # set -u only catches unset vars; a missing repo secret expands to an
+          # empty string, so fail loudly if any signing input is blank.
+          : "${MACOS_CERT_P12_BASE64:?must be set as a repo secret}"
+          : "${MACOS_CERT_PASSWORD:?must be set as a repo secret}"
+          : "${ASC_KEY_ID:?must be set as a repo secret}"
+          : "${ASC_ISSUER_ID:?must be set as a repo secret}"
+          : "${ASC_API_KEY_P8:?must be set as a repo secret}"
+
           rcodesign_version=0.29.0
           rcodesign_sha256=dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002
           asset="apple-codesign-${rcodesign_version}-x86_64-unknown-linux-musl"
@@ -75,6 +83,7 @@ jobs:
           # MACOS_CERT_P12_BASE64 is a leaf-only Developer ID Application .p12; a
           # chain-bundled .p12 makes rcodesign sign with the intermediate instead.
           printf '%s' "$MACOS_CERT_P12_BASE64" | base64 -d > "$work/signing.p12"
+          printf '%s' "$MACOS_CERT_PASSWORD" > "$work/p12-pass"
           printf '%s' "$ASC_API_KEY_P8" > "$work/asc.p8"
           "$rcodesign" encode-app-store-connect-api-key \
             "$ASC_ISSUER_ID" "$ASC_KEY_ID" "$work/asc.p8" > "$work/asc-key.json"
@@ -83,7 +92,7 @@ jobs:
             # Hardened runtime (--code-signature-flags runtime) is required for
             # notarization. The Apple CA chain is embedded from the leaf cert.
             "$rcodesign" sign \
-              --p12-file "$work/signing.p12" --p12-password "$MACOS_CERT_PASSWORD" \
+              --p12-file "$work/signing.p12" --p12-password-file "$work/p12-pass" \
               --code-signature-flags runtime "$bin"
 
             # The notary service only accepts a container and a bare Mach-O can't
