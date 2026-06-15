@@ -36,6 +36,7 @@ describe("companyProvisionHandler", () => {
     const result = await companyProvisionHandler({ example: true, dryRun: true })({
       command: "gusto company provision",
       globals,
+      sinks: { stdout: process.stdout, stderr: process.stderr },
     });
     expect(result.ok).toBe(true);
     expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
@@ -43,7 +44,11 @@ describe("companyProvisionHandler", () => {
   });
 
   test("bare invocation returns the standard missing-args envelope with blocked_on", async () => {
-    const result = await companyProvisionHandler({})({ command: "gusto company provision", globals });
+    const result = await companyProvisionHandler({})({
+      command: "gusto company provision",
+      globals,
+      sinks: { stdout: process.stdout, stderr: process.stderr },
+    });
     expect(result).toEqual({
       ok: false,
       exitCode: ExitCode.Validation,
@@ -64,6 +69,7 @@ describe("companyProvisionHandler", () => {
     const result = await companyProvisionHandler({ input: "/does/not/exist.json" })({
       command: "gusto company provision",
       globals,
+      sinks: { stdout: process.stdout, stderr: process.stderr },
     });
     expect(result.ok).toBe(false);
     const err = result as { ok: false; exitCode: number; error: { code: string; message: string } };

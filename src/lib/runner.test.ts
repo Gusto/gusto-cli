@@ -273,7 +273,11 @@ describe("missingArgs", () => {
 describe("notImplementedHandler", () => {
   test("returns a CommandResult with not_implemented and exit code 1", async () => {
     const handler = notImplementedHandler("gusto company provision");
-    const result = await handler({ command: "test", globals: flags });
+    const result = await handler({
+      command: "test",
+      globals: flags,
+      sinks: { stdout: process.stdout, stderr: process.stderr },
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.exitCode).toBe(ExitCode.General);

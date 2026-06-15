@@ -89,11 +89,10 @@ export async function performLogout(
  * blocking on the OAuth callback. Returns undefined in human mode so the URL is only printed. */
 export function buildSignInUrlEmitter(
   globals: GlobalFlags,
-  sinks: StreamSinks | undefined,
+  sinks: StreamSinks,
 ): ((event: SignInUrlEvent) => void) | undefined {
   if (resolveOutputMode(globals) !== "agent") return undefined;
-  const stdout = sinks?.stdout ?? process.stdout;
-  return (event) => stdout.write(`${JSON.stringify(event)}\n`);
+  return (event) => sinks.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
 export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {

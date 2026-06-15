@@ -101,7 +101,7 @@ describe("federalTaxHandler (network)", () => {
       taxPayerType: "LLC",
       filingForm: "941",
       legalName: "Acme Inc.",
-    })({ command: "test", globals: prod });
+    })({ ...ctx, globals: prod });
 
     expect(result.ok).toBe(false);
     // GET + one PUT only - no fabricated-EIN retry.
@@ -490,7 +490,7 @@ describe("formsHandler", () => {
 
   test("interactive TTY mode opens the signing URL in a browser", async () => {
     stubFetch([SIGNATORY_PRESENT, { status: 200, body: { url: "https://flows.example/abc" } }]);
-    const ttyCtx = { command: "test", globals: { ...globals, agent: false, json: false } };
+    const ttyCtx = { ...ctx, globals: { ...globals, agent: false, json: false } };
     const opened: string[] = [];
     const d = data(
       await formsHandler(auth, true, async (u) => {
@@ -504,7 +504,7 @@ describe("formsHandler", () => {
 
   test("a failed browser open still surfaces the URL and flags browser_opened:false", async () => {
     stubFetch([SIGNATORY_PRESENT, { status: 200, body: { url: "https://flows.example/abc" } }]);
-    const ttyCtx = { command: "test", globals: { ...globals, agent: false, json: false } };
+    const ttyCtx = { ...ctx, globals: { ...globals, agent: false, json: false } };
     const d = data(await formsHandler(auth, true, () => Promise.reject(new Error("no browser here")))(ttyCtx));
     expect(d).toMatchObject({ url: "https://flows.example/abc", browser_opened: false });
     expect(String(d.message)).toContain("https://flows.example/abc");
@@ -564,7 +564,7 @@ describe("formsHandler", () => {
     const calls = stubFetch([{ status: 200, body: {} }]);
     const prod: GlobalFlags = { ...globals, env: "production" };
     const result = await formsHandler({ ...auth, demoSign: true, signatureText: "Ada Lovelace" })({
-      command: "test",
+      ...ctx,
       globals: prod,
     });
     expect(result.ok).toBe(false);
