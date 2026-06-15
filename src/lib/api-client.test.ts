@@ -91,11 +91,49 @@ describe("ApiClient basics", () => {
     expect(captured.init?.body).toBe(JSON.stringify({ name: "thing" }));
   });
 
-  test("absolute URLs are passed through verbatim", async () => {
+  test("same-origin absolute URLs are passed through", async () => {
     const captured: { url?: string; init?: RequestInit } = {};
     const client = makeClient(mockFetch(captured, { status: 200, body: {} }));
-    await client.get("https://other.test/path");
-    expect(captured.url).toBe("https://other.test/path");
+    await client.get("https://api.example.test/v1/me?page=2");
+    expect(captured.url).toBe("https://api.example.test/v1/me?page=2");
+  });
+
+  test("rejects a foreign-origin absolute URL without sending the credential", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }));
+    try {
+      await client.get("https://evil.test/steal");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect((err as Error).name).toBe("BlockedDestinationError");
+      expect((err as { exitCode: number }).exitCode).toBe(ExitCode.Validation);
+    }
+    // fetch must never run, so the bearer token never leaves the process.
+    expect(captured.url).toBeUndefined();
+    expect(captured.init).toBeUndefined();
+  });
+
+  test("rejects a protocol-relative path that resolves to a foreign host", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }));
+    await expect(client.get("//evil.test/steal")).rejects.toThrow(/only https:\/\/api\.example\.test is allowed/);
+    expect(captured.url).toBeUndefined();
+  });
+
+  test("rejects a cleartext-downgrade URL on the configured host", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }));
+    await expect(client.get("http://api.example.test/v1/me")).rejects.toThrow(
+      /only https:\/\/api\.example\.test is allowed/,
+    );
+    expect(captured.url).toBeUndefined();
+  });
+
+  test("a blocked destination is not retried", async () => {
+    const seq = sequenceFetch([{ status: 200, body: {} }]);
+    const client = makeClient(seq.fetch, { maxRetries: 3 });
+    await expect(client.get("https://evil.test/steal")).rejects.toThrow();
+    expect(seq.calls).toBe(0);
   });
 
   test("4xx throws ApiError with ApiClient exit code", async () => {

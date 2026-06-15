@@ -1,4 +1,4 @@
-import { ApiError, NetworkError } from "./api-client.ts";
+import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import type { CommandResult } from "./runner.ts";
@@ -62,6 +62,13 @@ export function toResult(err: unknown): CommandResult<never> {
       ok: false,
       exitCode: err.exitCode,
       error: { code: "network_error", message: err.message },
+    };
+  }
+  if (err instanceof BlockedDestinationError) {
+    return {
+      ok: false,
+      exitCode: err.exitCode,
+      error: { code: "blocked_destination", message: err.message },
     };
   }
   if (err instanceof OAuthError) {
