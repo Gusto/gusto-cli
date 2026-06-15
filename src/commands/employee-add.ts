@@ -1054,7 +1054,7 @@ function manageHandler(employeeUuid: string | undefined, opts: ManageOpts): Comm
       }
       return { ok: true, data: { steps } };
     }
-    return withEmployeeClient(globals, opts.token, (client) => runManage(client, employeeUuid, opts));
+    return withEmployeeClient(globals, opts.tokenStdin, (client) => runManage(client, employeeUuid, opts));
   };
 }
 
@@ -1067,7 +1067,7 @@ export function registerEmployeeManage(employee: Command, parent: Command): void
     .option("--ssn <ssn>", "Social Security Number")
     .option("--date-of-birth <date>", "Date of birth (YYYY-MM-DD)")
     .option("--mode <mode>", 'Switch onboarding mode: "admin" (admin-driven) or "invite" (self-onboarding)')
-    .option(...TOKEN_OPT)
+    .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(
