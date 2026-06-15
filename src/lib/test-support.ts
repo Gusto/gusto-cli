@@ -1,6 +1,6 @@
 import { ApiClient } from "./api-client.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import type { StreamSinks } from "./output.ts";
+import { type StreamSinks, defaultSinks } from "./output.ts";
 import type { CommandContext, CommandResult } from "./runner.ts";
 
 export interface CapturedStream {
@@ -30,11 +30,7 @@ export function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; st
 
 /** Shared command-handler test fixtures. */
 export const TEST_GLOBALS: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
-export const TEST_CONTEXT: CommandContext = {
-  command: "test",
-  globals: TEST_GLOBALS,
-  sinks: { stdout: process.stdout, stderr: process.stderr },
-};
+export const TEST_CONTEXT: CommandContext = { command: "test", globals: TEST_GLOBALS, sinks: defaultSinks };
 // Just the company override; the access token comes from the ambient env set in
 // tests/preload.ts (token precedence is session > env > stdin - see AINT-588).
 export const TEST_AUTH = { companyUuid: "co-1" };
