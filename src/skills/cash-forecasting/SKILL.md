@@ -18,12 +18,14 @@ It is **interactive**: it asks how much payroll history to base the forecast on 
 
 ## Interactive inputs
 
-Before forecasting, establish two parameters — ask the user, or accept them if already provided:
+This skill is interactive: it asks for its two parameters up front rather than guessing. When a user is present, **ask before forecasting** — use the `AskUserQuestion` tool (or a plain question if that tool isn't available) to collect:
 
-1. **History window** — how many months of processed payroll to base the forecast on (default 3). More history makes the per-account trajectories more robust; a single payroll can only support a flat baseline.
-2. **Forecast horizon** — how many months forward to project (default 6).
+1. **History window** — how many months of processed payroll to base the forecast on. Offer **3 months as the recommended default**; more history makes the per-account trajectories more robust, and a single payroll can only support a flat baseline.
+2. **Forecast horizon** — how many months forward to project. Offer **6 months as the recommended default**.
 
-Then **check availability and report it**: list processed payrolls on/after `today − history_months` and count them. If fewer are available than the window implies — or the company simply hasn't been on Gusto that long — say so explicitly before forecasting. For example: "You asked for 6 months (~13 biweekly payrolls); only 5 processed payrolls exist, earliest 2026-05-08. Forecasting from those 5." Never silently use less data than requested. With only one processed payroll a trajectory can't be fit — fall back to a flat baseline and state that.
+Ask even though defaults exist — surfacing the choice is the point. Skip the question only when the user already gave both values in their request, or when **no user can answer** (a headless / subagent run): then use the defaults and **state that you did**.
+
+Then **check availability and report it** before going further: list processed payrolls on/after `today − history_months` and count them. If fewer are available than the window implies — or the company hasn't been on Gusto that long — say so explicitly, e.g. "You asked for 6 months (~13 biweekly payrolls); only 5 processed payrolls exist, earliest 2026-05-08. Forecasting from those 5." Never silently use less data than requested. With only one processed payroll a trajectory can't be fit — fall back to a flat baseline and state that.
 
 ## Discovering commands
 
@@ -41,9 +43,9 @@ A processed payroll is the only place real figures exist, so the skill needs at 
 ## Steps
 
 1. **Cadence.** `gusto pay-schedule show` — record each active schedule's frequency and its check dates.
-2. **Inputs + availability.** Resolve the history window and horizon (see [Interactive inputs](#interactive-inputs)). List processed payrolls in the window and report how many are actually available before going further.
+2. **Inputs + availability (pause point).** Ask the user for the history window and horizon before forecasting — see [Interactive inputs](#interactive-inputs) and [Pause points](#pause-points). Then list processed payrolls in the window and report how many are actually available before going further.
 3. **Cash baseline.** `gusto payroll list --processing-status processed --payroll-type regular,off_cycle --include totals --start-date <window-start> --sort-order desc` — one call returns both regular and off-cycle runs in the window; partition on each row's `off_cycle` boolean. The baseline figure is the **company debit** (`totals.company_debit`); if absent, sum the debit components (`net_pay_debit + tax_debit + reimbursement_debit + child_support_debit` — confirm the keys from the response). Take the most recent regular run's company debit, or an average of the last few, as the **per-period baseline**. Mark processed rows as source `actual`.
-   - **If any off-cycle (non-regularly-scheduled) runs came back, prompt the user before including them**: off-cycle runs (bonus/commission/correction runs that don't follow the cadence) are irregular, so folding them into the per-period baseline inflates *every* projected period. Offer the choice — exclude from the baseline (the safe default; they may still appear as one-off historical `actual` rows) or include. Don't decide silently; if no preference is given, default to excluding and say so.
+   - **If any off-cycle (non-regularly-scheduled) runs came back, stop and ask the user before including them — this is a pause point.** Off-cycle runs (bonus/commission/correction runs that don't follow the cadence) are irregular, so folding them into the per-period baseline inflates *every* projected period. Offer the choice — exclude from the baseline (the safe default; they may still appear as one-off historical `actual` rows) or include. Don't decide silently; only when no user can answer, default to excluding and say so.
    - This prompt is about `off_cycle` payrolls only. A *regular* run carrying a one-off bonus/commission is still on-cadence; handle that with the soft baseline-exclusion judgment in step 8.
 4. **Ledger per payroll.** For each processed payroll in the window, `gusto ledger show <payroll_uuid>` → take one entry from `data.report_urls` and fetch it (the URLs are **presigned and expire in ~10 minutes** — fetch promptly after each call; re-request if one expires) → parse the general-ledger JSON. Its `data` array holds two blocks of `{headers, rows}` where each row is `[account_type, account_description, debit, credit]` (amounts are strings, one of debit/credit is null): **block 0** is company-aggregated by account type, **block 1** is per-employee. Collect both for every payroll in the window. Skip this step (and the accounting layer) only if report scope is missing.
 5. **Company-level trajectories.** From the block-0 series across the window, build a per-account-type time series and extrapolate each forward over the cadence:
@@ -59,6 +61,15 @@ A processed payroll is the only place real figures exist, so the skill needs at 
    - **Per-employee projection** — projected employer cost per named employee (label it as excluding net pay / withholding).
    - **Rolling totals** — per month and per quarter for the cash debit.
 9. **Disclose the baseline provenance — without re-listing the payrolls.** The processed payrolls already appear as `actual` rows in the cash timeline, so don't print a second table repeating their `check_date`/`company_debit`. Instead, mark baseline membership inline on those `actual` rows (a `baseline` column or `✓`/`—`) and state the resulting baseline in one line: how many runs were averaged and the per-period figure (e.g. "baseline = avg of 4 regular runs = $27,524.38"). For any processed payroll excluded from the average (off-cycle, or a regular run carrying a one-off bonus/commission), mark it excluded and give the reason once. Never average payrolls silently.
+
+## Pause points
+
+These are the only times the skill should stop and wait for the user. Everything else — the cadence, which payrolls exist, how each account trends — is read or inferred from the data and should be narrated, not interrogated.
+
+- **History window + forecast horizon** (up front) — ask before forecasting, even though both have defaults; see [Interactive inputs](#interactive-inputs). Skip only if the user already supplied them, or if no user can answer.
+- **Off-cycle payroll inclusion** (step 3) — if any processed off-cycle runs exist in the window, stop and ask whether to fold them into the baseline; they materially change every projected period.
+
+When no user is present (a headless or subagent run), don't block: use the documented defaults at each pause point and state which defaults you used.
 
 ## Output mode
 
