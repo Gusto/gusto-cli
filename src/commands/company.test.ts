@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { InputError } from "../lib/oauth/provision-input.ts";
+import { TEST_CONTEXT as ctx } from "../lib/test-support.ts";
 import { companyProvisionHandler, provisionPayloadError, provisionResultData } from "./company.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
@@ -34,9 +35,9 @@ describe("provisionPayloadError", () => {
 describe("companyProvisionHandler", () => {
   test("dry-run returns the request shape without touching stdin", async () => {
     const result = await companyProvisionHandler({ example: true, dryRun: true })({
+      ...ctx,
       command: "gusto company provision",
       globals,
-      sinks: { stdout: process.stdout, stderr: process.stderr },
     });
     expect(result.ok).toBe(true);
     expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
@@ -45,9 +46,9 @@ describe("companyProvisionHandler", () => {
 
   test("bare invocation returns the standard missing-args envelope with blocked_on", async () => {
     const result = await companyProvisionHandler({})({
+      ...ctx,
       command: "gusto company provision",
       globals,
-      sinks: { stdout: process.stdout, stderr: process.stderr },
     });
     expect(result).toEqual({
       ok: false,
@@ -67,9 +68,9 @@ describe("companyProvisionHandler", () => {
 
   test("an unreadable --input still returns the invalid_input shape (not blocked_on)", async () => {
     const result = await companyProvisionHandler({ input: "/does/not/exist.json" })({
+      ...ctx,
       command: "gusto company provision",
       globals,
-      sinks: { stdout: process.stdout, stderr: process.stderr },
     });
     expect(result.ok).toBe(false);
     const err = result as { ok: false; exitCode: number; error: { code: string; message: string } };
