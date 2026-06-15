@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
@@ -180,18 +181,18 @@ interface ContractorAddOpts {
   hourlyRate?: string;
   selfOnboarding?: boolean;
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
   example?: boolean;
 }
 
 interface ContractorListOpts {
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 interface ContractorShowOpts {
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 export function registerContractorCommand(parent: Command): void {
@@ -210,7 +211,7 @@ export function registerContractorCommand(parent: Command): void {
     .option("--hourly-rate <amount>", "Hourly rate (required when --wage-type is hourly)")
     .option("--self-onboarding", "Email the contractor a self-onboarding invite (default: admin-driven)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .option(
       "--example",
@@ -223,7 +224,7 @@ export function registerContractorCommand(parent: Command): void {
   cmd
     .command("show <contractor_uuid>")
     .description("Read contractor record")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .action((contractorUuid: string, opts: ContractorShowOpts) =>
       runReadCommand(
         "gusto contractor show",
@@ -236,7 +237,7 @@ export function registerContractorCommand(parent: Command): void {
     .command("list")
     .description("List company contractors")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .action((opts: ContractorListOpts) =>
       runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );
@@ -278,7 +279,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "contractors", validation.body, {
-      token: opts.token,
+      tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
@@ -287,14 +288,14 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { token: opts.token }, () => `/v1/contractors/${contractorUuid}`);
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/contractors/${contractorUuid}`);
 }
 
 function contractorListHandler(opts: ContractorListOpts): CommandHandler {
   return async ({ globals }) =>
     fetchCompanyResource(
       globals,
-      { token: opts.token, companyUuid: opts.companyUuid },
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/contractors`,
     );
 }

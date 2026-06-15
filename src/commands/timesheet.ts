@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { createCompanyResource } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
@@ -185,14 +186,14 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
 
 interface TimesheetCreateOpts extends TimesheetCreateInput {
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
   example?: boolean;
 }
 
 interface TimesheetSyncOpts extends TimesheetSyncInput {
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
   example?: boolean;
 }
@@ -215,7 +216,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--overtime <hours>", "Overtime hours worked")
     .option("--double-overtime <hours>", "Double-overtime hours worked")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetCreateOpts) =>
@@ -229,7 +230,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--pay-period-start <date>", "Pay period start (YYYY-MM-DD)")
     .option("--pay-period-end <date>", "Pay period end (YYYY-MM-DD)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetSyncOpts) =>
@@ -266,7 +267,7 @@ export function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandle
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "time_tracking/time_sheets", validation.body, {
-      token: opts.token,
+      tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
@@ -296,7 +297,7 @@ export function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     return createCompanyResource(globals, "time_tracking/payroll_syncs", validation.body, {
-      token: opts.token,
+      tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });

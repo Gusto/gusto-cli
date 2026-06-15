@@ -16,7 +16,7 @@ import { registerCompanyForms, registerCompanySetup, withContextOptions } from "
 
 interface CompanyShowOpts {
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 interface ProvisionOpts {
@@ -82,7 +82,7 @@ interface PaySchedule {
 
 export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
-    withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}`;
       const safe = async <T>(
         label: string,
@@ -155,7 +155,7 @@ function onboardingStage(s: {
 
 export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
-    withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       // Honest type: an empty/malformed body can deserialize to null or {}.
       const status = (
         await ctx.client.get<OnboardingStatus | null>(`/v1/companies/${ctx.companyUuid}/onboarding_status`)

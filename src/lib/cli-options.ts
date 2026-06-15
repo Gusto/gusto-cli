@@ -8,5 +8,10 @@ export const DRY_RUN_OPT = ["--dry-run", "Build the request(s) without sending"]
 /** `--example`: print a canned sample payload without calling the API. */
 export const EXAMPLE_OPT = ["--example", "Print a canned sample payload without calling the API"] as const;
 
-/** `--token`: per-command access token override (falls back to GUSTO_ACCESS_TOKEN). */
-export const TOKEN_OPT = ["--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)"] as const;
+/** `--token-stdin`: read one access token piped on stdin (the gh/docker pattern) - a
+ * piped secret stays out of argv, shell history, and audit logs. Lowest-priority
+ * source: a stored login session and GUSTO_ACCESS_TOKEN both win first. See AINT-588. */
+export const TOKEN_STDIN_OPT = [
+  "--token-stdin",
+  "Read the access token from stdin (one line); for automation",
+] as const;

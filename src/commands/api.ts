@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { resolveApiContext } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -10,7 +11,7 @@ type Method = (typeof SUPPORTED_METHODS)[number];
 
 interface ApiRequestOpts {
   data?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
 }
 
@@ -21,7 +22,7 @@ export function registerApiCommand(parent: Command): void {
     .command("request <method> <path>")
     .description("Raw call to a Gusto REST endpoint; returns the response unchanged")
     .option("--data <json>", "Request body as a JSON string")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
     .addHelpText(
       "after",
@@ -67,7 +68,7 @@ function apiRequestHandler(rawMethod: string, path: string, opts: ApiRequestOpts
       return { ok: true, data: { method, path, body } };
     }
 
-    const ctx = await resolveApiContext(globals, { tokenOverride: opts.token, requireCompany: false });
+    const ctx = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
     if (!ctx.ok) return ctx.result;
 
     try {

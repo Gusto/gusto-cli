@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
 import { registerEmployeeAdd, registerEmployeeManage } from "./employee-add.ts";
@@ -7,11 +8,11 @@ import { registerEmployeeAdd, registerEmployeeManage } from "./employee-add.ts";
 interface EmployeeListOpts {
   status?: string;
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 interface EmployeeShowOpts {
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 export function registerEmployeeCommand(parent: Command): void {
@@ -23,7 +24,7 @@ export function registerEmployeeCommand(parent: Command): void {
   cmd
     .command("show <employee_uuid>")
     .description("Read employee record")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand("gusto employee show", readGlobalFlags(parent.opts()), employeeShowHandler(employeeUuid, opts)),
     );
@@ -31,7 +32,7 @@ export function registerEmployeeCommand(parent: Command): void {
   cmd
     .command("status <employee_uuid>")
     .description("Show onboarding status + the completed/required steps and any blockers")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand(
         "gusto employee status",
@@ -45,7 +46,7 @@ export function registerEmployeeCommand(parent: Command): void {
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .addHelpText(
       "after",
       `
@@ -65,12 +66,13 @@ breakdown, so \`data.summary.total\` is the real headcount regardless of filter.
 }
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) => fetchResource(globals, { token: opts.token }, () => `/v1/employees/${employeeUuid}`);
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}`);
 }
 
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { token: opts.token }, () => `/v1/employees/${employeeUuid}/onboarding_status`);
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/onboarding_status`);
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
@@ -80,7 +82,7 @@ export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
       return validationFailure("invalid --status", [{ field: "status", reason: parsed.reason }]);
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const response = await ctx.client.get(`/v1/companies/${ctx.companyUuid}/employees`);
       return { ok: true, data: buildEmployeeList(response.body, parsed.status) };
     });

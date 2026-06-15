@@ -31,7 +31,9 @@ export function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; st
 /** Shared command-handler test fixtures. */
 export const TEST_GLOBALS: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 export const TEST_CONTEXT: CommandContext = { command: "test", globals: TEST_GLOBALS };
-export const TEST_AUTH = { token: "tkn", companyUuid: "co-1" };
+// Just the company override; the access token comes from the ambient env set in
+// tests/preload.ts (token precedence is session > env > stdin - see AINT-588).
+export const TEST_AUTH = { companyUuid: "co-1" };
 
 /** Unwrap a successful CommandResult's data, throwing if it failed. */
 export function okData(result: CommandResult): Record<string, unknown> {

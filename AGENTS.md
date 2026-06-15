@@ -14,7 +14,7 @@ gusto <command> --help    # flags and usage for a command, e.g. gusto employee -
 - **`--agent` / `--json`** emits a stable JSON envelope on stdout: `{ "ok": true, "data": {...} }` or `{ "ok": false, "error": {...} }`. It's auto-on when stdout is piped, so you usually get JSON for free.
 - **`--dry-run`** on any create command prints the request body it would send, without sending it. Use it to preview the shape before committing.
 - **Missing required args** return a `blocked_on` envelope (exit code `7`) listing the fields to retry with. Exit codes are defined in `src/lib/exit-codes.ts`.
-- **Auth** comes from `GUSTO_ACCESS_TOKEN` + `GUSTO_COMPANY_UUID` (or `--token` / `--company-uuid`). `--env sandbox` is the default.
+- **Auth** comes from a stored login session (`gusto auth login`), then `GUSTO_ACCESS_TOKEN`, then a token piped to `--token-stdin` (in that precedence). `GUSTO_COMPANY_UUID` (or `--company-uuid`) sets the company. `--env sandbox` is the default.
 
 ## Bundled skills
 

@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { fetchCompanyResource } from "../lib/api-context.ts";
+import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
@@ -15,7 +16,7 @@ export interface PayrollListOpts {
   include?: string;
   sortOrder?: string;
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
 }
 
 export type PayrollListQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
@@ -123,7 +124,7 @@ export function registerPayrollCommand(parent: Command): void {
     .option("--include <attrs>", `Include extra attributes: ${INCLUDE_OPTIONS.join(", ")} - comma-separate`)
     .option("--sort-order <order>", `${SORT_ORDERS.join(", ")} (default asc)`)
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
-    .option("--token <token>", "Access token (overrides GUSTO_ACCESS_TOKEN)")
+    .option(...TOKEN_STDIN_OPT)
     .addHelpText(
       "after",
       `
@@ -152,7 +153,7 @@ function payrollListHandler(opts: PayrollListOpts): CommandHandler {
 
     return fetchCompanyResource(
       globals,
-      { token: opts.token, companyUuid: opts.companyUuid },
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls${toQueryString(parsed.query)}`,
     );
   };

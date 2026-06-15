@@ -8,6 +8,10 @@ import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
 import { getValidUserToken } from "./oauth/session.ts";
 import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import type { CommandResult } from "./runner.ts";
+import { readTokenFromStdin } from "./stdin.ts";
+
+/** Reads a single piped access token (or null if none). Injectable for tests. */
+export type StdinReader = () => Promise<string | null>;
 
 interface ApiContextBase {
   client: ApiClient;
@@ -22,7 +26,10 @@ export type CompanyApiContext = Extract<ApiContext, { hasCompany: true }>;
 
 export interface ApiContextOpts {
   requireCompany?: boolean;
-  tokenOverride?: string;
+  /** Whether --token-stdin was passed: read one token from stdin as a last resort. */
+  tokenStdin?: boolean;
+  /** Override the stdin read (tests). Defaults to reading real stdin. */
+  readStdin?: StdinReader;
   companyOverride?: string;
   store?: TokenStore;
   http?: OAuthHttpOptions;
@@ -40,9 +47,14 @@ export async function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
 ): Promise<Resolved<ApiContext>> {
-  // Token precedence: --token flag > GUSTO_ACCESS_TOKEN env > stored login session.
-  const override = getAccessToken(opts.tokenOverride);
-  const token = override ?? (await sessionToken(globals, opts));
+  // Token precedence: stored login session > GUSTO_ACCESS_TOKEN env > --token-stdin (piped).
+  // stdin is the lowest rung and read lazily: a piped secret is only consumed when no
+  // more secure source is present, so `gusto auth login` always wins. See AINT-588.
+  const session = await sessionToken(globals, opts);
+  let token = session ?? getAccessToken();
+  if (!token && opts.tokenStdin) {
+    token = await (opts.readStdin ?? readTokenFromStdin)();
+  }
   if (!token) {
     return {
       ok: false,
@@ -51,7 +63,7 @@ export async function resolveApiContext(
         exitCode: ExitCode.Auth,
         error: {
           code: "no_access_token",
-          message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pass --token.",
+          message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
         },
       },
     };
@@ -64,9 +76,10 @@ export async function resolveApiContext(
     return { ok: true, ctx: { client, baseUrl, hasCompany: false } };
   }
 
-  // Only borrow the session's company when the token also came from the session;
-  // an override token must not silently target an unrelated login's company.
-  const fallbackCompany = override ? null : await sessionCompanyUuid(globals, opts);
+  // Only borrow the session's company when the token came from the session; an
+  // env/stdin token must not silently target an unrelated login's company. Since
+  // the session wins when present, a non-null session means its token was used.
+  const fallbackCompany = session ? await sessionCompanyUuid(globals, opts) : null;
   const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
     return {
@@ -109,7 +122,8 @@ async function sessionCompanyUuid(globals: GlobalFlags, opts: ApiContextOpts): P
 }
 
 export interface CompanyResourceOpts {
-  token?: string;
+  tokenStdin?: boolean;
+  readStdin?: StdinReader;
   companyUuid?: string;
   dryRun?: boolean;
   store?: TokenStore;
@@ -126,7 +140,8 @@ export async function createCompanyResource(
   opts: CompanyResourceOpts,
 ): Promise<CommandResult> {
   const ctx = await resolveApiContext(globals, {
-    tokenOverride: opts.token,
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
     companyOverride: opts.companyUuid,
     store: opts.store,
     http: opts.http,
@@ -169,7 +184,8 @@ export async function fetchCompanyResource(
   buildPath: (ctx: CompanyApiContext) => string,
 ): Promise<CommandResult> {
   const resolved = await resolveApiContext(globals, {
-    tokenOverride: opts.token,
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
     companyOverride: opts.companyUuid,
     store: opts.store,
     http: opts.http,
@@ -194,7 +210,8 @@ export async function withCompanyContext(
   fn: (ctx: CompanyApiContext) => Promise<CommandResult>,
 ): Promise<CommandResult> {
   const resolved = await resolveApiContext(globals, {
-    tokenOverride: opts.token,
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
     companyOverride: opts.companyUuid,
     store: opts.store,
     http: opts.http,
@@ -214,11 +231,18 @@ export async function withCompanyContext(
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
 export async function fetchResource<T = unknown>(
   globals: GlobalFlags,
-  opts: { token?: string; store?: TokenStore; http?: OAuthHttpOptions; now?: () => number },
+  opts: {
+    tokenStdin?: boolean;
+    readStdin?: StdinReader;
+    store?: TokenStore;
+    http?: OAuthHttpOptions;
+    now?: () => number;
+  },
   buildPath: () => string,
 ): Promise<CommandResult<T>> {
   const resolved = await resolveApiContext(globals, {
-    tokenOverride: opts.token,
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
     requireCompany: false,
     store: opts.store,
     http: opts.http,

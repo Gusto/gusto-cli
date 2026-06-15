@@ -36,7 +36,7 @@ export interface PayScheduleCreateOpts {
   day1?: string;
   day2?: string;
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
   example?: boolean;
 }
@@ -171,7 +171,7 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
     if (!validated.ok) return missingArgs(validated.blocked);
 
     return createCompanyResource(globals, "pay_schedules", validated.body, {
-      token: opts.token,
+      tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });

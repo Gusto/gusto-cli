@@ -19,6 +19,19 @@ const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: fa
 // the real on-disk session. Tests that exercise the session path pass their own.
 const noSession = () => ({ store: memoryStore(), http: mockHttp({ status: 200 }) });
 
+// Authenticate via the lowest-priority rung: a token piped on --token-stdin, with
+// no stored session and (by default) no env var. The injected readStdin stands in
+// for real stdin. Used wherever a test just needs *a* token to get past auth.
+const stdinAuth = (tok: string | null = "tok") => ({
+  ...noSession(),
+  tokenStdin: true,
+  readStdin: () => Promise.resolve(tok),
+});
+
+// A reader that fails the test if stdin is ever consumed - proves laziness when a
+// higher-priority source (session/env) should win before stdin is touched.
+const forbiddenStdin = () => Promise.reject(new Error("stdin must not be read"));
+
 // A store whose load() rejects, to drive resolveToken's error handling.
 const throwingStore = (err: unknown): TokenStore => ({
   load: () => Promise.reject(err),
@@ -47,17 +60,18 @@ afterEach(() => {
 });
 
 describe("resolveApiContext", () => {
-  test("no token (no override, env, or session) returns an auth-coded failure", async () => {
+  test("no token (no session, env, or stdin) returns an auth-coded failure", async () => {
     const result = await resolveApiContext(flags, { requireCompany: false, ...noSession() });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
     expect(result.result.exitCode).toBe(ExitCode.Auth);
     expect(result.result.error.code).toBe("no_access_token");
+    expect(result.result.error.message).toContain("--token-stdin");
   });
 
   test("requireCompany:false returns a context narrowed to hasCompany:false", async () => {
-    const result = await resolveApiContext(flags, { requireCompany: false, tokenOverride: "tok" });
+    const result = await resolveApiContext(flags, { requireCompany: false, ...stdinAuth() });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.ctx.hasCompany).toBe(false);
@@ -66,7 +80,7 @@ describe("resolveApiContext", () => {
   });
 
   test("token present but company missing returns a validation failure", async () => {
-    const result = await resolveApiContext(flags, { tokenOverride: "tok", ...noSession() });
+    const result = await resolveApiContext(flags, { ...stdinAuth() });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
@@ -75,7 +89,7 @@ describe("resolveApiContext", () => {
   });
 
   test("companyOverride passes through to the resolved context", async () => {
-    const result = await resolveApiContext(flags, { tokenOverride: "tok", companyOverride: "co-123" });
+    const result = await resolveApiContext(flags, { ...stdinAuth(), companyOverride: "co-123" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.ctx.hasCompany).toBe(true);
@@ -83,18 +97,80 @@ describe("resolveApiContext", () => {
   });
 
   test("production env resolves the production base URL", async () => {
-    const result = await resolveApiContext(
-      { ...flags, env: "production" },
-      { requireCompany: false, tokenOverride: "tok" },
-    );
+    const result = await resolveApiContext({ ...flags, env: "production" }, { requireCompany: false, ...stdinAuth() });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.ctx.baseUrl).toBe("https://api.gusto.com");
   });
 });
 
+describe("resolveApiContext - token precedence (session > env > stdin)", () => {
+  test("a stored session wins over env and stdin; stdin is never read", async () => {
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
+    const result = await resolveApiContext(flags, {
+      store,
+      http: mockHttp({ status: 200 }),
+      now: () => 1_000,
+      tokenStdin: true,
+      readStdin: forbiddenStdin,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    // The borrowed company proves the session token (not env) was used - an env
+    // token never borrows a session's company.
+    expect(result.ctx.companyUuid).toBe("co-sess");
+  });
+
+  test("env wins over stdin when there is no session; stdin is never read", async () => {
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      ...noSession(),
+      tokenStdin: true,
+      readStdin: forbiddenStdin,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("stdin is read only when neither session nor env supplies a token", async () => {
+    let reads = 0;
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      ...noSession(),
+      tokenStdin: true,
+      readStdin: () => {
+        reads++;
+        return Promise.resolve("piped-tok");
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(reads).toBe(1);
+  });
+
+  test("--token-stdin with nothing piped degrades to no_access_token", async () => {
+    const result = await resolveApiContext(flags, { requireCompany: false, ...stdinAuth(null) });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.code).toBe("no_access_token");
+  });
+
+  test("stdin is not read unless --token-stdin was passed", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      ...noSession(),
+      readStdin: forbiddenStdin, // present but tokenStdin is falsy, so never invoked
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.code).toBe("no_access_token");
+  });
+});
+
 describe("resolveApiContext - stored session fallback", () => {
-  test("falls back to the stored session token when no override/env", async () => {
+  test("falls back to the stored session token when no env/stdin", async () => {
     const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const result = await resolveApiContext(flags, {
       requireCompany: false,
@@ -148,34 +224,12 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.ctx.companyUuid).toBe("co-flag");
   });
 
-  test("an override token does not borrow the session's company (must be given explicitly)", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
-    const result = await resolveApiContext(flags, {
-      tokenOverride: "override-tok",
-      store,
-      http: mockHttp({ status: 200 }),
-      now: () => 1_000,
-    });
+  test("a stdin token does not borrow a company (none to borrow without a session)", async () => {
+    const result = await resolveApiContext(flags, { ...stdinAuth("piped-tok") });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
     expect(result.result.error.code).toBe("no_company_uuid");
-  });
-
-  test("env/override token wins over the session - the session is never touched", async () => {
-    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
-    // Near-expiry session whose refresh would throw if consulted.
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
-    });
-    const result = await resolveApiContext(flags, {
-      requireCompany: false,
-      store,
-      http: mockHttp({ status: 500 }),
-      now: () => 1_990,
-    });
-    expect(result.ok).toBe(true);
-    expect(store.data.sandbox?.accessToken).toBe("old"); // not refreshed
   });
 });
 
@@ -203,7 +257,11 @@ describe("createCompanyResource", () => {
       flags,
       "contractors",
       { email: "a@b.com" },
-      { token: "tok", companyUuid: "co-1", dryRun: true },
+      {
+        ...stdinAuth(),
+        companyUuid: "co-1",
+        dryRun: true,
+      },
     );
     expect(result).toEqual({
       ok: true,
@@ -238,7 +296,7 @@ describe("fetchResource", () => {
 describe("fetchCompanyResource", () => {
   test("missing company surfaces a validation failure before the path builder runs", async () => {
     let built = false;
-    const result = await fetchCompanyResource(flags, { token: "tok", ...noSession() }, (ctx) => {
+    const result = await fetchCompanyResource(flags, { ...stdinAuth() }, (ctx) => {
       built = true;
       return `/v1/companies/${ctx.companyUuid}/employees`;
     });
@@ -276,7 +334,7 @@ describe("withCompanyContext", () => {
   });
 
   test("maps an ApiError thrown by fn via toResult", async () => {
-    const result = await withCompanyContext(flags, { token: "tok", companyUuid: "co-1" }, async () => {
+    const result = await withCompanyContext(flags, { ...stdinAuth(), companyUuid: "co-1" }, async () => {
       throw new ApiError(404, { error: "nope" }, ExitCode.ApiClient, "GET x -> 404");
     });
     expect(result.ok).toBe(false);
@@ -286,7 +344,7 @@ describe("withCompanyContext", () => {
   });
 
   test("returns fn's result on success", async () => {
-    const result = await withCompanyContext(flags, { token: "tok", companyUuid: "co-1" }, async (ctx) => ({
+    const result = await withCompanyContext(flags, { ...stdinAuth(), companyUuid: "co-1" }, async (ctx) => ({
       ok: true,
       data: { company: ctx.companyUuid },
     }));
