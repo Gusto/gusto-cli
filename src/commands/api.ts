@@ -6,6 +6,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+import { readString, withVersion } from "../lib/versioning.ts";
 
 const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];
@@ -197,17 +198,6 @@ async function resolveVersion(client: ApiClient, path: string, body: unknown): P
     };
   }
 
-  // Spread the body first so the fetched `version` wins: we only reach here when the
-  // caller's version was absent or invalid (empty/non-string), so it must not clobber it.
   const base = (body ?? {}) as Record<string, unknown>;
-  return { ok: true, body: { ...base, version } };
-}
-
-/** Read a non-empty string field from an unknown object body. */
-function readString(body: unknown, key: string): string | undefined {
-  if (typeof body === "object" && body !== null) {
-    const v = (body as Record<string, unknown>)[key];
-    if (typeof v === "string" && v.length > 0) return v;
-  }
-  return undefined;
+  return { ok: true, body: withVersion(base, version) };
 }
