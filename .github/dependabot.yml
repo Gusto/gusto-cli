@@ -17,3 +17,6 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    ignore:
+      - dependency-name: "actions/checkout"
+      - dependency-name: "oven-sh/setup-bun"
