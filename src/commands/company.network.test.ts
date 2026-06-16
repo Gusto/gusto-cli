@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import { companyLocationsHandler, companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
 import {
   type MockResponse,
   TEST_AUTH as auth,
@@ -228,5 +228,37 @@ describe("companyOnboardingStatusHandler", () => {
     const d = data(await companyOnboardingStatusHandler(auth)(ctx));
     expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["federal_tax_setup"]);
     expect(d.partial_errors).toBeUndefined();
+  });
+});
+
+describe("companyLocationsHandler", () => {
+  test("wraps the API list under a `locations` key (the field-filter target)", async () => {
+    routeFetch([
+      {
+        match: "/locations",
+        status: 200,
+        body: [
+          { uuid: "loc-1", street_1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107", primary: true },
+          { uuid: "loc-2", street_1: "1 Market St", city: "San Francisco", state: "CA", zip: "94105" },
+        ],
+      },
+    ]);
+    const d = data(await companyLocationsHandler(auth)(ctx));
+    const locations = d.locations as { uuid: string; primary?: boolean }[];
+    expect(locations).toHaveLength(2);
+    expect(locations[0]?.uuid).toBe("loc-1");
+    expect(locations[0]?.primary).toBe(true);
+  });
+
+  test("returns an empty list for a company with no locations", async () => {
+    routeFetch([{ match: "/locations", status: 200, body: [] }]);
+    const d = data(await companyLocationsHandler(auth)(ctx));
+    expect(d.locations).toEqual([]);
+  });
+
+  test("surfaces an API error as a failed CommandResult (not silently wrapped)", async () => {
+    routeFetch([{ match: "/locations", status: 404, body: { error: "not found" } }]);
+    const result = await companyLocationsHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
   });
 });

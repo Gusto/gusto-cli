@@ -1,10 +1,11 @@
 import type { Command } from "commander";
 import { ApiError } from "../lib/api-client.ts";
-import { withCompanyContext } from "../lib/api-context.ts";
+import { fetchCompanyResource, withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
+import type { LocationRec } from "../lib/locations.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
@@ -56,8 +57,29 @@ export function registerCompanyCommand(parent: Command): void {
     runReadCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
   );
 
+  withContextOptions(
+    cmd
+      .command("locations")
+      .description("List the company's locations (employee work addresses reference these by uuid)"),
+  ).action((opts: CompanyShowOpts) =>
+    runReadCommand("gusto company locations", readGlobalFlags(parent.opts()), companyLocationsHandler(opts)),
+  );
+
   registerCompanySetup(cmd, parent);
   registerCompanyForms(cmd, parent);
+}
+
+export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/locations`,
+    ).then((result) => {
+      if (!result.ok) return result;
+      const locations: LocationRec[] = Array.isArray(result.data) ? (result.data as LocationRec[]) : [];
+      return { ok: true, data: { locations } };
+    });
 }
 
 interface CompanyRecord {
