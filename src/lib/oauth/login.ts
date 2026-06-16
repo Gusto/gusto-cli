@@ -20,6 +20,16 @@ export function companyUuidFromTokenInfo(info: TokenInfo): string | undefined {
   return undefined;
 }
 
+/** Structured event emitted by `login` the moment the sign-in URL is ready, before
+ * blocking on the OAuth callback. Consumed by the `--agent` surface to write a JSON
+ * line to stdout so agent harnesses can surface the URL without buffering the whole
+ * subprocess. */
+export interface SignInUrlEvent {
+  event: "sign_in_url";
+  sign_in_url: string;
+  state: string;
+}
+
 export interface LoginDeps {
   store: TokenStore;
   http: OAuthHttpOptions;
@@ -27,6 +37,7 @@ export interface LoginDeps {
   /** Print the sign-in URL instead of opening a browser. For agent/headless use. */
   noBrowser?: boolean;
   print?: (line: string) => void;
+  emitEvent?: (event: SignInUrlEvent) => void;
   now?: () => number;
 }
 
@@ -47,6 +58,7 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
       challenge,
       state,
     });
+    deps.emitEvent?.({ event: "sign_in_url", sign_in_url: authorizeUrl, state });
     if (deps.noBrowser) {
       printManualUrl(authorizeUrl, print);
     } else {
@@ -89,18 +101,27 @@ export async function openOrPrint(
   url: string,
   openBrowser: ((url: string) => Promise<void>) | undefined,
   print: (line: string) => void,
+  isTty = process.stderr.isTTY === true,
 ): Promise<void> {
   const open = openBrowser ?? defaultOpenBrowser;
   try {
     await open(url);
     print("Opened your browser to sign in. If it didn't open, visit:");
-    print(`  ${url}`);
+    print(`  ${formatUrlForTerminal(url, isTty)}`);
   } catch {
-    printManualUrl(url, print);
+    printManualUrl(url, print, isTty);
   }
 }
 
-function printManualUrl(url: string, print: (line: string) => void): void {
+function printManualUrl(url: string, print: (line: string) => void, isTty = process.stderr.isTTY === true): void {
   print("Open this URL in your browser to sign in:");
-  print(`  ${url}`);
+  print(`  ${formatUrlForTerminal(url, isTty)}`);
+}
+
+/** Wrap the URL in an OSC 8 terminal hyperlink so supporting terminals (iTerm2,
+ * Terminal.app, VS Code, WezTerm, Ghostty) render it as a true clickable link.
+ * Falls back to the bare URL when the stream isn't a TTY (piped / agent / headless). */
+export function formatUrlForTerminal(url: string, isTty: boolean): string {
+  if (!isTty) return url;
+  return `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`;
 }

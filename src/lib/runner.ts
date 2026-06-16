@@ -1,11 +1,20 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import { availableFields, partitionFields, selectFields } from "./field-filter.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { type BlockedOn, type EnvelopeError, type StreamSinks, emit, outputOptionsFrom } from "./output.ts";
+import {
+  type BlockedOn,
+  type EnvelopeError,
+  type StreamSinks,
+  defaultSinks,
+  emit,
+  outputOptionsFrom,
+} from "./output.ts";
 
 export interface CommandContext {
   command: string;
   globals: GlobalFlags;
+  /** Runner-resolved stream sinks. Always populated. */
+  sinks: StreamSinks;
 }
 
 export type CommandResult<T = unknown> =
@@ -83,9 +92,11 @@ async function run<T>(
     return deps.exit(ExitCode.CliUsage);
   }
 
+  const sinks: StreamSinks = deps.sinks ?? defaultSinks;
+
   let code: ExitCodeValue;
   try {
-    const result = await handler({ command, globals });
+    const result = await handler({ command, globals, sinks });
     if (!result.ok) {
       emit(output, { ok: false, error: result.error }, deps.sinks);
       code = result.exitCode;

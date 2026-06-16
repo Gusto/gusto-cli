@@ -9,7 +9,7 @@ import {
   runReadCommand,
   validationFailure,
 } from "./runner.ts";
-import { captureSinks } from "./test-support.ts";
+import { TEST_CONTEXT as ctx, captureSinks } from "./test-support.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
 
@@ -273,7 +273,7 @@ describe("missingArgs", () => {
 describe("notImplementedHandler", () => {
   test("returns a CommandResult with not_implemented and exit code 1", async () => {
     const handler = notImplementedHandler("gusto company provision");
-    const result = await handler({ command: "test", globals: flags });
+    const result = await handler({ ...ctx, globals: flags });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.exitCode).toBe(ExitCode.General);

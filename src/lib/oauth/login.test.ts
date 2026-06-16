@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { companyUuidFromTokenInfo, login, openOrPrint } from "./login.ts";
+import { companyUuidFromTokenInfo, formatUrlForTerminal, login, openOrPrint } from "./login.ts";
 import { memoryStore, mockFetch } from "./test-support.ts";
 
 function driveCallback(): {
@@ -27,7 +27,28 @@ describe("companyUuidFromTokenInfo", () => {
   });
 });
 
+describe("formatUrlForTerminal", () => {
+  test("wraps the URL in an OSC 8 hyperlink on a TTY", () => {
+    const out = formatUrlForTerminal("https://auth.test/go", true);
+    expect(out).toBe("\x1b]8;;https://auth.test/go\x1b\\https://auth.test/go\x1b]8;;\x1b\\");
+  });
+  test("falls back to the bare URL when not a TTY", () => {
+    expect(formatUrlForTerminal("https://auth.test/go", false)).toBe("https://auth.test/go");
+  });
+});
+
 describe("openOrPrint", () => {
+  test("emits an OSC 8 hyperlink for the URL when stderr is a TTY", async () => {
+    const lines: string[] = [];
+    await openOrPrint(
+      "https://auth.test/go",
+      () => Promise.resolve(),
+      (l) => lines.push(l),
+      true,
+    );
+    expect(lines.join("\n")).toContain("\x1b]8;;https://auth.test/go\x1b\\");
+  });
+
   test("prints the opened-browser hint when the opener succeeds", async () => {
     const lines: string[] = [];
     await openOrPrint(
@@ -114,6 +135,45 @@ describe("login", () => {
     expect(opened).toBe(false);
     expect(lines.join("\n")).toMatch(/Open this URL in your browser/);
     expect(info.resource?.uuid).toBe("comp-1");
+  });
+
+  test("emitEvent fires with the sign-in URL before the OAuth callback completes", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
+    ]);
+
+    // AINT-625 holds the loopback callback response open until server.complete();
+    // fire-and-forget the fetch (don't await) so login can progress past openBrowser.
+    const eventOrder: string[] = [];
+    const events: { event: string; sign_in_url: string; state: string }[] = [];
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
+      eventOrder.push("callback");
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      return Promise.resolve();
+    };
+
+    await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      openBrowser,
+      emitEvent: (e) => {
+        eventOrder.push("emitEvent");
+        events.push(e);
+      },
+      print: () => {},
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe("sign_in_url");
+    expect(events[0].sign_in_url).toMatch(/oauth\/authorize/);
+    expect(events[0].state).toBeTruthy();
+    // emitEvent must fire BEFORE the callback so an agent can surface the URL up front.
+    expect(eventOrder).toEqual(["emitEvent", "callback"]);
   });
 
   test("clears a stale companyUuid when re-login yields a non-company token", async () => {

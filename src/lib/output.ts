@@ -31,7 +31,7 @@ export interface StreamSinks {
   stderr: NodeJS.WritableStream;
 }
 
-const defaultSinks: StreamSinks = {
+export const defaultSinks: StreamSinks = {
   stdout: process.stdout,
   stderr: process.stderr,
 };
