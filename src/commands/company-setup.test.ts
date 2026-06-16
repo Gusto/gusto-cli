@@ -185,11 +185,19 @@ describe("formsHandler --demo-sign", () => {
 
 describe("addressBlockers + handler", () => {
   test("flags every missing field", () => {
-    expect(addressBlockers({}).map((b) => b.field)).toEqual(["street-1", "city", "state", "zip"]);
+    expect(addressBlockers({}).map((b) => b.field)).toEqual(["street-1", "city", "state", "zip", "phone"]);
   });
 
-  test("no blockers when street/city/state/zip present", () => {
-    expect(addressBlockers({ street1: "1 Main St", city: "SF", state: "CA", zip: "94107" })).toEqual([]);
+  test("flags phone alone when other fields are present", () => {
+    expect(
+      addressBlockers({ street1: "1 Main St", city: "SF", state: "CA", zip: "94107" }).map((b) => b.field),
+    ).toEqual(["phone"]);
+  });
+
+  test("no blockers when street/city/state/zip/phone present", () => {
+    expect(
+      addressBlockers({ street1: "1 Main St", city: "SF", state: "CA", zip: "94107", phone: "4155550100" }),
+    ).toEqual([]);
   });
 
   test("missing args refuse with a structured blocked_on", async () => {
@@ -197,14 +205,19 @@ describe("addressBlockers + handler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
-    expect(result.error.blocked_on).toHaveLength(4);
+    expect(result.error.blocked_on).toHaveLength(5);
   });
 
   test("dry-run builds the POST shape; filing + mailing default true", async () => {
     const d = data(
-      await addressHandler({ street1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107", dryRun: true })(
-        ctx,
-      ),
+      await addressHandler({
+        street1: "300 3rd St",
+        city: "San Francisco",
+        state: "CA",
+        zip: "94107",
+        phone: "4155550100",
+        dryRun: true,
+      })(ctx),
     );
     expect(d.method).toBe("POST");
     expect(d.path).toBe("/v1/companies/{company_uuid}/locations");
@@ -213,6 +226,7 @@ describe("addressBlockers + handler", () => {
       city: "San Francisco",
       state: "CA",
       zip: "94107",
+      phone_number: "4155550100",
       filing_address: true,
       mailing_address: true,
     });
@@ -225,6 +239,7 @@ describe("addressBlockers + handler", () => {
         city: "San Francisco",
         state: "CA",
         zip: "94107",
+        phone: "4155550100",
         filingAddress: false,
         mailingAddress: false,
         dryRun: true,
