@@ -1,0 +1,104 @@
+/**
+ * Payroll-readiness blockers, surfaced by `gusto company onboarding-status`
+ * alongside the company-onboarding `blocked_on` list. Company onboarding
+ * (taxes, bank, pay schedule, forms) completing is NOT the same as the company
+ * being able to run payroll: gusto.com gates payroll on additional setup
+ * (employee personal details, bank verification) and post-onboarding review
+ * (approval). The dedicated GET /v1/companies/{uuid}/payrolls/blockers endpoint
+ * is the authoritative readiness signal - an empty list means payroll-ready.
+ * See AINT-643.
+ *
+ * Blocker keys come from the Payroll-Blocker schema's `key` enum. Where a blocker
+ * maps to a CLI command we reuse the same onboarding step ids (and thus the same
+ * command + flag definitions) from onboarding-map, so there is a single source of
+ * truth for "which command resolves this". Keys with no CLI equivalent (wait-states
+ * like `needs_approval`, infra errors like `eftps_in_error`) surface with a null
+ * suggested_action: the agent shows the API message and waits.
+ */
+
+import { SIGNATORY_STEP_ID, type Blocker, type SuggestedAction, suggestedActionFor } from "./onboarding-map.ts";
+
+/** A payroll blocker as returned by GET /v1/companies/{uuid}/payrolls/blockers. */
+export interface PayrollBlocker {
+  key: string;
+  message: string;
+}
+
+/** A payroll blocker enriched with the CLI command that resolves it (or null). */
+export interface EnrichedPayrollBlocker {
+  key: string;
+  message: string;
+  suggested_action: SuggestedAction | null;
+}
+
+/** Minimal read surface of ApiClient this helper needs (mirrors signatory.ts). */
+type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
+
+/** Maps a payroll blocker `key` to the onboarding step id whose command resolves it.
+ * Several keys share a command: both signatory blockers point at the signatory step,
+ * both pay-schedule blockers at the pay-schedule step, and a missing/unverified bank
+ * both resolve through the one compound bank-account command.
+ *
+ * `needs_onboarding` is deliberately absent - it's resolved by the onboarding flow
+ * this very command drives, so it's dropped rather than mapped (see enrichPayrollBlockers).
+ * Keys absent here (needs_approval, pending_*, suspended, eftps_in_error, geocode_*,
+ * company_ownership_required, contractor_only_company) have no CLI command and surface
+ * with a null suggested_action. */
+const BLOCKER_KEY_TO_STEP: Record<string, string> = {
+  missing_addresses: "add_addresses",
+  missing_industry_selection: "select_industry",
+  missing_federal_tax_setup: "federal_tax_setup",
+  missing_bank_info: "add_bank_info",
+  missing_bank_verification: "verify_bank_info",
+  missing_state_tax_setup: "state_setup",
+  missing_pay_schedule: "payroll_schedule",
+  pay_schedule_setup_not_complete: "payroll_schedule",
+  missing_forms: "sign_all_forms",
+  missing_signatory: SIGNATORY_STEP_ID,
+  invalid_signatory: SIGNATORY_STEP_ID,
+  missing_employee_setup: "add_employees",
+};
+
+/** The CLI command (with flags) that resolves a payroll blocker key, or null when
+ * no CLI command applies (wait-states and infra errors). */
+export function payrollBlockerAction(key: string): SuggestedAction | null {
+  const step = BLOCKER_KEY_TO_STEP[key];
+  return step ? suggestedActionFor(step) : null;
+}
+
+/** Enrich raw payroll blockers with their resolving command, then dedupe against the
+ * company-onboarding blockers so the agent isn't told the same thing twice:
+ *
+ * - `needs_onboarding` is dropped - it's the onboarding flow that onboarding-status
+ *   already drives via `blocked_on`, so re-listing it as a payroll blocker is noise.
+ * - A payroll blocker whose resolving command is already an OPEN onboarding blocker is
+ *   dropped (e.g. while `federal_tax_setup` is still in blocked_on, the mirrored
+ *   `missing_federal_tax_setup` is redundant). Once an onboarding step reads complete
+ *   its command leaves blocked_on, so a payroll gate that outlives it (e.g.
+ *   `missing_bank_verification` after the bank step "completes") still surfaces here.
+ * - Blockers with no CLI command can never collide with an onboarding step, so they
+ *   always surface (with a null suggested_action). */
+export function enrichPayrollBlockers(raw: PayrollBlocker[], onboardingBlockers: Blocker[]): EnrichedPayrollBlocker[] {
+  const openCommands = new Set(
+    onboardingBlockers.map((b) => b.suggested_action?.command).filter((c): c is string => typeof c === "string"),
+  );
+  return raw
+    .filter((b): b is PayrollBlocker => typeof b?.key === "string")
+    .filter((b) => b.key !== "needs_onboarding")
+    .map((b) => ({
+      key: b.key,
+      message: typeof b.message === "string" ? b.message : "",
+      suggested_action: payrollBlockerAction(b.key),
+    }))
+    .filter((b) => !(b.suggested_action !== null && openCommands.has(b.suggested_action.command)));
+}
+
+/** GET the company's payroll blockers. An empty list means the company is payroll-ready.
+ * A non-array body (empty/malformed 200) is treated as no blockers reported - the same
+ * malformed-but-200 discipline the onboarding-status and finish handlers use. Throws on a
+ * failed GET; the caller degrades (onboarding-status records a partial error and leaves
+ * readiness unknown rather than fabricating a not-ready verdict). */
+export async function fetchPayrollBlockers(client: ReadClient, companyUuid: string): Promise<PayrollBlocker[]> {
+  const body = (await client.get<unknown>(`/v1/companies/${companyUuid}/payrolls/blockers`)).body;
+  return Array.isArray(body) ? (body as PayrollBlocker[]) : [];
+}

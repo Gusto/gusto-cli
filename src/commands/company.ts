@@ -12,9 +12,11 @@ import { resolveStore } from "../lib/oauth/token-store.ts";
 import {
   FINISH_ONBOARDING_ACTION,
   type OnboardingStatus,
+  type SuggestedAction,
   extractBlockers,
   withSignatoryBlocker,
 } from "../lib/onboarding-map.ts";
+import { type EnrichedPayrollBlocker, enrichPayrollBlockers, fetchPayrollBlockers } from "../lib/payroll-blockers.ts";
 import { companyHasSignatory } from "../lib/signatory.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
@@ -162,24 +164,42 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
     });
 }
 
-/** Map onboarding flags to a stage label. `unknown` guards a malformed-but-200 status. */
-function onboardingStage(s: {
+/** Map onboarding + payroll-readiness flags to a stage label. `unknown` guards a
+ * malformed-but-200 status. The progression is:
+ *   unknown -> onboarding -> ready_to_finish -> (finish) -> not_payroll_ready -> done
+ * `done` requires BOTH onboarding_completed AND no payroll blockers, so the CLI no
+ * longer reports "done" while the company still can't run payroll (AINT-643). A
+ * payroll-readiness check that couldn't run (payrollReady null) doesn't fabricate
+ * not_payroll_ready - it falls through to done with a partial_error noting the gap. */
+function computeStage(s: {
   isComplete: boolean;
   hasSteps: boolean;
-  readyToFinish: boolean;
-}): "done" | "unknown" | "ready_to_finish" | "onboarding" {
-  if (s.isComplete) return "done";
+  onboardingClear: boolean;
+  payrollReady: boolean | null;
+}): "done" | "unknown" | "ready_to_finish" | "onboarding" | "not_payroll_ready" {
   if (!s.hasSteps) return "unknown";
-  return s.readyToFinish ? "ready_to_finish" : "onboarding";
+  if (!s.onboardingClear) return "onboarding";
+  if (!s.isComplete) return "ready_to_finish";
+  return s.payrollReady === false ? "not_payroll_ready" : "done";
 }
 
 export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
     withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
-      // Honest type: an empty/malformed body can deserialize to null or {}.
-      const status = (
-        await ctx.client.get<OnboardingStatus | null>(`/v1/companies/${ctx.companyUuid}/onboarding_status`)
-      ).body;
+      // Onboarding status and payroll blockers are independent reads - fetch in
+      // parallel. The payroll-blockers fetch (GET /payrolls/blockers) is the
+      // authoritative payroll-readiness signal; a failure is captured so it can
+      // degrade to a partial error rather than reject the whole command (AINT-643).
+      const [status, payroll] = await Promise.all([
+        // Honest type: an empty/malformed body can deserialize to null or {}.
+        ctx.client
+          .get<OnboardingStatus | null>(`/v1/companies/${ctx.companyUuid}/onboarding_status`)
+          .then((r) => r.body),
+        fetchPayrollBlockers(ctx.client, ctx.companyUuid).then(
+          (blockers) => ({ ok: true as const, blockers }),
+          (err) => ({ ok: false as const, error: errMsg(err) }),
+        ),
+      ]);
       const apiBlockers = extractBlockers(status);
 
       // The API's onboarding_status never lists a signatory step, yet form signing
@@ -203,16 +223,42 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       // A malformed-but-200 response (no onboarding_steps) must not read as
       // "no blockers" -> ready_to_finish; treat a missing step list as unknown.
       const hasSteps = Array.isArray(status?.onboarding_steps);
-      const readyToFinish = hasSteps && blockedOn.length === 0 && !isComplete;
-      const stage = onboardingStage({ isComplete, hasSteps, readyToFinish });
-      // At ready_to_finish there are no blockers left, so point the agent at the
-      // finish command — otherwise next_command is null and the loop dead-ends one
-      // step short of done (AINT-615). Otherwise use the first blocker that has a
-      // command (not just blockedOn[0], whose suggested_action may be null while a
-      // later blocker has one).
-      const suggested = readyToFinish
-        ? FINISH_ONBOARDING_ACTION
-        : (blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null);
+      const onboardingClear = blockedOn.length === 0;
+      const readyToFinish = hasSteps && onboardingClear && !isComplete;
+
+      // Payroll readiness from /payrolls/blockers. The company is payroll-ready iff the
+      // raw list is empty; a failed fetch leaves readiness unknown (null). The enriched
+      // section dedupes against the open onboarding blockers so it carries only the
+      // ADDITIONAL payroll gates (e.g. missing_employee_setup) - the value the onboarding
+      // step list doesn't cover.
+      const payrollReady = payroll.ok ? payroll.blockers.length === 0 : null;
+      const payrollBlockers: EnrichedPayrollBlocker[] = payroll.ok
+        ? enrichPayrollBlockers(payroll.blockers, blockedOn)
+        : [];
+
+      const stage = computeStage({ isComplete, hasSteps, onboardingClear, payrollReady });
+
+      // next_command sequencing: clear onboarding blockers first, then finish, then drain
+      // payroll blockers (the first one with a CLI command; null when only wait-states like
+      // needs_approval remain), then nothing once payroll-ready. At ready_to_finish point
+      // at the finish verb so the loop doesn't dead-end one step short of done (AINT-615);
+      // otherwise use the first blocker that has a command (not just blockedOn[0], whose
+      // suggested_action may be null while a later blocker has one).
+      let suggested: SuggestedAction | null;
+      if (!onboardingClear) {
+        suggested = blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null;
+      } else if (readyToFinish) {
+        suggested = FINISH_ONBOARDING_ACTION;
+      } else if (stage === "not_payroll_ready") {
+        suggested = payrollBlockers.find((b) => b.suggested_action)?.suggested_action ?? null;
+      } else {
+        suggested = null;
+      }
+
+      const partialErrors: { label: string; error: string }[] = [];
+      if (signatoryError) partialErrors.push({ label: "signatories", error: signatoryError });
+      if (!payroll.ok) partialErrors.push({ label: "payroll_blockers", error: payroll.error });
+
       return {
         ok: true,
         data: {
@@ -220,10 +266,12 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
           company_uuid: ctx.companyUuid,
           blocked_on: blockedOn,
           ready_to_finish: readyToFinish,
+          payroll_ready: payrollReady,
+          payroll_blockers: payrollBlockers,
           suggested_action: suggested,
           next_command: suggested?.command ?? null,
           onboarding_status: status,
-          ...(signatoryError ? { partial_errors: [{ label: "signatories", error: signatoryError }] } : {}),
+          ...(partialErrors.length > 0 ? { partial_errors: partialErrors } : {}),
         },
       };
     });
