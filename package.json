@@ -31,7 +31,7 @@
     "format:check": "prettier --check src tests"
   },
   "dependencies": {
-    "commander": "^12.1.0",
+    "commander": "^15.0.0",
     "smol-toml": "^1.6.1"
   },
   "devDependencies": {
