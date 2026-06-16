@@ -43,9 +43,7 @@ export function registerApiCommand(parent: Command): void {
 A literal {company_uuid} in the path is replaced with the bound company UUID
 (from --company-uuid, GUSTO_COMPANY_UUID, or a company-scoped login).
 
---auto-version handles the optimistic-concurrency "version dance" for PUT/PATCH:
-it GETs the resource, reads its current version, and threads it into the body so
-you don't have to GET-then-PUT by hand. A version you pass in --data always wins.
+--auto-version grabs the resource's latest version and injects it into PUT/PATCH update requests (a version you pass in --data always wins).
 
 Examples:
   $ gusto api request GET /v1/me
