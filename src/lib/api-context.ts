@@ -24,16 +24,19 @@ export type ApiContext =
 
 export type CompanyApiContext = Extract<ApiContext, { hasCompany: true }>;
 
-export interface ApiContextOpts {
-  requireCompany?: boolean;
+export interface AuthOpts {
   /** Whether --token-stdin was passed: read one token from stdin as a last resort. */
   tokenStdin?: boolean;
   /** Override the stdin read (tests). Defaults to reading real stdin. */
   readStdin?: StdinReader;
-  companyOverride?: string;
   store?: TokenStore;
   http?: OAuthHttpOptions;
   now?: () => number;
+}
+
+export interface ApiContextOpts extends AuthOpts {
+  requireCompany?: boolean;
+  companyOverride?: string;
 }
 
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
@@ -48,7 +51,7 @@ export type ResolvedToken =
  * more secure source is present. `gusto auth login` always wins. See AINT-588.
  * `sessionToken` is non-null when the resolved token came from the stored login —
  * callers use it to decide whether to fall back to the session's bound company. */
-export async function resolveAuthToken(globals: GlobalFlags, opts: ApiContextOpts): Promise<ResolvedToken> {
+export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Promise<ResolvedToken> {
   const session = await sessionToken(globals, opts);
   let token = session ?? getAccessToken();
   if (!token && opts.tokenStdin) {
@@ -114,7 +117,7 @@ export async function resolveApiContext(
 }
 
 /** The token from the stored login session, refreshed on near-expiry; null if none. */
-async function sessionToken(globals: GlobalFlags, opts: ApiContextOpts): Promise<string | null> {
+async function sessionToken(globals: GlobalFlags, opts: AuthOpts): Promise<string | null> {
   const store = opts.store ?? resolveStore();
   const http = opts.http ?? oauthHttp(globals);
   try {

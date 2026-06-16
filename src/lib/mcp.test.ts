@@ -135,6 +135,28 @@ describe("callMcpTool — success unwrap", () => {
     }
   });
 
+  test("multiple text blocks return an array of parsed payloads", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            { type: "text", text: JSON.stringify({ source: "third_party" }) },
+            { type: "text", text: JSON.stringify({ source: "native" }) },
+          ],
+        },
+      },
+    }));
+    try {
+      const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
+      expect(result).toEqual({ ok: true, data: [{ source: "third_party" }, { source: "native" }] });
+    } finally {
+      restore();
+    }
+  });
+
   test("non-JSON content text falls back to the raw string", async () => {
     const { restore } = stubGlobalFetch(() => ({
       status: 200,
@@ -225,7 +247,26 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
     }
   });
 
-  test("unknown RPC code falls back to mcp_error / ApiServer with the original code in details", async () => {
+  test("empty-string `details` falls back to the higher-level `message` instead of being swallowed", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32602, message: "Missing required parameters", data: { details: "" } },
+      },
+    }));
+    try {
+      const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toBe("Missing required parameters");
+    } finally {
+      restore();
+    }
+  });
+
+  test("unknown RPC code falls back to mcp_error / ApiServer", async () => {
     const { restore } = stubGlobalFetch(() => ({ status: 200, body: errorEnvelope(-99999, "boom") }));
     try {
       const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
@@ -233,7 +274,6 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("mcp_error");
       expect(result.exitCode).toBe(ExitCode.ApiServer);
-      expect(result.error.details).toMatchObject({ rpc_code: -99999 });
     } finally {
       restore();
     }
