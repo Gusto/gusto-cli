@@ -292,7 +292,10 @@ describe("companyFinishOnboardingHandler", () => {
     const result = await companyFinishOnboardingHandler(auth)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    expect(result.error.details).toBeDefined();
+    // Assert the upstream category actually survives into details - not just that
+    // *something* is there. A regression that swallowed the body to a generic
+    // message would still pass a bare toBeDefined, but must fail this.
+    expect(result.error.details).toMatchObject({ errors: [{ category: "finish_onboarding_incomplete" }] });
   });
 
   test("a malformed (empty 200) finish body degrades to null, not an internal_error throw", async () => {
