@@ -1,8 +1,5 @@
 import { spawn } from "node:child_process";
-
-function isTruthyFlag(value: string | undefined): boolean {
-  return value != null && value !== "" && value !== "0" && value.toLowerCase() !== "false";
-}
+import { isTruthy } from "./env.ts";
 
 /** Whether this environment can plausibly open a browser the user will actually see.
  * Used to decide whether `auth login` should launch a browser or just print the URL -
@@ -14,7 +11,7 @@ export function canOpenBrowser(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   // CI never has a human at a desktop, regardless of anything else.
-  if (isTruthyFlag(env.CI)) return false;
+  if (isTruthy(env.CI)) return false;
   // An explicit BROWSER launcher means the user has wired up how to open URLs.
   if (env.BROWSER) return true;
   if (platform === "linux") {

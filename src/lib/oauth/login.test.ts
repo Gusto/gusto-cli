@@ -17,6 +17,15 @@ function driveCallback(): {
   return { openBrowser, response: () => responsePromise as Promise<Response> };
 }
 
+/** Drive the loopback callback off a printed sign-in URL line - the print path used
+ * when the browser isn't opened (--no-browser or a headless environment). */
+function driveLoopbackFromPrintedUrl(line: string): void {
+  const m = line.match(/(https?:\/\/\S+\/oauth\/authorize\S*)/);
+  if (!m) return;
+  const u = new URL(m[1]);
+  void globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
+}
+
 describe("companyUuidFromTokenInfo", () => {
   test("returns resource.uuid for a Company-scoped token", () => {
     expect(companyUuidFromTokenInfo({ resource: { type: "Company", uuid: "comp-1" } })).toBe("comp-1");
@@ -115,11 +124,7 @@ describe("login", () => {
     // With --no-browser the URL is only printed; drive the loopback off the printed line.
     const print = (l: string): void => {
       lines.push(l);
-      const m = l.match(/(https?:\/\/\S+\/oauth\/authorize\S*)/);
-      if (m) {
-        const u = new URL(m[1]);
-        void globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
-      }
+      driveLoopbackFromPrintedUrl(l);
     };
 
     const info = await login("sandbox", {
@@ -148,14 +153,6 @@ describe("login", () => {
     const events: SignInUrlEvent[] = [];
     let opened = false;
     // No --no-browser flag, but the environment can't open one: drive the loopback off the printed line.
-    const print = (l: string): void => {
-      const m = l.match(/(https?:\/\/\S+\/oauth\/authorize\S*)/);
-      if (m) {
-        const u = new URL(m[1]);
-        void globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
-      }
-    };
-
     const info = await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
@@ -165,7 +162,7 @@ describe("login", () => {
         return Promise.resolve();
       },
       emitEvent: (e) => events.push(e),
-      print,
+      print: driveLoopbackFromPrintedUrl,
     });
 
     expect(opened).toBe(false);
