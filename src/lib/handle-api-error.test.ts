@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ApiError, NetworkError } from "./api-client.ts";
+import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { toResult } from "./handle-api-error.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
@@ -39,6 +39,21 @@ describe("toResult", () => {
       ok: false,
       exitCode: ExitCode.Network,
       error: { code: "network_error", message: "connection refused" },
+    });
+  });
+
+  test("BlockedDestinationError maps to blocked_destination with the validation exit code", () => {
+    const err = new BlockedDestinationError(
+      "refusing to send credentialed request to https://evil.test; only https://api.gusto.com is allowed",
+    );
+    const result = toResult(err);
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: {
+        code: "blocked_destination",
+        message: "refusing to send credentialed request to https://evil.test; only https://api.gusto.com is allowed",
+      },
     });
   });
 

@@ -29,6 +29,19 @@ export class NetworkError extends Error {
   }
 }
 
+/** Thrown before any request is sent when a path resolves to an origin other
+ * than the configured API base URL. Blocks SSRF and stops the bearer credential
+ * from being attached to a request bound for a non-Gusto host (a documented risk
+ * of the agent-facing `gusto api request` escape hatch). Carries `Validation` so
+ * callers report it as bad input rather than a network/server fault. */
+export class BlockedDestinationError extends Error {
+  readonly exitCode: ExitCodeValue = ExitCode.Validation;
+  constructor(message: string) {
+    super(message);
+    this.name = "BlockedDestinationError";
+  }
+}
+
 /** Thrown by `poll()` when the success predicate never holds within the
  * configured time / attempt budget. Carries the last response body so callers
  * can report the terminal status (and any resumable request id). */
@@ -255,8 +268,30 @@ export class ApiClient {
     return new NetworkError(`request deadline exceeded calling ${method} ${path}`, true);
   }
 
+  /** Resolve `path` against the configured base URL and confirm it stays on the
+   * same origin (scheme + host + port). Relative paths, same-origin absolute
+   * URLs, and protocol-relative paths that resolve back to the base host are
+   * allowed; anything pointing elsewhere - a foreign host, a `//other` redirect,
+   * or an `http://` downgrade of an `https` host - is rejected before the bearer
+   * credential can be attached. */
+  private resolveUrl(path: string): string {
+    const base = new URL(this.baseUrl);
+    let resolved: URL;
+    try {
+      resolved = new URL(path, base);
+    } catch {
+      throw new BlockedDestinationError(`invalid request path: ${path}`);
+    }
+    if (resolved.origin !== base.origin) {
+      throw new BlockedDestinationError(
+        `refusing to send credentialed request to ${resolved.origin}; only ${base.origin} is allowed`,
+      );
+    }
+    return resolved.toString();
+  }
+
   private async sendOnce<T>(method: string, path: string, body: unknown, timeoutMs: number): Promise<ApiResponse<T>> {
-    const url = path.startsWith("http") ? path : `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+    const url = this.resolveUrl(path);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: "application/json",
