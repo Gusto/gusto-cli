@@ -1231,8 +1231,8 @@ Examples:
   add
     .command("work-address <employee_uuid>")
     .description("Set the employee's work address (a company location)")
-    .option("--location-uuid <uuid>", "Company location UUID")
-    .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
+    .option("--location-uuid <uuid>", "Company location UUID (required)")
+    .option("--effective-date <date>", "Effective date YYYY-MM-DD (required)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .action((employeeUuid: string, opts: WorkAddressOpts) =>
