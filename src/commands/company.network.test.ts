@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { ExitCode } from "../lib/exit-codes.ts";
 import {
   companyFinishOnboardingHandler,
   companyLocationsHandler,
@@ -269,6 +270,15 @@ describe("companyLocationsHandler", () => {
     routeFetch([{ match: "/locations", status: 404, body: { error: "not found" } }]);
     const result = await companyLocationsHandler(auth)(ctx);
     expect(result.ok).toBe(false);
+  });
+
+  test("maps a non-array 200 to a malformed_response envelope (not 'no locations')", async () => {
+    routeFetch([{ match: "/locations", status: 200, body: { not: "an array" } }]);
+    const result = await companyLocationsHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 });
 
