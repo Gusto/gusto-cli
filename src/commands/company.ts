@@ -1,11 +1,11 @@
 import type { Command } from "commander";
 import { ApiError } from "../lib/api-client.ts";
-import { fetchCompanyResource, withCompanyContext } from "../lib/api-context.ts";
+import { withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
-import type { LocationRec } from "../lib/locations.ts";
+import { MalformedLocationsBodyError, fetchCompanyLocations, malformedLocationsResult } from "../lib/locations.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
@@ -90,25 +90,16 @@ export function registerCompanyCommand(parent: Command): void {
 }
 
 export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {
-  return async ({ globals }) => {
-    const result = await fetchCompanyResource(
-      globals,
-      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}/locations`,
-    );
-    if (!result.ok) return result;
-    if (!Array.isArray(result.data)) {
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiClient,
-        error: {
-          code: "malformed_response",
-          message: "/v1/companies/{company_uuid}/locations returned a non-array body",
-        },
-      };
-    }
-    return { ok: true, data: { locations: result.data as LocationRec[] } };
-  };
+  return async ({ globals }) =>
+    withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      try {
+        const locations = await fetchCompanyLocations(ctx.client, ctx.companyUuid);
+        return { ok: true, data: { locations } };
+      } catch (err) {
+        if (err instanceof MalformedLocationsBodyError) return malformedLocationsResult(err);
+        throw err;
+      }
+    });
 }
 
 interface CompanyRecord {

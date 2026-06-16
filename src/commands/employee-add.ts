@@ -8,7 +8,12 @@ import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure, toResult } from "../lib/handle-api-error.ts";
-import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts";
+import {
+  MalformedLocationsBodyError,
+  fetchCompanyLocations,
+  malformedLocationsResult,
+  pickPrimaryLocation,
+} from "../lib/locations.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
@@ -189,15 +194,20 @@ export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts):
     }
 
     return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
-      const resolved = await resolveWorkAddressLocation(ctx.client, ctx.companyUuid, opts.locationUuid);
-      if (!resolved.ok) return missingArgs(resolved.blocked);
-      const res = await ctx.client.post(path, {
-        location_uuid: resolved.locationUuid,
-        effective_date: opts.effectiveDate,
-      });
-      const body =
-        res.body && typeof res.body === "object" ? (res.body as Record<string, unknown>) : { result: res.body };
-      return { ok: true, data: { ...body, location_uuid_used: resolved.locationUuid } };
+      try {
+        const resolved = await resolveWorkAddressLocation(ctx.client, ctx.companyUuid, opts.locationUuid);
+        if (!resolved.ok) return missingArgs(resolved.blocked);
+        const res = await ctx.client.post(path, {
+          location_uuid: resolved.locationUuid,
+          effective_date: opts.effectiveDate,
+        });
+        const body =
+          res.body && typeof res.body === "object" ? (res.body as Record<string, unknown>) : { result: res.body };
+        return { ok: true, data: { ...body, location_uuid_used: resolved.locationUuid } };
+      } catch (err) {
+        if (err instanceof MalformedLocationsBodyError) return malformedLocationsResult(err);
+        throw err;
+      }
     });
   };
 }

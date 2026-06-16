@@ -1,4 +1,6 @@
 import type { ApiClient } from "./api-client.ts";
+import { ExitCode } from "./exit-codes.ts";
+import type { CommandResult } from "./runner.ts";
 
 export interface LocationRec {
   uuid: string;
@@ -6,15 +8,30 @@ export interface LocationRec {
   filing_address?: boolean;
 }
 
-/** GET /v1/companies/{company_uuid}/locations. Throws when the API returns a
- * non-array body so callers can distinguish a real "no locations" empty list
- * from a malformed response (which used to silently surface as a "no locations
- * found" blocker, misleading users about the actual cause). */
+/** Thrown when /locations returns a 200 with a non-array body so callers can
+ * distinguish a real "no locations" empty list from a malformed response. */
+export class MalformedLocationsBodyError extends Error {
+  constructor(companyUuid: string) {
+    super(`/v1/companies/${companyUuid}/locations returned a non-array body`);
+    this.name = "MalformedLocationsBodyError";
+  }
+}
+
+/** The shared `malformed_response` envelope both /locations consumers emit when the
+ * API returns a non-array body. Exit code matches a regular API client failure. */
+export function malformedLocationsResult(err: MalformedLocationsBodyError): CommandResult<never> {
+  return {
+    ok: false,
+    exitCode: ExitCode.ApiClient,
+    error: { code: "malformed_response", message: err.message },
+  };
+}
+
+/** GET /v1/companies/{company_uuid}/locations. Throws `MalformedLocationsBodyError`
+ * on a non-array body; callers catch + map to `malformedLocationsResult`. */
 export async function fetchCompanyLocations(client: ApiClient, companyUuid: string): Promise<LocationRec[]> {
   const res = await client.get<LocationRec[]>(`/v1/companies/${companyUuid}/locations`);
-  if (!Array.isArray(res.body)) {
-    throw new Error(`/v1/companies/${companyUuid}/locations returned a non-array body`);
-  }
+  if (!Array.isArray(res.body)) throw new MalformedLocationsBodyError(companyUuid);
   return res.body;
 }
 
