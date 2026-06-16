@@ -58,6 +58,18 @@ export interface RecordedCall {
   body: unknown;
 }
 
+/** A routed mock response: serve `MockResponse` on any URL containing `match`. */
+export interface Route extends MockResponse {
+  match: string;
+}
+
+/** Stub global fetch with substring-routed responses. The first route whose `match`
+ * the URL contains wins; unmatched URLs return 404. Returns the same `{ calls, restore }`
+ * handle as `stubGlobalFetch`; pass the restore to your file's `afterEach`. */
+export function routeFetch(routes: Route[]): { calls: RecordedCall[]; restore: () => void } {
+  return stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 });
+}
+
 /**
  * Stub `globalThis.fetch` for command-handler tests that build their own
  * ApiClient internally (so there's no `fetchImpl` seam to inject).

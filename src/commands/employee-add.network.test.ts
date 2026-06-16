@@ -1,24 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import {
-  type MockResponse,
+  type Route,
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
   blockedFields,
   okData,
+  routeFetch as setupRouteFetch,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
 import { workAddressHandler } from "./employee-add.ts";
-
-interface Route extends MockResponse {
-  match: string;
-}
 
 let restore: () => void = () => {};
 afterEach(() => restore());
 
 function routeFetch(routes: Route[]): void {
-  restore = stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 }).restore;
+  restore = setupRouteFetch(routes).restore;
 }
 
 describe("workAddressHandler default-to-primary", () => {

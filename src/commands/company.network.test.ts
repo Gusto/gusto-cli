@@ -1,23 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { companyLocationsHandler, companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
 import {
-  type MockResponse,
+  type Route,
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
   okData as data,
-  stubGlobalFetch,
+  routeFetch as setupRouteFetch,
 } from "../lib/test-support.ts";
-
-interface Route extends MockResponse {
-  match: string;
-}
 
 let restore: () => void = () => {};
 afterEach(() => restore());
 
-/** Stub global fetch, routing each request to the first route whose substring the URL contains. */
+/** Wraps the shared `routeFetch` to assign the file-level `restore` for the local `afterEach`. */
 function routeFetch(routes: Route[]): void {
-  restore = stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 }).restore;
+  restore = setupRouteFetch(routes).restore;
 }
 
 describe("companyShowHandler", () => {
