@@ -246,6 +246,18 @@ export function companyProvisionHandler(opts: ProvisionOpts): CommandHandler {
       return provisionPayloadError(err);
     }
 
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/provision",
+          body: payload,
+          note: "example: a sample {user, company} payload; email + EIN are randomized so this stays runnable as --input",
+        },
+      };
+    }
+
     if (opts.dryRun) {
       return { ok: true, data: { method: "POST", path: "/v1/provision", body: payload } };
     }
