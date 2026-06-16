@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_API_VERSION, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
+import {
+  DEFAULT_API_VERSION,
+  getAccessToken,
+  getCompanyUuid,
+  resolveApiVersion,
+  resolveBaseUrl,
+  resolveMcpBaseUrl,
+} from "./env.ts";
 
 describe("resolveBaseUrl", () => {
   test("defaults to sandbox when env is undefined and no override", () => {
@@ -52,6 +59,46 @@ describe("resolveBaseUrl", () => {
   test("rejects non-http schemes even with GUSTO_ALLOW_HTTP=1 (ftp://)", () => {
     expect(() => resolveBaseUrl(undefined, { GUSTO_API_BASE_URL: "ftp://example.com", GUSTO_ALLOW_HTTP: "1" })).toThrow(
       "GUSTO_API_BASE_URL must be https://",
+    );
+  });
+});
+
+describe("resolveMcpBaseUrl", () => {
+  test("defaults to sandbox MCP when env is undefined and no override", () => {
+    expect(resolveMcpBaseUrl(undefined, {})).toBe("https://mcp.api.gusto-demo.com");
+  });
+  test("returns sandbox MCP URL for sandbox env", () => {
+    expect(resolveMcpBaseUrl("sandbox", {})).toBe("https://mcp.api.gusto-demo.com");
+  });
+  test("returns production MCP URL for production env", () => {
+    expect(resolveMcpBaseUrl("production", {})).toBe("https://mcp.api.gusto.com");
+  });
+  test("GUSTO_MCP_BASE_URL overrides both", () => {
+    expect(resolveMcpBaseUrl("production", { GUSTO_MCP_BASE_URL: "https://example.test" })).toBe("https://example.test");
+  });
+  test("rejects http URL without escape hatch", () => {
+    expect(() => resolveMcpBaseUrl(undefined, { GUSTO_MCP_BASE_URL: "http://localhost:3000" })).toThrow(
+      "GUSTO_MCP_BASE_URL must be https:// (set GUSTO_ALLOW_HTTP=1 to allow http for local testing)",
+    );
+  });
+  test("allows http URL when GUSTO_ALLOW_HTTP=1", () => {
+    expect(resolveMcpBaseUrl(undefined, { GUSTO_MCP_BASE_URL: "http://localhost:3000", GUSTO_ALLOW_HTTP: "1" })).toBe(
+      "http://localhost:3000",
+    );
+  });
+  test("malformed URL throws an error that names the env var", () => {
+    expect(() => resolveMcpBaseUrl(undefined, { GUSTO_MCP_BASE_URL: "not-a-url" })).toThrow(
+      "GUSTO_MCP_BASE_URL is not a valid URL: not-a-url",
+    );
+  });
+  test("rejects non-http schemes even with GUSTO_ALLOW_HTTP=1 (file://)", () => {
+    expect(() =>
+      resolveMcpBaseUrl(undefined, { GUSTO_MCP_BASE_URL: "file:///etc/passwd", GUSTO_ALLOW_HTTP: "1" }),
+    ).toThrow("GUSTO_MCP_BASE_URL must be https://");
+  });
+  test("GUSTO_API_BASE_URL does NOT override the MCP URL (separate env vars)", () => {
+    expect(resolveMcpBaseUrl("sandbox", { GUSTO_API_BASE_URL: "https://wrong.test" })).toBe(
+      "https://mcp.api.gusto-demo.com",
     );
   });
 });
