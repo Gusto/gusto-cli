@@ -968,11 +968,11 @@ export async function runManage(client: ApiClient, employeeUuid: string, opts: M
       data.employee = res.body;
     } catch (err) {
       if (mode.status === null) return toResult(err);
-      return partialFailureResult(err, {
+      return partialFailure({
         code: "manage_identity_failed",
         message: "onboarding mode switched but updating the employee failed",
-        completedDomain: "onboarding_status",
-        completedData: data.onboarding_status,
+        err,
+        completed: { onboarding_status: data.onboarding_status },
         failedDomain: "employee",
       });
     }

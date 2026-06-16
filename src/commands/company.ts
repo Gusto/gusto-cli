@@ -32,7 +32,7 @@ interface ProvisionOpts {
 
 interface FinishOnboardingOpts {
   companyUuid?: string;
-  token?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
 }
 
@@ -245,7 +245,7 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
       };
     }
 
-    return withCompanyContext(globals, { token: opts.token, companyUuid: opts.companyUuid }, async (ctx) => {
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const base = `/v1/companies/${ctx.companyUuid}`;
 
       // finish_onboarding flips onboarding_completed -> true (stage 'done'). A 422
