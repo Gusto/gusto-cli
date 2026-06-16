@@ -650,6 +650,15 @@ describe("api request", () => {
     expect(envelope.data.path).toBe("/v1/companies/{company_uuid}/employees");
     expect(envelope.data.note).toBeTruthy();
   });
+
+  test("--company-uuid on a path with no placeholder warns on stderr but still succeeds", async () => {
+    const result = await run(["api", "request", "GET", "/v1/me", "--company-uuid", "co-1", "--dry-run"]);
+    expect(result.exitCode).toBe(0);
+    // stdout stays a clean JSON envelope; the warning goes to stderr.
+    expect(JSON.parse(result.stdout.trim()).data.path).toBe("/v1/me");
+    expect(result.stderr).toMatch(/--company-uuid/);
+    expect(result.stderr).toContain("{company_uuid}");
+  });
 });
 
 // AINT-588: the inline `--token <value>` flag was dropped (it leaks secrets into

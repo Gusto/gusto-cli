@@ -75,3 +75,33 @@ describe("api request without the placeholder is unchanged", () => {
     }
   });
 });
+
+describe("api request --company-uuid on a path with no placeholder", () => {
+  test("warns that the flag was ignored", async () => {
+    const warnings: string[] = [];
+    const d = data(
+      await apiRequestHandler("GET", "/v1/me", { companyUuid: "co-1", dryRun: true }, (m) => warnings.push(m))(ctx),
+    );
+    expect(d.path).toBe("/v1/me");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/--company-uuid/);
+    expect(warnings[0]).toMatch(/\{company_uuid\}/);
+  });
+
+  test("does not warn when --company-uuid is absent", async () => {
+    const warnings: string[] = [];
+    await apiRequestHandler("GET", "/v1/me", { dryRun: true }, (m) => warnings.push(m))(ctx);
+    expect(warnings).toHaveLength(0);
+  });
+
+  test("does not warn when the path uses the placeholder (the flag is used)", async () => {
+    const warnings: string[] = [];
+    await apiRequestHandler(
+      "GET",
+      "/v1/companies/{company_uuid}/employees",
+      { companyUuid: "co-1", dryRun: true },
+      (m) => warnings.push(m),
+    )(ctx);
+    expect(warnings).toHaveLength(0);
+  });
+});

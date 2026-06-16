@@ -48,7 +48,12 @@ Examples:
     );
 }
 
-export function apiRequestHandler(rawMethod: string, path: string, opts: ApiRequestOpts): CommandHandler {
+export function apiRequestHandler(
+  rawMethod: string,
+  path: string,
+  opts: ApiRequestOpts,
+  warn: (msg: string) => void = (m) => void process.stderr.write(`${m}\n`),
+): CommandHandler {
   return async ({ globals }) => {
     const method = rawMethod.toUpperCase();
     if (!(SUPPORTED_METHODS as readonly string[]).includes(method)) {
@@ -86,6 +91,13 @@ export function apiRequestHandler(rawMethod: string, path: string, opts: ApiRequ
 
     // Plain path: unchanged behavior - no company required, and a dry-run needs no auth.
     if (!path.includes(COMPANY_UUID_PLACEHOLDER)) {
+      // --company-uuid only feeds the placeholder; on a plain path it does nothing, so flag the
+      // likely mistake (a forgotten `{company_uuid}` token) rather than silently dropping it.
+      if (opts.companyUuid) {
+        warn(
+          `warning: --company-uuid was set but the path has no ${COMPANY_UUID_PLACEHOLDER} placeholder; ignoring it`,
+        );
+      }
       if (opts.dryRun) {
         return { ok: true, data: { method, path, body } };
       }
