@@ -631,6 +631,34 @@ describe("api request", () => {
     expect(result.exitCode).toBe(7);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_json");
   });
+
+  test("--dry-run substitutes {company_uuid} from GUSTO_COMPANY_UUID into the path", async () => {
+    const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], {
+      GUSTO_ACCESS_TOKEN: "tok",
+      GUSTO_COMPANY_UUID: "co-1",
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.path).toBe("/v1/companies/co-1/employees");
+    expect(envelope.data.note).toBeUndefined();
+  });
+
+  test("--dry-run with {company_uuid} but no company keeps the placeholder and notes it", async () => {
+    const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.path).toBe("/v1/companies/{company_uuid}/employees");
+    expect(envelope.data.note).toBeTruthy();
+  });
+
+  test("--company-uuid on a path with no placeholder warns on stderr but still succeeds", async () => {
+    const result = await run(["api", "request", "GET", "/v1/me", "--company-uuid", "co-1", "--dry-run"]);
+    expect(result.exitCode).toBe(0);
+    // stdout stays a clean JSON envelope; the warning goes to stderr.
+    expect(JSON.parse(result.stdout.trim()).data.path).toBe("/v1/me");
+    expect(result.stderr).toMatch(/--company-uuid/);
+    expect(result.stderr).toContain("{company_uuid}");
+  });
 });
 
 // AINT-588: the inline `--token <value>` flag was dropped (it leaks secrets into
