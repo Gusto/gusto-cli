@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData } from "../lib/test-support.ts";
+import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
 import {
   timesheetCreateHandler,
+  timesheetListHandler,
+  timesheetShowHandler,
   timesheetSyncHandler,
   validateTimesheetCreate,
+  validateTimesheetList,
   validateTimesheetSync,
 } from "./timesheet.ts";
 
@@ -309,5 +312,151 @@ describe("timesheetSyncHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("validation");
+  });
+});
+
+describe("validateTimesheetList", () => {
+  test("start + end returns the populated body in API field names", () => {
+    expect(validateTimesheetList({ startDate: "2026-06-01", endDate: "2026-06-15" })).toEqual({
+      ok: true,
+      body: { start_date: "2026-06-01", end_date: "2026-06-15" },
+    });
+  });
+
+  test("missing --start-date and --end-date block on both", () => {
+    const result = validateTimesheetList({});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
+  });
+
+  test("malformed --start-date is blocked", () => {
+    const result = validateTimesheetList({ startDate: "06/01/2026", endDate: "2026-06-15" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+  });
+
+  test("malformed --end-date is blocked", () => {
+    const result = validateTimesheetList({ startDate: "2026-06-01", endDate: "not-a-date" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
+  });
+
+  test("--end-date before --start-date is rejected client-side", () => {
+    const result = validateTimesheetList({ startDate: "2026-06-15", endDate: "2026-06-01" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(
+      expect.objectContaining({ field: "end-date", reason: expect.stringContaining("--start-date") }),
+    );
+  });
+});
+
+describe("timesheetShowHandler", () => {
+  test("GETs /v1/time_tracking/time_sheets/<uuid> and returns the body", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: { uuid: "ts-1", status: "approved", entity_type: "Employee" },
+    }));
+    try {
+      const data = okData(await timesheetShowHandler("ts-1", {})(ctx));
+      expect(data).toMatchObject({ uuid: "ts-1", status: "approved" });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("GET");
+      expect(calls[0]?.url).toContain("/v1/time_tracking/time_sheets/ts-1");
+    } finally {
+      restore();
+    }
+  });
+
+  test("404 from the API surfaces as a CommandResult failure (not a throw)", async () => {
+    const { restore } = stubGlobalFetch(() => ({ status: 404, body: { errors: ["not found"] } }));
+    try {
+      const result = await timesheetShowHandler("missing", {})(ctx);
+      expect(result.ok).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("timesheetListHandler", () => {
+  test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    try {
+      const result = await timesheetListHandler({})(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("validation");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("posts a JSON-RPC 2.0 tools/call envelope to the MCP endpoint", async () => {
+    const innerPayload = { source: "third_party", timesheets: [{ id: "TimeSheet:abc" }] };
+    const { calls, restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(innerPayload) }] } },
+    }));
+    try {
+      const data = okData(
+        await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx),
+      );
+      expect(data).toEqual(innerPayload);
+      expect(calls).toHaveLength(1);
+      const call = calls[0];
+      expect(call?.method).toBe("POST");
+      expect(call?.url).toContain("mcp.api.gusto-demo.com");
+      expect(call?.body).toMatchObject({
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: "list_time_records", arguments: { start_date: "2026-06-01", end_date: "2026-06-15" } },
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  test("tool-not-found (missing scope) maps to mcp_tool_not_found / Auth exit", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32601, message: "Method not found", data: { details: "Tool not found: list_time_records" } },
+      },
+    }));
+    try {
+      const result = await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("mcp_tool_not_found");
+    } finally {
+      restore();
+    }
+  });
+
+  test("JSON-RPC -32602 invalid params maps to mcp_invalid_params", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32602, message: "Missing required parameters", data: { details: "end_date" } },
+      },
+    }));
+    try {
+      const result = await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("mcp_invalid_params");
+    } finally {
+      restore();
+    }
   });
 });

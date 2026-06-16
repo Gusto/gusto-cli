@@ -38,18 +38,17 @@ export interface ApiContextOpts {
 
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
 
-export function resolveApiContext(
-  globals: GlobalFlags,
-  opts: ApiContextOpts & { requireCompany: false },
-): Promise<Resolved<Extract<ApiContext, { hasCompany: false }>>>;
-export function resolveApiContext(globals: GlobalFlags, opts?: ApiContextOpts): Promise<Resolved<CompanyApiContext>>;
-export async function resolveApiContext(
-  globals: GlobalFlags,
-  opts: ApiContextOpts = { requireCompany: true },
-): Promise<Resolved<ApiContext>> {
-  // Token precedence: stored login session > GUSTO_ACCESS_TOKEN env > --token-stdin (piped).
-  // stdin is the lowest rung and read lazily: a piped secret is only consumed when no
-  // more secure source is present, so `gusto auth login` always wins. See AINT-588.
+export type ResolvedToken =
+  | { ok: true; token: string; sessionToken: string | null }
+  | { ok: false; result: CommandResult<never> };
+
+/** Resolve the access token using the precedence shared by every transport:
+ * stored login session > GUSTO_ACCESS_TOKEN env > --token-stdin (piped). stdin
+ * is the lowest rung and read lazily so a piped secret is only consumed when no
+ * more secure source is present. `gusto auth login` always wins. See AINT-588.
+ * `sessionToken` is non-null when the resolved token came from the stored login —
+ * callers use it to decide whether to fall back to the session's bound company. */
+export async function resolveAuthToken(globals: GlobalFlags, opts: ApiContextOpts): Promise<ResolvedToken> {
   const session = await sessionToken(globals, opts);
   let token = session ?? getAccessToken();
   if (!token && opts.tokenStdin) {
@@ -68,6 +67,21 @@ export async function resolveApiContext(
       },
     };
   }
+  return { ok: true, token, sessionToken: session };
+}
+
+export function resolveApiContext(
+  globals: GlobalFlags,
+  opts: ApiContextOpts & { requireCompany: false },
+): Promise<Resolved<Extract<ApiContext, { hasCompany: false }>>>;
+export function resolveApiContext(globals: GlobalFlags, opts?: ApiContextOpts): Promise<Resolved<CompanyApiContext>>;
+export async function resolveApiContext(
+  globals: GlobalFlags,
+  opts: ApiContextOpts = { requireCompany: true },
+): Promise<Resolved<ApiContext>> {
+  const resolved = await resolveAuthToken(globals, opts);
+  if (!resolved.ok) return resolved;
+  const { token, sessionToken: session } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
   const client = new ApiClient({ baseUrl, token, apiVersion: resolveApiVersion() });

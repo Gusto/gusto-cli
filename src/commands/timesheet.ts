@@ -1,10 +1,17 @@
 import type { Command } from "commander";
-import { createCompanyResource } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import { callMcpTool } from "../lib/mcp.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
-import { type CommandHandler, type ValidationResult, runCommand, validationFailure } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type ValidationResult,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 type PayClassification = "Regular" | "Overtime" | "Double overtime";
 
@@ -198,6 +205,43 @@ interface TimesheetSyncOpts extends TimesheetSyncInput {
   example?: boolean;
 }
 
+interface TimesheetShowOpts {
+  tokenStdin?: boolean;
+}
+
+interface TimesheetListInput {
+  startDate?: string;
+  endDate?: string;
+}
+
+interface TimesheetListOpts extends TimesheetListInput {
+  tokenStdin?: boolean;
+}
+
+export type TimesheetListValidation = ValidationResult<{ start_date: string; end_date: string }>;
+
+export function validateTimesheetList(opts: TimesheetListInput): TimesheetListValidation {
+  const blocked: BlockedOn[] = [];
+  const { startDate, endDate } = opts;
+  if (!startDate) {
+    blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(startDate)) {
+    blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  if (!endDate) {
+    blocked.push({ field: "end-date", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(endDate)) {
+    blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  if (startDate && endDate && isValidIsoDate(startDate) && isValidIsoDate(endDate) && endDate < startDate) {
+    blocked.push({ field: "end-date", reason: "must be on or after --start-date" });
+  }
+  if (!startDate || !endDate || blocked.length > 0) {
+    return { ok: false, message: "missing or invalid arguments", blocked };
+  }
+  return { ok: true, body: { start_date: startDate, end_date: endDate } };
+}
+
 // Note: `kind` is intentionally not a flag — only regular payroll exports are supported today.
 
 export function registerTimesheetCommand(parent: Command): void {
@@ -235,6 +279,24 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetSyncOpts) =>
       runCommand("gusto timesheet sync", readGlobalFlags(parent.opts()), timesheetSyncHandler(opts)),
+    );
+
+  cmd
+    .command("show <time_sheet_uuid>")
+    .description("Read a single time sheet")
+    .option(...TOKEN_STDIN_OPT)
+    .action((timeSheetUuid: string, opts: TimesheetShowOpts) =>
+      runReadCommand("gusto timesheet show", readGlobalFlags(parent.opts()), timesheetShowHandler(timeSheetUuid, opts)),
+    );
+
+  cmd
+    .command("list")
+    .description("List time records (native shifts or third-party time sheets) for a pay period")
+    .option("--start-date <date>", "Pay period start (YYYY-MM-DD)")
+    .option("--end-date <date>", "Pay period end (YYYY-MM-DD)")
+    .option(...TOKEN_STDIN_OPT)
+    .action((opts: TimesheetListOpts) =>
+      runReadCommand("gusto timesheet list", readGlobalFlags(parent.opts()), timesheetListHandler(opts)),
     );
 }
 
@@ -301,5 +363,19 @@ export function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
+  };
+}
+
+export function timesheetShowHandler(timeSheetUuid: string, opts: TimesheetShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/time_tracking/time_sheets/${timeSheetUuid}`);
+}
+
+export function timesheetListHandler(opts: TimesheetListOpts): CommandHandler {
+  return async ({ globals }) => {
+    const validation = validateTimesheetList(opts);
+    if (!validation.ok) return validationFailure(validation.message, validation.blocked);
+
+    return callMcpTool(globals, { tokenStdin: opts.tokenStdin }, "list_time_records", validation.body);
   };
 }
