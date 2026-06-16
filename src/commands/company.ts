@@ -10,7 +10,12 @@ import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
 import { resolveStore } from "../lib/oauth/token-store.ts";
-import { type OnboardingStatus, extractBlockers, withSignatoryBlocker } from "../lib/onboarding-map.ts";
+import {
+  FINISH_ONBOARDING_ACTION,
+  type OnboardingStatus,
+  extractBlockers,
+  withSignatoryBlocker,
+} from "../lib/onboarding-map.ts";
 import { companyHasSignatory } from "../lib/signatory.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
@@ -23,6 +28,12 @@ interface CompanyShowOpts {
 interface ProvisionOpts {
   input?: string;
   example?: boolean;
+  dryRun?: boolean;
+}
+
+interface FinishOnboardingOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
   dryRun?: boolean;
 }
 
@@ -63,6 +74,15 @@ export function registerCompanyCommand(parent: Command): void {
       .description("List the company's locations (employee work addresses reference these by uuid)"),
   ).action((opts: CompanyShowOpts) =>
     runReadCommand("gusto company locations", readGlobalFlags(parent.opts()), companyLocationsHandler(opts)),
+  );
+
+  withContextOptions(
+    cmd
+      .command("finish")
+      .description("Finalize onboarding (flips onboarding_completed -> true)")
+      .option("--dry-run", "Describe the request without sending"),
+  ).action((opts: FinishOnboardingOpts) =>
+    runCommand("gusto company finish", readGlobalFlags(parent.opts()), companyFinishOnboardingHandler(opts)),
   );
 
   registerCompanySetup(cmd, parent);
@@ -207,9 +227,14 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       const hasSteps = Array.isArray(status?.onboarding_steps);
       const readyToFinish = hasSteps && blockedOn.length === 0 && !isComplete;
       const stage = onboardingStage({ isComplete, hasSteps, readyToFinish });
-      // First blocker that actually has a command - not just blockedOn[0], whose
-      // suggested_action may be null while a later blocker has one.
-      const suggested = blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null;
+      // At ready_to_finish there are no blockers left, so point the agent at the
+      // finish command — otherwise next_command is null and the loop dead-ends one
+      // step short of done (AINT-615). Otherwise use the first blocker that has a
+      // command (not just blockedOn[0], whose suggested_action may be null while a
+      // later blocker has one).
+      const suggested = readyToFinish
+        ? FINISH_ONBOARDING_ACTION
+        : (blockedOn.find((b) => b.suggested_action)?.suggested_action ?? null);
       return {
         ok: true,
         data: {
@@ -224,6 +249,59 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
         },
       };
     });
+}
+
+interface FinishOnboardingResult {
+  onboarding_completed?: boolean;
+}
+
+export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          steps: [{ method: "PUT", path: "/v1/companies/{company_uuid}/finish_onboarding" }],
+          note: "finish_onboarding flips onboarding_completed -> true (stage 'done')",
+        },
+      };
+    }
+
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const base = `/v1/companies/${ctx.companyUuid}`;
+
+      // finish_onboarding flips onboarding_completed -> true (stage 'done'). A 422
+      // here means the API considers a required step unsatisfied; toResult surfaces
+      // the upstream body so the agent sees which one rather than a bare "422".
+      // A 200 can still carry an empty/malformed body (deserializes to null), so the
+      // read below is null-safe - the same malformed-but-200 discipline the
+      // onboarding-status and bank-account handlers use. Without it, a null body
+      // would throw a TypeError past the try and surface as an opaque
+      // internal_error (exit 1) instead of a structured result.
+      let onboarding: FinishOnboardingResult | null;
+      try {
+        onboarding = (await ctx.client.put<FinishOnboardingResult | null>(`${base}/finish_onboarding`)).body;
+      } catch (err) {
+        return toResult(err);
+      }
+
+      // A 200 doesn't guarantee the flag flipped: the body can be empty/malformed (null) or the API
+      // can accept the request and complete onboarding asynchronously (onboarding_completed false).
+      // Only claim completion when the flag actually reads true; otherwise report it as accepted-but-
+      // unconfirmed so an agent doesn't tell the user onboarding is done when the API never said so.
+      const completed = onboarding?.onboarding_completed === true;
+      return {
+        ok: true,
+        data: {
+          onboarding_completed: onboarding?.onboarding_completed ?? null,
+          finish_onboarding: onboarding,
+          message: completed
+            ? "Onboarding finished (onboarding_completed -> true)."
+            : "finish_onboarding accepted, but onboarding_completed isn't confirmed yet - re-check with `gusto company onboarding-status`.",
+        },
+      };
+    });
+  };
 }
 
 export interface ProvisionData {

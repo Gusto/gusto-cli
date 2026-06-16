@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
-import { toResult } from "./handle-api-error.ts";
+import { partialFailure, toResult } from "./handle-api-error.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 
 describe("toResult", () => {
@@ -185,5 +185,93 @@ describe("toResult OAuthError handling", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect("details" in result.error).toBe(false);
+  });
+});
+
+describe("partialFailure", () => {
+  test("ApiError: classifies via toResult, appends the error message, nests the body under failed.error", () => {
+    const err = new ApiError(422, { errors: ["nope"] }, ExitCode.ApiClient, "PUT /x -> 422");
+    const result = partialFailure({
+      code: "bank_verification_failed",
+      message: "bank account created but verify failed",
+      err,
+      completed: { bank_account: "ba-1" },
+      failedDomain: "verify",
+    });
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.ApiClient,
+      error: {
+        code: "bank_verification_failed",
+        message: "bank account created but verify failed: PUT /x -> 422",
+        details: {
+          bank_account: "ba-1",
+          completed: ["bank_account"],
+          // The server's 422 body is preserved (structured) under failed.error.details.
+          failed: {
+            domain: "verify",
+            error: { code: "api_client_error", message: "PUT /x -> 422", details: { errors: ["nope"] } },
+          },
+        },
+      },
+    });
+  });
+
+  test("5xx ApiError carries its server exitCode", () => {
+    const err = new ApiError(500, { e: 1 }, ExitCode.ApiServer, "PUT /x -> 500");
+    const result = partialFailure({
+      code: "c",
+      message: "m",
+      err,
+      completed: { job: { uuid: "j-1" } },
+      failedDomain: "compensation",
+    });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiServer);
+  });
+
+  test("lists every completed domain and echoes its data", () => {
+    const err = new ApiError(422, null, ExitCode.ApiClient, "PUT /x -> 422");
+    const result = partialFailure({
+      code: "c",
+      message: "m",
+      err,
+      completed: { job: { uuid: "j-1" }, bank_account: "ba-1" },
+      failedDomain: "payment_method",
+    });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.details).toEqual({
+      job: { uuid: "j-1" },
+      bank_account: "ba-1",
+      completed: ["job", "bank_account"],
+      failed: { domain: "payment_method", error: { code: "api_client_error", message: "PUT /x -> 422" } },
+    });
+  });
+
+  test("NetworkError keeps its network exit code (matches toResult), not General", () => {
+    // A follow-up-step network failure (e.g. /verify timing out) must classify
+    // the same as a first-step one through toResult - both exit Network.
+    const err = new NetworkError("connection reset");
+    const result = partialFailure({
+      code: "bank_verification_failed",
+      message: "bank account created but verify failed",
+      err,
+      completed: { bank_account: "ba-1" },
+      failedDomain: "verify",
+    });
+    const viaToResult = toResult(err);
+    if (result.ok || viaToResult.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Network);
+    expect(result.exitCode).toBe(viaToResult.exitCode);
+    expect(result.error.code).toBe("bank_verification_failed");
+    expect(result.error.message).toBe("bank account created but verify failed: connection reset");
+    expect((result.error.details as { failed: { error: { code: string } } }).failed.error.code).toBe("network_error");
+  });
+
+  test("unknown non-Error throwable falls back to exit General and records the message", () => {
+    const result = partialFailure({ code: "c", message: "m", err: "boom", completed: {}, failedDomain: "step" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.General);
+    expect(result.error.message).toBe("m: boom");
   });
 });
