@@ -169,6 +169,16 @@ describe("dry-run works without auth", () => {
     expect(envelope.data.body.email).toBe("j@example.com");
   });
 
+  test("company finish --dry-run lists only finish_onboarding without a token", async () => {
+    const result = await run(["company", "finish", "--dry-run", "--company-uuid", "co-1"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.steps.map((s: { path: string }) => s.path)).toEqual([
+      "/v1/companies/{company_uuid}/finish_onboarding",
+    ]);
+  });
+
   test("pay-schedule create maps every frequency alias to its canonical Gusto value", async () => {
     const cases: [string, string][] = [
       ["weekly", "Every week"],

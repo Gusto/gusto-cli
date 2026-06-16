@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import { companyFinishOnboardingHandler, companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import type { CommandContext } from "../lib/runner.ts";
 import {
   type MockResponse,
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
+  TEST_GLOBALS,
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
@@ -153,6 +155,10 @@ describe("companyOnboardingStatusHandler", () => {
     expect(d.stage).toBe("ready_to_finish");
     expect(d.ready_to_finish).toBe(true);
     expect(d.blocked_on).toEqual([]);
+    // No blockers remain, so the navigation hook points at the finish verb rather
+    // than dead-ending at next_command: null one step short of done (AINT-615).
+    expect(d.next_command).toBe("gusto company finish");
+    expect((d.suggested_action as { command: string }).command).toBe("gusto company finish");
   });
 
   test("a malformed 200 (no onboarding_steps) is stage 'unknown', not ready_to_finish", async () => {
@@ -228,5 +234,89 @@ describe("companyOnboardingStatusHandler", () => {
     const d = data(await companyOnboardingStatusHandler(auth)(ctx));
     expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["federal_tax_setup"]);
     expect(d.partial_errors).toBeUndefined();
+  });
+});
+
+describe("companyFinishOnboardingHandler", () => {
+  const prodCtx: CommandContext = { command: "test", globals: { ...TEST_GLOBALS, env: "production" } };
+
+  /** Stub fetch with a router and return both the result and the recorded calls so a
+   * test can assert which PUTs were (or weren't) sent. */
+  function stub(router: (u: string) => MockResponse) {
+    const s = stubGlobalFetch(router);
+    restore = s.restore;
+    return s;
+  }
+
+  test("finishes onboarding via finish_onboarding only - the approve endpoint is gone", async () => {
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler(auth)(ctx));
+    expect(d.onboarding_completed).toBe(true);
+    expect(d.message).toContain("onboarding_completed -> true");
+    const puts = s.calls.filter((c) => c.method === "PUT").map((c) => c.url);
+    expect(puts.some((u) => u.includes("/finish_onboarding"))).toBe(true);
+    // approve was dropped (re-add when payroll-running lands) - it must never be called.
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+  });
+
+  test("a 200 that hasn't flipped the flag reports accepted-but-unconfirmed, not a false success", async () => {
+    stub((u) =>
+      u.includes("/finish_onboarding") ? { status: 200, body: { onboarding_completed: false } } : { status: 404 },
+    );
+    const d = data(await companyFinishOnboardingHandler(auth)(ctx));
+    expect(d.onboarding_completed).toBe(false);
+    // The message must not claim completion when the API didn't confirm it.
+    expect(d.message).not.toContain("-> true");
+    expect(d.message).toMatch(/onboarding-status/);
+  });
+
+  test("behaves identically in production - finish only, still no approve call", async () => {
+    const s = stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler(auth)(prodCtx));
+    expect(d.onboarding_completed).toBe(true);
+    expect(s.calls.some((c) => c.url.includes("/approve"))).toBe(false);
+  });
+
+  test("a finish_onboarding 422 surfaces the upstream body", async () => {
+    stub((u) => {
+      if (u.includes("/finish_onboarding"))
+        return { status: 422, body: { errors: [{ category: "finish_onboarding_incomplete" }] } };
+      return { status: 404 };
+    });
+    const result = await companyFinishOnboardingHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    // Assert the upstream category actually survives into details - not just that
+    // *something* is there. A regression that swallowed the body to a generic
+    // message would still pass a bare toBeDefined, but must fail this.
+    expect(result.error.details).toMatchObject({ errors: [{ category: "finish_onboarding_incomplete" }] });
+  });
+
+  test("a malformed (empty 200) finish body degrades to null, not an internal_error throw", async () => {
+    // A 200 with no body deserializes to null. Reading onboarding_completed off it
+    // must not throw past the handler (which would surface as exit-1 internal_error).
+    stub((u) => {
+      if (u.includes("/finish_onboarding")) return { status: 200 }; // empty body -> null
+      return { status: 404 };
+    });
+    const d = data(await companyFinishOnboardingHandler(auth)(ctx));
+    expect(d.onboarding_completed).toBeNull();
+    // A null flag is unconfirmed, so the message must not claim completion either.
+    expect(d.message).not.toContain("-> true");
+  });
+
+  test("dry-run lists only finish_onboarding and sends nothing", async () => {
+    const s = stub(() => ({ status: 500 })); // any real call would fail the test
+    const d = data(await companyFinishOnboardingHandler({ ...auth, dryRun: true })(ctx));
+    expect((d.steps as { path: string }[]).map((step) => step.path)).toEqual([
+      "/v1/companies/{company_uuid}/finish_onboarding",
+    ]);
+    expect(s.calls).toHaveLength(0);
   });
 });

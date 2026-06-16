@@ -97,3 +97,41 @@ export function toResult(err: unknown): CommandResult<never> {
     error: { code: "internal_error", message },
   };
 }
+
+/** Envelope for a partial failure: one or more earlier steps succeeded, then a
+ * follow-up step failed, leaving the caller in a known intermediate state worth
+ * reporting (e.g. a bank account was created but its verification failed, or an
+ * employee's job was created but its compensation update failed). A retry can
+ * resume from the failed step instead of redoing the completed ones.
+ *
+ * The underlying error is classified by `toResult`, so the exit code and the
+ * nested `error` envelope match every other failure path in the CLI: a
+ * NetworkError exits `Network`, an ApiError keeps its status-derived code and
+ * carries its response body under `error.details`, and so on. `message` is a
+ * prefix - the underlying error message is appended. `completed` maps each
+ * domain/step that succeeded to the data it produced; `details` echoes that
+ * data, lists those domains under `completed`, and names the step that failed
+ * (with its structured error) under `failed`. */
+export function partialFailure(spec: {
+  code: string;
+  message: string;
+  err: unknown;
+  completed: Record<string, unknown>;
+  failedDomain: string;
+}): CommandResult<never> {
+  const base = toResult(spec.err);
+  if (base.ok) throw new Error("toResult must return a failure", { cause: spec.err });
+  return {
+    ok: false,
+    exitCode: base.exitCode,
+    error: {
+      code: spec.code,
+      message: `${spec.message}: ${base.error.message}`,
+      details: {
+        ...spec.completed,
+        completed: Object.keys(spec.completed),
+        failed: { domain: spec.failedDomain, error: base.error },
+      },
+    },
+  };
+}
