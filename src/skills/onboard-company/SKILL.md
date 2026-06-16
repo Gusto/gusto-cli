@@ -53,7 +53,7 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
    Add employees before `setup state-tax` - it reads states off their work addresses.
 
    **Sub-domain papercuts to know about:**
-   - `employee add work-address` requires `--effective-date YYYY-MM-DD` even though `--help` doesn't mark it required. Default to today's date if you don't have a better one.
+   - `employee add work-address` requires both `--location-uuid` and `--effective-date YYYY-MM-DD` (now marked `(required)` in `--help`). Default the effective date to today if you don't have a better one.
    - `employee add federal-tax` 422s if optional W-4 numeric flags (e.g. `--dependents-amount`, `--other-income`, `--deductions`) are omitted. Pass `0` for each unless the user provides actual values.
    - Always run `gusto employee add <subdomain> --help` before invoking a sub-domain - the help is the source of truth for what flags are accepted right now. If a command returns `exit 7` with a `blocked_on` envelope, that's the CLI telling you exactly which flags it still needs.
 
