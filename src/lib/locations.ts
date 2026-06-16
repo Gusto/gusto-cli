@@ -1,22 +1,9 @@
 import type { ApiClient } from "./api-client.ts";
 
-/** A company location record. Surface the well-known fields; keep the rest as `unknown`
- * so an agent can still read them through `--fields` without us hand-rolling every key
- * the demo/prod API may add. */
 export interface LocationRec {
   uuid: string;
-  street_1?: string;
-  street_2?: string;
-  city?: string;
-  state?: string;
-  zip?: string;
-  country?: string;
-  phone_number?: string;
   primary?: boolean;
   filing_address?: boolean;
-  mailing_address?: boolean;
-  active?: boolean;
-  [key: string]: unknown;
 }
 
 /** GET /v1/companies/{company_uuid}/locations. Tolerates a non-array (malformed 200)

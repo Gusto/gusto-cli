@@ -6,6 +6,7 @@ import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { partialFailure } from "../lib/handle-api-error.ts";
+import { type LocationRec, pickPrimaryLocation } from "../lib/locations.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { defaultOpenBrowser } from "../lib/browser.ts";
 import {
@@ -349,9 +350,6 @@ interface WorkAddressRec {
   active?: boolean;
   state?: string;
 }
-interface LocationRec {
-  uuid: string;
-}
 interface StateStatusRec {
   state: string;
   setup_complete?: boolean;
@@ -435,7 +433,7 @@ async function discoverEmployeeStates(
   ]);
   const employees = asArray<EmployeeRec>(employeesRes.body);
   const locations = asArray<LocationRec>(locationsRes.body);
-  const primaryLocationUuid = locations[0]?.uuid;
+  const primaryLocationUuid = pickPrimaryLocation(locations)?.uuid;
 
   // Each employee is independent, so resolve them in parallel and merge. Per-employee
   // failures are collected locally so one bad employee doesn't abort the rest.

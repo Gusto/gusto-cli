@@ -1261,10 +1261,7 @@ Examples:
       "Company location UUID (defaults to the primary location; see `gusto company locations`)",
     )
     .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
-    .option(
-      "--company-uuid <uuid>",
-      "Company UUID (overrides GUSTO_COMPANY_UUID; only used when --location-uuid is omitted)",
-    )
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .action((employeeUuid: string, opts: WorkAddressOpts) =>

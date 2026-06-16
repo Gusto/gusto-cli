@@ -26,10 +26,10 @@ describe("pickPrimaryLocation", () => {
 describe("fetchCompanyLocations", () => {
   test("returns the list of locations", async () => {
     const { client } = stubApiClient({
-      "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1", street_1: "300 3rd St" }]],
+      "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1", primary: true }]],
     });
     const locs = await fetchCompanyLocations(client, "co-1");
-    expect(locs).toEqual([{ uuid: "loc-1", street_1: "300 3rd St" }]);
+    expect(locs).toEqual([{ uuid: "loc-1", primary: true }]);
   });
 
   test("tolerates a non-array (malformed 200) by returning an empty list", async () => {

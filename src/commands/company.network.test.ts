@@ -273,7 +273,7 @@ describe("companyLocationsHandler", () => {
 });
 
 describe("companyFinishOnboardingHandler", () => {
-  const prodCtx: CommandContext = { command: "test", globals: { ...TEST_GLOBALS, env: "production" } };
+  const prodCtx: CommandContext = { ...ctx, globals: { ...TEST_GLOBALS, env: "production" } };
 
   /** Stub fetch with a router and return both the result and the recorded calls so a
    * test can assert which PUTs were (or weren't) sent. */
