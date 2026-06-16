@@ -157,6 +157,24 @@ describe("api request --auto-version", () => {
     }
   });
 
+  test("an empty/invalid caller version does not clobber the fetched one", async () => {
+    // "" is rejected by the version check, so the GET still fires - but the fetched
+    // version must win, not the caller's empty string (regression: AINT-610 spread order).
+    const { calls, restore } = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } },
+      { status: 200, body: { updated: true } },
+    ]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: '{"ein":"9","version":""}' })(ctx);
+      expect(result.ok).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.method).toBe("PUT");
+      expect(calls[1]?.body).toMatchObject({ ein: "9", version: "v-current" });
+    } finally {
+      restore();
+    }
+  });
+
   test("a body with no version uses just the fetched version (PUT with no --data)", async () => {
     const { calls, restore } = stubGlobalFetch([
       { status: 200, body: { version: "v-current" } },
@@ -193,6 +211,22 @@ describe("api request --auto-version", () => {
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("version_unresolved");
       expect(result.exitCode).toBe(ExitCode.Validation);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("GET");
+    } finally {
+      restore();
+    }
+  });
+
+  test("a failing version GET surfaces a clean API error, not an unhandled throw", async () => {
+    // The version GET runs before the write; its failure must route through toResult
+    // (api_client_error envelope), not escape send() and bubble up as internal_error.
+    const { calls, restore } = stubGlobalFetch([{ status: 404, body: { error: "not found" } }]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: '{"x":1}' })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("api_client_error");
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
     } finally {

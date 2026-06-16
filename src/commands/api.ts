@@ -109,14 +109,16 @@ export function apiRequestHandler(
     });
 
     // Send (real request): substitute is already done; auto-version GETs finalPath for its version.
+    // The whole thing is in the try so a failing version GET maps through toResult too (a clean
+    // api_client_error envelope), rather than escaping as an unhandled internal_error.
     const send = async (client: ApiClient, finalPath: string): Promise<CommandResult> => {
-      let finalBody = body;
-      if (opts.autoVersion && isVersioned) {
-        const resolved = await resolveVersion(client, finalPath, body);
-        if (!resolved.ok) return resolved.result;
-        finalBody = resolved.body;
-      }
       try {
+        let finalBody = body;
+        if (opts.autoVersion && isVersioned) {
+          const resolved = await resolveVersion(client, finalPath, body);
+          if (!resolved.ok) return resolved.result;
+          finalBody = resolved.body;
+        }
         const response = await client.request(method as Method, finalPath, finalBody);
         return { ok: true, data: response.body };
       } catch (err) {
@@ -195,8 +197,10 @@ async function resolveVersion(client: ApiClient, path: string, body: unknown): P
     };
   }
 
+  // Spread the body first so the fetched `version` wins: we only reach here when the
+  // caller's version was absent or invalid (empty/non-string), so it must not clobber it.
   const base = (body ?? {}) as Record<string, unknown>;
-  return { ok: true, body: { version, ...base } };
+  return { ok: true, body: { ...base, version } };
 }
 
 /** Read a non-empty string field from an unknown object body. */
