@@ -100,4 +100,13 @@ describe("workAddressHandler default-to-primary", () => {
     });
     expect((result.data as { note: string }).note).toContain("primary location");
   });
+
+  test("a non-array 200 from /locations surfaces as malformed_response (not 'no locations')", async () => {
+    routeFetch([{ match: "/companies/co-1/locations", status: 200, body: { not: "an array" } }]);
+    const result = await workAddressHandler("emp-1", { ...auth, effectiveDate: "2026-01-01" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
 });
