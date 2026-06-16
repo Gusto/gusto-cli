@@ -37,10 +37,76 @@ jobs:
             exit 1
           fi
 
-      - run: bun run build:all
+      - name: Build binaries
+        # bun's self-signature on compiled binaries pre-allocates a too-small
+        # LC_CODE_SIGNATURE slot, which corrupts a real Developer ID signature
+        # (oven-sh/bun#29120). Disable it so rcodesign can sign cleanly.
+        env:
+          BUN_NO_CODESIGN_MACHO_BINARY: "1"
+        run: bun run build:all
+
+      - name: Sign and notarize macOS binaries
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+
+          # set -u only catches unset vars; a missing repo secret expands to an
+          # empty string, so fail loudly if any signing input is blank.
+          : "${MACOS_CERT_P12_BASE64:?must be set as a repo secret}"
+          : "${MACOS_CERT_PASSWORD:?must be set as a repo secret}"
+          : "${ASC_KEY_ID:?must be set as a repo secret}"
+          : "${ASC_ISSUER_ID:?must be set as a repo secret}"
+          : "${ASC_API_KEY_P8:?must be set as a repo secret}"
+
+          rcodesign_version=0.29.0
+          rcodesign_sha256=dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002
+          asset="apple-codesign-${rcodesign_version}-x86_64-unknown-linux-musl"
+
+          # Keep the cert, key, and notarization credentials in a temp dir we wipe
+          # on exit so they never land in the workspace or a build artifact.
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          # rcodesign is a pure-Rust signer that signs Mach-O and notarizes from
+          # Linux, so the whole release stays on one runner (no macOS needed).
+          curl -fsSL -o "$work/rcodesign.tar.gz" \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${rcodesign_version}/${asset}.tar.gz"
+          echo "${rcodesign_sha256}  ${work}/rcodesign.tar.gz" | sha256sum -c -
+          tar -xzf "$work/rcodesign.tar.gz" -C "$work"
+          rcodesign="$work/$asset/rcodesign"
+
+          # MACOS_CERT_P12_BASE64 is a leaf-only Developer ID Application .p12; a
+          # chain-bundled .p12 makes rcodesign sign with the intermediate instead.
+          printf '%s' "$MACOS_CERT_P12_BASE64" | base64 -d > "$work/signing.p12"
+          printf '%s' "$MACOS_CERT_PASSWORD" > "$work/p12-pass"
+          printf '%s' "$ASC_API_KEY_P8" > "$work/asc.p8"
+          "$rcodesign" encode-app-store-connect-api-key \
+            "$ASC_ISSUER_ID" "$ASC_KEY_ID" "$work/asc.p8" > "$work/asc-key.json"
+
+          for bin in dist/gusto-darwin-arm64 dist/gusto-darwin-x64; do
+            # Hardened runtime (--code-signature-flags runtime) is required for
+            # notarization. The Apple CA chain is embedded from the leaf cert.
+            "$rcodesign" sign \
+              --p12-file "$work/signing.p12" --p12-password-file "$work/p12-pass" \
+              --code-signature-flags runtime "$bin"
+
+            # The notary service only accepts a container and a bare Mach-O can't
+            # be stapled, so submit a zip. Gatekeeper checks the ticket online.
+            zip -j "$work/$(basename "$bin").zip" "$bin"
+            "$rcodesign" notary-submit --api-key-file "$work/asc-key.json" \
+              --wait "$work/$(basename "$bin").zip"
+
+            "$rcodesign" verify "$bin"
+          done
 
       - name: Generate SHA256SUMS
         working-directory: dist
+        # Runs after signing so the checksums cover the signed binaries.
         run: sha256sum gusto-darwin-arm64 gusto-darwin-x64 gusto-linux-x64 > SHA256SUMS
 
       - name: Create or update GitHub Release

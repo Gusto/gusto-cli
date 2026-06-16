@@ -105,6 +105,33 @@ bun run build
 bun run test:all
 ```
 
+## macOS code signing
+
+The release workflow signs and notarizes the macOS binaries so Gatekeeper doesn't flag them as untrusted. It runs on the same Linux runner as the build via [`rcodesign`](https://github.com/indygreg/apple-platform-rs), so there's no macOS runner. Each darwin binary is signed with Gusto's Developer ID Application certificate (hardened runtime on) and submitted to Apple's notary service. A bare binary can't have its notarization ticket stapled, so Gatekeeper verifies it online the first time it runs.
+
+Signing relies on these repo secrets:
+
+- `MACOS_CERT_P12_BASE64` - base64 of the leaf-only Developer ID Application `.p12`
+- `MACOS_CERT_PASSWORD` - that `.p12`'s passphrase
+- `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY_P8` - App Store Connect API key used for notarization
+
+### Rotating the certificate
+
+Developer ID Application certificates are valid for five years. To rotate:
+
+1. Generate a key and CSR locally, keeping `dev.key`:
+   ```sh
+   openssl req -new -newkey rsa:2048 -nodes -keyout dev.key -out dev.csr \
+     -subj "/emailAddress=you@gusto.com/CN=Gusto CLI Developer ID/C=US"
+   ```
+2. Have an Apple Developer account admin create a **Developer ID Application** certificate (not Installer) from the CSR and send back the `.cer`.
+3. Build a leaf-only `.p12` - don't bundle the Apple intermediate, or rcodesign signs with the wrong certificate:
+   ```sh
+   openssl x509 -inform DER -in dev.cer -out leaf.pem
+   openssl pkcs12 -export -inkey dev.key -in leaf.pem -out signing.p12
+   ```
+4. Update the `MACOS_CERT_P12_BASE64` (`base64 -i signing.p12`) and `MACOS_CERT_PASSWORD` secrets.
+
 ## Stack
 
 - [Bun](https://bun.sh) + TypeScript, compiled to a single binary per OS/arch via `bun build --compile`
