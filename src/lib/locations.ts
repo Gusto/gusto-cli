@@ -6,11 +6,16 @@ export interface LocationRec {
   filing_address?: boolean;
 }
 
-/** GET /v1/companies/{company_uuid}/locations. Tolerates a non-array (malformed 200)
- * by returning an empty list so callers don't have to re-validate the body. */
+/** GET /v1/companies/{company_uuid}/locations. Throws when the API returns a
+ * non-array body so callers can distinguish a real "no locations" empty list
+ * from a malformed response (which used to silently surface as a "no locations
+ * found" blocker, misleading users about the actual cause). */
 export async function fetchCompanyLocations(client: ApiClient, companyUuid: string): Promise<LocationRec[]> {
   const res = await client.get<LocationRec[]>(`/v1/companies/${companyUuid}/locations`);
-  return Array.isArray(res.body) ? res.body : [];
+  if (!Array.isArray(res.body)) {
+    throw new Error(`/v1/companies/${companyUuid}/locations returned a non-array body`);
+  }
+  return res.body;
 }
 
 /** Pick the company's primary location. Prefer an explicit `primary: true`, then a

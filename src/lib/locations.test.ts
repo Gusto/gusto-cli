@@ -32,11 +32,10 @@ describe("fetchCompanyLocations", () => {
     expect(locs).toEqual([{ uuid: "loc-1", primary: true }]);
   });
 
-  test("tolerates a non-array (malformed 200) by returning an empty list", async () => {
+  test("throws on a non-array body so 'no locations' isn't conflated with a malformed 200", async () => {
     const { client } = stubApiClient({
       "GET /v1/companies/co-1/locations": [200, { not: "an array" }],
     });
-    const locs = await fetchCompanyLocations(client, "co-1");
-    expect(locs).toEqual([]);
+    await expect(fetchCompanyLocations(client, "co-1")).rejects.toThrow(/non-array body/);
   });
 });
