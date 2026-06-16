@@ -90,16 +90,25 @@ export function registerCompanyCommand(parent: Command): void {
 }
 
 export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchCompanyResource(
+  return async ({ globals }) => {
+    const result = await fetchCompanyResource(
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/locations`,
-    ).then((result) => {
-      if (!result.ok) return result;
-      const locations: LocationRec[] = Array.isArray(result.data) ? (result.data as LocationRec[]) : [];
-      return { ok: true, data: { locations } };
-    });
+    );
+    if (!result.ok) return result;
+    if (!Array.isArray(result.data)) {
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiClient,
+        error: {
+          code: "malformed_response",
+          message: "/v1/companies/{company_uuid}/locations returned a non-array body",
+        },
+      };
+    }
+    return { ok: true, data: { locations: result.data as LocationRec[] } };
+  };
 }
 
 interface CompanyRecord {
