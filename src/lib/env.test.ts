@@ -74,7 +74,9 @@ describe("resolveMcpBaseUrl", () => {
     expect(resolveMcpBaseUrl("production", {})).toBe("https://mcp.api.gusto.com");
   });
   test("GUSTO_MCP_BASE_URL overrides both", () => {
-    expect(resolveMcpBaseUrl("production", { GUSTO_MCP_BASE_URL: "https://example.test" })).toBe("https://example.test");
+    expect(resolveMcpBaseUrl("production", { GUSTO_MCP_BASE_URL: "https://example.test" })).toBe(
+      "https://example.test",
+    );
   });
   test("rejects http URL without escape hatch", () => {
     expect(() => resolveMcpBaseUrl(undefined, { GUSTO_MCP_BASE_URL: "http://localhost:3000" })).toThrow(

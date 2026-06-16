@@ -404,9 +404,7 @@ describe("timesheetListHandler", () => {
       body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(innerPayload) }] } },
     }));
     try {
-      const data = okData(
-        await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx),
-      );
+      const data = okData(await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx));
       expect(data).toEqual(innerPayload);
       expect(calls).toHaveLength(1);
       const call = calls[0];
