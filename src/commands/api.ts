@@ -107,7 +107,11 @@ export function apiRequestHandler(
     // number, or an explicit `null` - which `typeof` reports as "object") has nowhere to hold it.
     // This is a pure shape check on --data with no network call, so enforce it for dry-run too - the
     // user finds out before sending, not only on a real send.
-    if (autoVersionPending && body !== undefined && (body === null || typeof body !== "object" || Array.isArray(body))) {
+    if (
+      autoVersionPending &&
+      body !== undefined &&
+      (body === null || typeof body !== "object" || Array.isArray(body))
+    ) {
       return {
         ok: false,
         exitCode: ExitCode.Validation,
