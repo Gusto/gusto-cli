@@ -756,3 +756,25 @@ describe("token-stdin authentication", () => {
     expect(envelope.data.note).toContain("token/company not required");
   });
 });
+
+describe("employee add: consistent missing employee_uuid contract", () => {
+  // Omitting the positional employee_uuid must yield the same blocked_on validation
+  // envelope (exit 7) across every subcommand - not a bare Commander error (exit 2).
+  for (const sub of ["home-address", "work-address", "job", "federal-tax", "payment-method", "state-tax"]) {
+    test(`${sub} without employee_uuid returns a validation envelope (exit 7)`, async () => {
+      const result = await run(["employee", "add", sub]);
+      expect(result.exitCode).toBe(7);
+      const envelope = JSON.parse(result.stdout.trim());
+      expect(envelope.ok).toBe(false);
+      expect(envelope.error.code).toBe("validation");
+      expect(envelope.error.blocked_on).toContainEqual({ field: "employee_uuid", reason: "required" });
+    });
+
+    test(`${sub} --help documents the employee_uuid positional`, async () => {
+      const result = await run(["employee", "add", sub, "--help"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("Arguments:");
+      expect(result.stdout).toContain("employee_uuid");
+    });
+  }
+});

@@ -1,11 +1,15 @@
 import type { Command } from "commander";
-import { createCompanyResource, fetchCompanyResource, fetchResource } from "../lib/api-context.ts";
+import type { ApiClient } from "../lib/api-client.ts";
+import { createCompanyResource, fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
+import { readString } from "../lib/read-string.ts";
 import {
   type CommandHandler,
+  type CommandResult,
   type ValidationResult,
   runCommand,
   runReadCommand,
@@ -36,6 +40,11 @@ export type ContractorBody =
   | ({ type: "Business"; business_name: string } & ContractorCommon);
 
 export type ContractorValidation = ValidationResult<ContractorBody>;
+
+/** The self-onboarding subset of `ContractorBody` (`self_onboarding: true`). `runContractorAdd`
+ * only ever receives this variant — the admin-driven path is a single POST via
+ * `createCompanyResource` — so the type lets the compiler prove the invite step always runs. */
+type SelfOnboardingContractorBody = Extract<ContractorBody, { self_onboarding: true }>;
 
 // Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
 function isValidStartDate(raw: string): boolean {
@@ -277,13 +286,90 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
 
     const validation = validateContractorAdd(opts);
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
+    const body = validation.body;
 
-    return createCompanyResource(globals, "contractors", validation.body, {
-      tokenStdin: opts.tokenStdin,
-      companyUuid: opts.companyUuid,
-      dryRun: opts.dryRun,
-    });
+    // Admin-driven: a single POST creates the contractor. Unchanged.
+    if (!body.self_onboarding) {
+      return createCompanyResource(globals, "contractors", body, {
+        tokenStdin: opts.tokenStdin,
+        companyUuid: opts.companyUuid,
+        dryRun: opts.dryRun,
+      });
+    }
+
+    // Self-onboarding is two calls: creating the contractor with self_onboarding:true only
+    // registers them at status self_onboarding_not_invited - the invite email is sent by a
+    // separate PUT to onboarding_status. Doing only the POST left them uninvited (AINT-656).
+    if (opts.dryRun) {
+      return { ok: true, data: { steps: contractorSelfOnboardSteps(body) } };
+    }
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, (ctx) =>
+      runContractorAdd(ctx.client, ctx.companyUuid, body),
+    );
   };
+}
+
+/** The onboarding_status that sends the self-onboarding invite, moving a contractor from
+ * `self_onboarding_not_invited` to invited. Verified against the Gusto API's contractor
+ * onboarding_status enum ("Invite a contractor to self-onboard"). */
+const SELF_ONBOARDING_INVITE_STATUS = "self_onboarding_invited";
+
+/** Create the contractor, then - when self-onboarding - send the invite. Creating a contractor
+ * with self_onboarding:true only registers them at status self_onboarding_not_invited; the invite
+ * email is a separate PUT to /v1/contractors/{uuid}/onboarding_status (AINT-656). A failed invite
+ * after a successful create surfaces the created contractor (+uuid) so a retry can resend the
+ * invite via that PUT rather than POSTing a duplicate contractor. */
+export async function runContractorAdd(
+  client: ApiClient,
+  companyUuid: string,
+  body: SelfOnboardingContractorBody,
+): Promise<CommandResult> {
+  let contractor: unknown;
+  try {
+    const res = await client.post(`/v1/companies/${companyUuid}/contractors`, body);
+    contractor = res.body;
+  } catch (err) {
+    // Nothing was created; surface the API error as-is.
+    return toResult(err);
+  }
+
+  const contractorUuid = readString(contractor, "uuid");
+  if (!contractorUuid) {
+    return createdWithoutUuidError({
+      code: "contractor_created_without_uuid",
+      message:
+        "contractor was created but the response carried no uuid, so the self-onboarding invite couldn't be sent. Find the contractor via `gusto contractor list`, then invite them in the Gusto dashboard.",
+      details: { contractor },
+    });
+  }
+
+  try {
+    const res = await client.put(`/v1/contractors/${contractorUuid}/onboarding_status`, {
+      onboarding_status: SELF_ONBOARDING_INVITE_STATUS,
+    });
+    return { ok: true, data: { contractor, onboarding_status: res.body } };
+  } catch (err) {
+    return partialFailure({
+      code: "self_onboarding_invite_failed",
+      message: "contractor created but sending the self-onboarding invite failed",
+      err,
+      completed: { contractor },
+      failedDomain: "onboarding_status",
+    });
+  }
+}
+
+/** The two requests `--self-onboarding` makes, for --dry-run. The contractor uuid isn't known until
+ * the POST returns, so the invite PUT carries a `{contractor_uuid}` placeholder. */
+export function contractorSelfOnboardSteps(body: SelfOnboardingContractorBody): Record<string, unknown>[] {
+  return [
+    { method: "POST", path: "/v1/companies/{company_uuid}/contractors", body },
+    {
+      method: "PUT",
+      path: "/v1/contractors/{contractor_uuid}/onboarding_status",
+      body: { onboarding_status: SELF_ONBOARDING_INVITE_STATUS },
+    },
+  ];
 }
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {

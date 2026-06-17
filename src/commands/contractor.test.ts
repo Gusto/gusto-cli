@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { validateContractorAdd } from "./contractor.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
+import { stubApiClient } from "../lib/test-support.ts";
+import { contractorSelfOnboardSteps, runContractorAdd, validateContractorAdd } from "./contractor.ts";
+
+const SELF_ONBOARD_INDIVIDUAL = {
+  type: "Individual" as const,
+  first_name: "Sam",
+  last_name: "Rivera",
+  start_date: "2026-06-03",
+  wage_type: "Fixed" as const,
+  self_onboarding: true as const,
+  email: "sam@example.com",
+};
 
 describe("validateContractorAdd", () => {
   test("individual with all required fields returns the populated body", () => {
@@ -270,5 +282,81 @@ describe("validateContractorAdd", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toEqual([{ field: "business-name", reason: "required for business" }]);
+  });
+});
+
+describe("runContractorAdd", () => {
+  test("self-onboarding → POSTs the contractor, then PUTs the invite to onboarding_status", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/companies/co-1/contractors": [201, { uuid: "ctr-1", onboarding_status: "self_onboarding_not_invited" }],
+      "PUT /v1/contractors/ctr-1/onboarding_status": [200, { onboarding_status: "self_onboarding_invited" }],
+    });
+    const result = await runContractorAdd(client, "co-1", SELF_ONBOARD_INDIVIDUAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["contractor", "onboarding_status"]);
+
+    // The create must precede the invite, and the invite targets the created contractor's uuid.
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "POST /v1/companies/co-1/contractors",
+      "PUT /v1/contractors/ctr-1/onboarding_status",
+    ]);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ onboarding_status: "self_onboarding_invited" });
+  });
+
+  test("create succeeds but the invite fails → partial failure surfacing the created contractor", async () => {
+    const { client } = stubApiClient({
+      "POST /v1/companies/co-1/contractors": [201, { uuid: "ctr-1", onboarding_status: "self_onboarding_not_invited" }],
+      "PUT /v1/contractors/ctr-1/onboarding_status": [422, { error: "cannot invite" }],
+    });
+    const result = await runContractorAdd(client, "co-1", SELF_ONBOARD_INDIVIDUAL);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("self_onboarding_invite_failed");
+    const details = result.error.details as {
+      contractor: { uuid: string };
+      completed: string[];
+      failed: { domain: string };
+    };
+    expect(details.completed).toEqual(["contractor"]);
+    expect(details.failed.domain).toBe("onboarding_status");
+    expect(details.contractor.uuid).toBe("ctr-1");
+  });
+
+  test("create returns no uuid → reports it without attempting the invite", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/companies/co-1/contractors": [201, { onboarding_status: "self_onboarding_not_invited" }],
+    });
+    const result = await runContractorAdd(client, "co-1", SELF_ONBOARD_INDIVIDUAL);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("contractor_created_without_uuid");
+    expect(result.exitCode).toBe(ExitCode.ApiServer);
+    expect(calls.some((c) => c.url.includes("/onboarding_status"))).toBe(false);
+  });
+
+  test("create fails → surfaces the API error as-is and never attempts the invite", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/companies/co-1/contractors": [422, { error: "bad start_date" }],
+    });
+    const result = await runContractorAdd(client, "co-1", SELF_ONBOARD_INDIVIDUAL);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(calls.some((c) => c.url.includes("/onboarding_status"))).toBe(false);
+  });
+});
+
+describe("contractorSelfOnboardSteps", () => {
+  test("previews both the create POST and the invite PUT with placeholders", () => {
+    expect(contractorSelfOnboardSteps(SELF_ONBOARD_INDIVIDUAL)).toEqual([
+      { method: "POST", path: "/v1/companies/{company_uuid}/contractors", body: SELF_ONBOARD_INDIVIDUAL },
+      {
+        method: "PUT",
+        path: "/v1/contractors/{contractor_uuid}/onboarding_status",
+        body: { onboarding_status: "self_onboarding_invited" },
+      },
+    ]);
   });
 });

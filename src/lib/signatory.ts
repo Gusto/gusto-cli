@@ -7,8 +7,7 @@
  * GET /v1/companies/{uuid}/signatories
  */
 
-/** Minimal read surface of ApiClient this helper needs. */
-type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
+import type { ReadClient } from "./api-client.ts";
 
 /** True when the company has a signatory assigned. Throws on a failed GET — the
  * caller decides how to degrade (onboarding-status records a partial error rather
