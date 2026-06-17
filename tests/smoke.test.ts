@@ -85,6 +85,14 @@ describe("auth required commands without a token", () => {
     expect(envelope.error.code).toBe("no_access_token");
   });
 
+  test("pay-schedule list (alias for show) dispatches the show handler instead of erroring", async () => {
+    // Without a token the show handler still exits 3 (no_access_token); the win is
+    // not getting commander's "unknown command 'list'" (exit 2) before we ever reach it.
+    const result = await run(["pay-schedule", "list"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll list without a token returns no_access_token (exit 3)", async () => {
     const result = await run(["payroll", "list"]);
     expect(result.exitCode).toBe(3);
