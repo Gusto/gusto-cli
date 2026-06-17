@@ -4,13 +4,10 @@ import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
-import type { OAuthHttpOptions } from "../lib/oauth/endpoints.ts";
 import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
-import { revokeToken } from "../lib/oauth/revoke.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
-import { hasClientCreds } from "../lib/oauth/types.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface AuthOpts {
@@ -42,7 +39,7 @@ export function registerAuthCommand(parent: Command): void {
 
   cmd
     .command("logout")
-    .description("Revoke (best-effort) and clear the local token")
+    .description("Clear the locally stored OAuth session")
     .action(() => runCommand("gusto auth logout", readGlobalFlags(parent.opts()), authLogoutHandler()));
 
   cmd
@@ -65,23 +62,11 @@ export function loginResultData(info: TokenInfo): LoginData {
   return { identity: info.resource_owner, company_uuid: companyUuidFromTokenInfo(info) ?? null, scope: info.scope };
 }
 
-/** Best-effort revoke (only if a usable session exists), then always clear local state. */
-export async function performLogout(
-  http: OAuthHttpOptions,
-  store: TokenStore,
-  env: Environment,
-): Promise<{ revoked: boolean; note?: string }> {
+export async function performLogout(store: TokenStore, env: Environment): Promise<{ cleared: boolean }> {
   const session = await store.load(env);
-  if (!session) return { revoked: false, note: "no stored session" };
-  let revoked = false;
-  if (session.accessToken && hasClientCreds(session)) {
-    revoked = await revokeToken(http, session.accessToken, {
-      clientId: session.clientId,
-      clientSecret: session.clientSecret,
-    });
-  }
+  if (!session) return { cleared: false };
   await store.clear(env);
-  return { revoked };
+  return { cleared: true };
 }
 
 /** Agent mode (explicit --agent/--json OR auto-on when stdout is piped) gets a callback
@@ -114,7 +99,7 @@ export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHan
 function authLogoutHandler(): CommandHandler {
   return async ({ globals }) => {
     try {
-      const data = await performLogout(oauthHttp(globals), resolveStore(), resolveEnv(globals));
+      const data = await performLogout(resolveStore(), resolveEnv(globals));
       return { ok: true, data };
     } catch (err) {
       return toResult(err);

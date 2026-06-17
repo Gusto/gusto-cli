@@ -1,16 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
-import { memoryStore, mockHttp as http } from "../lib/oauth/test-support.ts";
+import { memoryStore } from "../lib/oauth/test-support.ts";
 import { authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
 
 // whoami's token resolution (session > env > --token-stdin) is delegated to
 // fetchResource and covered by api-context.test.ts; the cases below cover the
 // capabilities summary it layers on top. (AINT-588 dropped the --token override.)
-
-const noFetch = (() => {
-  throw new Error("network must not be hit");
-}) as unknown as typeof fetch;
 
 describe("loginResultData", () => {
   test("maps token_info to identity + company_uuid + scope", () => {
@@ -38,30 +34,13 @@ describe("loginResultData", () => {
 });
 
 describe("performLogout", () => {
-  test("no stored session -> revoked:false with a note", async () => {
-    expect(await performLogout(http({ status: 200 }), memoryStore(), "sandbox")).toEqual({
-      revoked: false,
-      note: "no stored session",
-    });
+  test("no stored session -> cleared:false", async () => {
+    expect(await performLogout(memoryStore(), "sandbox")).toEqual({ cleared: false });
   });
 
-  test("revokes and clears when a session with creds exists", async () => {
+  test("clears the stored session and reports cleared:true", async () => {
     const store = memoryStore({ sandbox: { clientId: "c", clientSecret: "s", accessToken: "at" } });
-    expect(await performLogout(http({ status: 200 }), store, "sandbox")).toEqual({ revoked: true });
-    expect(store.data.sandbox).toBeUndefined();
-  });
-
-  test("a non-2xx revoke is non-fatal: revoked:false but still cleared", async () => {
-    const store = memoryStore({ sandbox: { clientId: "c", clientSecret: "s", accessToken: "at" } });
-    expect(await performLogout(http({ status: 401 }), store, "sandbox")).toEqual({ revoked: false });
-    expect(store.data.sandbox).toBeUndefined();
-  });
-
-  test("a session without client creds clears without attempting revoke", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "at" } });
-    expect(await performLogout({ baseUrl: "https://api.test", fetchImpl: noFetch }, store, "sandbox")).toEqual({
-      revoked: false,
-    });
+    expect(await performLogout(store, "sandbox")).toEqual({ cleared: true });
     expect(store.data.sandbox).toBeUndefined();
   });
 });

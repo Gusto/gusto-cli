@@ -7,7 +7,6 @@ export const OAUTH_PATHS = {
   register: "/v1/mcp/oauth/register",
   token: "/v1/mcp/oauth/token",
   authorize: "/v1/mcp/oauth/authorize",
-  revoke: "/oauth/revoke",
 } as const;
 
 export const DEFAULT_OAUTH_TIMEOUT_MS = 30_000;
