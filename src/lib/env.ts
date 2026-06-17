@@ -24,7 +24,8 @@ export function resolveBaseUrl(env: Environment | undefined, source: EnvSource =
   return SANDBOX_BASE_URL;
 }
 
-function isTruthy(value: string | undefined): boolean {
+/** Parse a boolean-ish env var: truthy only for `1`/`true`/`yes` (case-insensitive). */
+export function isTruthy(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";

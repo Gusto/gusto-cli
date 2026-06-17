@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { companyUuidFromTokenInfo, formatUrlForTerminal, login, openOrPrint } from "./login.ts";
+import { type SignInUrlEvent, companyUuidFromTokenInfo, formatUrlForTerminal, login, openOrPrint } from "./login.ts";
 import { memoryStore, mockFetch } from "./test-support.ts";
 
 function driveCallback(): {
@@ -15,6 +15,15 @@ function driveCallback(): {
     return Promise.resolve();
   };
   return { openBrowser, response: () => responsePromise as Promise<Response> };
+}
+
+/** Drive the loopback callback off a printed sign-in URL line - the print path used
+ * when the browser isn't opened (--no-browser or a headless environment). */
+function driveLoopbackFromPrintedUrl(line: string): void {
+  const m = line.match(/(https?:\/\/\S+\/oauth\/authorize\S*)/);
+  if (!m) return;
+  const u = new URL(m[1]);
+  void globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
 }
 
 describe("companyUuidFromTokenInfo", () => {
@@ -92,6 +101,7 @@ describe("login", () => {
     const info = await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
       openBrowser: driveCallback().openBrowser,
       print: () => {},
     });
@@ -114,11 +124,7 @@ describe("login", () => {
     // With --no-browser the URL is only printed; drive the loopback off the printed line.
     const print = (l: string): void => {
       lines.push(l);
-      const m = l.match(/(https?:\/\/\S+\/oauth\/authorize\S*)/);
-      if (m) {
-        const u = new URL(m[1]);
-        void globalThis.fetch(`${u.searchParams.get("redirect_uri")}?code=c&state=${u.searchParams.get("state")}`);
-      }
+      driveLoopbackFromPrintedUrl(l);
     };
 
     const info = await login("sandbox", {
@@ -134,6 +140,57 @@ describe("login", () => {
 
     expect(opened).toBe(false);
     expect(lines.join("\n")).toMatch(/Open this URL in your browser/);
+    expect(info.resource?.uuid).toBe("comp-1");
+  });
+
+  test("auto-detects a headless environment: prints the URL, skips the browser, still emits the event", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
+    ]);
+
+    const events: SignInUrlEvent[] = [];
+    let opened = false;
+    // No --no-browser flag, but the environment can't open one: drive the loopback off the printed line.
+    const info = await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => false,
+      openBrowser: () => {
+        opened = true;
+        return Promise.resolve();
+      },
+      emitEvent: (e) => events.push(e),
+      print: driveLoopbackFromPrintedUrl,
+    });
+
+    expect(opened).toBe(false);
+    expect(events).toHaveLength(1); // agent still gets the URL even though no browser opened
+    expect(info.resource?.uuid).toBe("comp-1");
+  });
+
+  test("auto-opens the browser when the environment has one (no --no-browser)", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
+    ]);
+
+    let opened = false;
+    const driver = driveCallback();
+    const info = await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
+      openBrowser: (url) => {
+        opened = true;
+        return driver.openBrowser(url);
+      },
+      print: () => {},
+    });
+
+    expect(opened).toBe(true);
     expect(info.resource?.uuid).toBe("comp-1");
   });
 
@@ -160,6 +217,7 @@ describe("login", () => {
     await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
       openBrowser,
       emitEvent: (e) => {
         eventOrder.push("emitEvent");
@@ -187,6 +245,7 @@ describe("login", () => {
     await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
       openBrowser: driveCallback().openBrowser,
       print: () => {},
     });
@@ -206,6 +265,7 @@ describe("login", () => {
     await login("sandbox", {
       store,
       http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
       openBrowser: driver.openBrowser,
       print: () => {},
     });
@@ -225,6 +285,7 @@ describe("login", () => {
       login("sandbox", {
         store,
         http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+        browserAvailable: () => true,
         openBrowser: driver.openBrowser,
         print: () => {},
       }),

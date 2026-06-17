@@ -1,4 +1,4 @@
-import { defaultOpenBrowser } from "../browser.ts";
+import { canOpenBrowser, defaultOpenBrowser } from "../browser.ts";
 import type { Environment } from "../global-flags.ts";
 import { oauthApiClient } from "./context.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
@@ -34,8 +34,11 @@ export interface LoginDeps {
   store: TokenStore;
   http: OAuthHttpOptions;
   openBrowser?: (url: string) => Promise<void>;
-  /** Print the sign-in URL instead of opening a browser. For agent/headless use. */
+  /** Force print-only (the `--no-browser` flag). When unset, the browser opens only
+   * if `browserAvailable()` says this environment can reach one. */
   noBrowser?: boolean;
+  /** Whether this environment can open a browser. Defaults to `canOpenBrowser`; injected in tests. */
+  browserAvailable?: () => boolean;
   print?: (line: string) => void;
   emitEvent?: (event: SignInUrlEvent) => void;
   now?: () => number;
@@ -59,10 +62,14 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
       state,
     });
     deps.emitEvent?.({ event: "sign_in_url", sign_in_url: authorizeUrl, state });
-    if (deps.noBrowser) {
-      printManualUrl(authorizeUrl, print);
-    } else {
+    // Open the browser only when the user didn't force --no-browser AND this
+    // environment can actually reach one. The agent surface still got the URL via
+    // emitEvent above, so a headless agent isn't left without the link.
+    const shouldOpenBrowser = !deps.noBrowser && (deps.browserAvailable ?? canOpenBrowser)();
+    if (shouldOpenBrowser) {
       await openOrPrint(authorizeUrl, deps.openBrowser, print);
+    } else {
+      printManualUrl(authorizeUrl, print);
     }
     print("Waiting for you to finish signing in...");
 
