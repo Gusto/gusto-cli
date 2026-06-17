@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { InputError } from "../lib/oauth/provision-input.ts";
-import { TEST_CONTEXT as ctx } from "../lib/test-support.ts";
+import { TEST_CONTEXT as ctx, stubGlobalFetch } from "../lib/test-support.ts";
 import { companyProvisionHandler, provisionPayloadError, provisionResultData } from "./company.ts";
 
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
@@ -33,15 +33,56 @@ describe("provisionPayloadError", () => {
 });
 
 describe("companyProvisionHandler", () => {
-  test("dry-run returns the request shape without touching stdin", async () => {
-    const result = await companyProvisionHandler({ example: true, dryRun: true })({
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("--example returns a canned payload and does not hit the network", async () => {
+    let called = false;
+    restore = stubGlobalFetch(() => {
+      called = true;
+      return { status: 500 };
+    }).restore;
+    const result = await companyProvisionHandler({ example: true })({
       ...ctx,
       command: "gusto company provision",
       globals,
     });
+    expect(called).toBe(false);
     expect(result.ok).toBe(true);
-    expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
-    expect((result as { data: { method: string; path: string } }).data.path).toBe("/v1/provision");
+    const data = (result as { data: { method: string; path: string; body: { user: { email: string } }; note: string } })
+      .data;
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/provision");
+    expect(data.body.user.email).toMatch(/^ada\+[0-9a-f]+@example\.com$/);
+    expect(data.note).toContain("example");
+  });
+
+  test("--dry-run with --input returns the request shape without touching the network or hitting the example branch", async () => {
+    const inputPath = `/tmp/gusto-cli-provision-${process.pid}-${Date.now()}.json`;
+    await Bun.write(
+      inputPath,
+      JSON.stringify({
+        user: { email: "ada@example.com", first_name: "Ada", last_name: "Lovelace" },
+        company: { name: "Analytical Engines", ein: "12-3456789", trade_name: "AE" },
+      }),
+    );
+    let called = false;
+    restore = stubGlobalFetch(() => {
+      called = true;
+      return { status: 500 };
+    }).restore;
+    const result = await companyProvisionHandler({ input: inputPath, dryRun: true })({
+      ...ctx,
+      command: "gusto company provision",
+      globals,
+    });
+    expect(called).toBe(false);
+    expect(result.ok).toBe(true);
+    const data = (result as { data: { method: string; path: string; note?: string } }).data;
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/provision");
+    // Distinguishes dry-run from example: the example branch attaches a `note`, dry-run does not.
+    expect(data.note).toBeUndefined();
   });
 
   test("bare invocation returns the standard missing-args envelope with blocked_on", async () => {
