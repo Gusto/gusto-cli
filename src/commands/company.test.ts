@@ -57,21 +57,32 @@ describe("companyProvisionHandler", () => {
     expect(data.note).toContain("example");
   });
 
-  test("dry-run returns the request shape without touching the network", async () => {
+  test("--dry-run with --input returns the request shape without touching the network or hitting the example branch", async () => {
+    const inputPath = `/tmp/gusto-cli-provision-${process.pid}-${Date.now()}.json`;
+    await Bun.write(
+      inputPath,
+      JSON.stringify({
+        user: { email: "ada@example.com", first_name: "Ada", last_name: "Lovelace" },
+        company: { name: "Analytical Engines", ein: "12-3456789", trade_name: "AE" },
+      }),
+    );
     let called = false;
     restore = stubGlobalFetch(() => {
       called = true;
       return { status: 500 };
     }).restore;
-    const result = await companyProvisionHandler({ example: true, dryRun: true })({
+    const result = await companyProvisionHandler({ input: inputPath, dryRun: true })({
       ...ctx,
       command: "gusto company provision",
       globals,
     });
     expect(called).toBe(false);
     expect(result.ok).toBe(true);
-    expect((result as { data: { method: string; path: string } }).data.method).toBe("POST");
-    expect((result as { data: { method: string; path: string } }).data.path).toBe("/v1/provision");
+    const data = (result as { data: { method: string; path: string; note?: string } }).data;
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/provision");
+    // Distinguishes dry-run from example: the example branch attaches a `note`, dry-run does not.
+    expect(data.note).toBeUndefined();
   });
 
   test("bare invocation returns the standard missing-args envelope with blocked_on", async () => {
