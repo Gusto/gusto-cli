@@ -2,11 +2,11 @@ import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
 import { createCompanyResource, fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { partialFailure, toResult } from "../lib/handle-api-error.ts";
+import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
+import { readString } from "../lib/read-string.ts";
 import {
   type CommandHandler,
   type CommandResult,
@@ -40,6 +40,11 @@ export type ContractorBody =
   | ({ type: "Business"; business_name: string } & ContractorCommon);
 
 export type ContractorValidation = ValidationResult<ContractorBody>;
+
+/** The self-onboarding subset of `ContractorBody` (`self_onboarding: true`). `runContractorAdd`
+ * only ever receives this variant — the admin-driven path is a single POST via
+ * `createCompanyResource` — so the type lets the compiler prove the invite step always runs. */
+type SelfOnboardingContractorBody = Extract<ContractorBody, { self_onboarding: true }>;
 
 // Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
 function isValidStartDate(raw: string): boolean {
@@ -317,7 +322,7 @@ const SELF_ONBOARDING_INVITE_STATUS = "self_onboarding_invited";
 export async function runContractorAdd(
   client: ApiClient,
   companyUuid: string,
-  body: ContractorBody,
+  body: SelfOnboardingContractorBody,
 ): Promise<CommandResult> {
   let contractor: unknown;
   try {
@@ -328,21 +333,14 @@ export async function runContractorAdd(
     return toResult(err);
   }
 
-  // Admin-driven contractors need no invite.
-  if (!body.self_onboarding) return { ok: true, data: contractor };
-
   const contractorUuid = readString(contractor, "uuid");
   if (!contractorUuid) {
-    return {
-      ok: false,
-      exitCode: ExitCode.ApiServer,
-      error: {
-        code: "contractor_created_without_uuid",
-        message:
-          "contractor was created but the response carried no uuid, so the self-onboarding invite couldn't be sent. Find the contractor via `gusto contractor list`, then invite them in the Gusto dashboard.",
-        details: { contractor },
-      },
-    };
+    return createdWithoutUuidError({
+      code: "contractor_created_without_uuid",
+      message:
+        "contractor was created but the response carried no uuid, so the self-onboarding invite couldn't be sent. Find the contractor via `gusto contractor list`, then invite them in the Gusto dashboard.",
+      details: { contractor },
+    });
   }
 
   try {
@@ -372,15 +370,6 @@ export function contractorSelfOnboardSteps(body: ContractorBody): Record<string,
       body: { onboarding_status: SELF_ONBOARDING_INVITE_STATUS },
     },
   ];
-}
-
-/** Read a non-empty string field off an unknown response body, or undefined. */
-function readString(body: unknown, key: string): string | undefined {
-  if (typeof body === "object" && body !== null) {
-    const v = (body as Record<string, unknown>)[key];
-    if (typeof v === "string" && v.length > 0) return v;
-  }
-  return undefined;
 }
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {

@@ -9,6 +9,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
 // `employee add` mirrors `company setup`: bare `employee add` creates the employee, then each
@@ -1064,14 +1065,6 @@ Examples:
 }
 
 // ───────────────────────────── shared helpers ─────────────────────────────
-
-function readString(body: unknown, key: string): string | undefined {
-  if (typeof body === "object" && body !== null) {
-    const v = (body as Record<string, unknown>)[key];
-    if (typeof v === "string" && v.length > 0) return v;
-  }
-  return undefined;
-}
 
 /** The job's currently-active compensation (uuid + version), found in its embedded `compensations`
  * by `current_compensation_uuid`. Falls back to the sole compensation if the pointer is absent. */

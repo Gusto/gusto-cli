@@ -13,15 +13,6 @@ const SELF_ONBOARD_INDIVIDUAL = {
   email: "sam@example.com",
 };
 
-const ADMIN_INDIVIDUAL = {
-  type: "Individual" as const,
-  first_name: "Sam",
-  last_name: "Rivera",
-  start_date: "2026-06-03",
-  wage_type: "Fixed" as const,
-  self_onboarding: false as const,
-};
-
 describe("validateContractorAdd", () => {
   test("individual with all required fields returns the populated body", () => {
     const result = validateContractorAdd({
@@ -312,16 +303,6 @@ describe("runContractorAdd", () => {
     ]);
     const put = calls.find((c) => c.method === "PUT");
     expect(put?.body).toEqual({ onboarding_status: "self_onboarding_invited" });
-  });
-
-  test("admin-driven → a single POST, never calls onboarding_status", async () => {
-    const { client, calls } = stubApiClient({
-      "POST /v1/companies/co-1/contractors": [201, { uuid: "ctr-1", onboarding_status: "admin_onboarding_incomplete" }],
-    });
-    const result = await runContractorAdd(client, "co-1", ADMIN_INDIVIDUAL);
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    expect(calls.some((c) => c.url.includes("/onboarding_status"))).toBe(false);
   });
 
   test("create succeeds but the invite fails → partial failure surfacing the created contractor", async () => {
