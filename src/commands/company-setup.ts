@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { type CompanyApiContext, withCompanyContext } from "../lib/api-context.ts";
-import { ApiError } from "../lib/api-client.ts";
+import { ApiError, type ReadClient } from "../lib/api-client.ts";
 import { bankCreateNoUuidError } from "../lib/bank-account.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
@@ -559,9 +559,6 @@ async function loadReadiness(ctx: CompanyApiContext): Promise<{ statuses: StateS
   }
   return { statuses, errors: [] };
 }
-
-/** Minimal read surface of ApiClient the load helpers need. */
-type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
 
 async function loadWorkAddresses(client: ReadClient, employeeUuid: string): Promise<WorkAddressRec[]> {
   return asArray<WorkAddressRec>((await client.get(`/v1/employees/${employeeUuid}/work_addresses`)).body);

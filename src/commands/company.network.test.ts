@@ -123,6 +123,7 @@ describe("companyShowHandler", () => {
 describe("companyOnboardingStatusHandler", () => {
   test("computes stage + blocked_on + next_command from onboarding_steps", async () => {
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [{ key: "needs_onboarding", message: "Finish onboarding." }] },
       {
         match: "/onboarding_status",
         status: 200,
@@ -141,10 +142,15 @@ describe("companyOnboardingStatusHandler", () => {
     expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["federal_tax_setup"]);
     expect(d.next_command).toBe("gusto company setup federal-tax");
     expect(d.ready_to_finish).toBe(false);
+    // Onboarding still incomplete -> not payroll-ready; needs_onboarding is dropped from
+    // the payroll section because this command already drives the onboarding flow.
+    expect(d.payroll_ready).toBe(false);
+    expect(d.payroll_blockers).toEqual([]);
   });
 
   test("ready_to_finish when blockers are clear but onboarding isn't marked complete", async () => {
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [{ key: "needs_onboarding", message: "Finish onboarding." }] },
       {
         match: "/onboarding_status",
         status: 200,
@@ -165,21 +171,137 @@ describe("companyOnboardingStatusHandler", () => {
   });
 
   test("a malformed 200 (no onboarding_steps) is stage 'unknown', not ready_to_finish", async () => {
-    routeFetch([{ match: "/onboarding_status", status: 200, body: { onboarding_completed: false } }]);
+    routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [] },
+      { match: "/onboarding_status", status: 200, body: { onboarding_completed: false } },
+    ]);
     const d = data(await companyOnboardingStatusHandler(auth)(ctx));
     expect(d.stage).toBe("unknown");
     expect(d.ready_to_finish).toBe(false);
     expect(d.blocked_on).toEqual([]);
   });
 
-  test("onboarding_completed yields stage done with no blockers", async () => {
+  test("onboarding_completed AND no payroll blockers yields stage done", async () => {
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [] },
       { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
     ]);
     const d = data(await companyOnboardingStatusHandler(auth)(ctx));
     expect(d.stage).toBe("done");
     expect(d.blocked_on).toEqual([]);
+    expect(d.payroll_ready).toBe(true);
+    expect(d.payroll_blockers).toEqual([]);
     expect(d.next_command).toBeNull();
+  });
+
+  test("onboarding_completed but payroll blockers remain -> not_payroll_ready, not done", async () => {
+    // The AINT-643 bug: finish_onboarding flips onboarding_completed but the company
+    // still can't run payroll. The payroll blockers surface as their own section, each
+    // mapped to a resolving command (null for wait-states like needs_approval), and
+    // next_command drives the first actionable one.
+    routeFetch([
+      {
+        match: "/payrolls/blockers",
+        status: 200,
+        body: [
+          { key: "missing_employee_setup", message: "Team members need personal details." },
+          { key: "needs_approval", message: "Company needs to be approved to run payroll." },
+        ],
+      },
+      { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("not_payroll_ready");
+    expect(d.payroll_ready).toBe(false);
+    expect((d.payroll_blockers as { key: string }[]).map((b) => b.key)).toEqual([
+      "missing_employee_setup",
+      "needs_approval",
+    ]);
+    expect(d.next_command).toBe("gusto employee add personal-details");
+    expect((d.suggested_action as { command: string }).command).toBe("gusto employee add personal-details");
+  });
+
+  test("a keyed blocker with no message still blocks payroll (no false-ready)", async () => {
+    // The sole blocker is identifiable (has a key) but the API omitted message. It must
+    // keep the company not-payroll-ready - dropping it would shrink the list to empty and
+    // report payroll_ready: true, the failure AINT-643 exists to prevent.
+    routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [{ key: "missing_employee_setup" }] },
+      { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("not_payroll_ready");
+    expect(d.payroll_ready).toBe(false);
+    expect(d.payroll_blockers).toEqual([
+      {
+        key: "missing_employee_setup",
+        message: "",
+        suggested_action: {
+          command: "gusto employee add personal-details",
+          required_flags: ["--first-name", "--last-name", "--email"],
+          optional_flags: ["--admin-driven", "--ssn", "--date-of-birth", "--company-uuid"],
+          source: "cli_static_map",
+        },
+      },
+    ]);
+    expect(d.next_command).toBe("gusto employee add personal-details");
+  });
+
+  test("not_payroll_ready with only wait-state blockers yields next_command null", async () => {
+    routeFetch([
+      {
+        match: "/payrolls/blockers",
+        status: 200,
+        body: [{ key: "needs_approval", message: "Company needs to be approved to run payroll." }],
+      },
+      { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("not_payroll_ready");
+    expect((d.payroll_blockers as { key: string }[]).map((b) => b.key)).toEqual(["needs_approval"]);
+    // No CLI command resolves an approval wait - the agent reports it and waits.
+    expect(d.next_command).toBeNull();
+  });
+
+  test("payroll blockers are deduped against open onboarding blockers", async () => {
+    // missing_federal_tax_setup mirrors the still-open federal_tax_setup onboarding step,
+    // so it's dropped from the payroll section; missing_employee_setup is the genuinely
+    // additional gate and stays. Onboarding drives next_command while it's incomplete.
+    routeFetch([
+      {
+        match: "/payrolls/blockers",
+        status: 200,
+        body: [
+          { key: "missing_federal_tax_setup", message: "Set up federal tax." },
+          { key: "missing_employee_setup", message: "Team members need personal details." },
+        ],
+      },
+      {
+        match: "/onboarding_status",
+        status: 200,
+        body: {
+          onboarding_completed: false,
+          onboarding_steps: [{ id: "federal_tax_setup", required: true, completed: false }],
+        },
+      },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("onboarding");
+    expect(d.next_command).toBe("gusto company setup federal-tax");
+    expect((d.payroll_blockers as { key: string }[]).map((b) => b.key)).toEqual(["missing_employee_setup"]);
+  });
+
+  test("a failed payroll-blockers fetch records a partial error and leaves readiness unknown", async () => {
+    routeFetch([
+      { match: "/payrolls/blockers", status: 404, body: { error: "not found" } }, // 404 = not retried
+      { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    // Readiness unknown must not fabricate not_payroll_ready - onboarding-based stage stands.
+    expect(d.stage).toBe("done");
+    expect(d.payroll_ready).toBeNull();
+    expect(d.payroll_blockers).toEqual([]);
+    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["payroll_blockers"]);
   });
 
   // The API never lists a signatory step; when sign_all_forms is pending the
@@ -191,6 +313,7 @@ describe("companyOnboardingStatusHandler", () => {
 
   test("injects an assign_signatory blocker ahead of sign_all_forms when no signatory exists", async () => {
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [] },
       { match: "/onboarding_status", status: 200, body: SIGN_FORMS_PENDING },
       { match: "/signatories", status: 200, body: [] }, // no signatory yet
     ]);
@@ -203,6 +326,7 @@ describe("companyOnboardingStatusHandler", () => {
 
   test("does not inject when a signatory already exists; sign_all_forms is next", async () => {
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [] },
       { match: "/onboarding_status", status: 200, body: SIGN_FORMS_PENDING },
       { match: "/signatories", status: 200, body: [{ uuid: "sig-1" }] },
     ]);
@@ -213,6 +337,7 @@ describe("companyOnboardingStatusHandler", () => {
 
   test("a failed signatories check records a partial error and does not fabricate a blocker", async () => {
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [] },
       { match: "/onboarding_status", status: 200, body: SIGN_FORMS_PENDING },
       { match: "/signatories", status: 404, body: { error: "not found" } }, // 404 = not retried
     ]);
@@ -222,9 +347,11 @@ describe("companyOnboardingStatusHandler", () => {
   });
 
   test("does not check signatories when sign_all_forms is not pending", async () => {
-    // Only a /onboarding_status route is registered; a stray /signatories GET would 404
-    // and surface as a partial error. Asserting none proves the call was skipped.
+    // Only /onboarding_status and /payrolls/blockers routes are registered; a stray
+    // /signatories GET would 404 and surface as a partial error. Asserting none proves
+    // the signatory call was skipped.
     routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [] },
       {
         match: "/onboarding_status",
         status: 200,
