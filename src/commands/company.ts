@@ -5,7 +5,7 @@ import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
-import { MalformedLocationsBodyError, fetchCompanyLocations, malformedLocationsResult } from "../lib/locations.ts";
+import { fetchCompanyLocations } from "../lib/locations.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
@@ -92,13 +92,9 @@ export function registerCompanyCommand(parent: Command): void {
 export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
     withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
-      try {
-        const locations = await fetchCompanyLocations(ctx.client, ctx.companyUuid);
-        return { ok: true, data: { locations } };
-      } catch (err) {
-        if (err instanceof MalformedLocationsBodyError) return malformedLocationsResult(err);
-        throw err;
-      }
+      const res = await fetchCompanyLocations(ctx.client, ctx.companyUuid);
+      if (!res.ok) return res;
+      return { ok: true, data: { locations: res.data } };
     });
 }
 

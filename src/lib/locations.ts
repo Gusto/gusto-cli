@@ -8,31 +8,28 @@ export interface LocationRec {
   filing_address?: boolean;
 }
 
-/** Thrown when /locations returns a 200 with a non-array body so callers can
- * distinguish a real "no locations" empty list from a malformed response. */
-export class MalformedLocationsBodyError extends Error {
-  constructor(companyUuid: string) {
-    super(`/v1/companies/${companyUuid}/locations returned a non-array body`);
-    this.name = "MalformedLocationsBodyError";
-  }
-}
-
-/** The shared `malformed_response` envelope both /locations consumers emit when the
- * API returns a non-array body. Exit code matches a regular API client failure. */
-export function malformedLocationsResult(err: MalformedLocationsBodyError): CommandResult<never> {
-  return {
-    ok: false,
-    exitCode: ExitCode.ApiClient,
-    error: { code: "malformed_response", message: err.message },
-  };
-}
-
-/** GET /v1/companies/{company_uuid}/locations. Throws `MalformedLocationsBodyError`
- * on a non-array body; callers catch + map to `malformedLocationsResult`. */
-export async function fetchCompanyLocations(client: ApiClient, companyUuid: string): Promise<LocationRec[]> {
+/** GET /v1/companies/{company_uuid}/locations. Returns a `CommandResult` so
+ * callers can `if (!res.ok) return res;` and propagate a structured
+ * `malformed_response` envelope when the API returns a non-array body (which
+ * the old behavior silently coerced to "no locations" - misleading the user
+ * about the actual cause). Network / API errors still throw from the client
+ * and propagate to the runner's `toResult` mapper as before. */
+export async function fetchCompanyLocations(
+  client: ApiClient,
+  companyUuid: string,
+): Promise<CommandResult<LocationRec[]>> {
   const res = await client.get<LocationRec[]>(`/v1/companies/${companyUuid}/locations`);
-  if (!Array.isArray(res.body)) throw new MalformedLocationsBodyError(companyUuid);
-  return res.body;
+  if (!Array.isArray(res.body)) {
+    return {
+      ok: false,
+      exitCode: ExitCode.ApiClient,
+      error: {
+        code: "malformed_response",
+        message: `/v1/companies/${companyUuid}/locations returned a non-array body`,
+      },
+    };
+  }
+  return { ok: true, data: res.body };
 }
 
 /** Pick the company's primary location. Prefer an explicit `primary: true`, then a

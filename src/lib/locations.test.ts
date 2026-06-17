@@ -24,18 +24,23 @@ describe("pickPrimaryLocation", () => {
 });
 
 describe("fetchCompanyLocations", () => {
-  test("returns the list of locations", async () => {
+  test("returns the list of locations under data on success", async () => {
     const { client } = stubApiClient({
       "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1", primary: true }]],
     });
-    const locs = await fetchCompanyLocations(client, "co-1");
-    expect(locs).toEqual([{ uuid: "loc-1", primary: true }]);
+    const res = await fetchCompanyLocations(client, "co-1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.data).toEqual([{ uuid: "loc-1", primary: true }]);
   });
 
-  test("throws on a non-array body so 'no locations' isn't conflated with a malformed 200", async () => {
+  test("returns a malformed_response envelope on a non-array body so 'no locations' isn't conflated with a malformed 200", async () => {
     const { client } = stubApiClient({
       "GET /v1/companies/co-1/locations": [200, { not: "an array" }],
     });
-    await expect(fetchCompanyLocations(client, "co-1")).rejects.toThrow(/non-array body/);
+    const res = await fetchCompanyLocations(client, "co-1");
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error.code).toBe("malformed_response");
   });
 });

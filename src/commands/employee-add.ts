@@ -8,12 +8,7 @@ import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure, toResult } from "../lib/handle-api-error.ts";
-import {
-  MalformedLocationsBodyError,
-  fetchCompanyLocations,
-  malformedLocationsResult,
-  pickPrimaryLocation,
-} from "../lib/locations.ts";
+import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
@@ -150,18 +145,24 @@ export function workAddressBody(opts: WorkAddressOpts): Record<string, unknown> 
 }
 
 /** Resolve the location uuid: prefer the explicit override, else pick the company's primary
- * location. A company with zero locations blocks (the caller must create one first). */
+ * location. Returns either the resolved uuid, a validation block (zero locations), or the
+ * fetch's own CommandResult error (e.g. malformed_response) for the caller to propagate. */
 export async function resolveWorkAddressLocation(
   client: ApiClient,
   companyUuid: string,
   override: string | undefined,
-): Promise<{ ok: true; locationUuid: string } | { ok: false; blocked: BlockedOn[] }> {
-  if (override) return { ok: true, locationUuid: override };
-  const locations = await fetchCompanyLocations(client, companyUuid);
-  const primary = pickPrimaryLocation(locations);
+): Promise<
+  | { kind: "ok"; locationUuid: string }
+  | { kind: "blocked"; blocked: BlockedOn[] }
+  | { kind: "error"; result: CommandResult }
+> {
+  if (override) return { kind: "ok", locationUuid: override };
+  const res = await fetchCompanyLocations(client, companyUuid);
+  if (!res.ok) return { kind: "error", result: res };
+  const primary = pickPrimaryLocation(res.data ?? []);
   if (!primary) {
     return {
-      ok: false,
+      kind: "blocked",
       blocked: [
         {
           field: "location-uuid",
@@ -170,7 +171,7 @@ export async function resolveWorkAddressLocation(
       ],
     };
   }
-  return { ok: true, locationUuid: primary.uuid };
+  return { kind: "ok", locationUuid: primary.uuid };
 }
 
 export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts): CommandHandler {
@@ -194,20 +195,16 @@ export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts):
     }
 
     return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
-      try {
-        const resolved = await resolveWorkAddressLocation(ctx.client, ctx.companyUuid, opts.locationUuid);
-        if (!resolved.ok) return missingArgs(resolved.blocked);
-        const res = await ctx.client.post(path, {
-          location_uuid: resolved.locationUuid,
-          effective_date: opts.effectiveDate,
-        });
-        const body =
-          res.body && typeof res.body === "object" ? (res.body as Record<string, unknown>) : { result: res.body };
-        return { ok: true, data: { ...body, location_uuid_used: resolved.locationUuid } };
-      } catch (err) {
-        if (err instanceof MalformedLocationsBodyError) return malformedLocationsResult(err);
-        throw err;
-      }
+      const resolved = await resolveWorkAddressLocation(ctx.client, ctx.companyUuid, opts.locationUuid);
+      if (resolved.kind === "error") return resolved.result;
+      if (resolved.kind === "blocked") return missingArgs(resolved.blocked);
+      const res = await ctx.client.post(path, {
+        location_uuid: resolved.locationUuid,
+        effective_date: opts.effectiveDate,
+      });
+      const body =
+        res.body && typeof res.body === "object" ? (res.body as Record<string, unknown>) : { result: res.body };
+      return { ok: true, data: { ...body, location_uuid_used: resolved.locationUuid } };
     });
   };
 }
