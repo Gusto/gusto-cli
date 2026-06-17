@@ -124,6 +124,11 @@ describe("bankAccountBlockers + handler", () => {
     const d = data(await bankAccountHandler({ example: true })(ctx));
     expect(d.method).toBe("POST");
     expect(d.path).toContain("/bank_accounts");
+    expect(d.body).toMatchObject({
+      routing_number: "102001017",
+      account_number: "9775014007",
+      account_type: "Checking",
+    });
   });
 });
 

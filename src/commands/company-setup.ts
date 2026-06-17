@@ -251,7 +251,8 @@ export function bankAccountHandler(opts: BankAccountOpts): CommandHandler {
         data: {
           method: "POST",
           path: "/v1/companies/{company_uuid}/bank_accounts",
-          body: { routing_number: "123456789", account_number: "1234567890", account_type: "Checking" },
+          // https://docs.gusto.com/embedded-payroll/docs/manage-company-bank-accounts
+          body: { routing_number: "102001017", account_number: "9775014007", account_type: "Checking" },
           note: "example: connect runs create -> send_test_deposits -> verify in one shot",
         },
       };
