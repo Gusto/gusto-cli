@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Blocker } from "./onboarding-map.ts";
 import { suggestedActionFor } from "./onboarding-map.ts";
-import { enrichPayrollBlockers, payrollBlockerAction } from "./payroll-blockers.ts";
+import { enrichPayrollBlockers, fetchPayrollBlockers, payrollBlockerAction } from "./payroll-blockers.ts";
 
 describe("payrollBlockerAction", () => {
   test("maps missing_employee_setup to the employee personal-details command", () => {
@@ -88,5 +88,47 @@ describe("enrichPayrollBlockers", () => {
   test("tolerates a malformed blocker entry without a key", () => {
     const result = enrichPayrollBlockers([{ message: "no key" } as unknown as { key: string; message: string }], []);
     expect(result).toEqual([]);
+  });
+});
+
+describe("fetchPayrollBlockers", () => {
+  // Minimal ReadClient stub. The double-cast sidesteps the generic get<T> signature -
+  // these tests only care about the body it hands back.
+  type ReadClient = Parameters<typeof fetchPayrollBlockers>[0];
+  const clientReturning = (body: unknown): ReadClient => ({ get: async () => ({ body }) }) as unknown as ReadClient;
+
+  test("returns the list as-is on a well-formed array body", async () => {
+    const blockers = [{ key: "needs_approval", message: "Company needs to be approved." }];
+    expect(await fetchPayrollBlockers(clientReturning(blockers), "co-1")).toEqual(blockers);
+  });
+
+  test("empty array (payroll-ready) returns an empty list", async () => {
+    expect(await fetchPayrollBlockers(clientReturning([]), "co-1")).toEqual([]);
+  });
+
+  // The malformed-but-200 discipline: a non-array body must not throw or leak through -
+  // it coerces to an empty list (Fresh Eyes, PR #69).
+  test("coerces a non-array object body to an empty list", async () => {
+    expect(await fetchPayrollBlockers(clientReturning({ errors: [{ category: "not_found" }] }), "co-1")).toEqual([]);
+  });
+
+  test("coerces a null body to an empty list", async () => {
+    expect(await fetchPayrollBlockers(clientReturning(null), "co-1")).toEqual([]);
+  });
+
+  test("coerces a string body to an empty list", async () => {
+    expect(await fetchPayrollBlockers(clientReturning("oops"), "co-1")).toEqual([]);
+  });
+
+  test("requests the company's payroll-blockers path", async () => {
+    let path = "";
+    const client = {
+      get: async (p: string) => {
+        path = p;
+        return { body: [] };
+      },
+    } as unknown as ReadClient;
+    await fetchPayrollBlockers(client, "co-xyz");
+    expect(path).toBe("/v1/companies/co-xyz/payrolls/blockers");
   });
 });
