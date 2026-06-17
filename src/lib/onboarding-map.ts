@@ -125,6 +125,8 @@ export interface Blocker {
   title?: string;
   requirements: unknown[];
   suggested_action: SuggestedAction | null;
+  /** Explanation attached when the static suggested_action would mislead (e.g. add_employees needs a verified employee). */
+  note?: string;
 }
 
 /** Required-and-incomplete onboarding steps, each enriched with the CLI command
@@ -160,4 +162,33 @@ export function withSignatoryBlocker(blockers: Blocker[], hasSignatory: boolean)
     suggested_action: suggestedActionFor(SIGNATORY_STEP_ID),
   };
   return [...blockers.slice(0, signIdx), signatory, ...blockers.slice(signIdx)];
+}
+
+/** Minimal employee shape the onboarding-status handler reads to tailor add_employees guidance. */
+export interface EmployeeOnboardingInfo {
+  onboarding_status?: string;
+  terminated?: boolean;
+}
+
+/** onboarding_status once an employee is fully verified; add_employees (verify_employees) clears only then. */
+const EMPLOYEE_VERIFIED_STATUS = "onboarding_completed";
+
+/** When an unverified employee already exists, add_employees needs a verified employee (not another added
+ * one), so drop the misleading suggested_action and attach a note. No-op otherwise (none, all verified, or absent). */
+export function withExistingEmployeeAction(blockers: Blocker[], employees: EmployeeOnboardingInfo[]): Blocker[] {
+  const active = employees.filter((e) => e.terminated !== true);
+  const unverified = active.filter((e) => e.onboarding_status !== EMPLOYEE_VERIFIED_STATUS);
+  if (unverified.length === 0) return blockers;
+  return blockers.map((b) =>
+    b.id === "add_employees"
+      ? {
+          ...b,
+          suggested_action: null,
+          note:
+            `${unverified.length} of ${active.length} employee(s) added but not yet verified. ` +
+            `This step clears once an employee completes onboarding and is verified ` +
+            `(onboarding_status "${EMPLOYEE_VERIFIED_STATUS}").`,
+        }
+      : b,
+  );
 }

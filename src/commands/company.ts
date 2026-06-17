@@ -12,9 +12,11 @@ import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-inpu
 import { resolveStore } from "../lib/oauth/token-store.ts";
 import {
   FINISH_ONBOARDING_ACTION,
+  type EmployeeOnboardingInfo,
   type OnboardingStatus,
   type SuggestedAction,
   extractBlockers,
+  withExistingEmployeeAction,
   withSignatoryBlocker,
 } from "../lib/onboarding-map.ts";
 import { type EnrichedPayrollBlocker, enrichPayrollBlockers, fetchPayrollBlockers } from "../lib/payroll-blockers.ts";
@@ -237,6 +239,24 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
         }
       }
 
+      // add_employees is backed by the verify_employees step: it clears only when an
+      // employee is verified, not merely added. So when an unverified employee already
+      // exists, the static "add personal-details" suggestion is wrong - it would create
+      // a duplicate. Fetch the roster and let withExistingEmployeeAction rewrite the
+      // blocker into a verify note. A failed fetch degrades to a partial error rather
+      // than leaving misleading guidance in place.
+      let employeesError: string | undefined;
+      if (blockedOn.some((b) => b.id === "add_employees")) {
+        try {
+          const employees =
+            (await ctx.client.get<EmployeeOnboardingInfo[] | null>(`/v1/companies/${ctx.companyUuid}/employees`))
+              .body ?? [];
+          blockedOn = withExistingEmployeeAction(blockedOn, employees);
+        } catch (err) {
+          employeesError = errMsg(err);
+        }
+      }
+
       const isComplete = status?.onboarding_completed === true;
       // A malformed-but-200 response (no onboarding_steps) must not read as
       // "no blockers" -> ready_to_finish; treat a missing step list as unknown.
@@ -275,6 +295,7 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
 
       const partialErrors: { label: string; error: string }[] = [];
       if (signatoryError) partialErrors.push({ label: "signatories", error: signatoryError });
+      if (employeesError) partialErrors.push({ label: "employees", error: employeesError });
       if (!payroll.ok) partialErrors.push({ label: "payroll_blockers", error: payroll.error });
 
       return {

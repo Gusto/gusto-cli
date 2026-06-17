@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { SIGNATORY_STEP_ID, extractBlockers, suggestedActionFor, withSignatoryBlocker } from "./onboarding-map.ts";
+import {
+  SIGNATORY_STEP_ID,
+  extractBlockers,
+  suggestedActionFor,
+  withExistingEmployeeAction,
+  withSignatoryBlocker,
+} from "./onboarding-map.ts";
 import type { Blocker } from "./onboarding-map.ts";
 
 describe("suggestedActionFor", () => {
@@ -66,6 +72,58 @@ describe("withSignatoryBlocker", () => {
   test("no-op when sign_all_forms is not an active blocker", () => {
     const input = [blocker("federal_tax_setup")];
     expect(withSignatoryBlocker(input, false)).toEqual(input);
+  });
+});
+
+describe("withExistingEmployeeAction", () => {
+  const blocker = (id: string): Blocker => ({ id, requirements: [], suggested_action: suggestedActionFor(id) });
+
+  test("no employees: keeps the static add-an-employee guidance", () => {
+    const input = [blocker("add_employees")];
+    expect(withExistingEmployeeAction(input, [])).toEqual(input);
+  });
+
+  test("only terminated employees count as none: keeps add guidance", () => {
+    const input = [blocker("add_employees")];
+    expect(
+      withExistingEmployeeAction(input, [{ onboarding_status: "onboarding_completed", terminated: true }]),
+    ).toEqual(input);
+  });
+
+  test("all active employees verified: no-op", () => {
+    const input = [blocker("add_employees")];
+    expect(withExistingEmployeeAction(input, [{ onboarding_status: "onboarding_completed" }])).toEqual(input);
+  });
+
+  test("an unverified employee exists: drops suggested_action and attaches a verify note", () => {
+    const result = withExistingEmployeeAction(
+      [blocker("add_employees"), blocker("federal_tax_setup")],
+      [{ onboarding_status: "self_onboarding_pending_invite" }, { onboarding_status: "onboarding_completed" }],
+    );
+    const addEmployees = result.find((b) => b.id === "add_employees");
+    expect(addEmployees?.suggested_action).toBeNull();
+    expect(addEmployees?.note).toContain("not yet verified");
+    expect(addEmployees?.note).toContain("1 of 2");
+    // other blockers untouched
+    expect(result.find((b) => b.id === "federal_tax_setup")?.suggested_action?.command).toBe(
+      "gusto company setup federal-tax",
+    );
+  });
+
+  test("missing or unknown onboarding_status counts as unverified and gets the note", () => {
+    const result = withExistingEmployeeAction(
+      [blocker("add_employees")],
+      [{}, { onboarding_status: "some_future_status" }],
+    );
+    const addEmployees = result.find((b) => b.id === "add_employees");
+    expect(addEmployees?.suggested_action).toBeNull();
+    expect(addEmployees?.note).toContain("not yet verified");
+    expect(addEmployees?.note).toContain("2 of 2");
+  });
+
+  test("no-op when add_employees is not among the blockers", () => {
+    const input = [blocker("federal_tax_setup")];
+    expect(withExistingEmployeeAction(input, [{ onboarding_status: "self_onboarding_pending_invite" }])).toEqual(input);
   });
 });
 

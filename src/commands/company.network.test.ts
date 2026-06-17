@@ -346,6 +346,57 @@ describe("companyOnboardingStatusHandler", () => {
     expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["signatories"]);
   });
 
+  // add_employees is backed by verify_employees: it clears on a verified employee, not
+  // a merely-added one. When an unverified employee exists, the handler GETs /employees
+  // and rewrites the blocker so an agent isn't told to add a duplicate (AINT-642).
+  const ADD_EMPLOYEES_PENDING = {
+    onboarding_completed: false,
+    onboarding_steps: [{ id: "add_employees", title: "Add Your Employees", required: true, completed: false }],
+  };
+
+  test("no employees: keeps the add-an-employee suggestion", async () => {
+    routeFetch([
+      { match: "/onboarding_status", status: 200, body: ADD_EMPLOYEES_PENDING },
+      { match: "/payrolls/blockers", status: 200, body: [] },
+      { match: "/employees", status: 200, body: [] },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.next_command).toBe("gusto employee add personal-details");
+    expect((d.blocked_on as { note?: string }[])[0]?.note).toBeUndefined();
+  });
+
+  test("unverified employee exists: drops the add suggestion and notes verification is needed", async () => {
+    routeFetch([
+      { match: "/onboarding_status", status: 200, body: ADD_EMPLOYEES_PENDING },
+      { match: "/payrolls/blockers", status: 200, body: [] },
+      {
+        match: "/employees",
+        status: 200,
+        body: [{ uuid: "ee-1", onboarding_status: "self_onboarding_pending_invite" }],
+      },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    const addEmployees = (d.blocked_on as { id: string; suggested_action: unknown; note?: string }[]).find(
+      (b) => b.id === "add_employees",
+    );
+    expect(addEmployees?.suggested_action).toBeNull();
+    expect(addEmployees?.note).toContain("verified");
+    // The misleading "add personal-details" is no longer the next step.
+    expect(d.next_command).not.toBe("gusto employee add personal-details");
+  });
+
+  test("a failed employees check records a partial error and leaves the blocker unchanged", async () => {
+    routeFetch([
+      { match: "/onboarding_status", status: 200, body: ADD_EMPLOYEES_PENDING },
+      { match: "/payrolls/blockers", status: 200, body: [] },
+      { match: "/employees", status: 404, body: { error: "not found" } }, // 404 = not retried
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["employees"]);
+    // Falls back to the static guidance rather than fabricating a note.
+    expect(d.next_command).toBe("gusto employee add personal-details");
+  });
+
   test("does not check signatories when sign_all_forms is not pending", async () => {
     // Only /onboarding_status and /payrolls/blockers routes are registered; a stray
     // /signatories GET would 404 and surface as a partial error. Asserting none proves
