@@ -1,0 +1,46 @@
+import { describe, expect, test } from "bun:test";
+import { fetchCompanyLocations, type LocationRec, pickPrimaryLocation } from "./locations.ts";
+import { stubApiClient } from "./test-support.ts";
+
+describe("pickPrimaryLocation", () => {
+  test("returns undefined for an empty list", () => {
+    expect(pickPrimaryLocation([])).toBeUndefined();
+  });
+
+  test("prefers an explicit primary: true", () => {
+    const locs: LocationRec[] = [{ uuid: "a", filing_address: true }, { uuid: "b", primary: true }, { uuid: "c" }];
+    expect(pickPrimaryLocation(locs)?.uuid).toBe("b");
+  });
+
+  test("falls back to filing_address: true when no primary flag is set", () => {
+    const locs: LocationRec[] = [{ uuid: "a" }, { uuid: "b", filing_address: true }];
+    expect(pickPrimaryLocation(locs)?.uuid).toBe("b");
+  });
+
+  test("falls back to the first record when neither flag is set", () => {
+    const locs: LocationRec[] = [{ uuid: "a" }, { uuid: "b" }];
+    expect(pickPrimaryLocation(locs)?.uuid).toBe("a");
+  });
+});
+
+describe("fetchCompanyLocations", () => {
+  test("returns the list of locations under data on success", async () => {
+    const { client } = stubApiClient({
+      "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1", primary: true }]],
+    });
+    const res = await fetchCompanyLocations(client, "co-1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.data).toEqual([{ uuid: "loc-1", primary: true }]);
+  });
+
+  test("returns a malformed_response envelope on a non-array body so 'no locations' isn't conflated with a malformed 200", async () => {
+    const { client } = stubApiClient({
+      "GET /v1/companies/co-1/locations": [200, { not: "an array" }],
+    });
+    const res = await fetchCompanyLocations(client, "co-1");
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error.code).toBe("malformed_response");
+  });
+});

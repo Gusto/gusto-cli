@@ -1,13 +1,14 @@
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
-import { createCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { createCompanyResource, resolveApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { bankCreateNoUuidError } from "../lib/bank-account.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure, toResult } from "../lib/handle-api-error.ts";
+import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
@@ -127,7 +128,7 @@ function homeAddressHandler(employeeUuid: string, opts: HomeAddressOpts): Comman
 
 // ───────────────────────────── add work-address ─────────────────────────────
 
-export interface WorkAddressOpts extends TokenOpts {
+export interface WorkAddressOpts extends CompanyContextOpts {
   locationUuid?: string;
   effectiveDate?: string;
   dryRun?: boolean;
@@ -135,7 +136,6 @@ export interface WorkAddressOpts extends TokenOpts {
 
 export function workAddressBlockers(opts: WorkAddressOpts): BlockedOn[] {
   const blocked: BlockedOn[] = [];
-  if (!opts.locationUuid) blocked.push({ field: "location-uuid", reason: "required (a company location uuid)" });
   if (!opts.effectiveDate) blocked.push({ field: "effective-date", reason: "required (YYYY-MM-DD)" });
   return blocked;
 }
@@ -144,13 +144,60 @@ export function workAddressBody(opts: WorkAddressOpts): Record<string, unknown> 
   return { location_uuid: opts.locationUuid, effective_date: opts.effectiveDate };
 }
 
-function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts): CommandHandler {
-  return postSubdomainHandler(
-    opts,
-    () => workAddressBlockers(opts),
-    `/v1/employees/${employeeUuid}/work_addresses`,
-    () => workAddressBody(opts),
-  );
+/** Resolve the location uuid: prefer the explicit override, else pick the company's primary
+ * location. Returns CommandResult so the caller can `if (!resolved.ok) return resolved;`
+ * for both the fetch's structured error (e.g. malformed_response) and the zero-locations
+ * validation block. */
+export async function resolveWorkAddressLocation(
+  client: ApiClient,
+  companyUuid: string,
+  override: string | undefined,
+): Promise<CommandResult<{ locationUuid: string }>> {
+  if (override) return { ok: true, data: { locationUuid: override } };
+  const res = await fetchCompanyLocations(client, companyUuid);
+  if (!res.ok) return res;
+  const primary = pickPrimaryLocation(res.data ?? []);
+  if (!primary) {
+    return missingArgs([
+      {
+        field: "location-uuid",
+        reason: "no company locations found; run `gusto company setup address` first, or pass --location-uuid <uuid>",
+      },
+    ]);
+  }
+  return { ok: true, data: { locationUuid: primary.uuid } };
+}
+
+export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts): CommandHandler {
+  return async ({ globals }) => {
+    const blocked = workAddressBlockers(opts);
+    if (blocked.length > 0) return missingArgs(blocked);
+    const path = `/v1/employees/${employeeUuid}/work_addresses`;
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path,
+          body: workAddressBody(opts),
+          ...(opts.locationUuid
+            ? {}
+            : { note: "dry-run: without --location-uuid the company's primary location is resolved at send time" }),
+        },
+      };
+    }
+
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const resolved = await resolveWorkAddressLocation(ctx.client, ctx.companyUuid, opts.locationUuid);
+      if (!resolved.ok) return resolved;
+      const { locationUuid } = resolved.data!;
+      const res = await ctx.client.post(path, { location_uuid: locationUuid, effective_date: opts.effectiveDate });
+      const body =
+        res.body && typeof res.body === "object" ? (res.body as Record<string, unknown>) : { result: res.body };
+      return { ok: true, data: { ...body, location_uuid_used: locationUuid } };
+    });
+  };
 }
 
 // ───────────────────────────── add job (+ compensation) ─────────────────────────────
@@ -1212,9 +1259,13 @@ Examples:
 
   add
     .command("work-address <employee_uuid>")
-    .description("Set the employee's work address (a company location)")
-    .option("--location-uuid <uuid>", "Company location UUID (required)")
-    .option("--effective-date <date>", "Effective date YYYY-MM-DD (required)")
+    .description("Set the employee's work address (defaults to the company's primary location)")
+    .option(
+      "--location-uuid <uuid>",
+      "Company location UUID (defaults to the primary location; see `gusto company locations`)",
+    )
+    .option("--effective-date <date>", "Effective date (YYYY-MM-DD, required)")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .action((employeeUuid: string, opts: WorkAddressOpts) =>

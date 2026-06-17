@@ -5,6 +5,7 @@ import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
+import { fetchCompanyLocations } from "../lib/locations.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type ProvisionResult, provision } from "../lib/oauth/provision.ts";
 import { InputError, resolveProvisionPayload } from "../lib/oauth/provision-input.ts";
@@ -69,6 +70,14 @@ export function registerCompanyCommand(parent: Command): void {
 
   withContextOptions(
     cmd
+      .command("locations")
+      .description("List the company's locations (employee work addresses reference these by uuid)"),
+  ).action((opts: CompanyShowOpts) =>
+    runReadCommand("gusto company locations", readGlobalFlags(parent.opts()), companyLocationsHandler(opts)),
+  );
+
+  withContextOptions(
+    cmd
       .command("finish")
       .description("Finalize onboarding (flips onboarding_completed -> true)")
       .option("--dry-run", "Describe the request without sending"),
@@ -78,6 +87,15 @@ export function registerCompanyCommand(parent: Command): void {
 
   registerCompanySetup(cmd, parent);
   registerCompanyForms(cmd, parent);
+}
+
+export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const res = await fetchCompanyLocations(ctx.client, ctx.companyUuid);
+      if (!res.ok) return res;
+      return { ok: true, data: { locations: res.data } };
+    });
 }
 
 interface CompanyRecord {

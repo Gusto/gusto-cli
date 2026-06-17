@@ -19,6 +19,7 @@ import {
   parseAnswerFlags,
   paymentMethodBlockers,
   resolveManageMode,
+  resolveWorkAddressLocation,
   runFederalTax,
   runJob,
   runManage,
@@ -102,12 +103,16 @@ describe("homeAddressBody", () => {
 });
 
 describe("workAddressBlockers", () => {
-  test("flags missing location-uuid and effective-date", () => {
-    expect(workAddressBlockers({}).map((b) => b.field)).toEqual(["location-uuid", "effective-date"]);
+  test("flags missing effective-date (location-uuid is optional - defaults to the primary location)", () => {
+    expect(workAddressBlockers({}).map((b) => b.field)).toEqual(["effective-date"]);
   });
 
   test("accepts a complete work address", () => {
     expect(workAddressBlockers({ locationUuid: "loc-1", effectiveDate: "2026-01-01" })).toEqual([]);
+  });
+
+  test("accepts an effective-date alone (the primary location will be resolved server-side)", () => {
+    expect(workAddressBlockers({ effectiveDate: "2026-01-01" })).toEqual([]);
   });
 });
 
@@ -117,6 +122,50 @@ describe("workAddressBody", () => {
       location_uuid: "loc-1",
       effective_date: "2026-01-01",
     });
+  });
+});
+
+describe("resolveWorkAddressLocation", () => {
+  test("returns the override without hitting the API when --location-uuid is supplied", async () => {
+    const { client, calls } = stubApiClient({});
+    const result = await resolveWorkAddressLocation(client, "co-1", "loc-override");
+    expect(result).toEqual({ ok: true, data: { locationUuid: "loc-override" } });
+    expect(calls).toHaveLength(0);
+  });
+
+  test("picks the primary location when --location-uuid is omitted", async () => {
+    const { client } = stubApiClient({
+      "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1" }, { uuid: "loc-2", primary: true }]],
+    });
+    const result = await resolveWorkAddressLocation(client, "co-1", undefined);
+    expect(result).toEqual({ ok: true, data: { locationUuid: "loc-2" } });
+  });
+
+  test("falls back to the first location when no primary/filing flag is set", async () => {
+    const { client } = stubApiClient({
+      "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1" }, { uuid: "loc-2" }]],
+    });
+    const result = await resolveWorkAddressLocation(client, "co-1", undefined);
+    expect(result).toEqual({ ok: true, data: { locationUuid: "loc-1" } });
+  });
+
+  test("blocks with an actionable reason when the company has no locations", async () => {
+    const { client } = stubApiClient({ "GET /v1/companies/co-1/locations": [200, []] });
+    const result = await resolveWorkAddressLocation(client, "co-1", undefined);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("validation");
+    expect(result.error.blocked_on?.map((b) => b.field)).toEqual(["location-uuid"]);
+    expect(result.error.blocked_on?.[0]?.reason).toContain("no company locations found");
+    expect(result.error.blocked_on?.[0]?.reason).toContain("company setup address");
+  });
+
+  test("propagates the malformed_response envelope when /locations returns a non-array body", async () => {
+    const { client } = stubApiClient({ "GET /v1/companies/co-1/locations": [200, { not: "an array" }] });
+    const result = await resolveWorkAddressLocation(client, "co-1", undefined);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
   });
 });
 

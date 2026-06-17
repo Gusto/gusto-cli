@@ -1,25 +1,28 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { companyFinishOnboardingHandler, companyOnboardingStatusHandler, companyShowHandler } from "./company.ts";
+import {
+  companyFinishOnboardingHandler,
+  companyLocationsHandler,
+  companyOnboardingStatusHandler,
+  companyShowHandler,
+} from "./company.ts";
 import type { CommandContext } from "../lib/runner.ts";
 import {
   type MockResponse,
+  type Route,
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
   TEST_GLOBALS,
   okData as data,
+  routeFetch as setupRouteFetch,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-
-interface Route extends MockResponse {
-  match: string;
-}
 
 let restore: () => void = () => {};
 afterEach(() => restore());
 
-/** Stub global fetch, routing each request to the first route whose substring the URL contains. */
+/** Wraps the shared `routeFetch` to assign the file-level `restore` for the local `afterEach`. */
 function routeFetch(routes: Route[]): void {
-  restore = stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 }).restore;
+  restore = setupRouteFetch(routes).restore;
 }
 
 describe("companyShowHandler", () => {
@@ -234,6 +237,38 @@ describe("companyOnboardingStatusHandler", () => {
     const d = data(await companyOnboardingStatusHandler(auth)(ctx));
     expect((d.blocked_on as { id: string }[]).map((b) => b.id)).toEqual(["federal_tax_setup"]);
     expect(d.partial_errors).toBeUndefined();
+  });
+});
+
+describe("companyLocationsHandler", () => {
+  test("wraps the API list under a `locations` key (the field-filter target)", async () => {
+    routeFetch([
+      {
+        match: "/locations",
+        status: 200,
+        body: [
+          { uuid: "loc-1", street_1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107", primary: true },
+          { uuid: "loc-2", street_1: "1 Market St", city: "San Francisco", state: "CA", zip: "94105" },
+        ],
+      },
+    ]);
+    const d = data(await companyLocationsHandler(auth)(ctx));
+    const locations = d.locations as { uuid: string; primary?: boolean }[];
+    expect(locations).toHaveLength(2);
+    expect(locations[0]?.uuid).toBe("loc-1");
+    expect(locations[0]?.primary).toBe(true);
+  });
+
+  test("returns an empty list for a company with no locations", async () => {
+    routeFetch([{ match: "/locations", status: 200, body: [] }]);
+    const d = data(await companyLocationsHandler(auth)(ctx));
+    expect(d.locations).toEqual([]);
+  });
+
+  test("surfaces an API error as a failed CommandResult (not silently wrapped)", async () => {
+    routeFetch([{ match: "/locations", status: 404, body: { error: "not found" } }]);
+    const result = await companyLocationsHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
   });
 });
 
