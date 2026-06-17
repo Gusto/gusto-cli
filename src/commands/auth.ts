@@ -30,7 +30,7 @@ export function registerAuthCommand(parent: Command): void {
     .description("Open the browser for OAuth PKCE login and store the token")
     .option(
       "--no-browser",
-      "Print the sign-in URL instead of opening a browser (local headless use - the OAuth callback returns to 127.0.0.1 on this machine)",
+      "Don't auto-open the browser - print the sign-in URL for the user to open manually. You still need a browser running on this machine to complete sign-in; the OAuth callback returns to 127.0.0.1 here. Use when the agent is driving the CLI, on a headless box, or when auto-open is unreliable.",
     )
     .action((opts: LoginOpts) =>
       runCommand(
