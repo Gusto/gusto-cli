@@ -609,7 +609,14 @@ describe("addressHandler (network)", () => {
     const calls = stubFetch([{ status: 201, body: { uuid: "loc-1", street_1: "300 3rd St" } }]);
 
     const d = data(
-      await addressHandler({ ...auth, street1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107" })(ctx),
+      await addressHandler({
+        ...auth,
+        street1: "300 3rd St",
+        city: "San Francisco",
+        state: "CA",
+        zip: "94107",
+        phone: "4155550100",
+      })(ctx),
     );
 
     expect(calls).toHaveLength(1);
@@ -620,6 +627,7 @@ describe("addressHandler (network)", () => {
       city: "San Francisco",
       state: "CA",
       zip: "94107",
+      phone_number: "4155550100",
       filing_address: true,
       mailing_address: true,
     });
@@ -627,7 +635,7 @@ describe("addressHandler (network)", () => {
     expect(String(d.message)).toContain("San Francisco, CA (filing address)");
   });
 
-  test("includes street_2 / country / phone when provided and respects --no-filing-address", async () => {
+  test("includes street_2 / country when provided and respects --no-filing-address", async () => {
     const calls = stubFetch([{ status: 201, body: { uuid: "loc-2" } }]);
 
     await addressHandler({

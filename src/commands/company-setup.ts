@@ -694,6 +694,7 @@ export function addressBlockers(opts: AddressOpts): BlockedOn[] {
   if (!opts.city) blocked.push({ field: "city", reason: "required" });
   if (!opts.state) blocked.push({ field: "state", reason: "required (2-letter state code, e.g. CA)" });
   if (!opts.zip) blocked.push({ field: "zip", reason: "required" });
+  if (!opts.phone) blocked.push({ field: "phone", reason: "required (location phone number)" });
   return blocked;
 }
 
@@ -702,9 +703,9 @@ interface AddressFields {
   city: string;
   state: string;
   zip: string;
+  phone: string;
   street2?: string;
   country?: string;
-  phone?: string;
   filingAddress: boolean;
   mailingAddress: boolean;
 }
@@ -721,7 +722,7 @@ function addressBody(fields: AddressFields): Record<string, unknown> {
     state: fields.state,
     zip: fields.zip,
     ...(fields.country ? { country: fields.country } : {}),
-    ...(fields.phone ? { phone_number: fields.phone } : {}),
+    phone_number: fields.phone,
     filing_address: fields.filingAddress,
     mailing_address: fields.mailingAddress,
   };
@@ -740,6 +741,7 @@ export function addressHandler(opts: AddressOpts): CommandHandler {
             city: "San Francisco",
             state: "CA",
             zip: "94107",
+            phone_number: "4155550100",
             filing_address: true,
             mailing_address: true,
           },
@@ -750,17 +752,17 @@ export function addressHandler(opts: AddressOpts): CommandHandler {
 
     const blocked = addressBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
-    const { street1, city, state, zip } = opts;
+    const { street1, city, state, zip, phone } = opts;
     // blockers guarantee these; re-check narrows the types without assertions.
-    if (!street1 || !city || !state || !zip) return missingArgs(blocked);
+    if (!street1 || !city || !state || !zip || !phone) return missingArgs(blocked);
     const fields: AddressFields = {
       street1,
       city,
       state,
       zip,
+      phone,
       ...(opts.street2 ? { street2: opts.street2 } : {}),
       ...(opts.country ? { country: opts.country } : {}),
-      ...(opts.phone ? { phone: opts.phone } : {}),
       filingAddress: opts.filingAddress !== false,
       mailingAddress: opts.mailingAddress !== false,
     };
@@ -1108,7 +1110,7 @@ export function registerCompanySetup(company: Command, parent: Command): void {
       .option("--state <state>", "2-letter state code, e.g. CA")
       .option("--zip <zip>", "ZIP code")
       .option("--country <country>", "Country (defaults to USA server-side)")
-      .option("--phone <phone>", "Location phone number")
+      .option("--phone <phone>", "Location phone number (required by the locations API)")
       .option("--no-filing-address", "Don't use this location as the company's filing address")
       .option("--no-mailing-address", "Don't use this location as the company's mailing address"),
   )
