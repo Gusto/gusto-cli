@@ -116,6 +116,11 @@ export interface ApiResponse<T = unknown> {
   requestId?: string;
 }
 
+/** Minimal read surface of ApiClient that GET-only helpers depend on. Lets a helper
+ * declare exactly what it needs (and be stubbed trivially in tests) without taking a
+ * dependency on the whole ApiClient. */
+export type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
+
 export class ApiClient {
   private readonly baseUrl: string;
   private readonly token: string;

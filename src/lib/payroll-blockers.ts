@@ -16,6 +16,7 @@
  * suggested_action: the agent shows the API message and waits.
  */
 
+import type { ReadClient } from "./api-client.ts";
 import { SIGNATORY_STEP_ID, type Blocker, type SuggestedAction, suggestedActionFor } from "./onboarding-map.ts";
 
 /** A payroll blocker as returned by GET /v1/companies/{uuid}/payrolls/blockers. */
@@ -30,9 +31,6 @@ export interface EnrichedPayrollBlocker {
   message: string;
   suggested_action: SuggestedAction | null;
 }
-
-/** Minimal read surface of ApiClient this helper needs (mirrors signatory.ts). */
-type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
 
 /** Maps a payroll blocker `key` to the onboarding step id whose command resolves it.
  * Several keys share a command: both signatory blockers point at the signatory step,
@@ -66,7 +64,16 @@ export function payrollBlockerAction(key: string): SuggestedAction | null {
   return step ? suggestedActionFor(step) : null;
 }
 
-/** Enrich raw payroll blockers with their resolving command, then dedupe against the
+/** Narrows an arbitrary value to a well-formed PayrollBlocker. Element validation lives
+ * here (and only here) so fetchPayrollBlockers can return a genuine PayrollBlocker[] and
+ * downstream consumers can trust the type rather than re-checking it. */
+function isPayrollBlocker(value: unknown): value is PayrollBlocker {
+  if (typeof value !== "object" || value === null) return false;
+  const { key, message } = value as Record<string, unknown>;
+  return typeof key === "string" && typeof message === "string";
+}
+
+/** Enrich payroll blockers with their resolving command, then dedupe against the
  * company-onboarding blockers so the agent isn't told the same thing twice:
  *
  * - `needs_onboarding` is dropped - it's the onboarding flow that onboarding-status
@@ -77,28 +84,33 @@ export function payrollBlockerAction(key: string): SuggestedAction | null {
  *   its command leaves blocked_on, so a payroll gate that outlives it (e.g.
  *   `missing_bank_verification` after the bank step "completes") still surfaces here.
  * - Blockers with no CLI command can never collide with an onboarding step, so they
- *   always surface (with a null suggested_action). */
+ *   always surface (with a null suggested_action).
+ *
+ * Input is trusted to be well-formed PayrollBlocker[] - fetchPayrollBlockers validates
+ * element shape, so there are no defensive type checks here. */
 export function enrichPayrollBlockers(raw: PayrollBlocker[], onboardingBlockers: Blocker[]): EnrichedPayrollBlocker[] {
   const openCommands = new Set(
     onboardingBlockers.map((b) => b.suggested_action?.command).filter((c): c is string => typeof c === "string"),
   );
   return raw
-    .filter((b): b is PayrollBlocker => typeof b?.key === "string")
     .filter((b) => b.key !== "needs_onboarding")
-    .map((b) => ({
-      key: b.key,
-      message: typeof b.message === "string" ? b.message : "",
-      suggested_action: payrollBlockerAction(b.key),
-    }))
+    .map((b) => ({ key: b.key, message: b.message, suggested_action: payrollBlockerAction(b.key) }))
     .filter((b) => !(b.suggested_action !== null && openCommands.has(b.suggested_action.command)));
 }
 
 /** GET the company's payroll blockers. An empty list means the company is payroll-ready.
- * A non-array body (empty/malformed 200) is treated as no blockers reported - the same
- * malformed-but-200 discipline the onboarding-status and finish handlers use. Throws on a
- * failed GET; the caller degrades (onboarding-status records a partial error and leaves
- * readiness unknown rather than fabricating a not-ready verdict). */
+ *
+ * The endpoint's contract is a (possibly empty) JSON array of blockers. A non-array body
+ * is malformed and we cannot conclude readiness from it, so it throws rather than coercing
+ * to `[]`: coercing would report `payroll_ready: true` off an error envelope, the inverse
+ * of the malformed-but-200 discipline onboarding_status uses (a malformed body is "unknown",
+ * never silently "no blockers"). The caller degrades a throw to a partial error with
+ * readiness left unknown (null). Within the array, elements that aren't well-formed blockers
+ * are dropped so the returned PayrollBlocker[] is honest. Also throws on a failed GET. */
 export async function fetchPayrollBlockers(client: ReadClient, companyUuid: string): Promise<PayrollBlocker[]> {
   const body = (await client.get<unknown>(`/v1/companies/${companyUuid}/payrolls/blockers`)).body;
-  return Array.isArray(body) ? (body as PayrollBlocker[]) : [];
+  if (!Array.isArray(body)) {
+    throw new Error(`payroll blockers response was not an array (got ${body === null ? "null" : typeof body})`);
+  }
+  return body.filter(isPayrollBlocker);
 }

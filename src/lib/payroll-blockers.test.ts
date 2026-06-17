@@ -84,11 +84,6 @@ describe("enrichPayrollBlockers", () => {
     );
     expect(result).toEqual([{ key: "needs_approval", message: "Company needs approval.", suggested_action: null }]);
   });
-
-  test("tolerates a malformed blocker entry without a key", () => {
-    const result = enrichPayrollBlockers([{ message: "no key" } as unknown as { key: string; message: string }], []);
-    expect(result).toEqual([]);
-  });
 });
 
 describe("fetchPayrollBlockers", () => {
@@ -106,18 +101,35 @@ describe("fetchPayrollBlockers", () => {
     expect(await fetchPayrollBlockers(clientReturning([]), "co-1")).toEqual([]);
   });
 
-  // The malformed-but-200 discipline: a non-array body must not throw or leak through -
-  // it coerces to an empty list (Fresh Eyes, PR #69).
-  test("coerces a non-array object body to an empty list", async () => {
-    expect(await fetchPayrollBlockers(clientReturning({ errors: [{ category: "not_found" }] }), "co-1")).toEqual([]);
+  // A non-array 200 is malformed: we can't conclude payroll-readiness from it, so it throws
+  // (the caller degrades to a partial error + null readiness) rather than coercing to an
+  // empty list, which would falsely report payroll_ready (Fresh Eyes, PR #69).
+  test("throws on a non-array object body (e.g. an error envelope)", async () => {
+    await expect(
+      fetchPayrollBlockers(clientReturning({ errors: [{ category: "not_found" }] }), "co-1"),
+    ).rejects.toThrow(/not an array/);
   });
 
-  test("coerces a null body to an empty list", async () => {
-    expect(await fetchPayrollBlockers(clientReturning(null), "co-1")).toEqual([]);
+  test("throws on a null body", async () => {
+    await expect(fetchPayrollBlockers(clientReturning(null), "co-1")).rejects.toThrow(/not an array/);
   });
 
-  test("coerces a string body to an empty list", async () => {
-    expect(await fetchPayrollBlockers(clientReturning("oops"), "co-1")).toEqual([]);
+  test("throws on a string body", async () => {
+    await expect(fetchPayrollBlockers(clientReturning("oops"), "co-1")).rejects.toThrow(/not an array/);
+  });
+
+  test("drops elements that aren't well-formed blockers (missing key/message, null, wrong types)", async () => {
+    const body = [
+      { key: "missing_employee_setup", message: "ok" }, // valid
+      { key: "needs_approval", message: "valid wait-state" }, // valid
+      { message: "no key" }, // dropped: no key
+      { key: "missing_forms" }, // dropped: no message
+      { key: 123, message: "numeric key" }, // dropped: non-string key
+      null, // dropped
+      "garbage", // dropped
+    ];
+    const result = await fetchPayrollBlockers(clientReturning(body), "co-1");
+    expect(result.map((b) => b.key)).toEqual(["missing_employee_setup", "needs_approval"]);
   });
 
   test("requests the company's payroll-blockers path", async () => {
