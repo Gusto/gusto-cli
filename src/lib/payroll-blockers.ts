@@ -64,13 +64,20 @@ export function payrollBlockerAction(key: string): SuggestedAction | null {
   return step ? suggestedActionFor(step) : null;
 }
 
-/** Narrows an arbitrary value to a well-formed PayrollBlocker. Element validation lives
- * here (and only here) so fetchPayrollBlockers can return a genuine PayrollBlocker[] and
- * downstream consumers can trust the type rather than re-checking it. */
-function isPayrollBlocker(value: unknown): value is PayrollBlocker {
-  if (typeof value !== "object" || value === null) return false;
+/** Normalize an arbitrary value into a PayrollBlocker, or null if it can't be one.
+ * Element validation lives here (and only here) so fetchPayrollBlockers returns a genuine
+ * PayrollBlocker[] and downstream consumers can trust the type without re-checking it.
+ *
+ * A string `key` is required - it's the blocker's identity and what maps to a resolving
+ * command, so a key-less value is unusable and dropped. `message` is only descriptive, so a
+ * missing/non-string message is normalized to "" rather than dropping the blocker: dropping a
+ * still-identifiable blocker would shrink the list and could flip the company to a false
+ * `payroll_ready: true`, the very failure this feature exists to prevent (AINT-643). */
+function toPayrollBlocker(value: unknown): PayrollBlocker | null {
+  if (typeof value !== "object" || value === null) return null;
   const { key, message } = value as Record<string, unknown>;
-  return typeof key === "string" && typeof message === "string";
+  if (typeof key !== "string") return null;
+  return { key, message: typeof message === "string" ? message : "" };
 }
 
 /** Enrich payroll blockers with their resolving command, then dedupe against the
@@ -95,7 +102,7 @@ export function enrichPayrollBlockers(raw: PayrollBlocker[], onboardingBlockers:
   return raw
     .filter((b) => b.key !== "needs_onboarding")
     .map((b) => ({ key: b.key, message: b.message, suggested_action: payrollBlockerAction(b.key) }))
-    .filter((b) => !(b.suggested_action !== null && openCommands.has(b.suggested_action.command)));
+    .filter((b) => b.suggested_action === null || !openCommands.has(b.suggested_action.command));
 }
 
 /** GET the company's payroll blockers. An empty list means the company is payroll-ready.
@@ -105,12 +112,13 @@ export function enrichPayrollBlockers(raw: PayrollBlocker[], onboardingBlockers:
  * to `[]`: coercing would report `payroll_ready: true` off an error envelope, the inverse
  * of the malformed-but-200 discipline onboarding_status uses (a malformed body is "unknown",
  * never silently "no blockers"). The caller degrades a throw to a partial error with
- * readiness left unknown (null). Within the array, elements that aren't well-formed blockers
- * are dropped so the returned PayrollBlocker[] is honest. Also throws on a failed GET. */
+ * readiness left unknown (null). Within the array, each element is normalized to a
+ * PayrollBlocker (key-less values dropped, missing messages defaulted) so the returned
+ * PayrollBlocker[] is honest. Also throws on a failed GET. */
 export async function fetchPayrollBlockers(client: ReadClient, companyUuid: string): Promise<PayrollBlocker[]> {
   const body = (await client.get<unknown>(`/v1/companies/${companyUuid}/payrolls/blockers`)).body;
   if (!Array.isArray(body)) {
     throw new Error(`payroll blockers response was not an array (got ${body === null ? "null" : typeof body})`);
   }
-  return body.filter(isPayrollBlocker);
+  return body.map(toPayrollBlocker).filter((b): b is PayrollBlocker => b !== null);
 }

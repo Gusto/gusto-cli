@@ -118,18 +118,27 @@ describe("fetchPayrollBlockers", () => {
     await expect(fetchPayrollBlockers(clientReturning("oops"), "co-1")).rejects.toThrow(/not an array/);
   });
 
-  test("drops elements that aren't well-formed blockers (missing key/message, null, wrong types)", async () => {
+  test("normalizes a keyed blocker with a missing/non-string message to message ''", async () => {
+    // A blocker we can still name (has a key) must be KEPT - dropping it could shrink the
+    // list to empty and falsely report payroll_ready. Only the message is normalized.
+    const body = [{ key: "missing_forms" }, { key: "missing_employee_setup", message: 42 }];
+    const result = await fetchPayrollBlockers(clientReturning(body), "co-1");
+    expect(result).toEqual([
+      { key: "missing_forms", message: "" },
+      { key: "missing_employee_setup", message: "" },
+    ]);
+  });
+
+  test("drops only un-nameable elements (no string key, null, wrong types)", async () => {
     const body = [
       { key: "missing_employee_setup", message: "ok" }, // valid
-      { key: "needs_approval", message: "valid wait-state" }, // valid
       { message: "no key" }, // dropped: no key
-      { key: "missing_forms" }, // dropped: no message
       { key: 123, message: "numeric key" }, // dropped: non-string key
       null, // dropped
       "garbage", // dropped
     ];
     const result = await fetchPayrollBlockers(clientReturning(body), "co-1");
-    expect(result.map((b) => b.key)).toEqual(["missing_employee_setup", "needs_approval"]);
+    expect(result.map((b) => b.key)).toEqual(["missing_employee_setup"]);
   });
 
   test("requests the company's payroll-blockers path", async () => {

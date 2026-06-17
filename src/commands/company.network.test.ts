@@ -218,6 +218,32 @@ describe("companyOnboardingStatusHandler", () => {
     expect((d.suggested_action as { command: string }).command).toBe("gusto employee add personal-details");
   });
 
+  test("a keyed blocker with no message still blocks payroll (no false-ready)", async () => {
+    // The sole blocker is identifiable (has a key) but the API omitted message. It must
+    // keep the company not-payroll-ready - dropping it would shrink the list to empty and
+    // report payroll_ready: true, the failure AINT-643 exists to prevent.
+    routeFetch([
+      { match: "/payrolls/blockers", status: 200, body: [{ key: "missing_employee_setup" }] },
+      { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
+    ]);
+    const d = data(await companyOnboardingStatusHandler(auth)(ctx));
+    expect(d.stage).toBe("not_payroll_ready");
+    expect(d.payroll_ready).toBe(false);
+    expect(d.payroll_blockers).toEqual([
+      {
+        key: "missing_employee_setup",
+        message: "",
+        suggested_action: {
+          command: "gusto employee add personal-details",
+          required_flags: ["--first-name", "--last-name", "--email"],
+          optional_flags: ["--admin-driven", "--ssn", "--date-of-birth", "--company-uuid"],
+          source: "cli_static_map",
+        },
+      },
+    ]);
+    expect(d.next_command).toBe("gusto employee add personal-details");
+  });
+
   test("not_payroll_ready with only wait-state blockers yields next_command null", async () => {
     routeFetch([
       {
