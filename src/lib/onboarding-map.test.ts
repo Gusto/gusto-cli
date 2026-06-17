@@ -24,8 +24,8 @@ describe("suggestedActionFor", () => {
   test("maps add_addresses to setup address", () => {
     expect(suggestedActionFor("add_addresses")).toEqual({
       command: "gusto company setup address",
-      required_flags: ["--street-1", "--city", "--state", "--zip"],
-      optional_flags: ["--street-2", "--country", "--phone", "--no-filing-address", "--no-mailing-address"],
+      required_flags: ["--street-1", "--city", "--state", "--zip", "--phone"],
+      optional_flags: ["--street-2", "--country", "--no-filing-address", "--no-mailing-address"],
       source: "cli_static_map",
     });
   });
