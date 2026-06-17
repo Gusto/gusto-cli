@@ -382,11 +382,6 @@ describe("employee add per-domain subcommands", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  test("a nested subcommand missing its <employee_uuid> exits CliUsage (2), not a raw crash", async () => {
-    const result = await run(["employee", "add", "home-address", "--street-1", "X"]);
-    expect(result.exitCode).toBe(2);
-  });
-
   test("an optional-positional subcommand missing [employee_uuid] returns blocked_on (exit 7)", async () => {
     // job/federal-tax/payment-method/state-tax take [employee_uuid] so --example needs no uuid;
     // a non-example call without it falls to missingEmployeeUuid() rather than a commander error.
@@ -730,4 +725,26 @@ describe("token-stdin authentication", () => {
     expect(envelope.data.path).toBe("/v1/companies/{company_uuid}/employees");
     expect(envelope.data.note).toContain("token/company not required");
   });
+});
+
+describe("employee add: consistent missing employee_uuid contract", () => {
+  // Omitting the positional employee_uuid must yield the same blocked_on validation
+  // envelope (exit 7) across every subcommand - not a bare Commander error (exit 2).
+  for (const sub of ["home-address", "work-address", "job", "federal-tax", "payment-method", "state-tax"]) {
+    test(`${sub} without employee_uuid returns a validation envelope (exit 7)`, async () => {
+      const result = await run(["employee", "add", sub]);
+      expect(result.exitCode).toBe(7);
+      const envelope = JSON.parse(result.stdout.trim());
+      expect(envelope.ok).toBe(false);
+      expect(envelope.error.code).toBe("validation");
+      expect(envelope.error.blocked_on).toContainEqual({ field: "employee_uuid", reason: "required" });
+    });
+
+    test(`${sub} --help documents the employee_uuid positional`, async () => {
+      const result = await run(["employee", "add", sub, "--help"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("Arguments:");
+      expect(result.stdout).toContain("employee_uuid");
+    });
+  }
 });

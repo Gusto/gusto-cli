@@ -118,13 +118,16 @@ export function homeAddressBody(opts: HomeAddressOpts): Record<string, unknown> 
   };
 }
 
-function homeAddressHandler(employeeUuid: string, opts: HomeAddressOpts): CommandHandler {
-  return postSubdomainHandler(
-    opts,
-    () => homeAddressBlockers(opts),
-    `/v1/employees/${employeeUuid}/home_addresses`,
-    () => homeAddressBody(opts),
-  );
+function homeAddressHandler(employeeUuid: string | undefined, opts: HomeAddressOpts): CommandHandler {
+  return async (ctx) => {
+    if (!employeeUuid) return missingEmployeeUuid();
+    return postSubdomainHandler(
+      opts,
+      () => homeAddressBlockers(opts),
+      `/v1/employees/${employeeUuid}/home_addresses`,
+      () => homeAddressBody(opts),
+    )(ctx);
+  };
 }
 
 // ───────────────────────────── add work-address ─────────────────────────────
@@ -169,8 +172,9 @@ export async function resolveWorkAddressLocation(
   return { ok: true, data: { locationUuid: primary.uuid } };
 }
 
-export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts): CommandHandler {
+export function workAddressHandler(employeeUuid: string | undefined, opts: WorkAddressOpts): CommandHandler {
   return async ({ globals }) => {
+    if (!employeeUuid) return missingEmployeeUuid();
     const blocked = workAddressBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
     const path = `/v1/employees/${employeeUuid}/work_addresses`;
@@ -1194,6 +1198,15 @@ function postSubdomainHandler(
 
 const collectAnswer = (value: string, previous: string[]): string[] => previous.concat(value);
 
+/** Declare the shared employee_uuid positional on an `employee add <domain>` subcommand.
+ * Optional at the Commander level so a missing uuid reaches the handler and returns the
+ * standard blocked_on envelope (every handler guards with missingEmployeeUuid) instead of a
+ * bare Commander error; the description gives `--help` an Arguments section. Centralized so the
+ * positional and its help text stay identical across subcommands. */
+function withEmployeeUuidArg(cmd: Command): Command {
+  return cmd.argument("[employee_uuid]", "UUID of the employee to update (from `employee add personal-details`)");
+}
+
 export function registerEmployeeAdd(employee: Command, parent: Command): void {
   // `add` is a pure command group (like `company setup`): `personal-details` creates the employee,
   // the rest configure an existing one by uuid.
@@ -1231,8 +1244,7 @@ Examples:
       runCommand("gusto employee add personal-details", readGlobalFlags(parent.opts()), employeeCreateHandler(opts)),
     );
 
-  add
-    .command("home-address <employee_uuid>")
+  withEmployeeUuidArg(add.command("home-address"))
     .description("Set the employee's home address")
     .option("--street-1 <street>", "Street line 1")
     .option("--street-2 <street>", "Street line 2")
@@ -1242,7 +1254,7 @@ Examples:
     .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
-    .action((employeeUuid: string, opts: HomeAddressOpts) =>
+    .action((employeeUuid: string | undefined, opts: HomeAddressOpts) =>
       runCommand(
         "gusto employee add home-address",
         readGlobalFlags(parent.opts()),
@@ -1250,8 +1262,7 @@ Examples:
       ),
     );
 
-  add
-    .command("work-address <employee_uuid>")
+  withEmployeeUuidArg(add.command("work-address"))
     .description("Set the employee's work address (defaults to the company's primary location)")
     .option(
       "--location-uuid <uuid>",
@@ -1261,7 +1272,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
-    .action((employeeUuid: string, opts: WorkAddressOpts) =>
+    .action((employeeUuid: string | undefined, opts: WorkAddressOpts) =>
       runCommand(
         "gusto employee add work-address",
         readGlobalFlags(parent.opts()),
@@ -1269,8 +1280,7 @@ Examples:
       ),
     );
 
-  add
-    .command("job [employee_uuid]")
+  withEmployeeUuidArg(add.command("job"))
     .description("Create a job; --rate/--payment-unit/--flsa-status also set its compensation")
     .option("--title <title>", "Job title")
     .option("--hire-date <date>", "Hire date (YYYY-MM-DD)")
@@ -1284,8 +1294,7 @@ Examples:
       runCommand("gusto employee add job", readGlobalFlags(parent.opts()), jobHandler(employeeUuid, opts)),
     );
 
-  add
-    .command("federal-tax [employee_uuid]")
+  withEmployeeUuidArg(add.command("federal-tax"))
     .description("Set the employee's federal W-4 withholding (version-guarded)")
     .option("--filing-status <status>", "W-4 filing status")
     .option("--w4-data-type <type>", "e.g. rev_2020_w4")
@@ -1305,8 +1314,7 @@ Examples:
       ),
     );
 
-  add
-    .command("payment-method [employee_uuid]")
+  withEmployeeUuidArg(add.command("payment-method"))
     .description("Set how the employee is paid: check, or direct-deposit (also creates the bank account)")
     .option("--type <type>", '"check" or "direct-deposit"')
     .option("--name <name>", "Bank account nickname (direct-deposit)")
@@ -1324,8 +1332,7 @@ Examples:
       ),
     );
 
-  add
-    .command("state-tax [employee_uuid]")
+  withEmployeeUuidArg(add.command("state-tax"))
     .description("Set state withholding. With no --answer: lists the questions (or prompts on a TTY)")
     .option(
       "--answer <STATE:key=value>",
