@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ApiClient } from "./api-client.ts";
-import { getAndInjectVersion, readString, withVersion } from "./versioning.ts";
+import { getAndInjectVersion, withVersion } from "./versioning.ts";
 
 /** Minimal stub: a `get` that returns a fixed body and records the paths it was called with. */
 function stubClient(getBody: unknown): { client: Pick<ApiClient, "get">; paths: string[] } {
@@ -13,22 +13,6 @@ function stubClient(getBody: unknown): { client: Pick<ApiClient, "get">; paths: 
   } as unknown as Pick<ApiClient, "get">;
   return { client, paths };
 }
-
-describe("readString", () => {
-  test("returns a non-empty string field", () => {
-    expect(readString({ v: "x" }, "v")).toBe("x");
-  });
-  test("undefined for an empty string", () => {
-    expect(readString({ v: "" }, "v")).toBeUndefined();
-  });
-  test("undefined for a non-string value", () => {
-    expect(readString({ v: 1 }, "v")).toBeUndefined();
-  });
-  test("undefined for a non-object body", () => {
-    expect(readString(null, "v")).toBeUndefined();
-    expect(readString("nope", "v")).toBeUndefined();
-  });
-});
 
 describe("withVersion", () => {
   test("injects the version when the body has none", () => {

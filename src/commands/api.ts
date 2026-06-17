@@ -5,8 +5,9 @@ import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
+import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
-import { getAndInjectVersion, readString } from "../lib/versioning.ts";
+import { getAndInjectVersion } from "../lib/versioning.ts";
 
 const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];

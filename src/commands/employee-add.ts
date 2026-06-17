@@ -12,7 +12,7 @@ import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts"
 import type { BlockedOn } from "../lib/output.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
-import { getAndInjectVersion, readString, withVersion } from "../lib/versioning.ts";
+import { getAndInjectVersion, withVersion } from "../lib/versioning.ts";
 
 // `employee add` mirrors `company setup`: bare `employee add` creates the employee, then each
 // sub-domain is its own subcommand (`employee add <domain> <employee_uuid>`) with typed flags, a

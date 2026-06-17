@@ -4,15 +4,7 @@
  * drifting between copies. */
 
 import type { ApiClient } from "./api-client.ts";
-
-/** Read a non-empty string field from an unknown object body. */
-export function readString(body: unknown, key: string): string | undefined {
-  if (typeof body === "object" && body !== null) {
-    const v = (body as Record<string, unknown>)[key];
-    if (typeof v === "string" && v.length > 0) return v;
-  }
-  return undefined;
-}
+import { readString } from "./read-string.ts";
 
 /** Inject `version` into a PUT/PATCH body unless the caller already supplied a valid one
  * (theirs always wins). The body is spread first so an absent or invalid (empty/non-string)
