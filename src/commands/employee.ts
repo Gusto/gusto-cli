@@ -1,9 +1,17 @@
 import type { Command } from "commander";
+import { ApiError } from "../lib/api-client.ts";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
-import { registerEmployeeAdd, registerEmployeeManage } from "./employee-add.ts";
+import { type CommandHandler, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
+import {
+  missingEmployeeUuid,
+  missingJobUuid,
+  registerEmployeeAdd,
+  registerEmployeeManage,
+  withEmployeeClient,
+  withEmployeeUuidArg,
+} from "./employee-add.ts";
 
 interface EmployeeListOpts {
   status?: string;
@@ -15,8 +23,14 @@ interface EmployeeShowOpts {
   tokenStdin?: boolean;
 }
 
+interface DeleteOpts {
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  example?: boolean;
+}
+
 export function registerEmployeeCommand(parent: Command): void {
-  const cmd = parent.command("employee").description("Add and inspect W-2 employees");
+  const cmd = parent.command("employee").description("Add, inspect, and delete W-2 employees");
 
   registerEmployeeAdd(cmd, parent);
   registerEmployeeManage(cmd, parent);
@@ -63,6 +77,81 @@ breakdown, so \`data.summary.total\` is the real headcount regardless of filter.
     .action((opts: EmployeeListOpts) =>
       runReadCommand("gusto employee list", readGlobalFlags(parent.opts()), employeeListHandler(opts)),
     );
+
+  withEmployeeUuidArg(cmd.command("delete"), "UUID of the employee to delete")
+    .description("Delete a pre-onboarded employee")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .action((employeeUuid: string | undefined, opts: DeleteOpts) =>
+      runCommand("gusto employee delete", readGlobalFlags(parent.opts()), employeeDeleteHandler(employeeUuid, opts)),
+    );
+
+  const job = cmd.command("job").description("Manage employee jobs");
+  job
+    .command("delete")
+    .description("Delete a job (deactivates when hard-delete is blocked by dependencies)")
+    .argument("[job_uuid]", "UUID of the job to delete")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .action((jobUuid: string | undefined, opts: DeleteOpts) =>
+      runCommand("gusto employee job delete", readGlobalFlags(parent.opts()), jobDeleteHandler(jobUuid, opts)),
+    );
+}
+
+export function employeeDeleteHandler(employeeUuid: string | undefined, opts: DeleteOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "DELETE",
+          path: "/v1/employees/{employee_uuid}",
+          note: "the API refuses to delete an onboarded employee (422 'Cannot delete onboarded employee')",
+        },
+      };
+    }
+    if (!employeeUuid) return missingEmployeeUuid();
+    const path = `/v1/employees/${employeeUuid}`;
+    if (opts.dryRun) return { ok: true, data: { method: "DELETE", path } };
+    return withEmployeeClient(globals, opts.tokenStdin, async (client) => {
+      await client.delete(path);
+      return { ok: true, data: { deleted: true, employee_uuid: employeeUuid } };
+    });
+  };
+}
+
+export function jobDeleteHandler(jobUuid: string | undefined, opts: DeleteOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "DELETE",
+          path: "/v1/jobs/{job_uuid}",
+          note: "server returns 204 whether it hard-destroyed or fell back to deactivate; CLI follows up with a GET to distinguish",
+        },
+      };
+    }
+    if (!jobUuid) return missingJobUuid();
+    const path = `/v1/jobs/${jobUuid}`;
+    if (opts.dryRun) return { ok: true, data: { method: "DELETE", path } };
+    return withEmployeeClient(globals, opts.tokenStdin, async (client) => {
+      await client.delete(path);
+      // 204 doesn't tell us whether the server hard-destroyed or fell back to
+      // deactivate (employee_job.rb#destroy_or_deactivate). Follow up with GET:
+      // 404 = destroyed, 200 with active:false = deactivated.
+      let action: "destroyed" | "deactivated" = "destroyed";
+      try {
+        const res = await client.get<{ active?: boolean }>(path);
+        if (res.body?.active === false) action = "deactivated";
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 404) throw err;
+      }
+      return { ok: true, data: { action, job_uuid: jobUuid } };
+    });
+  };
 }
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
