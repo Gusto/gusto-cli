@@ -129,7 +129,7 @@ describe("resolveWorkAddressLocation", () => {
   test("returns the override without hitting the API when --location-uuid is supplied", async () => {
     const { client, calls } = stubApiClient({});
     const result = await resolveWorkAddressLocation(client, "co-1", "loc-override");
-    expect(result).toEqual({ kind: "ok", locationUuid: "loc-override" });
+    expect(result).toEqual({ ok: true, data: { locationUuid: "loc-override" } });
     expect(calls).toHaveLength(0);
   });
 
@@ -138,7 +138,7 @@ describe("resolveWorkAddressLocation", () => {
       "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1" }, { uuid: "loc-2", primary: true }]],
     });
     const result = await resolveWorkAddressLocation(client, "co-1", undefined);
-    expect(result).toEqual({ kind: "ok", locationUuid: "loc-2" });
+    expect(result).toEqual({ ok: true, data: { locationUuid: "loc-2" } });
   });
 
   test("falls back to the first location when no primary/filing flag is set", async () => {
@@ -146,27 +146,26 @@ describe("resolveWorkAddressLocation", () => {
       "GET /v1/companies/co-1/locations": [200, [{ uuid: "loc-1" }, { uuid: "loc-2" }]],
     });
     const result = await resolveWorkAddressLocation(client, "co-1", undefined);
-    expect(result).toEqual({ kind: "ok", locationUuid: "loc-1" });
+    expect(result).toEqual({ ok: true, data: { locationUuid: "loc-1" } });
   });
 
   test("blocks with an actionable reason when the company has no locations", async () => {
     const { client } = stubApiClient({ "GET /v1/companies/co-1/locations": [200, []] });
     const result = await resolveWorkAddressLocation(client, "co-1", undefined);
-    expect(result.kind).toBe("blocked");
-    if (result.kind !== "blocked") throw new Error("unreachable");
-    expect(result.blocked.map((b) => b.field)).toEqual(["location-uuid"]);
-    expect(result.blocked[0]?.reason).toContain("no company locations found");
-    expect(result.blocked[0]?.reason).toContain("company setup address");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("validation");
+    expect(result.error.blocked_on?.map((b) => b.field)).toEqual(["location-uuid"]);
+    expect(result.error.blocked_on?.[0]?.reason).toContain("no company locations found");
+    expect(result.error.blocked_on?.[0]?.reason).toContain("company setup address");
   });
 
   test("propagates the malformed_response envelope when /locations returns a non-array body", async () => {
     const { client } = stubApiClient({ "GET /v1/companies/co-1/locations": [200, { not: "an array" }] });
     const result = await resolveWorkAddressLocation(client, "co-1", undefined);
-    expect(result.kind).toBe("error");
-    if (result.kind !== "error") throw new Error("unreachable");
-    expect(result.result.ok).toBe(false);
-    if (result.result.ok) throw new Error("unreachable");
-    expect(result.result.error.code).toBe("malformed_response");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
   });
 });
 

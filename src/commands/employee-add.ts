@@ -145,33 +145,27 @@ export function workAddressBody(opts: WorkAddressOpts): Record<string, unknown> 
 }
 
 /** Resolve the location uuid: prefer the explicit override, else pick the company's primary
- * location. Returns either the resolved uuid, a validation block (zero locations), or the
- * fetch's own CommandResult error (e.g. malformed_response) for the caller to propagate. */
+ * location. Returns CommandResult so the caller can `if (!resolved.ok) return resolved;`
+ * for both the fetch's structured error (e.g. malformed_response) and the zero-locations
+ * validation block. */
 export async function resolveWorkAddressLocation(
   client: ApiClient,
   companyUuid: string,
   override: string | undefined,
-): Promise<
-  | { kind: "ok"; locationUuid: string }
-  | { kind: "blocked"; blocked: BlockedOn[] }
-  | { kind: "error"; result: CommandResult }
-> {
-  if (override) return { kind: "ok", locationUuid: override };
+): Promise<CommandResult<{ locationUuid: string }>> {
+  if (override) return { ok: true, data: { locationUuid: override } };
   const res = await fetchCompanyLocations(client, companyUuid);
-  if (!res.ok) return { kind: "error", result: res };
+  if (!res.ok) return res;
   const primary = pickPrimaryLocation(res.data ?? []);
   if (!primary) {
-    return {
-      kind: "blocked",
-      blocked: [
-        {
-          field: "location-uuid",
-          reason: "no company locations found; run `gusto company setup address` first, or pass --location-uuid <uuid>",
-        },
-      ],
-    };
+    return missingArgs([
+      {
+        field: "location-uuid",
+        reason: "no company locations found; run `gusto company setup address` first, or pass --location-uuid <uuid>",
+      },
+    ]);
   }
-  return { kind: "ok", locationUuid: primary.uuid };
+  return { ok: true, data: { locationUuid: primary.uuid } };
 }
 
 export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts): CommandHandler {
@@ -196,15 +190,12 @@ export function workAddressHandler(employeeUuid: string, opts: WorkAddressOpts):
 
     return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
       const resolved = await resolveWorkAddressLocation(ctx.client, ctx.companyUuid, opts.locationUuid);
-      if (resolved.kind === "error") return resolved.result;
-      if (resolved.kind === "blocked") return missingArgs(resolved.blocked);
-      const res = await ctx.client.post(path, {
-        location_uuid: resolved.locationUuid,
-        effective_date: opts.effectiveDate,
-      });
+      if (!resolved.ok) return resolved;
+      const { locationUuid } = resolved.data!;
+      const res = await ctx.client.post(path, { location_uuid: locationUuid, effective_date: opts.effectiveDate });
       const body =
         res.body && typeof res.body === "object" ? (res.body as Record<string, unknown>) : { result: res.body };
-      return { ok: true, data: { ...body, location_uuid_used: resolved.locationUuid } };
+      return { ok: true, data: { ...body, location_uuid_used: locationUuid } };
     });
   };
 }
