@@ -19,6 +19,7 @@ import { type BlockedOn } from "../lib/output.ts";
 import { companyHasSignatory } from "../lib/signatory.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand } from "../lib/runner.ts";
 import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
+import { getAndInjectVersion } from "../lib/versioning.ts";
 
 interface ContextOpts {
   companyUuid?: string;
@@ -66,11 +67,10 @@ interface FederalTaxFields {
   taxableAsScorp?: boolean;
 }
 
-/** The federal_tax_details request body. Built once so the dry-run preview and
- * the real PUT can't drift. `version` is omitted for dry-run (read at send time). */
-function federalTaxBody(fields: FederalTaxFields, version?: string): Record<string, unknown> {
+/** The federal_tax_details request body. Built once so the dry-run preview and the real
+ * PUT can't drift. `version` is never set here - getAndInjectVersion reads it at send time. */
+function federalTaxBody(fields: FederalTaxFields): Record<string, unknown> {
   return {
-    ...(version !== undefined ? { version } : {}),
     ein: fields.ein,
     tax_payer_type: fields.taxPayerType,
     filing_form: fields.filingForm,
@@ -163,8 +163,11 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
       const base = `/v1/companies/${ctx.companyUuid}/federal_tax_details`;
 
       const attempt = async (ein: string): Promise<unknown> => {
-        const current = (await ctx.client.get<{ version?: string }>(base)).body;
-        return (await ctx.client.put(base, federalTaxBody({ ...fields, ein }, current.version))).body;
+        const body = federalTaxBody({ ...fields, ein });
+        const resolved = await getAndInjectVersion(ctx.client, base, body);
+        // A GET with no `version` falls back to the bare body, matching employee-add's
+        // putVersioned - these endpoints only 409 on a *stale* version, not a missing one.
+        return (await ctx.client.put(base, resolved.ok ? resolved.body : body)).body;
       };
 
       // Sandbox persists EINs across runs, so a fixture EIN often collides on a
