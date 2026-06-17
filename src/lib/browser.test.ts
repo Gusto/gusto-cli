@@ -49,6 +49,12 @@ describe("canOpenBrowser", () => {
     expect(canOpenBrowser({ CI: "true", BROWSER: "firefox" }, "linux")).toBe(false);
   });
 
+  test("BROWSER=none or empty is a suppress signal, not a launcher", () => {
+    expect(canOpenBrowser({ BROWSER: "none" }, "darwin")).toBe(false);
+    expect(canOpenBrowser({ BROWSER: "none", DISPLAY: ":0" }, "linux")).toBe(false);
+    expect(canOpenBrowser({ BROWSER: "" }, "darwin")).toBe(false);
+  });
+
   test("an unknown platform is treated as not openable", () => {
     expect(canOpenBrowser({}, "freebsd" as NodeJS.Platform)).toBe(false);
   });
