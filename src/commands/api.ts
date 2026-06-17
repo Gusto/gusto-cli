@@ -6,7 +6,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
-import { readString, withVersion } from "../lib/versioning.ts";
+import { getAndInjectVersion, readString } from "../lib/versioning.ts";
 
 const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];
@@ -99,9 +99,26 @@ export function apiRequestHandler(
       };
     }
 
+    // Pending when we'll need to GET the resource's version at send time: --auto-version is on, the
+    // method carries a version, and the caller didn't already supply one in --data (theirs wins).
+    const autoVersionPending = opts.autoVersion === true && isVersioned && readString(body, "version") === undefined;
+
+    // --auto-version injects the version into an object body; a non-object --data (array, string,
+    // number) has nowhere to hold it. This is a pure shape check on --data with no network call, so
+    // enforce it for dry-run too - the user finds out before sending, not only on a real send.
+    if (autoVersionPending && body !== undefined && (typeof body !== "object" || Array.isArray(body))) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: {
+          code: "auto_version_requires_object",
+          message: "--auto-version needs --data to be a JSON object (or omitted) so version can be injected",
+        },
+      };
+    }
+
     // A dry-run never sends; when --auto-version is pending it notes that the version is read at
     // send time (matching the setup/add commands) rather than firing the version GET now.
-    const autoVersionPending = opts.autoVersion === true && isVersioned && readString(body, "version") === undefined;
     const dryRunResult = (finalPath: string): CommandResult => ({
       ok: true,
       data: autoVersionPending
@@ -115,9 +132,18 @@ export function apiRequestHandler(
     const send = async (client: ApiClient, finalPath: string): Promise<CommandResult> => {
       try {
         let finalBody = body;
-        if (opts.autoVersion && isVersioned) {
-          const resolved = await resolveVersion(client, finalPath, body);
-          if (!resolved.ok) return resolved.result;
+        if (autoVersionPending) {
+          const resolved = await getAndInjectVersion(client, finalPath, (body ?? {}) as Record<string, unknown>);
+          if (!resolved.ok) {
+            return {
+              ok: false,
+              exitCode: ExitCode.Validation,
+              error: {
+                code: "version_unresolved",
+                message: `no \`version\` field in the GET ${finalPath} response; pass it explicitly in --data`,
+              },
+            };
+          }
           finalBody = resolved.body;
         }
         const response = await client.request(method as Method, finalPath, finalBody);
@@ -158,46 +184,4 @@ export function apiRequestHandler(
     if (opts.dryRun) return dryRunResult(resolvedPath);
     return send(ctx.ctx.client, resolvedPath);
   };
-}
-
-type VersionResolution = { ok: true; body: unknown } | { ok: false; result: CommandResult<never> };
-
-/** GET `path` to learn the resource's current `version` and inject it into `body`,
- * unless the caller already supplied one (theirs always wins). Mirrors the version
- * dance the `company setup` / `employee add` commands run internally. */
-async function resolveVersion(client: ApiClient, path: string, body: unknown): Promise<VersionResolution> {
-  if (readString(body, "version") !== undefined) return { ok: true, body };
-
-  if (body !== undefined && (typeof body !== "object" || Array.isArray(body))) {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: {
-          code: "auto_version_requires_object",
-          message: "--auto-version needs --data to be a JSON object (or omitted) so version can be injected",
-        },
-      },
-    };
-  }
-
-  const current = await client.get(path);
-  const version = readString(current.body, "version");
-  if (version === undefined) {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: {
-          code: "version_unresolved",
-          message: `no \`version\` field in the GET ${path} response; pass it explicitly in --data`,
-        },
-      },
-    };
-  }
-
-  const base = (body ?? {}) as Record<string, unknown>;
-  return { ok: true, body: withVersion(base, version) };
 }

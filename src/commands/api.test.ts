@@ -288,4 +288,19 @@ describe("api request --auto-version", () => {
     expect(d.body).toEqual({ ein: "12-3" });
     expect(d.note).toBeUndefined();
   });
+
+  test("--dry-run --auto-version with a non-object body is rejected (same as a real send)", async () => {
+    // The body-shape check needs no network, so a dry-run surfaces it too - the user finds out
+    // before sending rather than getting an ok dry-run that a real send would then reject.
+    const { calls, restore } = stubGlobalFetch([{ status: 200, body: {} }]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: "[1,2,3]", dryRun: true })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("auto_version_requires_object");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
 });

@@ -12,7 +12,7 @@ import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts"
 import type { BlockedOn } from "../lib/output.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
-import { readString, withVersion } from "../lib/versioning.ts";
+import { getAndInjectVersion, readString, withVersion } from "../lib/versioning.ts";
 
 // `employee add` mirrors `company setup`: bare `employee add` creates the employee, then each
 // sub-domain is its own subcommand (`employee add <domain> <employee_uuid>`) with typed flags, a
@@ -1146,12 +1146,10 @@ async function putVersioned(
   path: string,
   body: Record<string, unknown>,
 ): Promise<{ body: unknown }> {
-  let merged = body;
-  if (readString(merged, "version") === undefined) {
-    const current = await client.get(path);
-    merged = withVersion(merged, readString(current.body, "version"));
-  }
-  return client.put(path, merged);
+  const resolved = await getAndInjectVersion(client, path, body);
+  // A GET with no `version` falls back to the bare body (unchanged from before this used the
+  // shared helper) - these endpoints only 409 when a *stale* version is sent, not a missing one.
+  return client.put(path, resolved.ok ? resolved.body : body);
 }
 
 /** Resolve a token-only (no company required) client for employee-scoped endpoints and run `fn`,
