@@ -361,7 +361,7 @@ export async function runContractorAdd(
 
 /** The two requests `--self-onboarding` makes, for --dry-run. The contractor uuid isn't known until
  * the POST returns, so the invite PUT carries a `{contractor_uuid}` placeholder. */
-export function contractorSelfOnboardSteps(body: ContractorBody): Record<string, unknown>[] {
+export function contractorSelfOnboardSteps(body: SelfOnboardingContractorBody): Record<string, unknown>[] {
   return [
     { method: "POST", path: "/v1/companies/{company_uuid}/contractors", body },
     {
