@@ -632,8 +632,9 @@ function asStateArray(body: unknown): StateTaxStateRec[] {
   return Array.isArray(body) ? (body as StateTaxStateRec[]) : [];
 }
 
-/** Resolve a raw answer string against a question's type: Select accepts the value OR the human
- * label (case-insensitive) and returns the API value; Number/Currency/Date are format-checked. */
+/** Resolve a raw answer string against a question's type: Select accepts the value, the human label
+ * (case-insensitive), or (for boolean-valued options) `yes`/`no` as aliases for `true`/`false`,
+ * and returns the API value; Number/Currency/Date are format-checked. */
 function resolveAnswerValue(
   q: StateTaxQuestion,
   value: string,
@@ -641,9 +642,14 @@ function resolveAnswerValue(
   const type = q.input_question_format?.type;
   if (type === "Select") {
     const options = q.input_question_format?.options ?? [];
-    // Match on the stringified option value (so a boolean `true` accepts "true") or the human label,
-    // then return the option's ORIGINAL value so its type round-trips back to the API.
-    const match = options.find((o) => String(o.value) === value || o.label.toLowerCase() === value.toLowerCase());
+    const lowered = value.toLowerCase();
+    const yesNo = lowered === "yes" ? true : lowered === "no" ? false : null;
+    const match = options.find(
+      (o) =>
+        String(o.value) === value ||
+        o.label.toLowerCase() === lowered ||
+        (yesNo !== null && typeof o.value === "boolean" && o.value === yesNo),
+    );
     if (!match) return { ok: false, reason: `must be one of: ${options.map((o) => o.label).join(", ")}` };
     return { ok: true, value: match.value };
   }
@@ -1293,8 +1299,9 @@ Run with no --answer to discover each state's questions, then answer them:
   $ gusto employee add state-tax <employee_uuid>
   $ gusto employee add state-tax <employee_uuid> --answer CA:filing_status=Single --answer CA:withholding_allowance=2
 
-Select answers accept either the human label ("Single") or the API value ("S"). A bare key
-(--answer filing_status=Single) applies to every state that asks it; STATE:key scopes it to one.
+Select answers accept the human label ("Single"), the API value ("S"), or for true/false
+questions also "Yes"/"No". A bare key (--answer filing_status=Single) applies to every state
+that asks it; STATE:key scopes it to one.
 `,
     )
     .action((employeeUuid: string | undefined, opts: StateTaxOpts) =>

@@ -781,6 +781,41 @@ describe("buildStateTaxBody", () => {
     expect(r.ok).toBe(false);
   });
 
+  test("a boolean Select accepts Yes/No as aliases for true/false", () => {
+    const yes = buildStateTaxBody([NEW_HIRE_STATE], [{ state: "CA", key: "file_new_hire_report", value: "Yes" }]);
+    expect(yes.ok).toBe(true);
+    if (!yes.ok) throw new Error("unreachable");
+    expect(yes.body.states[0]?.questions[0]?.answers[0]?.value).toBe(true);
+
+    const no = buildStateTaxBody([NEW_HIRE_STATE], [{ state: "CA", key: "file_new_hire_report", value: "no" }]);
+    expect(no.ok).toBe(true);
+    if (!no.ok) throw new Error("unreachable");
+    expect(no.body.states[0]?.questions[0]?.answers[0]?.value).toBe(false);
+  });
+
+  test("Yes/No alias does not apply to non-boolean Select questions", () => {
+    const yesNoOptionsState = {
+      state: "NY",
+      questions: [
+        {
+          key: "yn",
+          input_question_format: {
+            type: "Select",
+            options: [
+              { value: "Y", label: "Yes" },
+              { value: "N", label: "No" },
+            ],
+          },
+          answers: [],
+        },
+      ],
+    };
+    const r = buildStateTaxBody([yesNoOptionsState], [{ state: "NY", key: "yn", value: "Yes" }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.body.states[0]?.questions[0]?.answers[0]?.value).toBe("Y");
+  });
+
   test("a missing required question is blocked with STATE:key", () => {
     const r = buildStateTaxBody([CA_STATE], [{ key: "filing_status", value: "Single" }]);
     expect(r.ok).toBe(false);
