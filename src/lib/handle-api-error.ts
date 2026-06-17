@@ -98,6 +98,27 @@ export function toResult(err: unknown): CommandResult<never> {
   };
 }
 
+/** The failure returned when a create succeeds (2xx) but the response carries no usable uuid, so a
+ * follow-up call keyed on that uuid can't be made. A server-side contract violation, hence
+ * `ExitCode.ApiServer`. Shared by every create-then-use flow (bank accounts, contractor
+ * self-onboarding, ...) so the code/shape stays in lockstep; `details` echoes the raw response for
+ * debugging, and `message` should name the resource and the recovery path. */
+export function createdWithoutUuidError(spec: {
+  code: string;
+  message: string;
+  details?: unknown;
+}): CommandResult<never> {
+  return {
+    ok: false,
+    exitCode: ExitCode.ApiServer,
+    error: {
+      code: spec.code,
+      message: spec.message,
+      ...(spec.details !== undefined ? { details: spec.details } : {}),
+    },
+  };
+}
+
 /** Envelope for a partial failure: one or more earlier steps succeeded, then a
  * follow-up step failed, leaving the caller in a known intermediate state worth
  * reporting (e.g. a bank account was created but its verification failed, or an
