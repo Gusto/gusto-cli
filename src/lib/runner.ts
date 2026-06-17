@@ -18,7 +18,15 @@ export interface CommandContext {
 }
 
 export type CommandResult<T = unknown> =
-  | { ok: true; data?: T }
+  | {
+      ok: true;
+      data?: T;
+      /** Optional renderer for `--human` output, as a thunk over this result's data. Applied only
+       * when stdout is human mode and no `--fields` projection is in play (a projection changes the
+       * data shape the renderer expects). Agent/JSON output ignores it entirely. A thunk keeps this
+       * field free of `T`, so a concrete CommandResult stays assignable to CommandResult<unknown>. */
+      human?: () => string;
+    }
   | {
       ok: false;
       exitCode: ExitCodeValue;
@@ -132,8 +140,10 @@ async function run<T>(
         code = ExitCode.Success;
       }
     } else {
-      // Without `--fields`, successful data passes through untouched.
-      emit(output, { ok: true, data: result.data }, deps.sinks);
+      // Without `--fields`, successful data passes through untouched. A handler-supplied human
+      // renderer is forwarded here only — the projection branches above reshape the data, so the
+      // renderer (which expects the full shape) would no longer apply.
+      emit(output, { ok: true, data: result.data }, deps.sinks, result.human);
       code = ExitCode.Success;
     }
   } catch (err) {
