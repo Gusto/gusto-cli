@@ -247,6 +247,21 @@ describe("api request --auto-version", () => {
     }
   });
 
+  test("--auto-version with an explicit null body is rejected (typeof null is 'object')", async () => {
+    // Regression: `--data null` slipped past the shape check because typeof null === "object", then
+    // (body ?? {}) silently coerced it to {} and the write went out instead of being rejected.
+    const { calls, restore } = stubGlobalFetch([{ status: 200, body: {} }]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: "null" })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("auto_version_requires_object");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
   test("auto-version resolves the {company_uuid} placeholder before the version GET/PUT", async () => {
     const { calls, restore } = stubGlobalFetch([
       { status: 200, body: { version: "v-current" } },
