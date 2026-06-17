@@ -12,8 +12,10 @@ export function canOpenBrowser(
 ): boolean {
   // CI never has a human at a desktop, regardless of anything else.
   if (isTruthy(env.CI)) return false;
-  // An explicit BROWSER launcher means the user has wired up how to open URLs.
-  if (env.BROWSER) return true;
+  // BROWSER lets the user decide how URLs open. A real launcher (`firefox`) means
+  // yes; by convention `none` or empty means "never open one", so honor that as a
+  // suppress override on every platform before the per-OS heuristics run.
+  if (env.BROWSER !== undefined) return env.BROWSER !== "" && env.BROWSER !== "none";
   if (platform === "linux") {
     // A graphical launcher needs an X11/Wayland display. This also handles SSH:
     // forwarded sessions set DISPLAY, bare remote shells don't.
