@@ -332,7 +332,7 @@ export async function runJob(
 
 /** The positional employee_uuid is optional on subcommands that take `--example` (so a canned
  * sample needs no real uuid); every non-example path requires it. */
-function missingEmployeeUuid(): CommandResult<never> {
+export function missingEmployeeUuid(): CommandResult<never> {
   return missingArgs([{ field: "employee_uuid", reason: "required" }]);
 }
 
@@ -1152,9 +1152,11 @@ async function putVersioned(
   return client.put(path, resolved.ok ? resolved.body : body);
 }
 
-/** Resolve a token-only (no company required) client for employee-scoped endpoints and run `fn`,
- * mapping any API/network error it throws. Sibling of `withCompanyContext` for `/v1/employees/...`. */
-async function withEmployeeClient(
+/** Resolve a token-only (no company required) client and run `fn`, mapping any
+ * API/network error it throws. Sibling of `withCompanyContext` for endpoints
+ * that carry the resource UUID in the path itself (`/v1/employees/{uuid}`,
+ * `/v1/jobs/{uuid}`, and any future token-scoped resource of the same shape). */
+export async function withEmployeeClient(
   globals: GlobalFlags,
   tokenStdin: boolean | undefined,
   fn: (client: ApiClient) => Promise<CommandResult>,
@@ -1190,13 +1192,17 @@ function postSubdomainHandler(
 
 const collectAnswer = (value: string, previous: string[]): string[] => previous.concat(value);
 
-/** Declare the shared employee_uuid positional on an `employee add <domain>` subcommand.
+/** Declare the shared employee_uuid positional on an employee subcommand.
  * Optional at the Commander level so a missing uuid reaches the handler and returns the
  * standard blocked_on envelope (every handler guards with missingEmployeeUuid) instead of a
  * bare Commander error; the description gives `--help` an Arguments section. Centralized so the
- * positional and its help text stay identical across subcommands. */
-function withEmployeeUuidArg(cmd: Command): Command {
-  return cmd.argument("[employee_uuid]", "UUID of the employee to update (from `employee add personal-details`)");
+ * positional and its help text stay identical across subcommands; pass `description` to
+ * override the default "to update" wording for non-update verbs. */
+export function withEmployeeUuidArg(
+  cmd: Command,
+  description = "UUID of the employee to update (from `employee add personal-details`)",
+): Command {
+  return cmd.argument("[employee_uuid]", description);
 }
 
 export function registerEmployeeAdd(employee: Command, parent: Command): void {
