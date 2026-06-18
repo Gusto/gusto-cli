@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { fetchCompanyResource } from "../lib/api-context.ts";
+import { fetchCompanyResource, putCompanyResource } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
@@ -107,8 +107,14 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryRe
   return { ok: true, query };
 }
 
+interface PayrollPrepareOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+}
+
 export function registerPayrollCommand(parent: Command): void {
-  const cmd = parent.command("payroll").description("Inspect payrolls");
+  const cmd = parent.command("payroll").description("Inspect and prepare payrolls");
 
   cmd
     .command("list")
@@ -138,6 +144,36 @@ All filters are optional. Defaults: processed regular payrolls, ascending.
     .action((opts: PayrollListOpts) =>
       runCommand("gusto payroll list", readGlobalFlags(parent.opts()), payrollListHandler(opts)),
     );
+
+  cmd
+    .command("prepare <payroll_uuid>")
+    .description("Prepare a draft payroll: populates its employee compensations so totals can be verified")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option("--dry-run", "Build the request without sending")
+    .addHelpText(
+      "after",
+      `
+A draft payroll starts as an empty shell (0 employee_compensations); 'timesheet sync' and
+running payroll both require it to be prepared first. The response echoes the populated
+payroll so the synced hours/compensations can be read back and verified.
+
+Example:
+  $ gusto payroll prepare 1a2b3c4d-0000-1111-2222-333344445555
+`,
+    )
+    .action((payrollUuid: string, opts: PayrollPrepareOpts) =>
+      runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
+    );
+}
+
+export function payrollPrepareHandler(payrollUuid: string, opts: PayrollPrepareOpts): CommandHandler {
+  return async ({ globals }) =>
+    putCompanyResource(globals, `payrolls/${payrollUuid}/prepare`, {
+      tokenStdin: opts.tokenStdin,
+      companyUuid: opts.companyUuid,
+      dryRun: opts.dryRun,
+    });
 }
 
 function payrollListHandler(opts: PayrollListOpts): CommandHandler {

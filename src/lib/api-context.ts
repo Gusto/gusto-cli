@@ -192,6 +192,54 @@ export async function createCompanyResource(
   }
 }
 
+/** PUT to /v1/companies/{company_uuid}/{resource} (optionally with a body). Same auth/company
+ * resolution, --dry-run, and error mapping as createCompanyResource, but for endpoints that mutate
+ * an existing resource in place (e.g. payroll prepare). Returns the response body, so callers that
+ * need to read the mutated resource back (e.g. the payroll's populated compensations) get it for
+ * free. Use this for a straight PUT-and-return; reach for withCompanyContext when the result needs
+ * further shaping (see companyFinishOnboardingHandler). */
+export async function putCompanyResource(
+  globals: GlobalFlags,
+  resource: string,
+  opts: CompanyResourceOpts,
+  body?: unknown,
+): Promise<CommandResult> {
+  const ctx = await resolveApiContext(globals, {
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
+    companyOverride: opts.companyUuid,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
+  if (!ctx.ok) {
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: `/v1/companies/{company_uuid}/${resource}`,
+          ...(body !== undefined ? { body } : {}),
+          note: "dry-run: token/company not required",
+        },
+      };
+    }
+    return ctx.result;
+  }
+
+  const path = `/v1/companies/${ctx.ctx.companyUuid}/${resource}`;
+  if (opts.dryRun) {
+    return { ok: true, data: { method: "PUT", path, ...(body !== undefined ? { body } : {}) } };
+  }
+
+  try {
+    const response = await ctx.ctx.client.put(path, body);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
 /** Resolve auth/company context, GET the path from `buildPath`, and map API/network errors.
  * `buildPath` receives a context narrowed to `hasCompany: true`, so accessing `companyUuid`
  * is a compile-error-safe operation. */
