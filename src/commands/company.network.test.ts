@@ -49,10 +49,6 @@ describe("companyShowHandler", () => {
   });
 
   test("a failed primary company GET is a real failure, not a buried partial_error", async () => {
-    // The company record is the primary read; without it there's nothing to show. A 404
-    // here must surface as a real failure (ok:false, exit ApiClient) so an agent keying on
-    // the exit code sees the command failed, rather than ok:true with success:false buried
-    // in the body (AINT-674). The secondary GETs succeeding doesn't change that.
     routeFetch([
       { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
       { match: "/pay_schedules", status: 200, body: [] },
@@ -66,9 +62,6 @@ describe("companyShowHandler", () => {
   });
 
   test("company succeeds but a secondary pay_schedules GET fails: ok:true with partial_errors", async () => {
-    // Only the company read is primary. A secondary read failing (here pay_schedules) still
-    // returns the company data with the failure recorded under partial_errors - it doesn't
-    // promote to a command failure the way a missing company record does (AINT-674).
     routeFetch([
       { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
       { match: "/pay_schedules", status: 404, body: { error: "not found" } }, // 404 = not retried

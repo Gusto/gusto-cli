@@ -146,11 +146,8 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         safe("pay_schedules", async () => (await ctx.client.get<PaySchedule[]>(`${base}/pay_schedules`)).body),
       ]);
 
-      // The company record is the primary read - without it there's nothing to show. Surface its
-      // failure as a real failure (rethrow so withCompanyContext's catch maps it via toResult to
-      // the right exit code) rather than folding it into partial_errors under ok:true, where an
-      // agent keying on the exit code would think the command worked (AINT-674). Secondary reads
-      // (payment_config, pay_schedules) still degrade to partial_errors below.
+      // The company record is the primary read; if it failed there's nothing to show, so rethrow
+      // (mapped to the right exit code downstream) instead of burying it under partial_errors.
       if (!companyR.ok) throw companyR.cause;
 
       const company = companyR.data;
