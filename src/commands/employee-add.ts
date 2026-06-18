@@ -1152,8 +1152,10 @@ async function putVersioned(
   return client.put(path, resolved.ok ? resolved.body : body);
 }
 
-/** Resolve a token-only (no company required) client for employee-scoped endpoints and run `fn`,
- * mapping any API/network error it throws. Sibling of `withCompanyContext` for `/v1/employees/...`. */
+/** Resolve a token-only (no company required) client and run `fn`, mapping any
+ * API/network error it throws. Sibling of `withCompanyContext` for endpoints
+ * that carry the resource UUID in the path itself (`/v1/employees/{uuid}`,
+ * `/v1/jobs/{uuid}`, and any future token-scoped resource of the same shape). */
 export async function withEmployeeClient(
   globals: GlobalFlags,
   tokenStdin: boolean | undefined,

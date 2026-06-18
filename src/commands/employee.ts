@@ -138,13 +138,13 @@ export function jobDeleteHandler(jobUuid: string | undefined, opts: DeleteOpts):
     if (opts.dryRun) return { ok: true, data: { method: "DELETE", path } };
     return withEmployeeClient(globals, opts.tokenStdin, async (client) => {
       await client.delete(path);
-      // 204 doesn't tell us whether the server hard-destroyed or fell back to
-      // deactivate (employee_job.rb#destroy_or_deactivate). Follow up with GET:
-      // 404 = destroyed, 200 with active:false = deactivated.
+      // 204 doesn't distinguish between hard-destroy and deactivate fallback
+      // (employee_job.rb#destroy_or_deactivate). Follow up with GET: 404 means
+      // destroyed; any 2xx means the row still exists, so deactivate fired.
       let action: "destroyed" | "deactivated" = "destroyed";
       try {
-        const res = await client.get<{ active?: boolean }>(path);
-        if (res.body?.active === false) action = "deactivated";
+        await client.get(path);
+        action = "deactivated";
       } catch (err) {
         if (!(err instanceof ApiError) || err.status !== 404) throw err;
       }

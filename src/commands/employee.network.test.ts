@@ -109,10 +109,11 @@ describe("jobDeleteHandler (network)", () => {
     expect(calls[1]?.url).toContain("/v1/jobs/job-1");
   });
 
-  test("DELETE 204 then GET 200 with active:false → action 'deactivated'", async () => {
+  test("DELETE 204 then GET 200 → action 'deactivated' (any 2xx means the row still exists)", async () => {
     const calls = stubSeq([
       { status: 204, body: "" },
-      { status: 200, body: { uuid: "job-1", active: false } },
+      // Realistic JobPresenter response: no `active` field, per show.json.rabl.
+      { status: 200, body: { uuid: "job-1", title: "Engineer", primary: true } },
     ]);
     const d = okData(await jobDeleteHandler("job-1", {})(ctx));
     expect(d).toEqual({ action: "deactivated", job_uuid: "job-1" });
@@ -127,5 +128,17 @@ describe("jobDeleteHandler (network)", () => {
     expect(JSON.stringify(result.error.details)).toContain("at least one active job");
     // No follow-up GET when the DELETE itself failed.
     expect(calls).toHaveLength(1);
+  });
+
+  test("DELETE 204 then GET non-404 error propagates (not silently swallowed as 'destroyed')", async () => {
+    const calls = stubSeq([
+      { status: 204, body: "" },
+      { status: 403, body: { errors: [{ message: "forbidden" }] } },
+    ]);
+    const result = await jobDeleteHandler("job-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("api_client_error");
+    expect(calls).toHaveLength(2);
   });
 });
