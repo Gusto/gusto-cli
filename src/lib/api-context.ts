@@ -56,11 +56,26 @@ export type ResolvedToken =
  * a typo'd secret surfaces the real auth error instead of silently running as the
  * logged-in identity. The session is only loaded when no explicit
  * token is present, so a bad GUSTO_ACCESS_TOKEN can't be masked by an on-disk
- * session refresh. `source` tells callers which credential won. */
+ * session refresh. An empty pipe under `--token-stdin` is treated as an explicit
+ * credential choice that failed, not a falls-through-to-other-sources case - same
+ * silent-identity-drift hazard as a bad env token. `source` tells callers which
+ * credential won. */
 export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Promise<ResolvedToken> {
   if (opts.tokenStdin) {
     const piped = await (opts.readStdin ?? readTokenFromStdin)();
     if (piped) return { ok: true, token: piped, source: "stdin" };
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        exitCode: ExitCode.Auth,
+        error: {
+          code: "no_access_token",
+          message:
+            "--token-stdin was passed but no token arrived on stdin. Pipe one (e.g. `echo $TOKEN | gusto ...`) or drop --token-stdin to fall back to GUSTO_ACCESS_TOKEN / the stored session.",
+        },
+      },
+    };
   }
   const envToken = getAccessToken();
   if (envToken) return { ok: true, token: envToken, source: "env" };

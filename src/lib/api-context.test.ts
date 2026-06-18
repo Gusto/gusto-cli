@@ -167,7 +167,27 @@ describe("resolveAuthToken - explicit token precedence (stdin > env > session)",
     expect(resolved.source).toBe("env");
   });
 
-  test("--token-stdin with nothing piped degrades to no_access_token", async () => {
+  test("--token-stdin with nothing piped fails closed instead of falling back to env or session", async () => {
+    // The user opted into an explicit credential source; an empty pipe is the same
+    // silent-identity-drift hazard as a bad env token. Even with env + session set,
+    // we must not silently run as one of them.
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const resolved = await resolveAuthToken(flags, {
+      tokenStdin: true,
+      readStdin: () => Promise.resolve(null),
+      store,
+      http: mockHttp({ status: 200 }),
+      now: () => 1_000,
+    });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) throw new Error("unreachable");
+    if (resolved.result.ok) throw new Error("unreachable");
+    expect(resolved.result.error.code).toBe("no_access_token");
+    expect(resolved.result.error.message).toContain("--token-stdin");
+  });
+
+  test("--token-stdin with nothing piped fails closed when env and session are also absent", async () => {
     const resolved = await resolveAuthToken(flags, { ...stdinAuth(null) });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) throw new Error("unreachable");
