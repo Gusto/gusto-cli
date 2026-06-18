@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findSkillsDir, getSkill, getSkillStatus, injectUserInvocable, installSkill, listSkills } from "./skills.ts";
+import {
+  findSkillsDir,
+  getSkill,
+  getSkillStatus,
+  injectUserInvocable,
+  installBundledSkills,
+  installSkill,
+  listSkills,
+} from "./skills.ts";
 
 let scratch: string;
 
@@ -144,5 +152,35 @@ describe("getSkillStatus", () => {
   test("returns 'not_installed' for an unknown skill name", async () => {
     const dir = { path: scratch, kind: "claude" as const, scope: "local" as const };
     expect(await getSkillStatus("not-a-skill", dir)).toBe("not_installed");
+  });
+});
+
+describe("installBundledSkills", () => {
+  test("installs every bundled skill on a fresh machine", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    const results = await installBundledSkills(dir);
+    expect(results.length).toBe(listSkills().length);
+    for (const r of results) {
+      expect(r.action).toBe("installed");
+      expect(existsSync(r.installedAt)).toBe(true);
+    }
+  });
+
+  test("reports already_up_to_date on second run without rewriting", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    await installBundledSkills(dir);
+    const second = await installBundledSkills(dir);
+    for (const r of second) expect(r.action).toBe("already_up_to_date");
+  });
+
+  test("skips stale (possibly user-edited) skills instead of clobbering them", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    const target = path.join(dir.path, "onboard-company", "SKILL.md");
+    mkdirSync(path.dirname(target), { recursive: true });
+    const userEdit = "user-edited content I don't want clobbered";
+    writeFileSync(target, userEdit);
+    const results = await installBundledSkills(dir);
+    expect(results.find((r) => r.skill === "onboard-company")?.action).toBe("skipped_user_edited");
+    expect(readFileSync(target, "utf8")).toBe(userEdit);
   });
 });

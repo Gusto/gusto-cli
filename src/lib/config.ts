@@ -4,17 +4,21 @@ import { parse, stringify } from "smol-toml";
 import type { Environment } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
-export type ConfigKey = "environment" | "format";
+export type ConfigKey = "environment" | "format" | "skills_auto_install";
 
-export const CONFIG_KEYS: readonly ConfigKey[] = ["environment", "format"] as const;
+export const CONFIG_KEYS: readonly ConfigKey[] = ["environment", "format", "skills_auto_install"] as const;
+
+export type SkillsAutoInstall = "ask" | "always" | "never";
 
 export interface UserConfig {
   environment?: Environment;
   format?: OutputMode;
+  skills_auto_install?: SkillsAutoInstall;
 }
 
 const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
+const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
 
 export interface ConfigPaths {
   dir: string;
@@ -72,6 +76,10 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       return (FORMAT_VALUES as readonly string[]).includes(value)
         ? null
         : `format must be one of: ${FORMAT_VALUES.join(", ")}`;
+    case "skills_auto_install":
+      return (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(value)
+        ? null
+        : `skills_auto_install must be one of: ${SKILLS_AUTO_INSTALL_VALUES.join(", ")}`;
     default: {
       // Exhaustiveness guard: adding a ConfigKey without a case here is a compile error,
       // not a silent validation bypass.
@@ -88,6 +96,12 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
   }
   if (typeof raw.format === "string" && (FORMAT_VALUES as readonly string[]).includes(raw.format)) {
     out.format = raw.format as OutputMode;
+  }
+  if (
+    typeof raw.skills_auto_install === "string" &&
+    (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(raw.skills_auto_install)
+  ) {
+    out.skills_auto_install = raw.skills_auto_install as SkillsAutoInstall;
   }
   return out;
 }

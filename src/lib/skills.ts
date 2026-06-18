@@ -14,13 +14,14 @@ export interface Skill {
 const SKILLS: Record<string, Skill> = {
   "onboard-company": {
     name: "onboard-company",
-    description: "Onboard a new Gusto company end-to-end - provision, add first hire, set up pay schedule, finalize.",
+    description:
+      "Use when the user wants to set up a new Gusto company, get a company onto payroll, or onboard their business end-to-end. Drives provisioning, tax setup, bank, pay schedule, first hire, and form signing.",
     content: onboardCompany,
   },
   "cash-forecasting": {
     name: "cash-forecasting",
     description:
-      "Forecast upcoming payroll cash needs from processed-payroll history, ledger data, and the pay-schedule cadence. Read-only.",
+      "Use when the user asks about payroll cash flow, runway, whether they can afford payroll, or how much they'll owe in upcoming pay periods. Projects payroll cash needs from history + ledger + pay-schedule cadence. Interactive and read-only.",
     content: cashForecasting,
   },
 };
@@ -58,6 +59,14 @@ export function findSkillsDir(startDir: string = process.cwd(), home: string = h
     if (parent === cur) break;
     cur = parent;
   }
+  return globalClaudeSkillsDir(home);
+}
+
+/** Always-global Claude skills target. Used by `auth login` auto-install where the goal is
+ * "any agent on this machine sees the skill" - independent of where the user happens to be
+ * `cd`'d when they sign in. `findSkillsDir`'s walk-up-from-cwd is still the right shape for
+ * explicit `gusto skill install`, where the user may scope to a repo on purpose. */
+export function globalClaudeSkillsDir(home: string = homedir()): SkillsDir {
   return { path: path.join(home, ".claude", "skills"), kind: "claude", scope: "global" };
 }
 
@@ -114,6 +123,38 @@ export async function installSkill(name: string, dir: SkillsDir = findSkillsDir(
   }
 
   return { skill: skill.name, installedAt: targetFile, kind: dir.kind, scope: dir.scope, action };
+}
+
+export interface AutoInstallResult {
+  skill: string;
+  installedAt: string;
+  action: InstallAction | "skipped_user_edited";
+}
+
+/** Install every bundled skill conservatively into `~/.claude/skills`:
+ *
+ * - not_installed -> write the file
+ * - installed (already current) -> no-op
+ * - stale -> skip (could be user-edited; explicit `gusto skill install --all` refreshes)
+ *
+ * The conservative branch on `stale` is what makes this safe to run on every `auth login`
+ * without clobbering local edits. */
+export async function installBundledSkills(dir: SkillsDir = globalClaudeSkillsDir()): Promise<AutoInstallResult[]> {
+  const out: AutoInstallResult[] = [];
+  for (const skill of listSkills()) {
+    const status = await getSkillStatus(skill.name, dir);
+    const targetFile = installedPath(dir, skill.name);
+    if (status === "not_installed") {
+      await mkdir(path.dirname(targetFile), { recursive: true });
+      await writeFile(targetFile, expectedContent(skill, dir.kind));
+      out.push({ skill: skill.name, installedAt: targetFile, action: "installed" });
+    } else if (status === "stale") {
+      out.push({ skill: skill.name, installedAt: targetFile, action: "skipped_user_edited" });
+    } else {
+      out.push({ skill: skill.name, installedAt: targetFile, action: "already_up_to_date" });
+    }
+  }
+  return out;
 }
 
 export function injectUserInvocable(markdown: string): string {

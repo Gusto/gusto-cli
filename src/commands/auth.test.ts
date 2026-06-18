@@ -1,8 +1,19 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { type ConfigPaths, readConfig, writeConfig } from "../lib/config.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
-import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
-import { authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
+import type { SkillsDir } from "../lib/skills.ts";
+import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  authWhoamiHandler,
+  buildSignInUrlEmitter,
+  loginResultData,
+  maybeInstallSkillsAfterLogin,
+  performLogout,
+} from "./auth.ts";
 
 // whoami's token resolution (session > env > --token-stdin) is delegated to
 // fetchResource and covered by api-context.test.ts; the cases below cover the
@@ -82,6 +93,82 @@ describe("buildSignInUrlEmitter", () => {
     } finally {
       Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
     }
+  });
+});
+
+describe("maybeInstallSkillsAfterLogin", () => {
+  const human: GlobalFlags = { ...TEST_GLOBALS, agent: false, human: true, json: false };
+  const agent: GlobalFlags = { ...TEST_GLOBALS, agent: true, human: false, json: true };
+  let scratch: string;
+  let configPaths: ConfigPaths;
+  let skillsDir: SkillsDir;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(path.join(tmpdir(), "gusto-cli-auth-skills-"));
+    configPaths = { dir: path.join(scratch, "config"), file: path.join(scratch, "config", "config.toml") };
+    skillsDir = { path: path.join(scratch, "skills"), kind: "claude", scope: "global" };
+  });
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  test("skips entirely when persisted preference is 'never'", async () => {
+    await writeConfig({ skills_auto_install: "never" }, configPaths);
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, skillsDir });
+    expect(result).toBeUndefined();
+  });
+
+  test("auto-installs without prompting when persisted preference is 'always'", async () => {
+    await writeConfig({ skills_auto_install: "always" }, configPaths);
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      prompt: async () => {
+        throw new Error("prompt should not be called when preference is persisted");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.length).toBeGreaterThan(0);
+  });
+
+  test("prompts on first run in TTY mode and persists the answer", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      prompt: async () => "always",
+    });
+    expect(result).toBeDefined();
+    expect((await readConfig(configPaths)).skills_auto_install).toBe("always");
+  });
+
+  test("persists 'never' when the user declines the prompt", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      prompt: async () => "never",
+    });
+    expect(result).toBeUndefined();
+    expect((await readConfig(configPaths)).skills_auto_install).toBe("never");
+  });
+
+  test("auto-installs in agent mode without prompting or persisting", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(agent, sinks, {
+      configPaths,
+      skillsDir,
+      prompt: async () => {
+        throw new Error("prompt should not be called in agent mode");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.length).toBeGreaterThan(0);
+    // Future TTY run on the same machine should still see the prompt.
+    expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
   });
 });
 

@@ -1,6 +1,6 @@
 ---
 name: onboard-company
-description: Onboard a new Gusto company end-to-end - provision, set up taxes/bank/pay-schedule, add first hire, sign forms.
+description: Use when the user wants to set up a new Gusto company, get a company onto payroll, or onboard their business end-to-end. Drives provisioning, federal/state tax setup, bank linkage, pay schedule, first W-2 hire, and signing company forms.
 ---
 
 # Onboard a Gusto company

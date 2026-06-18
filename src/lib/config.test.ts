@@ -20,6 +20,7 @@ describe("validateKey", () => {
   test("accepts known keys", () => {
     expect(validateKey("environment")).toBe("environment");
     expect(validateKey("format")).toBe("format");
+    expect(validateKey("skills_auto_install")).toBe("skills_auto_install");
   });
   test("rejects unknown keys", () => {
     expect(validateKey("token")).toBeNull();
@@ -38,6 +39,12 @@ describe("validateValue", () => {
     expect(validateValue("format", "human")).toBeNull();
     expect(validateValue("format", "json")).not.toBeNull();
   });
+  test("skills_auto_install must be ask, always, or never", () => {
+    expect(validateValue("skills_auto_install", "ask")).toBeNull();
+    expect(validateValue("skills_auto_install", "always")).toBeNull();
+    expect(validateValue("skills_auto_install", "never")).toBeNull();
+    expect(validateValue("skills_auto_install", "sometimes")).not.toBeNull();
+  });
 });
 
 describe("read/write/reset", () => {
@@ -48,6 +55,13 @@ describe("read/write/reset", () => {
   test("writeConfig + readConfig round-trip", async () => {
     await writeConfig({ environment: "sandbox", format: "agent" }, paths);
     expect(await readConfig(paths)).toEqual({ environment: "sandbox", format: "agent" });
+  });
+
+  test("skills_auto_install round-trips and rejects invalid values from disk", async () => {
+    await writeConfig({ skills_auto_install: "always" }, paths);
+    expect(await readConfig(paths)).toEqual({ skills_auto_install: "always" });
+    await Bun.write(paths.file, `skills_auto_install = "sometimes"\n`);
+    expect(await readConfig(paths)).toEqual({});
   });
 
   test("readConfig ignores unknown keys + invalid values", async () => {

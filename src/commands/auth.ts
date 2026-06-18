@@ -1,6 +1,8 @@
 import type { Command } from "commander";
+import { createInterface } from "node:readline/promises";
 import { fetchResource } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { type ConfigPaths, readConfig, type SkillsAutoInstall, writeConfig } from "../lib/config.ts";
 import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
@@ -8,6 +10,7 @@ import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } 
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
+import { type AutoInstallResult, type SkillsDir, installBundledSkills, listSkills } from "../lib/skills.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface AuthOpts {
@@ -55,11 +58,63 @@ export interface LoginData {
   identity: NonNullable<TokenInfo["resource_owner"]>;
   company_uuid: string | null;
   scope?: string;
+  skills_installed?: AutoInstallResult[];
 }
 
 export function loginResultData(info: TokenInfo): LoginData {
   if (!info.resource_owner) throw new Error("login succeeded but token_info returned no identity");
   return { identity: info.resource_owner, company_uuid: companyUuidFromTokenInfo(info) ?? null, scope: info.scope };
+}
+
+export interface SkillInstallDeps {
+  configPaths?: ConfigPaths;
+  skillsDir?: SkillsDir;
+  prompt?: () => Promise<SkillsAutoInstall>;
+  installBundledSkills?: typeof installBundledSkills;
+}
+
+/** Decide whether to install bundled skills after a successful login, prompting in TTY mode
+ * if the user hasn't answered before and auto-installing in agent/piped mode (since that's
+ * the case AINT-680 is fixing - an agent driving the CLI can't see a prompt). The persisted
+ * answer lives in `~/.config/gusto/config.toml` so subsequent logins are non-interactive. */
+export async function maybeInstallSkillsAfterLogin(
+  globals: GlobalFlags,
+  sinks: StreamSinks,
+  deps: SkillInstallDeps = {},
+): Promise<AutoInstallResult[] | undefined> {
+  const cfg = await readConfig(deps.configPaths);
+  let pref: SkillsAutoInstall = cfg.skills_auto_install ?? "ask";
+  if (pref === "never") return undefined;
+  if (pref === "ask") {
+    if (resolveOutputMode(globals) === "agent") {
+      // Non-TTY: implicit consent. Don't persist - a future human run on the same machine
+      // should still get the prompt.
+      pref = "always";
+    } else {
+      pref = await (deps.prompt ?? (() => promptForSkillsAutoInstall(sinks)))();
+      await writeConfig({ ...cfg, skills_auto_install: pref }, deps.configPaths);
+    }
+  }
+  if (pref === "never") return undefined;
+  const install = deps.installBundledSkills ?? installBundledSkills;
+  return install(deps.skillsDir);
+}
+
+async function promptForSkillsAutoInstall(sinks: StreamSinks): Promise<SkillsAutoInstall> {
+  const names = listSkills()
+    .map((s) => s.name)
+    .join(", ");
+  const rl = createInterface({ input: process.stdin, output: sinks.stderr });
+  try {
+    const answer = (
+      await rl.question(`Install bundled Gusto skills (${names}) to ~/.claude/skills for Claude Code? [Y/n] `)
+    )
+      .trim()
+      .toLowerCase();
+    return answer === "" || answer === "y" || answer === "yes" ? "always" : "never";
+  } finally {
+    rl.close();
+  }
 }
 
 export async function performLogout(store: TokenStore, env: Environment): Promise<{ cleared: boolean }> {
@@ -89,7 +144,10 @@ export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHan
         noBrowser: opts.noBrowser,
         emitEvent: buildSignInUrlEmitter(globals, sinks),
       });
-      return { ok: true, data: loginResultData(info) };
+      const data = loginResultData(info);
+      const skills = await maybeInstallSkillsAfterLogin(globals, sinks);
+      if (skills) data.skills_installed = skills;
+      return { ok: true, data };
     } catch (err) {
       return toResult(err);
     }
