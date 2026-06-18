@@ -3,10 +3,9 @@ import { ApiError } from "../lib/api-client.ts";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
-import { type CommandHandler, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
+import { type CommandHandler, missingArgs, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
 import {
   missingEmployeeUuid,
-  missingJobUuid,
   registerEmployeeAdd,
   registerEmployeeManage,
   withEmployeeClient,
@@ -134,7 +133,7 @@ export function jobDeleteHandler(jobUuid: string | undefined, opts: DeleteOpts):
         },
       };
     }
-    if (!jobUuid) return missingJobUuid();
+    if (!jobUuid) return missingArgs([{ field: "job_uuid", reason: "required" }]);
     const path = `/v1/jobs/${jobUuid}`;
     if (opts.dryRun) return { ok: true, data: { method: "DELETE", path } };
     return withEmployeeClient(globals, opts.tokenStdin, async (client) => {

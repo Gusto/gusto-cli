@@ -336,10 +336,6 @@ export function missingEmployeeUuid(): CommandResult<never> {
   return missingArgs([{ field: "employee_uuid", reason: "required" }]);
 }
 
-export function missingJobUuid(): CommandResult<never> {
-  return missingArgs([{ field: "job_uuid", reason: "required" }]);
-}
-
 function jobHandler(employeeUuid: string | undefined, opts: JobOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
