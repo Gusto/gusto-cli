@@ -138,15 +138,18 @@ export function jobDeleteHandler(jobUuid: string | undefined, opts: DeleteOpts):
     if (opts.dryRun) return { ok: true, data: { method: "DELETE", path } };
     return withEmployeeClient(globals, opts.tokenStdin, async (client) => {
       await client.delete(path);
-      // 204 doesn't distinguish between hard-destroy and deactivate fallback
-      // (employee_job.rb#destroy_or_deactivate). Follow up with GET: 404 means
-      // destroyed; any 2xx means the row still exists, so deactivate fired.
-      let action: "destroyed" | "deactivated" = "destroyed";
+      // The DELETE already returned 204; the row is gone (or deactivated). The
+      // follow-up GET is a probe to distinguish the two branches of
+      // employee_job.rb#destroy_or_deactivate (404 = destroyed, 2xx = deactivated).
+      // If the probe fails for any other reason, we don't know which branch fired,
+      // but the delete still succeeded — surface that as action="unknown" rather
+      // than turning a successful delete into a non-ok envelope an agent would retry.
+      let action: "destroyed" | "deactivated" | "unknown" = "unknown";
       try {
         await client.get(path);
         action = "deactivated";
       } catch (err) {
-        if (!(err instanceof ApiError) || err.status !== 404) throw err;
+        if (err instanceof ApiError && err.status === 404) action = "destroyed";
       }
       return { ok: true, data: { action, job_uuid: jobUuid } };
     });

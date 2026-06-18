@@ -130,15 +130,13 @@ describe("jobDeleteHandler (network)", () => {
     expect(calls).toHaveLength(1);
   });
 
-  test("DELETE 204 then GET non-404 error propagates (not silently swallowed as 'destroyed')", async () => {
+  test("DELETE 204 then GET non-404 error → action 'unknown' (delete already succeeded; don't surface a retryable failure)", async () => {
     const calls = stubSeq([
       { status: 204, body: "" },
       { status: 403, body: { errors: [{ message: "forbidden" }] } },
     ]);
-    const result = await jobDeleteHandler("job-1", {})(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("api_client_error");
+    const d = okData(await jobDeleteHandler("job-1", {})(ctx));
+    expect(d).toEqual({ action: "unknown", job_uuid: "job-1" });
     expect(calls).toHaveLength(2);
   });
 });
