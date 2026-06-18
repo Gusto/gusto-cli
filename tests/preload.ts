@@ -1,10 +1,11 @@
 // Bun test preload (wired up in bunfig.toml); runs once before the suite.
 //
-// Token precedence is session > env > stdin (AINT-588), so command-handler tests
-// that don't inject their own credential store would otherwise read the developer's
-// real ~/.config/gusto session - and could hit the network on a refresh. Point the
-// store at an empty temp dir and supply an ambient access token so those handlers
-// resolve auth deterministically (the token value is irrelevant - network is stubbed).
+// Token precedence puts an explicit token first - stdin > env > session (AINT-673).
+// Set an ambient GUSTO_ACCESS_TOKEN so command-handler tests that don't inject their
+// own credential store resolve auth deterministically off the env token, never the
+// developer's real ~/.config/gusto session (which could hit the network on refresh).
+// Point the store at an empty temp dir as a second guard. The token value is
+// irrelevant - network is stubbed.
 //
 // Tests that exercise precedence directly (api-context.test.ts, env.test.ts) clear
 // these vars in their own setup, and store/config tests override XDG_CONFIG_HOME

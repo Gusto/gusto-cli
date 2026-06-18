@@ -5,6 +5,7 @@ import {
   fetchCompanyResource,
   fetchResource,
   resolveApiContext,
+  resolveAuthToken,
   withCompanyContext,
 } from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
@@ -102,70 +103,99 @@ describe("resolveApiContext", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.ctx.baseUrl).toBe("https://api.gusto.com");
   });
+
+  test("the resolved context exposes which credential source won", async () => {
+    const result = await resolveApiContext(flags, { requireCompany: false, ...stdinAuth() });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.ctx.tokenSource).toBe("stdin");
+  });
 });
 
-describe("resolveApiContext - token precedence (session > env > stdin)", () => {
-  test("a stored session wins over env and stdin; stdin is never read", async () => {
+describe("resolveAuthToken - explicit token precedence (stdin > env > session)", () => {
+  test("--token-stdin wins over env and a stored session", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
-    const result = await resolveApiContext(flags, {
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const resolved = await resolveAuthToken(flags, {
       store,
       http: mockHttp({ status: 200 }),
       now: () => 1_000,
       tokenStdin: true,
-      readStdin: forbiddenStdin,
+      readStdin: () => Promise.resolve("stdin-tok"),
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    // The borrowed company proves the session token (not env) was used - an env
-    // token never borrows a session's company.
-    expect(result.ctx.companyUuid).toBe("co-sess");
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("unreachable");
+    expect(resolved.token).toBe("stdin-tok");
+    expect(resolved.source).toBe("stdin");
   });
 
-  test("env wins over stdin when there is no session; stdin is never read", async () => {
+  test("GUSTO_ACCESS_TOKEN wins over a stored session; the session is never resolved", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
-    const result = await resolveApiContext(flags, {
-      requireCompany: false,
-      ...noSession(),
-      tokenStdin: true,
-      readStdin: forbiddenStdin,
+    const resolved = await resolveAuthToken(flags, {
+      store: throwingStore(new Error("session must not be loaded when env token is set")),
+      http: mockHttp({ status: 200 }),
     });
-    expect(result.ok).toBe(true);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("unreachable");
+    expect(resolved.token).toBe("env-tok");
+    expect(resolved.source).toBe("env");
   });
 
-  test("stdin is read only when neither session nor env supplies a token", async () => {
-    let reads = 0;
-    const result = await resolveApiContext(flags, {
-      requireCompany: false,
-      ...noSession(),
-      tokenStdin: true,
-      readStdin: () => {
-        reads++;
-        return Promise.resolve("piped-tok");
-      },
+  test("the stored session is used only when no explicit token is supplied", async () => {
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const resolved = await resolveAuthToken(flags, {
+      store,
+      http: mockHttp({ status: 200 }),
+      now: () => 1_000,
     });
-    expect(result.ok).toBe(true);
-    expect(reads).toBe(1);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("unreachable");
+    expect(resolved.token).toBe("sess-tok");
+    expect(resolved.source).toBe("session");
+  });
+
+  test("an env token is used even when a session exists - it is never replaced by the session", async () => {
+    // The whole point of AINT-673: a bad explicit token surfaces the real auth
+    // error, it does not silently run as the session's identity. We assert the
+    // env value is the resolved token even though a valid session is present.
+    process.env.GUSTO_ACCESS_TOKEN = "bad-explicit-tok";
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const resolved = await resolveAuthToken(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("unreachable");
+    expect(resolved.token).toBe("bad-explicit-tok");
+    expect(resolved.source).toBe("env");
   });
 
   test("--token-stdin with nothing piped degrades to no_access_token", async () => {
-    const result = await resolveApiContext(flags, { requireCompany: false, ...stdinAuth(null) });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    if (result.result.ok) throw new Error("unreachable");
-    expect(result.result.error.code).toBe("no_access_token");
+    const resolved = await resolveAuthToken(flags, { ...stdinAuth(null) });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) throw new Error("unreachable");
+    if (resolved.result.ok) throw new Error("unreachable");
+    expect(resolved.result.error.code).toBe("no_access_token");
   });
 
   test("stdin is not read unless --token-stdin was passed", async () => {
-    const result = await resolveApiContext(flags, {
-      requireCompany: false,
+    const resolved = await resolveAuthToken(flags, {
       ...noSession(),
       readStdin: forbiddenStdin, // present but tokenStdin is falsy, so never invoked
     });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) throw new Error("unreachable");
+    if (resolved.result.ok) throw new Error("unreachable");
+    expect(resolved.result.error.code).toBe("no_access_token");
+  });
+});
+
+describe("resolveApiContext - company fallback honors the resolved token source", () => {
+  test("an env token never borrows the session's company", async () => {
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
+    const result = await resolveApiContext(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
-    expect(result.result.error.code).toBe("no_access_token");
+    expect(result.result.error.code).toBe("no_company_uuid");
   });
 });
 

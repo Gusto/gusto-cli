@@ -1,6 +1,7 @@
 import type { Command } from "commander";
-import { fetchResource } from "../lib/api-context.ts";
+import { type StdinReader, type TokenSource, resolveApiContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { getAccessToken } from "../lib/env.ts";
 import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
@@ -80,10 +81,29 @@ export function buildSignInUrlEmitter(
   return (event) => sinks.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
-export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
+/** The login transport, injectable so handler tests don't drive the real OAuth flow. */
+type LoginFn = (env: Environment, deps: Parameters<typeof login>[1]) => Promise<TokenInfo>;
+
+export interface AuthLoginDeps {
+  login?: LoginFn;
+  getEnvToken?: () => string | null;
+}
+
+export function authLoginHandler(opts: { noBrowser?: boolean } = {}, deps: AuthLoginDeps = {}): CommandHandler {
+  const doLogin = deps.login ?? login;
+  const getEnvToken = deps.getEnvToken ?? getAccessToken;
   return async ({ globals, sinks }) => {
+    // A set GUSTO_ACCESS_TOKEN outranks the session we're about to store, so every
+    // later command would run as the env token's identity, not this login's. Warn
+    // (gh refuses `--with-token` under GITHUB_TOKEN for the same reason) so the user
+    // isn't misled about which identity is active. See AINT-673.
+    if (getEnvToken()) {
+      sinks.stderr.write(
+        "warning: GUSTO_ACCESS_TOKEN is set and overrides the stored login. Commands will use that token, not this session. Unset it to use the logged-in identity.\n",
+      );
+    }
     try {
-      const info = await login(resolveEnv(globals), {
+      const info = await doLogin(resolveEnv(globals), {
         store: resolveStore(),
         http: oauthHttp(globals),
         noBrowser: opts.noBrowser,
@@ -107,16 +127,35 @@ function authLogoutHandler(): CommandHandler {
   };
 }
 
-export function authWhoamiHandler(opts: AuthOpts): CommandHandler {
-  // Token resolution (session > env > --token-stdin) is handled by fetchResource.
-  return async ({ globals }) => {
-    const result = await fetchResource<TokenInfo>(globals, { tokenStdin: opts.tokenStdin }, () => "/v1/token_info");
-    if (!result.ok) return result;
+/** Human-facing name for each credential source, matching how a user supplies it. */
+const CREDENTIAL_SOURCE_LABEL: Record<TokenSource, string> = {
+  stdin: "--token-stdin",
+  env: "GUSTO_ACCESS_TOKEN",
+  session: "stored session",
+};
 
-    const info = result.data;
-    return {
-      ok: true,
-      data: { ...info, capabilities: summarizeGrantedScopes(parseScopes(info?.scope)) },
-    };
+export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): CommandHandler {
+  return async ({ globals }) => {
+    const resolved = await resolveApiContext(globals, {
+      requireCompany: false,
+      tokenStdin: opts.tokenStdin,
+      readStdin,
+    });
+    if (!resolved.ok) return resolved.result;
+
+    try {
+      const response = await resolved.ctx.client.get<TokenInfo>("/v1/token_info");
+      const info = response.body;
+      return {
+        ok: true,
+        data: {
+          ...info,
+          credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
+          capabilities: summarizeGrantedScopes(parseScopes(info?.scope)),
+        },
+      };
+    } catch (err) {
+      return toResult(err);
+    }
   };
 }

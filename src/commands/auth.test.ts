@@ -1,12 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
-import { authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
+import { authLoginHandler, authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
 
-// whoami's token resolution (session > env > --token-stdin) is delegated to
-// fetchResource and covered by api-context.test.ts; the cases below cover the
-// capabilities summary it layers on top. (AINT-588 dropped the --token override.)
+// whoami's token resolution (explicit token first: --token-stdin > env > session,
+// see AINT-673) is covered by api-context.test.ts; the cases below cover the
+// capabilities summary and credential-source label it layers on top.
 
 describe("loginResultData", () => {
   test("maps token_info to identity + company_uuid + scope", () => {
@@ -85,6 +85,40 @@ describe("buildSignInUrlEmitter", () => {
   });
 });
 
+describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.GUSTO_ACCESS_TOKEN;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GUSTO_ACCESS_TOKEN;
+    else process.env.GUSTO_ACCESS_TOKEN = saved;
+  });
+
+  const fakeLogin = () =>
+    Promise.resolve({
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+      resource: { type: "Company", uuid: "co-1" },
+    });
+
+  test("warns on stderr when GUSTO_ACCESS_TOKEN is set - login won't change the active identity", async () => {
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler({}, { login: fakeLogin })({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).toContain("GUSTO_ACCESS_TOKEN");
+    expect(stderr.buffer.toLowerCase()).toContain("warning");
+  });
+
+  test("no warning when GUSTO_ACCESS_TOKEN is unset", async () => {
+    delete process.env.GUSTO_ACCESS_TOKEN;
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler({}, { login: fakeLogin })({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).not.toContain("GUSTO_ACCESS_TOKEN");
+  });
+});
+
 describe("authWhoamiHandler", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());
@@ -112,5 +146,25 @@ describe("authWhoamiHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("api_client_error");
     expect("data" in result).toBe(false);
+  });
+
+  test("labels the credential source - GUSTO_ACCESS_TOKEN wins via the ambient env token", async () => {
+    // tests/preload.ts sets GUSTO_ACCESS_TOKEN, so with no session the env token
+    // is the resolved source; whoami should say so.
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).credential_source).toBe("GUSTO_ACCESS_TOKEN");
+  });
+
+  test("labels --token-stdin as the credential source when a token is piped", async () => {
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({ tokenStdin: true }, () => Promise.resolve("piped-tok"))(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).credential_source).toBe("--token-stdin");
   });
 });
