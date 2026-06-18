@@ -169,7 +169,11 @@ Example:
 
 export function payrollPrepareHandler(payrollUuid: string, opts: PayrollPrepareOpts): CommandHandler {
   return async ({ globals }) =>
-    putCompanyResource(globals, `payrolls/${payrollUuid}/prepare`, {
+    // Encode the UUID as a single path segment: the value can come from agent/tool output, and a
+    // raw `/`, `?` or `#` would otherwise retarget the PUT (the client resolves paths via `new URL`,
+    // which treats those as separators) — e.g. `x?e=1` drops `/prepare` and hits the payroll-update
+    // endpoint instead. Valid hex UUIDs are unaffected.
+    putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,

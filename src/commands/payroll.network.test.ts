@@ -48,6 +48,18 @@ describe("payrollPrepareHandler", () => {
     expect(s.calls).toHaveLength(0);
   });
 
+  test("percent-encodes the UUID segment so a stray '/' or '?' can't retarget the PUT", async () => {
+    // An injection-y UUID (e.g. from agent/tool output) must stay one path segment: without
+    // encoding, `?` would drop `/prepare` and hit the payroll-update endpoint instead.
+    const s = stub(() => ({ status: 404 }));
+    await payrollPrepareHandler("evil?x=1/y", auth)(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy/prepare");
+    // The dangerous shapes must NOT appear unescaped.
+    expect(put?.url).not.toContain("evil?x=1");
+    expect(put?.url).not.toContain("/y/prepare");
+  });
+
   test("a 422 (no employees to prepare) surfaces the upstream body as a failed result", async () => {
     stub((u) =>
       u.includes("/prepare")
