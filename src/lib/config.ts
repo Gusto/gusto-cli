@@ -16,6 +16,10 @@ export interface UserConfig {
 const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 
+// `json` is the advertised alias for `agent` (see the `--json` / `--agent` global flags).
+// Accept it as a `format` value and persist it as `agent` so the config mirrors the flags.
+const FORMAT_ALIASES: Readonly<Record<string, OutputMode>> = { json: "agent" } as const;
+
 export interface ConfigPaths {
   dir: string;
   file: string;
@@ -69,7 +73,7 @@ export function validateValue(key: ConfigKey, value: string): string | null {
         ? null
         : `environment must be one of: ${ENV_VALUES.join(", ")}`;
     case "format":
-      return (FORMAT_VALUES as readonly string[]).includes(value)
+      return (FORMAT_VALUES as readonly string[]).includes(value) || value in FORMAT_ALIASES
         ? null
         : `format must be one of: ${FORMAT_VALUES.join(", ")}`;
     default: {
@@ -79,6 +83,12 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       throw new Error(`no validation for config key: ${String(unhandled)}`);
     }
   }
+}
+
+/** Canonicalize a validated value before persisting (e.g. the `json` format alias → `agent`). */
+export function normalizeValue(key: ConfigKey, value: string): string {
+  if (key === "format" && value in FORMAT_ALIASES) return FORMAT_ALIASES[value];
+  return value;
 }
 
 function pickValid(raw: Record<string, unknown>): UserConfig {

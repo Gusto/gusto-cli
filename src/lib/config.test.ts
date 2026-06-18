@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type ConfigPaths, readConfig, resetConfig, validateKey, validateValue, writeConfig } from "./config.ts";
+import {
+  type ConfigPaths,
+  normalizeValue,
+  readConfig,
+  resetConfig,
+  validateKey,
+  validateValue,
+  writeConfig,
+} from "./config.ts";
 
 let scratch: string;
 let paths: ConfigPaths;
@@ -33,10 +41,26 @@ describe("validateValue", () => {
     expect(validateValue("environment", "production")).toBeNull();
     expect(validateValue("environment", "staging")).not.toBeNull();
   });
-  test("format must be agent or human", () => {
+  test("format accepts agent, human, and the json alias", () => {
     expect(validateValue("format", "agent")).toBeNull();
     expect(validateValue("format", "human")).toBeNull();
-    expect(validateValue("format", "json")).not.toBeNull();
+    expect(validateValue("format", "json")).toBeNull();
+  });
+  test("format rejects genuinely invalid values", () => {
+    expect(validateValue("format", "bogus")).not.toBeNull();
+  });
+});
+
+describe("normalizeValue", () => {
+  test("normalizes the json format alias to agent", () => {
+    expect(normalizeValue("format", "json")).toBe("agent");
+  });
+  test("leaves agent and human untouched", () => {
+    expect(normalizeValue("format", "agent")).toBe("agent");
+    expect(normalizeValue("format", "human")).toBe("human");
+  });
+  test("leaves environment values untouched", () => {
+    expect(normalizeValue("environment", "sandbox")).toBe("sandbox");
   });
 });
 
