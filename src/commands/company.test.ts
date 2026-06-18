@@ -14,8 +14,8 @@ import {
 const globals: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 
 function showData(overrides: Partial<CompanyShowData> = {}): CompanyShowData {
-  return {
-    success: true,
+  const { success, partial_errors, ...rest } = overrides;
+  const base = {
     company_uuid: "co-1",
     summary: {
       name: "Acme Inc",
@@ -30,8 +30,11 @@ function showData(overrides: Partial<CompanyShowData> = {}): CompanyShowData {
     company: null,
     payment_config: null,
     pay_schedules: [{ uuid: "ps-1", frequency: "every_other_week", anchor_pay_date: "2026-01-15" }],
-    ...overrides,
+    ...rest,
   };
+  return success === false
+    ? { ...base, success: false, partial_errors: partial_errors ?? [] }
+    : { ...base, success: true };
 }
 
 describe("renderCompanyShow", () => {

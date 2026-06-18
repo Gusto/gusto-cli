@@ -134,17 +134,24 @@ interface CompanyShowSummary {
   pay_schedule: { frequency?: string; anchor_pay_date?: string } | null;
 }
 
-/** The data envelope `company show` returns. Shared by the handler and the human renderer so the
- * two can't drift. */
-export interface CompanyShowData {
-  success: boolean;
+interface PartialError {
+  label: string;
+  error: string;
+}
+
+interface CompanyShowBase {
   company_uuid: string;
   summary: CompanyShowSummary;
   company: CompanyRecord | null;
   payment_config: PaymentConfig | null;
   pay_schedules: PaySchedule[] | null;
-  partial_errors?: { label: string; error: string }[];
 }
+
+/** The data envelope `company show` returns. Shared by the handler and the human renderer so the
+ * two can't drift. Discriminated on `success`: partial_errors is present iff a section failed, so
+ * the two can never contradict each other (no `{ success: true, partial_errors: [...] }`). */
+export type CompanyShowData = CompanyShowBase &
+  ({ success: true; partial_errors?: never } | { success: false; partial_errors: PartialError[] });
 
 /** Render `company show` as human-readable key-value blocks + a pay-schedule table instead of raw
  * JSON (AINT-653). Missing fields are dropped; only the UUID is always shown. */
@@ -161,7 +168,7 @@ export function renderCompanyShow(data: CompanyShowData): string {
     ["Payment speed", s.payment_speed],
   ]);
 
-  const rows = Array.isArray(data.pay_schedules) ? data.pay_schedules : [];
+  const rows = data.pay_schedules ?? [];
   const schedule = table(
     ["UUID", "Frequency", "Anchor pay date"],
     rows.map((ps) => [ps.uuid, ps.frequency, ps.anchor_pay_date]),
@@ -201,8 +208,11 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
 
       const company = companyR.ok ? companyR.data : null;
       const paymentConfig = paymentR.ok ? paymentR.data : null;
-      const paySchedules = scheduleR.ok ? scheduleR.data : null;
-      const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
+      // Sanitize once here so pay_schedules is genuinely PaySchedule[] | null downstream: the API
+      // body is typed but not runtime-validated, and a malformed-but-200 non-array would otherwise
+      // crash the human renderer's .map. Keeping the guard here lets callers trust the type.
+      const paySchedules = scheduleR.ok && Array.isArray(scheduleR.data) ? scheduleR.data : null;
+      const firstSchedule = paySchedules?.[0] ?? null;
       // payment_configs is gated on an active PartnerCompanyMapping; non-partner-managed
       // companies (e.g. those reached via `gusto auth login` rather than `provision`) always
       // 404 here, which reads as a bug to anyone watching the output. Drop only the 404 -
@@ -213,8 +223,7 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         .filter((r) => !(r.label === "payment_config" && r.status === 404 && suppressPaymentConfig404))
         .map(({ label, error }) => ({ label, error }));
 
-      const data: CompanyShowData = {
-        success: errors.length === 0,
+      const payload: CompanyShowBase = {
         company_uuid: ctx.companyUuid,
         summary: {
           name: company?.name ?? null,
@@ -231,8 +240,9 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         company,
         payment_config: paymentConfig,
         pay_schedules: paySchedules,
-        ...(errors.length > 0 ? { partial_errors: errors } : {}),
       };
+      const data: CompanyShowData =
+        errors.length > 0 ? { ...payload, success: false, partial_errors: errors } : { ...payload, success: true };
       return { ok: true, data, human: () => renderCompanyShow(data) };
     });
 }
