@@ -75,7 +75,7 @@ export function validateValue(key: ConfigKey, value: string): string | null {
     case "format":
       return (FORMAT_VALUES as readonly string[]).includes(value) || Object.hasOwn(FORMAT_ALIASES, value)
         ? null
-        : `format must be one of: ${FORMAT_VALUES.join(", ")}`;
+        : `format must be one of: ${[...FORMAT_VALUES, ...Object.keys(FORMAT_ALIASES)].join(", ")}`;
     default: {
       // Exhaustiveness guard: adding a ConfigKey without a case here is a compile error,
       // not a silent validation bypass.

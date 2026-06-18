@@ -49,6 +49,12 @@ describe("validateValue", () => {
   test("format rejects genuinely invalid values", () => {
     expect(validateValue("format", "bogus")).not.toBeNull();
   });
+  test("format error message lists every accepted value including the json alias", () => {
+    const msg = validateValue("format", "bogus");
+    expect(msg).toContain("agent");
+    expect(msg).toContain("human");
+    expect(msg).toContain("json");
+  });
   test("format rejects Object prototype property names", () => {
     expect(validateValue("format", "toString")).not.toBeNull();
     expect(validateValue("format", "constructor")).not.toBeNull();
