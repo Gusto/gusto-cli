@@ -12,6 +12,7 @@ import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts"
 import type { BlockedOn } from "../lib/output.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
+import { getAndInjectVersion, withVersion } from "../lib/versioning.ts";
 
 // `employee add` mirrors `company setup`: bare `employee add` creates the employee, then each
 // sub-domain is its own subcommand (`employee add <domain> <employee_uuid>`) with typed flags, a
@@ -1138,13 +1139,6 @@ function currentCompensation(jobBody: unknown): { uuid: string; version?: string
   return { uuid, version: readString(match, "version") };
 }
 
-/** Inject `version` into a PUT body when the caller didn't supply one (it can't be known for a
- * resource created earlier in this same flow). A caller-supplied version always wins. */
-function withVersion(body: Record<string, unknown>, version: string | undefined): Record<string, unknown> {
-  if (version === undefined || readString(body, "version") !== undefined) return body;
-  return { version, ...body };
-}
-
 /** PUT a version-guarded resource: if the body lacks a `version`, GET the current resource to learn
  * it, then PUT. Avoids the 409 `invalid_resource_version` these endpoints return otherwise. */
 async function putVersioned(
@@ -1152,12 +1146,10 @@ async function putVersioned(
   path: string,
   body: Record<string, unknown>,
 ): Promise<{ body: unknown }> {
-  let merged = body;
-  if (readString(merged, "version") === undefined) {
-    const current = await client.get(path);
-    merged = withVersion(merged, readString(current.body, "version"));
-  }
-  return client.put(path, merged);
+  const resolved = await getAndInjectVersion(client, path, body);
+  // A GET with no `version` falls back to the bare body (unchanged from before this used the
+  // shared helper) - these endpoints only 409 when a *stale* version is sent, not a missing one.
+  return client.put(path, resolved.ok ? resolved.body : body);
 }
 
 /** Resolve a token-only (no company required) client for employee-scoped endpoints and run `fn`,

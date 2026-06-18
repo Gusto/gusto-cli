@@ -654,6 +654,29 @@ describe("api request", () => {
     expect(result.stderr).toMatch(/--company-uuid/);
     expect(result.stderr).toContain("{company_uuid}");
   });
+
+  test("--auto-version on a non-PUT/PATCH method is a validation error", async () => {
+    const result = await run(["api", "request", "GET", "/v1/things", "--auto-version", "--dry-run"]);
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("auto_version_unsupported");
+  });
+
+  test("--dry-run --auto-version notes the version is resolved at send time", async () => {
+    const result = await run([
+      "api",
+      "request",
+      "PUT",
+      "/v1/things/1",
+      "--data",
+      '{"x":1}',
+      "--auto-version",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.body).toEqual({ x: 1 });
+    expect(envelope.data.note).toMatch(/version.*send time/i);
+  });
 });
 
 // AINT-588: the inline `--token <value>` flag was dropped (it leaks secrets into
