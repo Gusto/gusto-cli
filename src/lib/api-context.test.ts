@@ -155,9 +155,9 @@ describe("resolveAuthToken - explicit token precedence (stdin > env > session)",
   });
 
   test("an env token is used even when a session exists - it is never replaced by the session", async () => {
-    // The whole point of AINT-673: a bad explicit token surfaces the real auth
-    // error, it does not silently run as the session's identity. We assert the
-    // env value is the resolved token even though a valid session is present.
+    // A bad explicit token surfaces the real auth error; it does not silently run
+    // as the session's identity. Assert the env value is the resolved token even
+    // though a valid session is present.
     process.env.GUSTO_ACCESS_TOKEN = "bad-explicit-tok";
     const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const resolved = await resolveAuthToken(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });

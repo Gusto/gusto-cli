@@ -54,7 +54,7 @@ export type ResolvedToken =
  * GUSTO_ACCESS_TOKEN env > stored login session. Once an explicit token is
  * supplied we never fall back to the session, even if that token is invalid, so
  * a typo'd secret surfaces the real auth error instead of silently running as the
- * logged-in identity. See AINT-673. The session is only loaded when no explicit
+ * logged-in identity. The session is only loaded when no explicit
  * token is present, so a bad GUSTO_ACCESS_TOKEN can't be masked by an on-disk
  * session refresh. `source` tells callers which credential won. */
 export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Promise<ResolvedToken> {

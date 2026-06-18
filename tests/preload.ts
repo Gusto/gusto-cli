@@ -1,6 +1,6 @@
 // Bun test preload (wired up in bunfig.toml); runs once before the suite.
 //
-// Token precedence puts an explicit token first - stdin > env > session (AINT-673).
+// Token precedence puts an explicit token first - stdin > env > session.
 // Set an ambient GUSTO_ACCESS_TOKEN so command-handler tests that don't inject their
 // own credential store resolve auth deterministically off the env token, never the
 // developer's real ~/.config/gusto session (which could hit the network on refresh).

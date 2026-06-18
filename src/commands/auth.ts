@@ -94,7 +94,7 @@ export function authLoginHandler(opts: { noBrowser?: boolean } = {}, deps: AuthL
     // A set GUSTO_ACCESS_TOKEN outranks the session we're about to store, so every
     // later command would run as the env token's identity, not this login's. Warn
     // (gh refuses `--with-token` under GITHUB_TOKEN for the same reason) so the user
-    // isn't misled about which identity is active. See AINT-673.
+    // isn't misled about which identity is active.
     if (getAccessToken()) {
       sinks.stderr.write(
         "warning: GUSTO_ACCESS_TOKEN is set and overrides the stored login. Commands will use that token, not this session. Unset it to use the logged-in identity.\n",

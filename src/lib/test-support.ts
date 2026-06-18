@@ -32,7 +32,7 @@ export function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; st
 export const TEST_GLOBALS: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 export const TEST_CONTEXT: CommandContext = { command: "test", globals: TEST_GLOBALS, sinks: defaultSinks };
 // Just the company override; the access token comes from the ambient env set in
-// tests/preload.ts (explicit token wins: stdin > env > session - see AINT-673).
+// tests/preload.ts (explicit token wins: stdin > env > session).
 export const TEST_AUTH = { companyUuid: "co-1" };
 
 /** Unwrap a successful CommandResult's data, throwing if it failed. */

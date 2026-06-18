@@ -11,7 +11,7 @@ export const EXAMPLE_OPT = ["--example", "Print a canned sample payload without 
 /** `--token-stdin`: read one access token piped on stdin (the gh/docker pattern) - a
  * piped secret stays out of argv, shell history, and audit logs. Highest-priority
  * source: an explicit token overrides GUSTO_ACCESS_TOKEN and the stored login
- * session, and is never replaced by the session even if invalid. See AINT-673. */
+ * session, and is never replaced by the session even if invalid. */
 export const TOKEN_STDIN_OPT = [
   "--token-stdin",
   "Read the access token from stdin (one line); for automation",

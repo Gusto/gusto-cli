@@ -4,9 +4,9 @@ import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from
 import { memoryStore } from "../lib/oauth/test-support.ts";
 import { authLoginHandler, authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
 
-// whoami's token resolution (explicit token first: --token-stdin > env > session,
-// see AINT-673) is covered by api-context.test.ts; the cases below cover the
-// capabilities summary and credential-source label it layers on top.
+// whoami's token resolution (explicit token first: --token-stdin > env > session)
+// is covered by api-context.test.ts; the cases below cover the capabilities
+// summary and credential-source label it layers on top.
 
 describe("loginResultData", () => {
   test("maps token_info to identity + company_uuid + scope", () => {
