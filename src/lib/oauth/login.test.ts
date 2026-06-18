@@ -286,19 +286,21 @@ describe("login", () => {
     let intervalCallback: (() => void) | undefined;
     let cleared = false;
     const sentinelHandle = Symbol("handle");
-    const fakeSetInterval = (cb: () => void): unknown => {
-      intervalCallback = cb;
-      return sentinelHandle;
-    };
-    const fakeClearInterval = (h: unknown): void => {
-      if (h === sentinelHandle) cleared = true;
+    const timers = {
+      set: (cb: () => void): unknown => {
+        intervalCallback = cb;
+        return sentinelHandle;
+      },
+      clear: (h: unknown): void => {
+        if (h === sentinelHandle) cleared = true;
+      },
     };
 
     let mockNow = 1_000_000;
     const lines: string[] = [];
 
     // setTimeout(0) so login() has reached `await server.waitForCode()` and registered
-    // setInterval before we fire ticks; a microtask would run too early.
+    // the timer before we fire ticks; a microtask would run too early.
     const openBrowser = (authorizeUrl: string): Promise<void> => {
       const u = new URL(authorizeUrl);
       const redirect = u.searchParams.get("redirect_uri") as string;
@@ -320,8 +322,7 @@ describe("login", () => {
       openBrowser,
       print: (l) => lines.push(l),
       now: () => mockNow,
-      setInterval: fakeSetInterval,
-      clearInterval: fakeClearInterval,
+      timers,
     });
 
     const heartbeats = lines.filter((l) => l.startsWith("Open the URL above"));
@@ -337,9 +338,11 @@ describe("login", () => {
 
     let cleared = false;
     const sentinelHandle = Symbol("handle");
-    const fakeSetInterval = (): unknown => sentinelHandle;
-    const fakeClearInterval = (h: unknown): void => {
-      if (h === sentinelHandle) cleared = true;
+    const timers = {
+      set: (): unknown => sentinelHandle,
+      clear: (h: unknown): void => {
+        if (h === sentinelHandle) cleared = true;
+      },
     };
 
     await expect(
@@ -349,8 +352,7 @@ describe("login", () => {
         browserAvailable: () => true,
         openBrowser: driveCallback().openBrowser,
         print: () => {},
-        setInterval: fakeSetInterval,
-        clearInterval: fakeClearInterval,
+        timers,
       }),
     ).rejects.toThrow();
 

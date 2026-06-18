@@ -42,8 +42,10 @@ export interface LoginDeps {
   print?: (line: string) => void;
   emitEvent?: (event: SignInUrlEvent) => void;
   now?: () => number;
-  setInterval?: (cb: () => void, ms: number) => unknown;
-  clearInterval?: (handle: unknown) => void;
+  timers?: {
+    set: (cb: () => void, ms: number) => unknown;
+    clear: (handle: unknown) => void;
+  };
   heartbeatIntervalMs?: number;
 }
 
@@ -114,14 +116,16 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
 
 function startHeartbeat(print: (line: string) => void, deps: LoginDeps, now: () => number): () => void {
   const intervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-  const setIntervalFn = deps.setInterval ?? ((cb, ms) => setInterval(cb, ms));
-  const clearIntervalFn = deps.clearInterval ?? ((h) => clearInterval(h as ReturnType<typeof setInterval>));
+  const timers = deps.timers ?? {
+    set: (cb, ms) => setInterval(cb, ms),
+    clear: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+  };
   const start = now();
-  const handle = setIntervalFn(() => {
+  const handle = timers.set(() => {
     const elapsed = Math.round((now() - start) / 1000);
     print(`Open the URL above to complete sign-in (${elapsed}s elapsed)`);
   }, intervalMs);
-  return () => clearIntervalFn(handle);
+  return () => timers.clear(handle);
 }
 
 export async function fetchTokenInfo(http: OAuthHttpOptions, token: string): Promise<TokenInfo> {
