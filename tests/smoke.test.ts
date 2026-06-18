@@ -416,10 +416,14 @@ describe("employee add per-domain subcommands", () => {
   test("--example on home-address / work-address prints canned payload without an employee_uuid", async () => {
     const home = JSON.parse((await run(["employee", "add", "home-address", "--example"])).stdout.trim());
     expect(home.ok).toBe(true);
-    expect(home.data.path).toContain("/home_addresses");
+    expect(home.data.method).toBe("POST");
+    expect(home.data.path).toBe("/v1/employees/{employee_uuid}/home_addresses");
+    expect(home.data.body).toMatchObject({ street_1: expect.any(String), city: expect.any(String), state: "CA" });
     const work = JSON.parse((await run(["employee", "add", "work-address", "--example"])).stdout.trim());
     expect(work.ok).toBe(true);
-    expect(work.data.path).toContain("/work_addresses");
+    expect(work.data.method).toBe("POST");
+    expect(work.data.path).toBe("/v1/employees/{employee_uuid}/work_addresses");
+    expect(work.data.body).toMatchObject({ location_uuid: expect.any(String), effective_date: expect.any(String) });
   });
 });
 

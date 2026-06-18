@@ -119,7 +119,7 @@ export function homeAddressBody(opts: HomeAddressOpts): Record<string, unknown> 
   };
 }
 
-export function homeAddressHandler(employeeUuid: string | undefined, opts: HomeAddressOpts): CommandHandler {
+function homeAddressHandler(employeeUuid: string | undefined, opts: HomeAddressOpts): CommandHandler {
   return async (ctx) => {
     if (opts.example) {
       return {

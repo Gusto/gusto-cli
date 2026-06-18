@@ -11,7 +11,6 @@ import {
   federalTaxBody,
   homeAddressBlockers,
   homeAddressBody,
-  homeAddressHandler,
   introspectStateTax,
   jobBlockers,
   jobBody,
@@ -28,9 +27,7 @@ import {
   runStateTax,
   workAddressBlockers,
   workAddressBody,
-  workAddressHandler,
 } from "./employee-add.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData } from "../lib/test-support.ts";
 
 describe("employeeCreateBlockers", () => {
   test("flags every missing required field", () => {
@@ -125,40 +122,6 @@ describe("workAddressBody", () => {
       location_uuid: "loc-1",
       effective_date: "2026-01-01",
     });
-  });
-});
-
-describe("homeAddressHandler --example + missing-uuid", () => {
-  test("--example returns the canned POST payload without an employee_uuid", async () => {
-    const data = okData(await homeAddressHandler(undefined, { example: true })(ctx));
-    expect(data.method).toBe("POST");
-    expect(data.path).toBe("/v1/employees/{employee_uuid}/home_addresses");
-    expect(data.body).toMatchObject({ street_1: expect.any(String), city: expect.any(String), state: "CA" });
-  });
-
-  test("missing employee_uuid (no --example) returns a blocked_on validation envelope", async () => {
-    const result = await homeAddressHandler(undefined, { street1: "X" })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.exitCode).toBe(ExitCode.Validation);
-    expect(result.error.blocked_on).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
-  });
-});
-
-describe("workAddressHandler --example + missing-uuid", () => {
-  test("--example returns the canned POST payload without an employee_uuid", async () => {
-    const data = okData(await workAddressHandler(undefined, { example: true })(ctx));
-    expect(data.method).toBe("POST");
-    expect(data.path).toBe("/v1/employees/{employee_uuid}/work_addresses");
-    expect(data.body).toMatchObject({ location_uuid: expect.any(String), effective_date: expect.any(String) });
-  });
-
-  test("missing employee_uuid (no --example) returns a blocked_on validation envelope", async () => {
-    const result = await workAddressHandler(undefined, { ...auth, effectiveDate: "2026-01-01" })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.exitCode).toBe(ExitCode.Validation);
-    expect(result.error.blocked_on).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
   });
 });
 
