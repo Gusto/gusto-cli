@@ -111,7 +111,10 @@ export function einAlreadyInUse(err: unknown): boolean {
   return messages.some((m) => re.test(m));
 }
 
-export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
+export function federalTaxHandler(
+  opts: FederalTaxOpts,
+  warn: (msg: string) => void = (m) => void process.stderr.write(`${m}\n`),
+): CommandHandler {
   return async ({ globals }) => {
     const taxableAsScorp = resolveTaxableAsScorp(opts);
 
@@ -186,6 +189,7 @@ export function federalTaxHandler(opts: FederalTaxOpts): CommandHandler {
         einProvided = einUsed;
         einUsed = fabricateEin();
         einAutoRotated = true;
+        warn(`warning: EIN ${einProvided} was already in use; rotated to ${einUsed} (sandbox only).`);
         try {
           result = await attempt(einUsed);
         } catch (retryErr) {

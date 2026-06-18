@@ -68,20 +68,26 @@ describe("federalTaxHandler (network)", () => {
       { status: 200, body: { uuid: "ft-1" } },
     ]);
 
+    const warnings: string[] = [];
     const d = data(
-      await federalTaxHandler({
-        ...auth,
-        ein: "12-3456789",
-        taxPayerType: "LLC",
-        filingForm: "941",
-        legalName: "Acme Inc.",
-      })(ctx),
+      await federalTaxHandler(
+        {
+          ...auth,
+          ein: "12-3456789",
+          taxPayerType: "LLC",
+          filingForm: "941",
+          legalName: "Acme Inc.",
+        },
+        (m) => warnings.push(m),
+      )(ctx),
     );
 
     expect(calls).toHaveLength(4);
     expect(d.ein_auto_rotated).toBe(true);
     expect(d.ein_provided).toBe("12-3456789");
     expect(d.ein_used).not.toBe("12-3456789");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/EIN 12-3456789 was already in use; rotated to .+ \(sandbox only\)\./);
     // First PUT used the provided EIN + v1; the retried PUT used the rotated EIN + v2.
     expect((calls[1]?.body as { ein: string }).ein).toBe("12-3456789");
     expect((calls[1]?.body as { version: string }).version).toBe("v1");
@@ -95,17 +101,22 @@ describe("federalTaxHandler (network)", () => {
       { status: 422, body: { errors: [{ message: "EIN is already in use" }] } },
     ]);
     const prod: GlobalFlags = { ...globals, env: "production" };
-    const result = await federalTaxHandler({
-      ...auth,
-      ein: "12-3456789",
-      taxPayerType: "LLC",
-      filingForm: "941",
-      legalName: "Acme Inc.",
-    })({ ...ctx, globals: prod });
+    const warnings: string[] = [];
+    const result = await federalTaxHandler(
+      {
+        ...auth,
+        ein: "12-3456789",
+        taxPayerType: "LLC",
+        filingForm: "941",
+        legalName: "Acme Inc.",
+      },
+      (m) => warnings.push(m),
+    )({ ...ctx, globals: prod });
 
     expect(result.ok).toBe(false);
     // GET + one PUT only - no fabricated-EIN retry.
     expect(calls).toHaveLength(2);
+    expect(warnings).toEqual([]);
   });
 
   test("ein_rotation_failed when the fabricated EIN also collides", async () => {
@@ -115,18 +126,24 @@ describe("federalTaxHandler (network)", () => {
       { status: 200, body: { version: "v2" } }, // GET (retry)
       { status: 422, body: { errors: [{ message: "EIN is already in use" }] } }, // PUT (rotated) also fails
     ]);
-    const result = await federalTaxHandler({
-      ...auth,
-      ein: "12-3456789",
-      taxPayerType: "LLC",
-      filingForm: "941",
-      legalName: "Acme Inc.",
-    })(ctx);
+    const warnings: string[] = [];
+    const result = await federalTaxHandler(
+      {
+        ...auth,
+        ein: "12-3456789",
+        taxPayerType: "LLC",
+        filingForm: "941",
+        legalName: "Acme Inc.",
+      },
+      (m) => warnings.push(m),
+    )(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("ein_rotation_failed");
     expect(result.error.details).toMatchObject({ ein_provided: "12-3456789" });
     expect(calls).toHaveLength(4);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/EIN 12-3456789 was already in use; rotated to .+/);
   });
 
   test("a non-EIN 422 is not retried and surfaces as an error", async () => {
