@@ -73,7 +73,7 @@ export function validateValue(key: ConfigKey, value: string): string | null {
         ? null
         : `environment must be one of: ${ENV_VALUES.join(", ")}`;
     case "format":
-      return (FORMAT_VALUES as readonly string[]).includes(value) || value in FORMAT_ALIASES
+      return (FORMAT_VALUES as readonly string[]).includes(value) || Object.hasOwn(FORMAT_ALIASES, value)
         ? null
         : `format must be one of: ${FORMAT_VALUES.join(", ")}`;
     default: {
@@ -87,7 +87,7 @@ export function validateValue(key: ConfigKey, value: string): string | null {
 
 /** Canonicalize a validated value before persisting (e.g. the `json` format alias → `agent`). */
 export function normalizeValue(key: ConfigKey, value: string): string {
-  if (key === "format" && value in FORMAT_ALIASES) return FORMAT_ALIASES[value];
+  if (key === "format" && Object.hasOwn(FORMAT_ALIASES, value)) return FORMAT_ALIASES[value];
   return value;
 }
 

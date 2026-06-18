@@ -49,6 +49,11 @@ describe("validateValue", () => {
   test("format rejects genuinely invalid values", () => {
     expect(validateValue("format", "bogus")).not.toBeNull();
   });
+  test("format rejects Object prototype property names", () => {
+    expect(validateValue("format", "toString")).not.toBeNull();
+    expect(validateValue("format", "constructor")).not.toBeNull();
+    expect(validateValue("format", "hasOwnProperty")).not.toBeNull();
+  });
 });
 
 describe("normalizeValue", () => {
@@ -61,6 +66,9 @@ describe("normalizeValue", () => {
   });
   test("leaves environment values untouched", () => {
     expect(normalizeValue("environment", "sandbox")).toBe("sandbox");
+  });
+  test("does not treat Object prototype property names as the json alias", () => {
+    expect(normalizeValue("format", "toString")).toBe("toString");
   });
 });
 
