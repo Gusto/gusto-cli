@@ -5,6 +5,7 @@ import {
   companyOnboardingStatusHandler,
   companyShowHandler,
 } from "./company.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import type { CommandContext } from "../lib/runner.ts";
 import {
   type MockResponse,
@@ -47,16 +48,38 @@ describe("companyShowHandler", () => {
     expect(partial.map((e) => e.label)).toEqual(["payment_config"]);
   });
 
-  test("a failed primary company GET nulls the summary and reports partial_errors", async () => {
+  test("a failed primary company GET is a real failure, not a buried partial_error", async () => {
+    // The company record is the primary read; without it there's nothing to show. A 404
+    // here must surface as a real failure (ok:false, exit ApiClient) so an agent keying on
+    // the exit code sees the command failed, rather than ok:true with success:false buried
+    // in the body (AINT-674). The secondary GETs succeeding doesn't change that.
     routeFetch([
       { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
       { match: "/pay_schedules", status: 200, body: [] },
       { match: "/companies/co-1", status: 404, body: { error: "not found" } }, // primary company GET fails (404 = not retried)
     ]);
-    const d = data(await companyShowHandler(auth)(ctx));
+    const result = await companyShowHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.details).toMatchObject({ error: "not found" });
+  });
+
+  test("company succeeds but a secondary pay_schedules GET fails: ok:true with partial_errors", async () => {
+    // Only the company read is primary. A secondary read failing (here pay_schedules) still
+    // returns the company data with the failure recorded under partial_errors - it doesn't
+    // promote to a command failure the way a missing company record does (AINT-674).
+    routeFetch([
+      { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
+      { match: "/pay_schedules", status: 404, body: { error: "not found" } }, // 404 = not retried
+      { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved" } },
+    ]);
+    const result = await companyShowHandler(auth)(ctx);
+    expect(result.ok).toBe(true);
+    const d = data(result);
     expect(d.success).toBe(false);
-    expect((d.summary as { name: string | null }).name).toBeNull();
-    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toContain("company");
+    expect((d.summary as { name: string | null }).name).toBe("Acme");
+    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["pay_schedules"]);
   });
 
   test("payment_config 404 is suppressed when the company isn't partner-managed", async () => {

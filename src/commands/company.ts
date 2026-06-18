@@ -129,12 +129,14 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       const safe = async <T>(
         label: string,
         fn: () => Promise<T>,
-      ): Promise<{ ok: true; data: T } | { ok: false; label: string; error: string; status?: number }> => {
+      ): Promise<
+        { ok: true; data: T } | { ok: false; label: string; error: string; status?: number; cause: unknown }
+      > => {
         try {
           return { ok: true, data: await fn() };
         } catch (err) {
           const status = err instanceof ApiError ? err.status : undefined;
-          return { ok: false, label, error: errMsg(err), status };
+          return { ok: false, label, error: errMsg(err), status, cause: err };
         }
       };
 
@@ -144,7 +146,14 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         safe("pay_schedules", async () => (await ctx.client.get<PaySchedule[]>(`${base}/pay_schedules`)).body),
       ]);
 
-      const company = companyR.ok ? companyR.data : null;
+      // The company record is the primary read - without it there's nothing to show. Surface its
+      // failure as a real failure (rethrow so withCompanyContext's catch maps it via toResult to
+      // the right exit code) rather than folding it into partial_errors under ok:true, where an
+      // agent keying on the exit code would think the command worked (AINT-674). Secondary reads
+      // (payment_config, pay_schedules) still degrade to partial_errors below.
+      if (!companyR.ok) throw companyR.cause;
+
+      const company = companyR.data;
       const paymentConfig = paymentR.ok ? paymentR.data : null;
       const paySchedules = scheduleR.ok ? scheduleR.data : null;
       const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
@@ -153,8 +162,8 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       // 404 here, which reads as a bug to anyone watching the output. Drop only the 404 -
       // a 5xx or network error against the same endpoint is still a real failure.
       const suppressPaymentConfig404 = company?.is_partner_managed === false;
-      const errors = [companyR, paymentR, scheduleR]
-        .filter((r): r is { ok: false; label: string; error: string; status?: number } => !r.ok)
+      const errors = [paymentR, scheduleR]
+        .filter((r): r is { ok: false; label: string; error: string; status?: number; cause: unknown } => !r.ok)
         .filter((r) => !(r.label === "payment_config" && r.status === 404 && suppressPaymentConfig404))
         .map(({ label, error }) => ({ label, error }));
 
