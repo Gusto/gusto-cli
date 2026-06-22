@@ -265,6 +265,19 @@ export async function withCompanyContext(
   }
 }
 
+/** GET a path with an already-resolved client and map API/network errors. The bare
+ * primitive shared by `fetchResource` and any handler that already holds a context
+ * (e.g. `authWhoamiHandler` needs the resolved `tokenSource` *and* the response body,
+ * so it resolves the context itself and reuses this helper for the request). */
+export async function fetchAtPath<T = unknown>(client: ApiClient, path: string): Promise<CommandResult<T>> {
+  try {
+    const response = await client.get<T>(path);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
 /** Resolve auth context only (no company required), GET the path, and map API/network errors.
  * Use for resource endpoints where the resource UUID is already in the path
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
@@ -288,11 +301,5 @@ export async function fetchResource<T = unknown>(
     now: opts.now,
   });
   if (!resolved.ok) return resolved.result;
-
-  try {
-    const response = await resolved.ctx.client.get<T>(buildPath());
-    return { ok: true, data: response.body };
-  } catch (err) {
-    return toResult(err);
-  }
+  return fetchAtPath<T>(resolved.ctx.client, buildPath());
 }

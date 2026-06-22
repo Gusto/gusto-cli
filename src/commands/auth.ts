@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { type StdinReader, type TokenSource, resolveApiContext } from "../lib/api-context.ts";
+import { type StdinReader, type TokenSource, fetchAtPath, resolveApiContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { getAccessToken } from "../lib/env.ts";
 import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -130,26 +130,23 @@ const CREDENTIAL_SOURCE_LABEL: Record<TokenSource, string> = {
 
 export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): CommandHandler {
   return async ({ globals }) => {
+    // Resolve the context ourselves (rather than going through `fetchResource`) so the
+    // response body can be decorated with the `tokenSource` that won.
     const resolved = await resolveApiContext(globals, {
       requireCompany: false,
       tokenStdin: opts.tokenStdin,
       readStdin,
     });
     if (!resolved.ok) return resolved.result;
-
-    try {
-      const response = await resolved.ctx.client.get<TokenInfo>("/v1/token_info");
-      const info = response.body;
-      return {
-        ok: true,
-        data: {
-          ...info,
-          credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
-          capabilities: summarizeGrantedScopes(parseScopes(info?.scope)),
-        },
-      };
-    } catch (err) {
-      return toResult(err);
-    }
+    const result = await fetchAtPath<TokenInfo>(resolved.ctx.client, "/v1/token_info");
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      data: {
+        ...result.data,
+        credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
+        capabilities: summarizeGrantedScopes(parseScopes(result.data?.scope)),
+      },
+    };
   };
 }
