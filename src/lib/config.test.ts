@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type ConfigPaths, readConfig, resetConfig, validateKey, validateValue, writeConfig } from "./config.ts";
+import {
+  type ConfigPaths,
+  normalizeValue,
+  readConfig,
+  resetConfig,
+  validateKey,
+  validateValue,
+  writeConfig,
+} from "./config.ts";
 
 let scratch: string;
 let paths: ConfigPaths;
@@ -34,10 +42,40 @@ describe("validateValue", () => {
     expect(validateValue("environment", "production")).toBeNull();
     expect(validateValue("environment", "staging")).not.toBeNull();
   });
-  test("format must be agent or human", () => {
+  test("format accepts agent, human, and the json alias", () => {
     expect(validateValue("format", "agent")).toBeNull();
     expect(validateValue("format", "human")).toBeNull();
-    expect(validateValue("format", "json")).not.toBeNull();
+    expect(validateValue("format", "json")).toBeNull();
+  });
+  test("format rejects genuinely invalid values", () => {
+    expect(validateValue("format", "bogus")).not.toBeNull();
+  });
+  test("format error message lists every accepted value including the json alias", () => {
+    const msg = validateValue("format", "bogus");
+    expect(msg).toContain("agent");
+    expect(msg).toContain("human");
+    expect(msg).toContain("json");
+  });
+  test("format rejects Object prototype property names", () => {
+    expect(validateValue("format", "toString")).not.toBeNull();
+    expect(validateValue("format", "constructor")).not.toBeNull();
+    expect(validateValue("format", "hasOwnProperty")).not.toBeNull();
+  });
+});
+
+describe("normalizeValue", () => {
+  test("normalizes the json format alias to agent", () => {
+    expect(normalizeValue("format", "json")).toBe("agent");
+  });
+  test("leaves agent and human untouched", () => {
+    expect(normalizeValue("format", "agent")).toBe("agent");
+    expect(normalizeValue("format", "human")).toBe("human");
+  });
+  test("leaves environment values untouched", () => {
+    expect(normalizeValue("environment", "sandbox")).toBe("sandbox");
+  });
+  test("does not treat Object prototype property names as the json alias", () => {
+    expect(normalizeValue("format", "toString")).toBe("toString");
   });
   test("skills_auto_install must be ask, always, or never", () => {
     expect(validateValue("skills_auto_install", "ask")).toBeNull();

@@ -276,6 +276,89 @@ describe("login", () => {
     expect(body).toContain("login complete");
   });
 
+  test("a heartbeat line fires on each interval tick and stops once the callback resolves", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } },
+      { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
+    ]);
+
+    let intervalCallback: (() => void) | undefined;
+    let cleared = false;
+    const sentinelHandle = Symbol("handle");
+    const timers = {
+      set: (cb: () => void): unknown => {
+        intervalCallback = cb;
+        return sentinelHandle;
+      },
+      clear: (h: unknown): void => {
+        if (h === sentinelHandle) cleared = true;
+      },
+    };
+
+    let mockNow = 1_000_000;
+    const lines: string[] = [];
+
+    // setTimeout(0) so login() has reached `await server.waitForCode()` and registered
+    // the timer before we fire ticks; a microtask would run too early.
+    const openBrowser = (authorizeUrl: string): Promise<void> => {
+      const u = new URL(authorizeUrl);
+      const redirect = u.searchParams.get("redirect_uri") as string;
+      const state = u.searchParams.get("state") as string;
+      setTimeout(() => {
+        mockNow += 12_000;
+        intervalCallback?.();
+        mockNow += 13_000;
+        intervalCallback?.();
+        void globalThis.fetch(`${redirect}?code=auth-code&state=${state}`);
+      }, 0);
+      return Promise.resolve();
+    };
+
+    await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
+      openBrowser,
+      print: (l) => lines.push(l),
+      now: () => mockNow,
+      timers,
+    });
+
+    const heartbeats = lines.filter((l) => l.startsWith("Open the URL above"));
+    expect(heartbeats).toHaveLength(2);
+    expect(heartbeats[0]).toContain("(12s elapsed)");
+    expect(heartbeats[1]).toContain("(25s elapsed)");
+    expect(cleared).toBe(true);
+  });
+
+  test("heartbeat stops when the OAuth callback rejects, not just on success", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
+
+    let cleared = false;
+    const sentinelHandle = Symbol("handle");
+    const timers = {
+      set: (): unknown => sentinelHandle,
+      clear: (h: unknown): void => {
+        if (h === sentinelHandle) cleared = true;
+      },
+    };
+
+    await expect(
+      login("sandbox", {
+        store,
+        http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+        browserAvailable: () => true,
+        openBrowser: driveCallback().openBrowser,
+        print: () => {},
+        timers,
+      }),
+    ).rejects.toThrow();
+
+    expect(cleared).toBe(true);
+  });
+
   test("browser tab shows a failure page when the token exchange returns non-200", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
     const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);

@@ -42,7 +42,14 @@ export interface LoginDeps {
   print?: (line: string) => void;
   emitEvent?: (event: SignInUrlEvent) => void;
   now?: () => number;
+  timers?: {
+    set: (cb: () => void, ms: number) => unknown;
+    clear: (handle: unknown) => void;
+  };
+  heartbeatIntervalMs?: number;
 }
+
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 
 export async function login(env: Environment, deps: LoginDeps): Promise<TokenInfo> {
   const { store, http } = deps;
@@ -71,9 +78,17 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
     } else {
       printManualUrl(authorizeUrl, print);
     }
-    print("Waiting for you to finish signing in...");
+    print(
+      "Waiting for you to complete sign-in in your browser. The CLI will continue automatically once you finish; press Ctrl-C to cancel.",
+    );
 
-    const code = await server.waitForCode();
+    const stopHeartbeat = startHeartbeat(print, deps, now);
+    let code: string;
+    try {
+      code = await server.waitForCode();
+    } finally {
+      stopHeartbeat();
+    }
     try {
       const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
       const info = await fetchTokenInfo(http, tokens.accessToken);
@@ -97,6 +112,20 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
   } finally {
     server.close();
   }
+}
+
+function startHeartbeat(print: (line: string) => void, deps: LoginDeps, now: () => number): () => void {
+  const intervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const timers = deps.timers ?? {
+    set: (cb, ms) => setInterval(cb, ms),
+    clear: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+  };
+  const start = now();
+  const handle = timers.set(() => {
+    const elapsed = Math.round((now() - start) / 1000);
+    print(`Open the URL above to complete sign-in (${elapsed}s elapsed)`);
+  }, intervalMs);
+  return () => timers.clear(handle);
 }
 
 export async function fetchTokenInfo(http: OAuthHttpOptions, token: string): Promise<TokenInfo> {

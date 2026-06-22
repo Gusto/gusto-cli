@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type EmployeeListData, type EmployeeListSummary, employeeListHandler } from "./employee.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  type EmployeeListData,
+  type EmployeeListSummary,
+  employeeDeleteHandler,
+  employeeListHandler,
+  jobDeleteHandler,
+} from "./employee.ts";
+import {
+  type MockResponse,
+  type RecordedCall,
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  blockedFields,
+  okData,
+  stubGlobalFetch,
+} from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -52,5 +66,77 @@ describe("employeeListHandler", () => {
     expect(result.ok).toBe(false);
     expect(blockedFields(result)).toEqual(["status"]);
     expect(fetchStub.calls).toHaveLength(0);
+  });
+});
+
+function stubSeq(responses: MockResponse[]): RecordedCall[] {
+  const s = stubGlobalFetch(responses);
+  restore = s.restore;
+  return s.calls;
+}
+
+describe("employeeDeleteHandler (network)", () => {
+  test("204 success → { deleted: true, employee_uuid }", async () => {
+    const calls = stubSeq([{ status: 204, body: "" }]);
+    const d = okData(await employeeDeleteHandler("emp-1", {})(ctx));
+    expect(d).toEqual({ deleted: true, employee_uuid: "emp-1" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[0]?.url).toContain("/v1/employees/emp-1");
+  });
+
+  test("422 'Cannot delete onboarded employee' propagates as a structured error", async () => {
+    stubSeq([{ status: 422, body: { errors: [{ error_key: "base", message: "Cannot delete onboarded employee" }] } }]);
+    const result = await employeeDeleteHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("422");
+    expect(JSON.stringify(result.error.details)).toContain("Cannot delete onboarded employee");
+  });
+});
+
+describe("jobDeleteHandler (network)", () => {
+  test("DELETE 204 then GET 404 → action 'destroyed'", async () => {
+    const calls = stubSeq([
+      { status: 204, body: "" },
+      { status: 404, body: { errors: [{ message: "not found" }] } },
+    ]);
+    const d = okData(await jobDeleteHandler("job-1", {})(ctx));
+    expect(d).toEqual({ action: "destroyed", job_uuid: "job-1" });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[1]?.method).toBe("GET");
+    expect(calls[1]?.url).toContain("/v1/jobs/job-1");
+  });
+
+  test("DELETE 204 then GET 200 → action 'deactivated' (any 2xx means the row still exists)", async () => {
+    const calls = stubSeq([
+      { status: 204, body: "" },
+      // Realistic JobPresenter response: no `active` field, per show.json.rabl.
+      { status: 200, body: { uuid: "job-1", title: "Engineer", primary: true } },
+    ]);
+    const d = okData(await jobDeleteHandler("job-1", {})(ctx));
+    expect(d).toEqual({ action: "deactivated", job_uuid: "job-1" });
+    expect(calls).toHaveLength(2);
+  });
+
+  test("DELETE 422 'must have at least one active job' propagates", async () => {
+    const calls = stubSeq([{ status: 422, body: { errors: [{ message: "must have at least one active job" }] } }]);
+    const result = await jobDeleteHandler("job-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(JSON.stringify(result.error.details)).toContain("at least one active job");
+    // No follow-up GET when the DELETE itself failed.
+    expect(calls).toHaveLength(1);
+  });
+
+  test("DELETE 204 then GET non-404 error → action 'unknown' (delete already succeeded; don't surface a retryable failure)", async () => {
+    const calls = stubSeq([
+      { status: 204, body: "" },
+      { status: 403, body: { errors: [{ message: "forbidden" }] } },
+    ]);
+    const d = okData(await jobDeleteHandler("job-1", {})(ctx));
+    expect(d).toEqual({ action: "unknown", job_uuid: "job-1" });
+    expect(calls).toHaveLength(2);
   });
 });

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { ExitCode } from "../lib/exit-codes.ts";
+import type { CommandResult } from "../lib/runner.ts";
 import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
 import {
+  clarifyEmptyTimesheetSync,
   timesheetCreateHandler,
   timesheetListHandler,
   timesheetShowHandler,
@@ -456,5 +459,73 @@ describe("timesheetListHandler", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("clarifyEmptyTimesheetSync", () => {
+  const notConfigured422: CommandResult = {
+    ok: false,
+    exitCode: ExitCode.ApiClient,
+    error: {
+      code: "api_client_error",
+      message: "POST .../time_tracking/payroll_syncs -> 422",
+      details: {
+        errors: [
+          {
+            error_key: "base",
+            category: "invalid_operation",
+            message: "Time Api integration is not enabled or hasn't been configured.",
+          },
+        ],
+      },
+      request_id: "abc123",
+    },
+  };
+
+  test("remaps the empty-company 422 to a Blocked no_time_sheets precondition", () => {
+    const result = clarifyEmptyTimesheetSync(notConfigured422);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("no_time_sheets");
+    expect(result.error.message).toContain("gusto timesheet create");
+  });
+
+  test("preserves the original details and request_id for support/debugging", () => {
+    const result = clarifyEmptyTimesheetSync(notConfigured422);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.request_id).toBe("abc123");
+    expect(result.error.details).toEqual(notConfigured422.ok ? undefined : notConfigured422.error.details);
+  });
+
+  test("leaves an unrelated api_client_error untouched", () => {
+    const other: CommandResult = {
+      ok: false,
+      exitCode: ExitCode.ApiClient,
+      error: {
+        code: "api_client_error",
+        message: "422",
+        details: { errors: [{ category: "invalid_request", message: "something else entirely" }] },
+      },
+    };
+    expect(clarifyEmptyTimesheetSync(other)).toBe(other);
+  });
+
+  test("leaves a non-client error (e.g. auth) untouched even if the text matches", () => {
+    const authErr: CommandResult = {
+      ok: false,
+      exitCode: ExitCode.Auth,
+      error: {
+        code: "no_access_token",
+        details: { errors: [{ category: "invalid_operation", message: "not enabled or hasn't been configured" }] },
+        message: "no access token",
+      },
+    };
+    expect(clarifyEmptyTimesheetSync(authErr)).toBe(authErr);
+  });
+
+  test("passes successful results straight through", () => {
+    const ok: CommandResult = { ok: true, data: { status: "pending" } };
+    expect(clarifyEmptyTimesheetSync(ok)).toBe(ok);
   });
 });

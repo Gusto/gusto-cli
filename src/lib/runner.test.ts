@@ -234,6 +234,36 @@ describe("runCommand", () => {
     expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { uuid: "u1" } });
   });
 
+  test("renders success data with the handler's human renderer in human mode", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { name: "Acme" }, human: () => "Company: Acme" }),
+      { ...flags, agent: false, human: true },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(result.stdout).toBe("Company: Acme\n");
+  });
+
+  test("ignores the human renderer when --fields selection is active", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { name: "Acme", uuid: "co-1" }, human: () => "SHOULD NOT SHOW" }),
+      { ...flags, agent: false, human: true, fields: { mode: "select", keys: ["name"] } },
+    );
+    expect(result.exitCode).toBe(ExitCode.Success);
+    expect(result.stdout).not.toContain("SHOULD NOT SHOW");
+    expect(result.stdout).toContain("Acme");
+  });
+
+  test("the human renderer never leaks into agent (JSON) output", async () => {
+    const result = await runWithExitCapture(
+      "test",
+      async () => ({ ok: true, data: { name: "Acme" }, human: () => "SHOULD NOT SHOW" }),
+      flags,
+    );
+    expect(JSON.parse(result.stdout.trim())).toEqual({ ok: true, data: { name: "Acme" } });
+  });
+
   test("passes the command name + globals into the handler context", async () => {
     const captured: { command?: string; globals?: GlobalFlags } = {};
     await runWithExitCapture("gusto company provision", async (ctx) => {

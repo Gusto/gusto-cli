@@ -6,6 +6,7 @@ import {
   configPaths,
   readConfig,
   resetConfig,
+  normalizeValue,
   validateKey,
   validateValue,
   writeConfig,
@@ -84,10 +85,11 @@ function configSetHandler(key: string, value: string): CommandHandler {
         error: { code: "invalid_value", message: valueError },
       };
     }
+    const normalized = normalizeValue(validKey, value);
     const cfg = await readConfig();
-    const updated: UserConfig = { ...cfg, [validKey]: value };
+    const updated: UserConfig = { ...cfg, [validKey]: normalized };
     await writeConfig(updated);
-    return { ok: true, data: { key: validKey, value } };
+    return { ok: true, data: { key: validKey, value: normalized } };
   };
 }
 

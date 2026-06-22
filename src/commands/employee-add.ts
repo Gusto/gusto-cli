@@ -97,6 +97,7 @@ export interface HomeAddressOpts extends TokenOpts {
   zip?: string;
   effectiveDate?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 export function homeAddressBlockers(opts: HomeAddressOpts): BlockedOn[] {
@@ -121,6 +122,17 @@ export function homeAddressBody(opts: HomeAddressOpts): Record<string, unknown> 
 
 function homeAddressHandler(employeeUuid: string | undefined, opts: HomeAddressOpts): CommandHandler {
   return async (ctx) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/employees/{employee_uuid}/home_addresses",
+          body: { street_1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107" },
+          note: "example: requires a real employee_uuid in the path at send time",
+        },
+      };
+    }
     if (!employeeUuid) return missingEmployeeUuid();
     return postSubdomainHandler(
       opts,
@@ -137,6 +149,7 @@ export interface WorkAddressOpts extends CompanyContextOpts {
   locationUuid?: string;
   effectiveDate?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 export function workAddressBlockers(opts: WorkAddressOpts): BlockedOn[] {
@@ -175,6 +188,17 @@ export async function resolveWorkAddressLocation(
 
 export function workAddressHandler(employeeUuid: string | undefined, opts: WorkAddressOpts): CommandHandler {
   return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/employees/{employee_uuid}/work_addresses",
+          body: { location_uuid: "{location_uuid}", effective_date: "2026-01-01" },
+          note: "example: omit --location-uuid to default to the company's primary location at send time",
+        },
+      };
+    }
     if (!employeeUuid) return missingEmployeeUuid();
     const blocked = workAddressBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
@@ -332,7 +356,7 @@ export async function runJob(
 
 /** The positional employee_uuid is optional on subcommands that take `--example` (so a canned
  * sample needs no real uuid); every non-example path requires it. */
-function missingEmployeeUuid(): CommandResult<never> {
+export function missingEmployeeUuid(): CommandResult<never> {
   return missingArgs([{ field: "employee_uuid", reason: "required" }]);
 }
 
@@ -1152,9 +1176,11 @@ async function putVersioned(
   return client.put(path, resolved.ok ? resolved.body : body);
 }
 
-/** Resolve a token-only (no company required) client for employee-scoped endpoints and run `fn`,
- * mapping any API/network error it throws. Sibling of `withCompanyContext` for `/v1/employees/...`. */
-async function withEmployeeClient(
+/** Resolve a token-only (no company required) client and run `fn`, mapping any
+ * API/network error it throws. Sibling of `withCompanyContext` for endpoints
+ * that carry the resource UUID in the path itself (`/v1/employees/{uuid}`,
+ * `/v1/jobs/{uuid}`, and any future token-scoped resource of the same shape). */
+export async function withEmployeeClient(
   globals: GlobalFlags,
   tokenStdin: boolean | undefined,
   fn: (client: ApiClient) => Promise<CommandResult>,
@@ -1190,13 +1216,17 @@ function postSubdomainHandler(
 
 const collectAnswer = (value: string, previous: string[]): string[] => previous.concat(value);
 
-/** Declare the shared employee_uuid positional on an `employee add <domain>` subcommand.
+/** Declare the shared employee_uuid positional on an employee subcommand.
  * Optional at the Commander level so a missing uuid reaches the handler and returns the
  * standard blocked_on envelope (every handler guards with missingEmployeeUuid) instead of a
  * bare Commander error; the description gives `--help` an Arguments section. Centralized so the
- * positional and its help text stay identical across subcommands. */
-function withEmployeeUuidArg(cmd: Command): Command {
-  return cmd.argument("[employee_uuid]", "UUID of the employee to update (from `employee add personal-details`)");
+ * positional and its help text stay identical across subcommands; pass `description` to
+ * override the default "to update" wording for non-update verbs. */
+export function withEmployeeUuidArg(
+  cmd: Command,
+  description = "UUID of the employee to update (from `employee add personal-details`)",
+): Command {
+  return cmd.argument("[employee_uuid]", description);
 }
 
 export function registerEmployeeAdd(employee: Command, parent: Command): void {
@@ -1246,6 +1276,7 @@ Examples:
     .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: HomeAddressOpts) =>
       runCommand(
         "gusto employee add home-address",
@@ -1264,6 +1295,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: WorkAddressOpts) =>
       runCommand(
         "gusto employee add work-address",

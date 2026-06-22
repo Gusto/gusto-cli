@@ -1,12 +1,14 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
 import {
   type CommandHandler,
+  type CommandResult,
   type ValidationResult,
   runCommand,
   runReadCommand,
@@ -358,11 +360,41 @@ export function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
     const validation = validateTimesheetSync(opts);
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
-    return createCompanyResource(globals, "time_tracking/payroll_syncs", validation.body, {
+    const result = await createCompanyResource(globals, "time_tracking/payroll_syncs", validation.body, {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
+    return clarifyEmptyTimesheetSync(result);
+  };
+}
+
+/** The payroll-sync endpoint returns a 422 `invalid_operation` —
+ * "Time Api integration is not enabled or hasn't been configured." — when the company has no
+ * time sheets to pull from. Sync only moves existing time sheets into payroll; it never creates
+ * them. The raw text reads like an auth/config fault and sends callers debugging the wrong thing,
+ * so remap it to a Blocked precondition with the actionable next step. Anything else passes
+ * through, and if the upstream wording ever changes the match misses and the original surfaces. */
+export function clarifyEmptyTimesheetSync(result: CommandResult): CommandResult {
+  if (result.ok || result.exitCode !== ExitCode.ApiClient) return result;
+
+  const errors = (result.error.details as { errors?: { category?: string; message?: string }[] } | undefined)?.errors;
+  const noTimeSheets = errors?.some(
+    (e) => e.category === "invalid_operation" && /not enabled or hasn't been configured/i.test(e.message ?? ""),
+  );
+  if (!noTimeSheets) return result;
+
+  return {
+    ok: false,
+    exitCode: ExitCode.Blocked,
+    error: {
+      code: "no_time_sheets",
+      message:
+        "Nothing to sync: this company has no time sheets yet. " +
+        "Create one with `gusto timesheet create`, then re-run sync.",
+      ...(result.error.details !== undefined ? { details: result.error.details } : {}),
+      ...(result.error.request_id ? { request_id: result.error.request_id } : {}),
+    },
   };
 }
 
