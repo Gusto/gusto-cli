@@ -72,10 +72,16 @@ export function loginResultData(info: TokenInfo): LoginData {
   return { identity: info.resource_owner, company_uuid: companyUuidFromTokenInfo(info) ?? null, scope: info.scope };
 }
 
+/** The two values the prompt can resolve to. `"ask"` is the unresolved/initial state in
+ * `SkillsAutoInstall`; it must not be the *answer*, since persisting `"ask"` would cause
+ * an infinite re-prompt loop on every subsequent login. Narrowing here makes that
+ * invariant a compile error rather than a runtime hazard. */
+export type SkillInstallChoice = Exclude<SkillsAutoInstall, "ask">;
+
 export interface SkillInstallDeps {
   configPaths?: ConfigPaths;
   skillsDir?: SkillsDir;
-  prompt?: () => Promise<SkillsAutoInstall>;
+  prompt?: () => Promise<SkillInstallChoice>;
   /** Override the stdin-TTY check (tests). When omitted, reads `process.stdin.isTTY`. */
   stdinIsTty?: boolean;
 }
@@ -114,12 +120,12 @@ export async function maybeInstallSkillsAfterLogin(
 /** Map a raw answer to the `[Y/n]` prompt to a persisted preference. Empty / y / yes
  * (case-insensitive, trimmed) opt in; anything else opts out. Extracted so the boundary
  * cases (Y, YES, whitespace, "no", garbage) are unit-testable without driving readline. */
-export function parseAutoInstallAnswer(raw: string): SkillsAutoInstall {
+export function parseAutoInstallAnswer(raw: string): SkillInstallChoice {
   const norm = raw.trim().toLowerCase();
   return norm === "" || norm === "y" || norm === "yes" ? "always" : "never";
 }
 
-async function promptForSkillsAutoInstall(sinks: StreamSinks): Promise<SkillsAutoInstall> {
+async function promptForSkillsAutoInstall(sinks: StreamSinks): Promise<SkillInstallChoice> {
   const names = listSkills()
     .map((s) => s.name)
     .join(", ");
