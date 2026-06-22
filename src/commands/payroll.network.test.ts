@@ -5,7 +5,7 @@ import {
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
   okData as data,
-  stubGlobalFetch,
+  stubFetchRouter,
 } from "../lib/test-support.ts";
 import { payrollPrepareHandler } from "./payroll.ts";
 
@@ -14,11 +14,7 @@ afterEach(() => restore());
 
 /** Stub fetch with a router and expose the recorded calls so a test can assert which
  * request was (or wasn't) sent. */
-function stub(router: (u: string) => MockResponse) {
-  const s = stubGlobalFetch(router);
-  restore = s.restore;
-  return s;
-}
+const stub = (router: (u: string) => MockResponse) => stubFetchRouter(router, (r) => (restore = r));
 
 describe("payrollPrepareHandler", () => {
   test("PUTs to the company's payroll prepare endpoint and returns the populated payroll", async () => {

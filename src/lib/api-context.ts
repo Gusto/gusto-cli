@@ -148,12 +148,18 @@ export interface CompanyResourceOpts {
   now?: () => number;
 }
 
-/** POST `body` to /v1/companies/{company_uuid}/{resource}. Resolves auth/company context,
- * honors --dry-run (emits the request shape without sending), and maps API/network errors. */
-export async function createCompanyResource(
+/** Shared body of createCompanyResource/putCompanyResource: resolve auth/company context, honor
+ * --dry-run (emit the request shape without sending), send `method` to
+ * /v1/companies/{company_uuid}/{resource}, and map API/network errors. `includeBody` controls
+ * whether the `body` key appears in the dry-run shape — POST always echoes its (required) body;
+ * PUT only echoes a body it was actually given. Keeping this in one place stops the two verbs from
+ * drifting on dry-run shape or context resolution. */
+async function companyResourceRequest(
   globals: GlobalFlags,
+  method: "POST" | "PUT",
   resource: string,
   body: unknown,
+  includeBody: boolean,
   opts: CompanyResourceOpts,
 ): Promise<CommandResult> {
   const ctx = await resolveApiContext(globals, {
@@ -164,14 +170,15 @@ export async function createCompanyResource(
     http: opts.http,
     now: opts.now,
   });
+  const bodyShape = includeBody ? { body } : {};
   if (!ctx.ok) {
     if (opts.dryRun) {
       return {
         ok: true,
         data: {
-          method: "POST",
+          method,
           path: `/v1/companies/{company_uuid}/${resource}`,
-          body,
+          ...bodyShape,
           note: "dry-run: token/company not required",
         },
       };
@@ -181,15 +188,26 @@ export async function createCompanyResource(
 
   const path = `/v1/companies/${ctx.ctx.companyUuid}/${resource}`;
   if (opts.dryRun) {
-    return { ok: true, data: { method: "POST", path, body } };
+    return { ok: true, data: { method, path, ...bodyShape } };
   }
 
   try {
-    const response = await ctx.ctx.client.post(path, body);
+    const response = await ctx.ctx.client.request(method, path, body);
     return { ok: true, data: response.body };
   } catch (err) {
     return toResult(err);
   }
+}
+
+/** POST `body` to /v1/companies/{company_uuid}/{resource}. Resolves auth/company context,
+ * honors --dry-run (emits the request shape without sending), and maps API/network errors. */
+export async function createCompanyResource(
+  globals: GlobalFlags,
+  resource: string,
+  body: unknown,
+  opts: CompanyResourceOpts,
+): Promise<CommandResult> {
+  return companyResourceRequest(globals, "POST", resource, body, true, opts);
 }
 
 /** PUT to /v1/companies/{company_uuid}/{resource} (optionally with a body). Same auth/company
@@ -204,40 +222,7 @@ export async function putCompanyResource(
   opts: CompanyResourceOpts,
   body?: unknown,
 ): Promise<CommandResult> {
-  const ctx = await resolveApiContext(globals, {
-    tokenStdin: opts.tokenStdin,
-    readStdin: opts.readStdin,
-    companyOverride: opts.companyUuid,
-    store: opts.store,
-    http: opts.http,
-    now: opts.now,
-  });
-  if (!ctx.ok) {
-    if (opts.dryRun) {
-      return {
-        ok: true,
-        data: {
-          method: "PUT",
-          path: `/v1/companies/{company_uuid}/${resource}`,
-          ...(body !== undefined ? { body } : {}),
-          note: "dry-run: token/company not required",
-        },
-      };
-    }
-    return ctx.result;
-  }
-
-  const path = `/v1/companies/${ctx.ctx.companyUuid}/${resource}`;
-  if (opts.dryRun) {
-    return { ok: true, data: { method: "PUT", path, ...(body !== undefined ? { body } : {}) } };
-  }
-
-  try {
-    const response = await ctx.ctx.client.put(path, body);
-    return { ok: true, data: response.body };
-  } catch (err) {
-    return toResult(err);
-  }
+  return companyResourceRequest(globals, "PUT", resource, body, body !== undefined, opts);
 }
 
 /** Resolve auth/company context, GET the path from `buildPath`, and map API/network errors.
