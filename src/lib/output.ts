@@ -61,7 +61,17 @@ export function outputOptionsFrom(flags: GlobalFlags): OutputOptions {
   };
 }
 
-export function emit<T>(opts: OutputOptions, payload: AgentEnvelope<T>, sinks: StreamSinks = defaultSinks): void {
+export function emit<T>(
+  opts: OutputOptions,
+  payload: AgentEnvelope<T>,
+  sinks: StreamSinks = defaultSinks,
+  // Optional per-command human renderer, as a thunk closing over the result's data. Used only in
+  // human mode; agent (JSON) output is always the raw envelope so the machine contract is
+  // unaffected. When absent, objects fall back to pretty JSON via formatHuman. A thunk (rather than
+  // `(data) => string`) keeps CommandResult<T> assignable to CommandResult<unknown> — a function
+  // parameter would be contravariant and break that for every handler.
+  renderHuman?: () => string,
+): void {
   if (opts.mode === "agent") {
     sinks.stdout.write(`${JSON.stringify(payload)}\n`);
     if (!payload.ok) writeHumanError(payload.error, sinks.stderr);
@@ -69,7 +79,8 @@ export function emit<T>(opts: OutputOptions, payload: AgentEnvelope<T>, sinks: S
   }
   if (payload.ok) {
     if (payload.data !== undefined) {
-      sinks.stdout.write(`${formatHuman(payload.data)}\n`);
+      const text = renderHuman ? renderHuman() : formatHuman(payload.data);
+      sinks.stdout.write(`${text}\n`);
     }
     return;
   }

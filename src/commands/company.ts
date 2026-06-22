@@ -21,6 +21,7 @@ import {
 } from "../lib/onboarding-map.ts";
 import { type EnrichedPayrollBlocker, enrichPayrollBlockers, fetchPayrollBlockers } from "../lib/payroll-blockers.ts";
 import { companyHasSignatory } from "../lib/signatory.ts";
+import { kvLines, table } from "../lib/human.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, runReadCommand } from "../lib/runner.ts";
 import { registerCompanyForms, registerCompanySetup, withContextOptions } from "./company-setup.ts";
 
@@ -122,6 +123,67 @@ interface PaySchedule {
   anchor_end_of_pay_period?: string;
 }
 
+interface CompanyShowSummary {
+  name: string | null;
+  trade_name: string | null;
+  status: string | null;
+  tier: string | null;
+  ein: string | null;
+  entity_type: string | null;
+  payment_speed: string | null;
+  pay_schedule: { frequency?: string; anchor_pay_date?: string } | null;
+}
+
+interface PartialError {
+  label: string;
+  error: string;
+}
+
+interface CompanyShowBase {
+  company_uuid: string;
+  summary: CompanyShowSummary;
+  company: CompanyRecord | null;
+  payment_config: PaymentConfig | null;
+  pay_schedules: PaySchedule[] | null;
+}
+
+/** The data envelope `company show` returns. Shared by the handler and the human renderer so the
+ * two can't drift. Discriminated on `success`: partial_errors is present iff a section failed, so
+ * the two can never contradict each other (no `{ success: true, partial_errors: [...] }`). */
+export type CompanyShowData = CompanyShowBase &
+  ({ success: true; partial_errors?: never } | { success: false; partial_errors: PartialError[] });
+
+/** Render `company show` as human-readable key-value blocks + a pay-schedule table instead of raw
+ * JSON (AINT-653). Missing fields are dropped; only the UUID is always shown. */
+export function renderCompanyShow(data: CompanyShowData): string {
+  const s = data.summary;
+  const overview = kvLines([
+    ["Company", s.name],
+    ["Trade name", s.trade_name],
+    ["UUID", data.company_uuid],
+    ["Status", s.status],
+    ["Tier", s.tier],
+    ["EIN", s.ein],
+    ["Entity type", s.entity_type],
+    ["Payment speed", s.payment_speed],
+  ]);
+
+  const rows = data.pay_schedules ?? [];
+  const schedule = table(
+    ["UUID", "Frequency", "Anchor pay date"],
+    rows.map((ps) => [ps.uuid, ps.frequency, ps.anchor_pay_date]),
+  );
+  const scheduleSection = schedule ? `Pay schedules\n${schedule}` : "";
+
+  const errs = data.partial_errors ?? [];
+  const errorSection =
+    errs.length > 0
+      ? [`⚠ ${errs.length} section(s) failed to load:`, ...errs.map((e) => `  - ${e.label}: ${e.error}`)].join("\n")
+      : "";
+
+  return [overview, scheduleSection, errorSection].filter((section) => section !== "").join("\n\n");
+}
+
 export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
   return async ({ globals }) =>
     withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
@@ -152,8 +214,11 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
 
       const company = companyR.data;
       const paymentConfig = paymentR.ok ? paymentR.data : null;
-      const paySchedules = scheduleR.ok ? scheduleR.data : null;
-      const firstSchedule = Array.isArray(paySchedules) ? (paySchedules[0] ?? null) : null;
+      // Sanitize once here so pay_schedules is genuinely PaySchedule[] | null downstream: the API
+      // body is typed but not runtime-validated, and a malformed-but-200 non-array would otherwise
+      // crash the human renderer's .map. Keeping the guard here lets callers trust the type.
+      const paySchedules = scheduleR.ok && Array.isArray(scheduleR.data) ? scheduleR.data : null;
+      const firstSchedule = paySchedules?.[0] ?? null;
       // payment_configs is gated on an active PartnerCompanyMapping; non-partner-managed
       // companies (e.g. those reached via `gusto auth login` rather than `provision`) always
       // 404 here, which reads as a bug to anyone watching the output. Drop only the 404 -
@@ -164,29 +229,27 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         .filter((r) => !(r.label === "payment_config" && r.status === 404 && suppressPaymentConfig404))
         .map(({ label, error }) => ({ label, error }));
 
-      return {
-        ok: true,
-        data: {
-          success: errors.length === 0,
-          company_uuid: ctx.companyUuid,
-          summary: {
-            name: company?.name ?? null,
-            trade_name: company?.trade_name ?? null,
-            status: company?.company_status ?? null,
-            tier: company?.tier ?? null,
-            ein: company?.ein ?? null,
-            entity_type: company?.entity_type ?? null,
-            payment_speed: paymentConfig?.payment_speed ?? null,
-            pay_schedule: firstSchedule
-              ? { frequency: firstSchedule.frequency, anchor_pay_date: firstSchedule.anchor_pay_date }
-              : null,
-          },
-          company,
-          payment_config: paymentConfig,
-          pay_schedules: paySchedules,
-          ...(errors.length > 0 ? { partial_errors: errors } : {}),
+      const payload: CompanyShowBase = {
+        company_uuid: ctx.companyUuid,
+        summary: {
+          name: company?.name ?? null,
+          trade_name: company?.trade_name ?? null,
+          status: company?.company_status ?? null,
+          tier: company?.tier ?? null,
+          ein: company?.ein ?? null,
+          entity_type: company?.entity_type ?? null,
+          payment_speed: paymentConfig?.payment_speed ?? null,
+          pay_schedule: firstSchedule
+            ? { frequency: firstSchedule.frequency, anchor_pay_date: firstSchedule.anchor_pay_date }
+            : null,
         },
+        company,
+        payment_config: paymentConfig,
+        pay_schedules: paySchedules,
       };
+      const data: CompanyShowData =
+        errors.length > 0 ? { ...payload, success: false, partial_errors: errors } : { ...payload, success: true };
+      return { ok: true, data, human: () => renderCompanyShow(data) };
     });
 }
 

@@ -99,6 +99,23 @@ describe("emit", () => {
     expect(stdout.buffer).toBe(`${JSON.stringify({ id: "x" }, null, 2)}\n`);
   });
 
+  test("human mode uses a provided renderer instead of pretty JSON", () => {
+    const { sinks, stdout } = captureSinks();
+    emit({ mode: "human", color: false, verbose: false }, { ok: true, data: { id: "x" } }, sinks, () => "rendered:x");
+    expect(stdout.buffer).toBe("rendered:x\n");
+  });
+
+  test("agent mode ignores a provided human renderer", () => {
+    const { sinks, stdout } = captureSinks();
+    emit(
+      { mode: "agent", color: false, verbose: false },
+      { ok: true, data: { id: "x" } },
+      sinks,
+      () => "should not appear",
+    );
+    expect(stdout.buffer).toBe(`${JSON.stringify({ ok: true, data: { id: "x" } })}\n`);
+  });
+
   test("human mode writes scalars as plain strings", () => {
     const { sinks, stdout } = captureSinks();
     emit({ mode: "human", color: false, verbose: false }, { ok: true, data: "hello" }, sinks);
