@@ -580,6 +580,25 @@ describe("config commands work without auth", () => {
     expect(result.exitCode).toBe(7);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_value");
   });
+
+  test("config set format json is normalized to agent on the way to disk", async () => {
+    const env = { XDG_CONFIG_HOME: scratchHome };
+
+    const set = await run(["config", "set", "format", "json"], env);
+    expect(set.exitCode).toBe(0);
+    expect(JSON.parse(set.stdout.trim()).data.value).toBe("agent");
+
+    const get = await run(["config", "get", "format"], env);
+    expect(JSON.parse(get.stdout.trim()).data.value).toBe("agent");
+  });
+
+  test("config set rejects an invalid format and lists json in the error", async () => {
+    const result = await run(["config", "set", "format", "bogus"], { XDG_CONFIG_HOME: scratchHome });
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("invalid_value");
+    expect(envelope.error.message).toContain("json");
+  });
 });
 
 describe("skill commands work without auth", () => {
