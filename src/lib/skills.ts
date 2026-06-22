@@ -149,14 +149,24 @@ export async function installBundledSkills(dir: SkillsDir = globalClaudeSkillsDi
   for (const skill of listSkills()) {
     const status = await getSkillStatus(skill.name, dir);
     const targetFile = installedPath(dir, skill.name);
-    if (status === "not_installed") {
-      await mkdir(path.dirname(targetFile), { recursive: true });
-      await writeFile(targetFile, expectedContent(skill, dir.kind));
-      out.push({ skill: skill.name, installedAt: targetFile, action: "installed" });
-    } else if (status === "stale") {
-      out.push({ skill: skill.name, installedAt: targetFile, action: "skipped_user_edited" });
-    } else {
-      out.push({ skill: skill.name, installedAt: targetFile, action: "already_up_to_date" });
+    switch (status) {
+      case "not_installed":
+        await mkdir(path.dirname(targetFile), { recursive: true });
+        await writeFile(targetFile, expectedContent(skill, dir.kind));
+        out.push({ skill: skill.name, installedAt: targetFile, action: "installed" });
+        break;
+      case "stale":
+        out.push({ skill: skill.name, installedAt: targetFile, action: "skipped_user_edited" });
+        break;
+      case "installed":
+        out.push({ skill: skill.name, installedAt: targetFile, action: "already_up_to_date" });
+        break;
+      default: {
+        // Compile-time exhaustiveness guard: adding a new SkillStatus variant without
+        // a case here is a type error, not a silent miscategorization as up-to-date.
+        const _exhaustive: never = status;
+        throw new Error(`unhandled SkillStatus: ${String(_exhaustive)}`);
+      }
     }
   }
   return out;
