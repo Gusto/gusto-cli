@@ -47,7 +47,7 @@ describe("skillListHandler", () => {
 
 describe("skillInstallHandler", () => {
   test("installs a known skill and returns the install action", async () => {
-    const result = (await skillInstallHandler("onboard-company", dir)(ctx)) as {
+    const result = (await skillInstallHandler("onboard-company", {}, dir)(ctx)) as {
       ok: boolean;
       data: { skill: string; action: string };
     };
@@ -57,9 +57,31 @@ describe("skillInstallHandler", () => {
   });
 
   test("returns a validation error for an unknown skill", async () => {
-    const result = await skillInstallHandler("not-a-skill", dir)(ctx);
+    const result = await skillInstallHandler("not-a-skill", {}, dir)(ctx);
     expect(result.ok).toBe(false);
     expect((result as { exitCode: number }).exitCode).toBe(ExitCode.Validation);
     expect((result as { error: { code: string } }).error.code).toBe("unknown_skill");
+  });
+
+  test("--all installs every bundled skill", async () => {
+    const result = (await skillInstallHandler(undefined, { all: true }, dir)(ctx)) as {
+      ok: boolean;
+      data: { skills: Array<{ skill: string; action: string }> };
+    };
+    expect(result.ok).toBe(true);
+    expect(result.data.skills.length).toBeGreaterThan(0);
+    for (const s of result.data.skills) expect(s.action).toBe("installed");
+  });
+
+  test("--all combined with a name is rejected as ambiguous", async () => {
+    const result = await skillInstallHandler("onboard-company", { all: true }, dir)(ctx);
+    expect(result.ok).toBe(false);
+    expect((result as { error: { code: string } }).error.code).toBe("ambiguous_install");
+  });
+
+  test("missing name without --all returns missing_skill_name", async () => {
+    const result = await skillInstallHandler(undefined, {}, dir)(ctx);
+    expect(result.ok).toBe(false);
+    expect((result as { error: { code: string } }).error.code).toBe("missing_skill_name");
   });
 });

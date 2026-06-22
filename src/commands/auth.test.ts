@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { type ConfigPaths, readConfig, writeConfig } from "../lib/config.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
-import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
+import type { SkillsDir } from "../lib/skills.ts";
+import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import {
   CREDENTIAL_SOURCE_LABEL,
   authLoginHandler,
   authWhoamiHandler,
   buildSignInUrlEmitter,
   loginResultData,
+  maybeInstallSkillsAfterLogin,
+  parseAutoInstallAnswer,
   performLogout,
 } from "./auth.ts";
 
@@ -92,6 +99,179 @@ describe("buildSignInUrlEmitter", () => {
   });
 });
 
+describe("parseAutoInstallAnswer", () => {
+  test("empty input (just hitting Enter on the default) opts in", () => {
+    expect(parseAutoInstallAnswer("")).toBe("always");
+    expect(parseAutoInstallAnswer("   ")).toBe("always");
+    expect(parseAutoInstallAnswer("\n")).toBe("always");
+  });
+
+  test("y / yes opt in regardless of case", () => {
+    expect(parseAutoInstallAnswer("y")).toBe("always");
+    expect(parseAutoInstallAnswer("Y")).toBe("always");
+    expect(parseAutoInstallAnswer("yes")).toBe("always");
+    expect(parseAutoInstallAnswer("YES")).toBe("always");
+    expect(parseAutoInstallAnswer("  Yes  ")).toBe("always");
+  });
+
+  test("anything else opts out", () => {
+    expect(parseAutoInstallAnswer("n")).toBe("never");
+    expect(parseAutoInstallAnswer("NO")).toBe("never");
+    expect(parseAutoInstallAnswer("nope")).toBe("never");
+    expect(parseAutoInstallAnswer("yes please")).toBe("never");
+    expect(parseAutoInstallAnswer("garbage")).toBe("never");
+  });
+});
+
+describe("maybeInstallSkillsAfterLogin", () => {
+  const human: GlobalFlags = { ...TEST_GLOBALS, agent: false, human: true, json: false };
+  const agent: GlobalFlags = { ...TEST_GLOBALS, agent: true, human: false, json: true };
+  let scratch: string;
+  let configPaths: ConfigPaths;
+  let skillsDir: SkillsDir;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(path.join(tmpdir(), "gusto-cli-auth-skills-"));
+    configPaths = { dir: path.join(scratch, "config"), file: path.join(scratch, "config", "config.toml") };
+    skillsDir = { path: path.join(scratch, "skills"), kind: "claude", scope: "global" };
+  });
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  test("skips entirely when persisted preference is 'never'", async () => {
+    await writeConfig({ skills_auto_install: "never" }, configPaths);
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, skillsDir });
+    expect(result).toBeUndefined();
+  });
+
+  test("auto-installs without prompting when persisted preference is 'always'", async () => {
+    await writeConfig({ skills_auto_install: "always" }, configPaths);
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      prompt: async () => {
+        throw new Error("prompt should not be called when preference is persisted");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.length).toBeGreaterThan(0);
+  });
+
+  test("prompts on first run in TTY mode and persists the answer", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      stdinIsTty: true,
+      prompt: async () => "always",
+    });
+    expect(result).toBeDefined();
+    expect((await readConfig(configPaths)).skills_auto_install).toBe("always");
+  });
+
+  test("persists 'never' when the user declines the prompt", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      stdinIsTty: true,
+      prompt: async () => "never",
+    });
+    expect(result).toBeUndefined();
+    expect((await readConfig(configPaths)).skills_auto_install).toBe("never");
+  });
+
+  test("auto-installs in agent mode without prompting or persisting", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(agent, sinks, {
+      configPaths,
+      skillsDir,
+      stdinIsTty: true,
+      prompt: async () => {
+        throw new Error("prompt should not be called in agent mode");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.length).toBeGreaterThan(0);
+    // Future TTY run on the same machine should still see the prompt.
+    expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
+  });
+
+  // Regression: stdout TTY + stdin redirected (e.g. `gusto auth login </dev/null`
+  // from a CI runner) would previously enter the prompt path and hang on EOF stdin
+  // since `rl.question()` neither resolves nor throws. Treat it as implicit consent.
+  test("falls back to implicit-consent when stdin is not a TTY even if stdout is", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      stdinIsTty: false,
+      prompt: async () => {
+        throw new Error("prompt should not be called when stdin is not a TTY");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.length).toBeGreaterThan(0);
+    expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
+  });
+});
+
+describe("authLoginHandler - skill-install failure must not negate a successful login", () => {
+  const tokenInfo = {
+    resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+    resource: { type: "Company" as const, uuid: "co-1" },
+  };
+  const fakeLogin = () => Promise.resolve(tokenInfo);
+
+  test("an installSkills throw surfaces as a stderr warning, not an error envelope", async () => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler(
+      {},
+      {
+        login: fakeLogin,
+        installSkills: async () => {
+          throw new Error("EACCES: ~/.claude/skills is read-only");
+        },
+      },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).identity).toEqual(tokenInfo.resource_owner);
+    expect(stderr.buffer.toLowerCase()).toContain("warning");
+    expect(stderr.buffer).toContain("EACCES");
+  });
+
+  test("--no-skills skips the installer entirely (the throwing stub is never reached)", async () => {
+    const { sinks, stderr } = captureSinks();
+    const installSkills = async () => {
+      throw new Error("installer should not run with --no-skills");
+    };
+    const result = await authLoginHandler({ noSkills: true }, { login: fakeLogin, installSkills })({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    // env warning may fire from the ambient GUSTO_ACCESS_TOKEN in tests/preload.ts;
+    // what matters here is that the installer didn't run, so its error message is absent.
+    expect(stderr.buffer).not.toContain("installer should not run");
+  });
+
+  test("happy path: installSkills's results are attached to the login envelope", async () => {
+    const { sinks } = captureSinks();
+    const stubInstall = [
+      { skill: "onboard-company", installedAt: "/p/onboard-company/SKILL.md", action: "installed" as const },
+    ];
+    const result = await authLoginHandler(
+      {},
+      { login: fakeLogin, installSkills: async () => stubInstall },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).skills_installed).toEqual(stubInstall);
+  });
+});
+
 describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
   let saved: string | undefined;
   beforeEach(() => {
@@ -104,14 +284,15 @@ describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
 
   const fakeLogin = () =>
     Promise.resolve({
-      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
-      resource: { type: "Company", uuid: "co-1" },
+      resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+      resource: { type: "Company" as const, uuid: "co-1" },
     });
+  const skipSkills = async () => undefined;
 
   test("warns on stderr when GUSTO_ACCESS_TOKEN is set - login won't change the active identity", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
     const { sinks, stderr } = captureSinks();
-    const result = await authLoginHandler({}, { login: fakeLogin })({ ...ctx, sinks });
+    const result = await authLoginHandler({}, { login: fakeLogin, installSkills: skipSkills })({ ...ctx, sinks });
     expect(result.ok).toBe(true);
     expect(stderr.buffer).toContain("GUSTO_ACCESS_TOKEN");
     expect(stderr.buffer.toLowerCase()).toContain("warning");
@@ -120,7 +301,7 @@ describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
   test("no warning when GUSTO_ACCESS_TOKEN is unset", async () => {
     delete process.env.GUSTO_ACCESS_TOKEN;
     const { sinks, stderr } = captureSinks();
-    const result = await authLoginHandler({}, { login: fakeLogin })({ ...ctx, sinks });
+    const result = await authLoginHandler({}, { login: fakeLogin, installSkills: skipSkills })({ ...ctx, sinks });
     expect(result.ok).toBe(true);
     expect(stderr.buffer).not.toContain("GUSTO_ACCESS_TOKEN");
   });

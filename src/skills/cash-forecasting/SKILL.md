@@ -1,6 +1,6 @@
 ---
 name: cash-forecasting
-description: Forecast a Gusto company's upcoming payroll cash needs and where that cash goes in accounting terms — from processed-payroll totals and per-payroll general-ledger data, projected over the pay-schedule cadence. Interactive and read-only.
+description: Use when the user asks about payroll cash flow, runway, whether they can afford payroll, or how much they'll owe in upcoming pay periods. Projects upcoming payroll cash needs from processed-payroll totals + general-ledger data + pay-schedule cadence, and breaks the cash down into wages, taxes, employer benefits, and bank debits. Interactive and read-only.
 ---
 
 # Forecast payroll cash needs
