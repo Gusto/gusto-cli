@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import cashForecasting from "../skills/cash-forecasting/SKILL.md" with { type: "text" };
@@ -11,19 +11,29 @@ export interface Skill {
   content: string;
 }
 
+/** Pull the `description` field from a SKILL.md's YAML-ish frontmatter so the bundled
+ * description and `gusto skill list` stay in sync with the file itself - the two used to
+ * be hand-duplicated in this file and drifted. Throws if the frontmatter is malformed,
+ * which is a build-time error since the .md files are baked into the binary. */
+function parseSkillDescription(name: string, markdown: string): string {
+  if (!markdown.startsWith("---\n")) {
+    throw new Error(`SKILL.md for ${name} is missing frontmatter`);
+  }
+  const end = markdown.indexOf("\n---", 4);
+  if (end === -1) throw new Error(`SKILL.md for ${name} has unterminated frontmatter`);
+  const frontmatter = markdown.slice(4, end);
+  const match = frontmatter.match(/^description:\s*(.+)$/m);
+  if (!match) throw new Error(`SKILL.md for ${name} has no description in frontmatter`);
+  return match[1].trim();
+}
+
+function defineSkill(name: string, content: string): Skill {
+  return { name, description: parseSkillDescription(name, content), content };
+}
+
 const SKILLS: Record<string, Skill> = {
-  "onboard-company": {
-    name: "onboard-company",
-    description:
-      "Use when the user wants to set up a new Gusto company, get a company onto payroll, or onboard their business end-to-end. Drives provisioning, tax setup, bank, pay schedule, first hire, and form signing.",
-    content: onboardCompany,
-  },
-  "cash-forecasting": {
-    name: "cash-forecasting",
-    description:
-      "Use when the user asks about payroll cash flow, runway, whether they can afford payroll, or how much they'll owe in upcoming pay periods. Projects payroll cash needs from history + ledger + pay-schedule cadence. Interactive and read-only.",
-    content: cashForecasting,
-  },
+  "onboard-company": defineSkill("onboard-company", onboardCompany),
+  "cash-forecasting": defineSkill("cash-forecasting", cashForecasting),
 };
 
 export function listSkills(): Skill[] {
@@ -118,11 +128,36 @@ export async function installSkill(name: string, dir: SkillsDir = findSkillsDir(
   const action = STATUS_TO_ACTION[await getSkillStatus(name, dir)];
 
   if (action !== "already_up_to_date") {
-    await mkdir(path.dirname(targetFile), { recursive: true });
-    await writeFile(targetFile, expectedContent(skill, dir.kind));
+    await writeSkillFile(dir, targetFile, expectedContent(skill, dir.kind));
   }
 
   return { skill: skill.name, installedAt: targetFile, kind: dir.kind, scope: dir.scope, action };
+}
+
+/** mkdir + writeFile, guarded against symlink-following. The skill install path can be
+ * driven from a `.claude/skills` directory discovered by walking up from cwd, which means
+ * an untrusted repo could plant `.claude/skills/<name>/SKILL.md` as a symlink to (e.g.)
+ * `~/.ssh/authorized_keys` and trick this writer into overwriting it. After mkdir we
+ * realpath the parent and verify it still resolves under the configured skills dir; then
+ * lstat the target file and refuse to write through an existing symlink. */
+async function writeSkillFile(dir: SkillsDir, targetFile: string, content: string): Promise<void> {
+  await mkdir(path.dirname(targetFile), { recursive: true });
+  const realParent = await realpath(path.dirname(targetFile));
+  const realRoot = await realpath(dir.path);
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + path.sep)) {
+    throw new Error(
+      `refusing to install skill: resolved path ${realParent} escapes the skills dir at ${realRoot} (symlink in the way?)`,
+    );
+  }
+  try {
+    const stat = await lstat(targetFile);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`refusing to install skill: ${targetFile} exists as a symlink`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  await writeFile(targetFile, content);
 }
 
 /** Subset of `InstallAction` that `installBundledSkills` can actually emit, plus the
@@ -151,8 +186,7 @@ export async function installBundledSkills(dir: SkillsDir = globalClaudeSkillsDi
     const targetFile = installedPath(dir, skill.name);
     switch (status) {
       case "not_installed":
-        await mkdir(path.dirname(targetFile), { recursive: true });
-        await writeFile(targetFile, expectedContent(skill, dir.kind));
+        await writeSkillFile(dir, targetFile, expectedContent(skill, dir.kind));
         out.push({ skill: skill.name, installedAt: targetFile, action: "installed" });
         break;
       case "stale":

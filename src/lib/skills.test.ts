@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -20,6 +20,18 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe("skill description", () => {
+  test("is sourced from the SKILL.md frontmatter (no hand-duplicated drift)", () => {
+    const onboard = getSkill("onboard-company");
+    expect(onboard).not.toBeNull();
+    if (!onboard) throw new Error("unreachable");
+    // The description must literally appear in the bundled SKILL.md content; that's
+    // the invariant a regression-by-drift would break.
+    expect(onboard.content).toContain(onboard.description);
+    expect(onboard.content).toContain(`description: ${onboard.description}`);
+  });
 });
 
 describe("listSkills + getSkill", () => {
@@ -152,6 +164,48 @@ describe("getSkillStatus", () => {
   test("returns 'not_installed' for an unknown skill name", async () => {
     const dir = { path: scratch, kind: "claude" as const, scope: "local" as const };
     expect(await getSkillStatus("not-a-skill", dir)).toBe("not_installed");
+  });
+});
+
+describe("symlink-follow guard", () => {
+  test("installSkill refuses to write through a symlink at the target file", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    const skillDir = path.join(dir.path, "onboard-company");
+    mkdirSync(skillDir, { recursive: true });
+    // Plant a symlink where SKILL.md should land - simulating an attacker who controls
+    // the discovered .claude/skills tree (e.g. a malicious repo). The installer must
+    // refuse rather than overwrite the symlink target.
+    const decoy = path.join(scratch, "sensitive-target.txt");
+    writeFileSync(decoy, "original content");
+    symlinkSync(decoy, path.join(skillDir, "SKILL.md"));
+    await expect(installSkill("onboard-company", dir)).rejects.toThrow(/symlink/);
+    expect(readFileSync(decoy, "utf8")).toBe("original content");
+  });
+
+  test("installSkill refuses when the parent dir resolves outside the skills root", async () => {
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
+    // .claude/skills/onboard-company points at /tmp/<scratch>/elsewhere via symlink.
+    const elsewhere = path.join(scratch, "elsewhere");
+    mkdirSync(elsewhere, { recursive: true });
+    mkdirSync(dir.path, { recursive: true });
+    symlinkSync(elsewhere, path.join(dir.path, "onboard-company"));
+    await expect(installSkill("onboard-company", dir)).rejects.toThrow(/escapes the skills dir/);
+    expect(existsSync(path.join(elsewhere, "SKILL.md"))).toBe(false);
+  });
+
+  test("installBundledSkills refuses when the skill dir is a symlink to elsewhere", async () => {
+    // A pre-existing SKILL.md symlink would naturally land in the conservative "stale"
+    // branch (readFile through the symlink doesn't match bundled content, so it's
+    // skipped). The unsafe path is a *directory*-level symlink where SKILL.md doesn't
+    // yet exist - mkdir+writeFile would otherwise follow the symlink and create the
+    // file at the wrong path.
+    const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "global" as const };
+    const elsewhere = path.join(scratch, "elsewhere");
+    mkdirSync(elsewhere, { recursive: true });
+    mkdirSync(dir.path, { recursive: true });
+    symlinkSync(elsewhere, path.join(dir.path, "onboard-company"));
+    await expect(installBundledSkills(dir)).rejects.toThrow(/escapes the skills dir/);
+    expect(existsSync(path.join(elsewhere, "SKILL.md"))).toBe(false);
   });
 });
 
