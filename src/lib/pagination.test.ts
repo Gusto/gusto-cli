@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decodeCursor, detectNext, encodeCursor, withPageParams } from "./pagination.ts";
+import { decodeCursor, detectNext, encodeCursor, parsePaginationFlags, withPageParams } from "./pagination.ts";
 
 describe("cursor codec", () => {
   test("round-trips page and per", () => {
@@ -44,5 +44,72 @@ describe("detectNext", () => {
   });
   test("empty page ends the walk", () => {
     expect(detectNext({}, 3, 0, 100)).toBeUndefined();
+  });
+});
+
+describe("parsePaginationFlags", () => {
+  test("default: first page of 100, surfaces next", () => {
+    expect(parsePaginationFlags({})).toEqual({
+      ok: true,
+      body: { startPage: 1, per: 100, maxItems: 100, surfaceNext: true },
+    });
+  });
+
+  test("--all: walk to end at max per, no next", () => {
+    expect(parsePaginationFlags({ all: true })).toEqual({
+      ok: true,
+      body: { startPage: 1, per: 500, maxItems: undefined, surfaceNext: false },
+    });
+  });
+
+  test("--limit caps total and page size, no next", () => {
+    expect(parsePaginationFlags({ limit: "50" })).toEqual({
+      ok: true,
+      body: { startPage: 1, per: 50, maxItems: 50, surfaceNext: false },
+    });
+  });
+
+  test("--limit above max clamps per to 500 but keeps the cap", () => {
+    expect(parsePaginationFlags({ limit: "1200" })).toEqual({
+      ok: true,
+      body: { startPage: 1, per: 500, maxItems: 1200, surfaceNext: false },
+    });
+  });
+
+  test("--limit with --all is allowed; limit wins", () => {
+    const r = parsePaginationFlags({ all: true, limit: "30" });
+    expect(r).toEqual({ ok: true, body: { startPage: 1, per: 30, maxItems: 30, surfaceNext: false } });
+  });
+
+  test("--cursor resumes from the encoded page, surfaces next", () => {
+    const token = encodeCursor(4, 100);
+    expect(parsePaginationFlags({ cursor: token })).toEqual({
+      ok: true,
+      body: { startPage: 4, per: 100, maxItems: 100, surfaceNext: true },
+    });
+  });
+
+  test("invalid --limit fails validation", () => {
+    const r = parsePaginationFlags({ limit: "0" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.blocked[0]?.field).toBe("limit");
+  });
+
+  test("non-integer --limit fails validation", () => {
+    expect(parsePaginationFlags({ limit: "abc" }).ok).toBe(false);
+  });
+
+  test("malformed --cursor fails validation", () => {
+    const r = parsePaginationFlags({ cursor: "garbage" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.blocked[0]?.field).toBe("cursor");
+  });
+
+  test("--cursor with --all is rejected", () => {
+    expect(parsePaginationFlags({ cursor: encodeCursor(2, 100), all: true }).ok).toBe(false);
+  });
+
+  test("--cursor with --limit is rejected", () => {
+    expect(parsePaginationFlags({ cursor: encodeCursor(2, 100), limit: "10" }).ok).toBe(false);
   });
 });

@@ -1,3 +1,5 @@
+import type { ValidationResult } from "./runner.ts";
+
 export const DEFAULT_PER = 100;
 export const MAX_PER = 500;
 
@@ -57,4 +59,48 @@ export function detectNext(
     return currentPage < totalPages ? currentPage + 1 : undefined;
   }
   return fetchedCount > 0 && fetchedCount >= per ? currentPage + 1 : undefined;
+}
+
+export function parsePaginationFlags(opts: PaginationFlags): ValidationResult<PageMode> {
+  const hasCursor = opts.cursor !== undefined;
+  const hasLimit = opts.limit !== undefined;
+  const hasAll = opts.all === true;
+
+  if (hasCursor && (hasAll || hasLimit)) {
+    return {
+      ok: false,
+      message: "--cursor can't be combined with --all or --limit",
+      blocked: [{ field: "cursor", reason: "use --cursor for forward iteration, or --all/--limit on its own" }],
+    };
+  }
+
+  if (hasLimit) {
+    const n = Number(opts.limit);
+    if (!Number.isInteger(n) || n < 1) {
+      return {
+        ok: false,
+        message: "invalid --limit",
+        blocked: [{ field: "limit", reason: `must be a positive integer, got: ${opts.limit}` }],
+      };
+    }
+    return { ok: true, body: { startPage: 1, per: Math.min(n, MAX_PER), maxItems: n, surfaceNext: false } };
+  }
+
+  if (hasAll) {
+    return { ok: true, body: { startPage: 1, per: MAX_PER, maxItems: undefined, surfaceNext: false } };
+  }
+
+  if (hasCursor) {
+    const decoded = decodeCursor(opts.cursor as string);
+    if (!decoded) {
+      return {
+        ok: false,
+        message: "invalid --cursor",
+        blocked: [{ field: "cursor", reason: "not a valid pagination cursor; use the next value from a previous response" }],
+      };
+    }
+    return { ok: true, body: { startPage: decoded.page, per: decoded.per, maxItems: decoded.per, surfaceNext: true } };
+  }
+
+  return { ok: true, body: { startPage: 1, per: DEFAULT_PER, maxItems: DEFAULT_PER, surfaceNext: true } };
 }
