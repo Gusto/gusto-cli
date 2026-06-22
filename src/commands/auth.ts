@@ -17,9 +17,11 @@ interface AuthOpts {
   tokenStdin?: boolean;
 }
 
-// commander negatable flag: `--no-browser` sets `browser: false` (default true).
+// commander negatable flags: `--no-browser` sets `browser: false` (default true);
+// `--no-skills` sets `skills: false` (default true).
 interface LoginOpts {
   browser?: boolean;
+  skills?: boolean;
 }
 
 export function registerAuthCommand(parent: Command): void {
@@ -32,11 +34,15 @@ export function registerAuthCommand(parent: Command): void {
       "--no-browser",
       "Print the sign-in URL instead of opening a browser (local headless use - the OAuth callback returns to 127.0.0.1 on this machine)",
     )
+    .option(
+      "--no-skills",
+      "Skip the bundled-skills install (one-shot). To opt out permanently: `gusto config set skills_auto_install never`.",
+    )
     .action((opts: LoginOpts) =>
       runCommand(
         "gusto auth login",
         readGlobalFlags(parent.opts()),
-        authLoginHandler({ noBrowser: opts.browser === false }),
+        authLoginHandler({ noBrowser: opts.browser === false, noSkills: opts.skills === false }),
       ),
     );
 
@@ -70,6 +76,8 @@ export interface SkillInstallDeps {
   configPaths?: ConfigPaths;
   skillsDir?: SkillsDir;
   prompt?: () => Promise<SkillsAutoInstall>;
+  /** Override the stdin-TTY check (tests). When omitted, reads `process.stdin.isTTY`. */
+  stdinIsTty?: boolean;
 }
 
 /** Decide whether to install bundled skills after a successful login, prompting in TTY mode
@@ -85,9 +93,14 @@ export async function maybeInstallSkillsAfterLogin(
   let pref: SkillsAutoInstall = cfg.skills_auto_install ?? "ask";
   if (pref === "never") return undefined;
   if (pref === "ask") {
-    if (resolveOutputMode(globals) === "agent") {
-      // Non-TTY: implicit consent. Don't persist - a future human run on the same machine
-      // should still get the prompt.
+    // Prompt only when *both* sides of the conversation are interactive. Agent mode
+    // (piped stdout) is the obvious case, but stdout-TTY-but-stdin-redirected
+    // (`gusto auth login </dev/null` from a CI runner) would hang on `rl.question`
+    // since EOF stdin neither resolves nor throws. Treat that as implicit consent.
+    const stdinTty = deps.stdinIsTty ?? Boolean(process.stdin.isTTY);
+    if (resolveOutputMode(globals) === "agent" || !stdinTty) {
+      // Non-interactive: implicit consent. Don't persist - a future human run on the
+      // same machine should still get the prompt.
       pref = "always";
     } else {
       pref = await (deps.prompt ?? (() => promptForSkillsAutoInstall(sinks)))();
@@ -139,7 +152,7 @@ export function buildSignInUrlEmitter(
   return (event) => sinks.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
-export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
+export function authLoginHandler(opts: { noBrowser?: boolean; noSkills?: boolean } = {}): CommandHandler {
   return async ({ globals, sinks }) => {
     let data: LoginData;
     try {
@@ -157,12 +170,14 @@ export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHan
     // best-effort side-effect. An fs error, prompt EOF/Ctrl+C, or readonly config
     // dir mustn't flip a successful login into an error envelope - the user is
     // already signed in and will be confused if we say otherwise.
-    try {
-      const skills = await maybeInstallSkillsAfterLogin(globals, sinks);
-      if (skills) data.skills_installed = skills;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      sinks.stderr.write(`warning: signed in but skipped bundled skill install: ${message}\n`);
+    if (!opts.noSkills) {
+      try {
+        const skills = await maybeInstallSkillsAfterLogin(globals, sinks);
+        if (skills) data.skills_installed = skills;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        sinks.stderr.write(`warning: signed in but skipped bundled skill install: ${message}\n`);
+      }
     }
     return { ok: true, data };
   };

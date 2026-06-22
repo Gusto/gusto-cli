@@ -164,6 +164,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const result = await maybeInstallSkillsAfterLogin(human, sinks, {
       configPaths,
       skillsDir,
+      stdinIsTty: true,
       prompt: async () => "always",
     });
     expect(result).toBeDefined();
@@ -175,6 +176,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const result = await maybeInstallSkillsAfterLogin(human, sinks, {
       configPaths,
       skillsDir,
+      stdinIsTty: true,
       prompt: async () => "never",
     });
     expect(result).toBeUndefined();
@@ -186,6 +188,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const result = await maybeInstallSkillsAfterLogin(agent, sinks, {
       configPaths,
       skillsDir,
+      stdinIsTty: true,
       prompt: async () => {
         throw new Error("prompt should not be called in agent mode");
       },
@@ -193,6 +196,24 @@ describe("maybeInstallSkillsAfterLogin", () => {
     expect(result).toBeDefined();
     expect(result!.length).toBeGreaterThan(0);
     // Future TTY run on the same machine should still see the prompt.
+    expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
+  });
+
+  // Regression: stdout TTY + stdin redirected (e.g. `gusto auth login </dev/null`
+  // from a CI runner) would previously enter the prompt path and hang on EOF stdin
+  // since `rl.question()` neither resolves nor throws. Treat it as implicit consent.
+  test("falls back to implicit-consent when stdin is not a TTY even if stdout is", async () => {
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      skillsDir,
+      stdinIsTty: false,
+      prompt: async () => {
+        throw new Error("prompt should not be called when stdin is not a TTY");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.length).toBeGreaterThan(0);
     expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
   });
 });
