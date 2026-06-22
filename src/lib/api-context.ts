@@ -13,9 +13,13 @@ import { readTokenFromStdin } from "./stdin.ts";
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
 
+/** Which credential supplied the resolved access token, in precedence order. */
+export type TokenSource = "stdin" | "env" | "session";
+
 interface ApiContextBase {
   client: ApiClient;
   baseUrl: string;
+  tokenSource: TokenSource;
 }
 
 export type ApiContext =
@@ -42,22 +46,24 @@ export interface ApiContextOpts extends AuthOpts {
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
 
 export type ResolvedToken =
-  | { ok: true; token: string; sessionToken: string | null }
+  | { ok: true; token: string; source: TokenSource }
   | { ok: false; result: CommandResult<never> };
 
-/** Resolve the access token using the precedence shared by every transport:
- * stored login session > GUSTO_ACCESS_TOKEN env > --token-stdin (piped). stdin
- * is the lowest rung and read lazily so a piped secret is only consumed when no
- * more secure source is present. `gusto auth login` always wins. See AINT-588.
- * `sessionToken` is non-null when the resolved token came from the stored login —
- * callers use it to decide whether to fall back to the session's bound company. */
+/** Resolve the access token using the precedence every CLI converges on - an
+ * explicit token always overrides the stored login: --token-stdin (piped) >
+ * GUSTO_ACCESS_TOKEN env > stored login session. Once an explicit token is
+ * supplied we never fall back to the session, even if that token is invalid, so
+ * a typo'd secret surfaces the real auth error instead of silently running as the
+ * logged-in identity. The session is only loaded when no explicit
+ * token is present, so a bad GUSTO_ACCESS_TOKEN can't be masked by an on-disk
+ * session refresh. An empty pipe under `--token-stdin` is treated as an explicit
+ * credential choice that failed, not a falls-through-to-other-sources case - same
+ * silent-identity-drift hazard as a bad env token. `source` tells callers which
+ * credential won. */
 export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Promise<ResolvedToken> {
-  const session = await sessionToken(globals, opts);
-  let token = session ?? getAccessToken();
-  if (!token && opts.tokenStdin) {
-    token = await (opts.readStdin ?? readTokenFromStdin)();
-  }
-  if (!token) {
+  if (opts.tokenStdin) {
+    const piped = await (opts.readStdin ?? readTokenFromStdin)();
+    if (piped) return { ok: true, token: piped, source: "stdin" };
     return {
       ok: false,
       result: {
@@ -65,12 +71,29 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
         exitCode: ExitCode.Auth,
         error: {
           code: "no_access_token",
-          message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
+          message:
+            "--token-stdin was passed but no token arrived on stdin. Pipe one (e.g. `echo $TOKEN | gusto ...`) or drop --token-stdin to fall back to GUSTO_ACCESS_TOKEN / the stored session.",
         },
       },
     };
   }
-  return { ok: true, token, sessionToken: session };
+  const envToken = getAccessToken();
+  if (envToken) return { ok: true, token: envToken, source: "env" };
+
+  const session = await sessionToken(globals, opts);
+  if (session) return { ok: true, token: session, source: "session" };
+
+  return {
+    ok: false,
+    result: {
+      ok: false,
+      exitCode: ExitCode.Auth,
+      error: {
+        code: "no_access_token",
+        message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
+      },
+    },
+  };
 }
 
 export function resolveApiContext(
@@ -84,19 +107,18 @@ export async function resolveApiContext(
 ): Promise<Resolved<ApiContext>> {
   const resolved = await resolveAuthToken(globals, opts);
   if (!resolved.ok) return resolved;
-  const { token, sessionToken: session } = resolved;
+  const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
   const client = new ApiClient({ baseUrl, token, apiVersion: resolveApiVersion() });
 
   if (opts.requireCompany === false) {
-    return { ok: true, ctx: { client, baseUrl, hasCompany: false } };
+    return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };
   }
 
   // Only borrow the session's company when the token came from the session; an
-  // env/stdin token must not silently target an unrelated login's company. Since
-  // the session wins when present, a non-null session means its token was used.
-  const fallbackCompany = session ? await sessionCompanyUuid(globals, opts) : null;
+  // env/stdin token must not silently target an unrelated login's company.
+  const fallbackCompany = tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
   const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
     return {
@@ -113,7 +135,7 @@ export async function resolveApiContext(
     };
   }
 
-  return { ok: true, ctx: { client, baseUrl, hasCompany: true, companyUuid } };
+  return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: true, companyUuid } };
 }
 
 /** The token from the stored login session, refreshed on near-expiry; null if none. */
@@ -148,12 +170,18 @@ export interface CompanyResourceOpts {
   now?: () => number;
 }
 
-/** POST `body` to /v1/companies/{company_uuid}/{resource}. Resolves auth/company context,
- * honors --dry-run (emits the request shape without sending), and maps API/network errors. */
-export async function createCompanyResource(
+/** Shared body of createCompanyResource/putCompanyResource: resolve auth/company context, honor
+ * --dry-run (emit the request shape without sending), send `method` to
+ * /v1/companies/{company_uuid}/{resource}, and map API/network errors. `includeBody` controls
+ * whether the `body` key appears in the dry-run shape — POST always echoes its (required) body;
+ * PUT only echoes a body it was actually given. Keeping this in one place stops the two verbs from
+ * drifting on dry-run shape or context resolution. */
+async function companyResourceRequest(
   globals: GlobalFlags,
+  method: "POST" | "PUT",
   resource: string,
   body: unknown,
+  includeBody: boolean,
   opts: CompanyResourceOpts,
 ): Promise<CommandResult> {
   const ctx = await resolveApiContext(globals, {
@@ -164,14 +192,15 @@ export async function createCompanyResource(
     http: opts.http,
     now: opts.now,
   });
+  const bodyShape = includeBody ? { body } : {};
   if (!ctx.ok) {
     if (opts.dryRun) {
       return {
         ok: true,
         data: {
-          method: "POST",
+          method,
           path: `/v1/companies/{company_uuid}/${resource}`,
-          body,
+          ...bodyShape,
           note: "dry-run: token/company not required",
         },
       };
@@ -181,15 +210,41 @@ export async function createCompanyResource(
 
   const path = `/v1/companies/${ctx.ctx.companyUuid}/${resource}`;
   if (opts.dryRun) {
-    return { ok: true, data: { method: "POST", path, body } };
+    return { ok: true, data: { method, path, ...bodyShape } };
   }
 
   try {
-    const response = await ctx.ctx.client.post(path, body);
+    const response = await ctx.ctx.client.request(method, path, body);
     return { ok: true, data: response.body };
   } catch (err) {
     return toResult(err);
   }
+}
+
+/** POST `body` to /v1/companies/{company_uuid}/{resource}. Resolves auth/company context,
+ * honors --dry-run (emits the request shape without sending), and maps API/network errors. */
+export async function createCompanyResource(
+  globals: GlobalFlags,
+  resource: string,
+  body: unknown,
+  opts: CompanyResourceOpts,
+): Promise<CommandResult> {
+  return companyResourceRequest(globals, "POST", resource, body, true, opts);
+}
+
+/** PUT to /v1/companies/{company_uuid}/{resource} (optionally with a body). Same auth/company
+ * resolution, --dry-run, and error mapping as createCompanyResource, but for endpoints that mutate
+ * an existing resource in place (e.g. payroll prepare). Returns the response body, so callers that
+ * need to read the mutated resource back (e.g. the payroll's populated compensations) get it for
+ * free. Use this for a straight PUT-and-return; reach for withCompanyContext when the result needs
+ * further shaping (see companyFinishOnboardingHandler). */
+export async function putCompanyResource(
+  globals: GlobalFlags,
+  resource: string,
+  body: unknown,
+  opts: CompanyResourceOpts,
+): Promise<CommandResult> {
+  return companyResourceRequest(globals, "PUT", resource, body, body !== undefined, opts);
 }
 
 /** Resolve auth/company context, GET the path from `buildPath`, and map API/network errors.
@@ -243,6 +298,19 @@ export async function withCompanyContext(
   }
 }
 
+/** GET a path with an already-resolved client and map API/network errors. The bare
+ * primitive shared by `fetchResource` and any handler that already holds a context
+ * (e.g. `authWhoamiHandler` needs the resolved `tokenSource` *and* the response body,
+ * so it resolves the context itself and reuses this helper for the request). */
+export async function fetchAtPath<T = unknown>(client: ApiClient, path: string): Promise<CommandResult<T>> {
+  try {
+    const response = await client.get<T>(path);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
 /** Resolve auth context only (no company required), GET the path, and map API/network errors.
  * Use for resource endpoints where the resource UUID is already in the path
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
@@ -266,11 +334,5 @@ export async function fetchResource<T = unknown>(
     now: opts.now,
   });
   if (!resolved.ok) return resolved.result;
-
-  try {
-    const response = await resolved.ctx.client.get<T>(buildPath());
-    return { ok: true, data: response.body };
-  } catch (err) {
-    return toResult(err);
-  }
+  return fetchAtPath<T>(resolved.ctx.client, buildPath());
 }

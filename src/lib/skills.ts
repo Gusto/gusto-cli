@@ -11,17 +11,27 @@ export interface Skill {
   content: string;
 }
 
+/** Pull the YAML-ish frontmatter block out of a SKILL.md. Returns the body of the
+ * fences (between the opening `---\n` and the closing `\n---`), or `null` if the
+ * file doesn't start with frontmatter or the closing fence is missing. Shared so the
+ * description parser and `injectUserInvocable` don't keep two parallel parsers that
+ * could drift if the format ever evolves (CRLF, leading whitespace, etc.). */
+export function extractFrontmatter(markdown: string): string | null {
+  if (!markdown.startsWith("---\n")) return null;
+  const end = markdown.indexOf("\n---", 4);
+  if (end === -1) return null;
+  return markdown.slice(4, end);
+}
+
 /** Pull the `description` field from a SKILL.md's YAML-ish frontmatter so the bundled
  * description and `gusto skill list` stay in sync with the file itself - the two used to
  * be hand-duplicated in this file and drifted. Throws if the frontmatter is malformed,
  * which is a build-time error since the .md files are baked into the binary. */
 function parseSkillDescription(name: string, markdown: string): string {
-  if (!markdown.startsWith("---\n")) {
-    throw new Error(`SKILL.md for ${name} is missing frontmatter`);
+  const frontmatter = extractFrontmatter(markdown);
+  if (frontmatter === null) {
+    throw new Error(`SKILL.md for ${name} is missing or has unterminated frontmatter`);
   }
-  const end = markdown.indexOf("\n---", 4);
-  if (end === -1) throw new Error(`SKILL.md for ${name} has unterminated frontmatter`);
-  const frontmatter = markdown.slice(4, end);
   const match = frontmatter.match(/^description:\s*(.+)$/m);
   if (!match) throw new Error(`SKILL.md for ${name} has no description in frontmatter`);
   return match[1].trim();
@@ -207,10 +217,11 @@ export async function installBundledSkills(dir: SkillsDir = globalClaudeSkillsDi
 }
 
 export function injectUserInvocable(markdown: string): string {
-  if (!markdown.startsWith("---\n")) return markdown;
-  const end = markdown.indexOf("\n---", 4);
-  if (end === -1) return markdown;
-  const frontmatter = markdown.slice(4, end);
+  const frontmatter = extractFrontmatter(markdown);
+  if (frontmatter === null) return markdown;
   if (/^user-invocable\s*:/m.test(frontmatter)) return markdown;
+  // We know the closing fence is at index `4 + frontmatter.length` since extractFrontmatter
+  // sliced exactly that range.
+  const end = 4 + frontmatter.length;
   return `---\n${frontmatter}\nuser-invocable: true\n---${markdown.slice(end + 4)}`;
 }

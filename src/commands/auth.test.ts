@@ -8,6 +8,7 @@ import { memoryStore } from "../lib/oauth/test-support.ts";
 import type { SkillsDir } from "../lib/skills.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import {
+  CREDENTIAL_SOURCE_LABEL,
   authLoginHandler,
   authWhoamiHandler,
   buildSignInUrlEmitter,
@@ -17,9 +18,9 @@ import {
   performLogout,
 } from "./auth.ts";
 
-// whoami's token resolution (session > env > --token-stdin) is delegated to
-// fetchResource and covered by api-context.test.ts; the cases below cover the
-// capabilities summary it layers on top. (AINT-588 dropped the --token override.)
+// whoami's token resolution (explicit token first: --token-stdin > env > session)
+// is covered by api-context.test.ts; the cases below cover the capabilities
+// summary and credential-source label it layers on top.
 
 describe("loginResultData", () => {
   test("maps token_info to identity + company_uuid + scope", () => {
@@ -251,7 +252,58 @@ describe("authLoginHandler - skill-install failure must not negate a successful 
     };
     const result = await authLoginHandler({ noSkills: true }, { login: fakeLogin, installSkills })({ ...ctx, sinks });
     expect(result.ok).toBe(true);
-    expect(stderr.buffer).toBe("");
+    // env warning may fire from the ambient GUSTO_ACCESS_TOKEN in tests/preload.ts;
+    // what matters here is that the installer didn't run, so its error message is absent.
+    expect(stderr.buffer).not.toContain("installer should not run");
+  });
+
+  test("happy path: installSkills's results are attached to the login envelope", async () => {
+    const { sinks } = captureSinks();
+    const stubInstall = [
+      { skill: "onboard-company", installedAt: "/p/onboard-company/SKILL.md", action: "installed" as const },
+    ];
+    const result = await authLoginHandler(
+      {},
+      { login: fakeLogin, installSkills: async () => stubInstall },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).skills_installed).toEqual(stubInstall);
+  });
+});
+
+describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.GUSTO_ACCESS_TOKEN;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GUSTO_ACCESS_TOKEN;
+    else process.env.GUSTO_ACCESS_TOKEN = saved;
+  });
+
+  const fakeLogin = () =>
+    Promise.resolve({
+      resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+      resource: { type: "Company" as const, uuid: "co-1" },
+    });
+  const skipSkills = async () => undefined;
+
+  test("warns on stderr when GUSTO_ACCESS_TOKEN is set - login won't change the active identity", async () => {
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler({}, { login: fakeLogin, installSkills: skipSkills })({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).toContain("GUSTO_ACCESS_TOKEN");
+    expect(stderr.buffer.toLowerCase()).toContain("warning");
+  });
+
+  test("no warning when GUSTO_ACCESS_TOKEN is unset", async () => {
+    delete process.env.GUSTO_ACCESS_TOKEN;
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler({}, { login: fakeLogin, installSkills: skipSkills })({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).not.toContain("GUSTO_ACCESS_TOKEN");
   });
 });
 
@@ -282,5 +334,37 @@ describe("authWhoamiHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("api_client_error");
     expect("data" in result).toBe(false);
+  });
+
+  test("labels the credential source - GUSTO_ACCESS_TOKEN wins via the ambient env token", async () => {
+    // tests/preload.ts sets GUSTO_ACCESS_TOKEN, so with no session the env token
+    // is the resolved source; whoami should say so.
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).credential_source).toBe("GUSTO_ACCESS_TOKEN");
+  });
+
+  test("labels --token-stdin as the credential source when a token is piped", async () => {
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({ tokenStdin: true }, () => Promise.resolve("piped-tok"))(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).credential_source).toBe("--token-stdin");
+  });
+});
+
+// The `session` branch is hard to drive through whoami without standing up a real
+// session file; the underlying concern (a label typo slipping through) is captured
+// by asserting the const map directly. `Record<TokenSource, string>` enforces
+// exhaustive keys at compile time; this pins the values.
+describe("CREDENTIAL_SOURCE_LABEL", () => {
+  test("each TokenSource maps to the expected user-facing label", () => {
+    expect(CREDENTIAL_SOURCE_LABEL.stdin).toBe("--token-stdin");
+    expect(CREDENTIAL_SOURCE_LABEL.env).toBe("GUSTO_ACCESS_TOKEN");
+    expect(CREDENTIAL_SOURCE_LABEL.session).toBe("stored session");
   });
 });
