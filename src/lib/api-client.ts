@@ -1,4 +1,5 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
+import { detectNext, encodeCursor, withPageParams } from "./pagination.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -214,6 +215,33 @@ export class ApiClient {
       if (deadline !== undefined) wait = Math.min(wait, Math.max(0, deadline - now()));
       await sleep(wait);
     }
+  }
+
+  /** Walk page-based list results starting at `startPage`. Continues while another page
+   * exists (per `detectNext`) and `maxItems` (when set) is not yet reached, concatenating
+   * each page's items. Returns the items (truncated to `maxItems`), `complete` (whether the
+   * end was reached), and `next` — an opaque cursor for the following page when the walk
+   * stopped before the end, else undefined. A single-page fetch is `maxItems === per`. */
+  async paginate<T = unknown>(
+    path: string,
+    opts: { startPage?: number; per: number; maxItems?: number },
+  ): Promise<{ items: T[]; next?: string; complete: boolean }> {
+    const { per, maxItems } = opts;
+    let page = opts.startPage ?? 1;
+    const items: T[] = [];
+    let nextPage: number | undefined;
+    for (;;) {
+      const res = await this.get<T[]>(withPageParams(path, page, per));
+      const pageItems = Array.isArray(res.body) ? res.body : [];
+      items.push(...pageItems);
+      nextPage = detectNext(res.headers, page, pageItems.length, per);
+      if (nextPage === undefined) break;
+      if (maxItems !== undefined && items.length >= maxItems) break;
+      page = nextPage;
+    }
+    const complete = nextPage === undefined;
+    if (maxItems !== undefined && items.length > maxItems) items.length = maxItems;
+    return { items, next: complete ? undefined : encodeCursor(nextPage as number, per), complete };
   }
 
   async request<T = unknown>(
