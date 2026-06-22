@@ -90,8 +90,8 @@ export function parsePaginationFlags(opts: PaginationFlags): ValidationResult<Pa
     return { ok: true, body: { startPage: 1, per: MAX_PER, maxItems: undefined, surfaceNext: false } };
   }
 
-  if (hasCursor) {
-    const decoded = decodeCursor(opts.cursor as string);
+  if (opts.cursor !== undefined) {
+    const decoded = decodeCursor(opts.cursor);
     if (!decoded) {
       return {
         ok: false,

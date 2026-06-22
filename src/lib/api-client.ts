@@ -242,7 +242,7 @@ export class ApiClient {
     const complete = nextPage === undefined;
     const truncated = maxItems !== undefined && items.length > maxItems;
     if (truncated) items.length = maxItems;
-    const next = complete || truncated ? undefined : encodeCursor(nextPage as number, per);
+    const next = nextPage !== undefined && !truncated ? encodeCursor(nextPage, per) : undefined;
     return { items, next, complete };
   }
 

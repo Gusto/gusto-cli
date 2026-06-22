@@ -127,6 +127,16 @@ export function stubApiClient(routes: Record<string, [number, unknown]>): { clie
   return { client, calls };
 }
 
+/** Shared ApiClient for unit tests that inject via `fetchImpl`. Retries disabled. */
+export function testApiClient(): ApiClient {
+  return new ApiClient({
+    baseUrl: "https://api.example.com",
+    token: "t",
+    apiVersion: "2026-02-01",
+    retrySleepMs: () => 0,
+  });
+}
+
 /** A `stubGlobalFetch` router that serves a flat `items` array paginated by the URL's
  * `page`/`per` query (defaults page=1, per=25). With `withHeaders`, emits the same
  * pagination headers the contractors endpoint sets; without, emits none — exercising the
