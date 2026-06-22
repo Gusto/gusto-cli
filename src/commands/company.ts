@@ -169,7 +169,7 @@ export type CompanyShowData = CompanyShowBase &
   ({ success: true; partial_errors?: never } | { success: false; partial_errors: PartialError[] });
 
 /** Render `company show` as human-readable key-value blocks + a pay-schedule table instead of raw
- * JSON (AINT-653). Missing fields are dropped; only the UUID is always shown. */
+ * JSON. Missing fields are dropped; only the UUID is always shown. */
 export function renderCompanyShow(data: CompanyShowData): string {
   const s = data.summary;
   const overview = kvLines([
@@ -272,7 +272,7 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
  * malformed-but-200 status. The progression is:
  *   unknown -> onboarding -> ready_to_finish -> (finish) -> not_payroll_ready -> done
  * `done` requires BOTH onboarding_completed AND no payroll blockers, so the CLI no
- * longer reports "done" while the company still can't run payroll (AINT-643). A
+ * longer reports "done" while the company still can't run payroll. A
  * payroll-readiness check that couldn't run (payrollReady null) doesn't fabricate
  * not_payroll_ready - it falls through to done with a partial_error noting the gap. */
 function computeStage(s: {
@@ -293,7 +293,7 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       // Onboarding status and payroll blockers are independent reads - fetch in
       // parallel. The payroll-blockers fetch (GET /payrolls/blockers) is the
       // authoritative payroll-readiness signal; a failure is captured so it can
-      // degrade to a partial error rather than reject the whole command (AINT-643).
+      // degrade to a partial error rather than reject the whole command.
       const [status, payroll] = await Promise.all([
         // Honest type: an empty/malformed body can deserialize to null or {}.
         ctx.client
@@ -363,7 +363,7 @@ export function companyOnboardingStatusHandler(opts: CompanyShowOpts): CommandHa
       // next_command sequencing: clear onboarding blockers first, then finish, then drain
       // payroll blockers (the first one with a CLI command; null when only wait-states like
       // needs_approval remain), then nothing once payroll-ready. At ready_to_finish point
-      // at the finish verb so the loop doesn't dead-end one step short of done (AINT-615);
+      // at the finish verb so the loop doesn't dead-end one step short of done;
       // otherwise use the first blocker that has a command (not just blockedOn[0], whose
       // suggested_action may be null while a later blocker has one).
       let suggested: SuggestedAction | null;

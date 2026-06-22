@@ -73,7 +73,7 @@ function validateEnum(
  * are enforced server-side and surfaced through the API error envelope, so they
  * are intentionally not duplicated here. The deprecated `processed` /
  * `include_off_cycle` params are omitted in favor of `processing_statuses` /
- * `payroll_types`. Pagination params (`page`/`per`) are deferred to AINT-564. */
+ * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
 export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryResult {
   const blocked: BlockedOn[] = [];
   if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {

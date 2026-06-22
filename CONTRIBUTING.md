@@ -1,6 +1,6 @@
 # Contributing
 
-The Gusto CLI is a 3-week wedge experiment. See the [shape spec](https://www.notion.so/36ead673c6c281efacd0c2e2c533f9f7) for the design contract V1 is locking in.
+The Gusto CLI is an agent-friendly developer interface for Gusto payroll. This guide covers local setup, the development loop, and the conventions the project follows.
 
 ## Prerequisites
 
@@ -81,7 +81,7 @@ bun run build:all        # macOS arm64 + macOS x86_64 + Linux x86_64
 ## Commit style
 
 - Single-line summary, 20-80 chars, imperative mood
-- Reference the Jira ticket: `[AINT-XXX] do the thing`
+- Reference the related issue when there is one
 - Body explains why if non-obvious; otherwise leave it terse
 
 ## Pull requests

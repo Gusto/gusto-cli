@@ -52,7 +52,7 @@ fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS"
 
 # SHA256SUMS is served from the same origin as the binary, so this catches a
 # corrupted or partial download, not a tampered origin - that's HTTPS + GitHub's
-# release integrity, and real code-signing is AINT-580.
+# release integrity, with code-signing as a further layer.
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "$tmp/gusto" | awk '{print $1}')
 else
@@ -72,9 +72,9 @@ mkdir -p "$INSTALL_DIR"
 mv "$tmp/gusto" "$INSTALL_DIR/gusto"
 chmod +x "$INSTALL_DIR/gusto"
 
-# macOS Gatekeeper blocks the unsigned binary on first run. Interim fallback
-# until AINT-580 ships real code-signing + notarization: clear the quarantine
-# attribute. Best-effort and macOS-only; a no-op elsewhere.
+# macOS Gatekeeper can block a hand-copied binary on first run. Clear the
+# quarantine attribute as a fallback. Best-effort and macOS-only; a no-op
+# elsewhere, and unnecessary on the curl | sh path since curl doesn't set it.
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -d com.apple.quarantine "$INSTALL_DIR/gusto" 2>/dev/null || true
 fi

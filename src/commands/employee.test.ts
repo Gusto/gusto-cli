@@ -31,7 +31,7 @@ describe("parseStatus", () => {
   });
 });
 
-// Mirrors the AINT-597 sandbox distribution: 16 active, 63 onboarding, 6 terminated = 85 total.
+// Mirrors the sandbox distribution: 16 active, 63 onboarding, 6 terminated = 85 total.
 const FIXTURE = [
   ...Array.from({ length: 16 }, (_, i) => ({ uuid: `a${i}`, onboarding_status: "onboarding_completed" })),
   ...Array.from({ length: 51 }, (_, i) => ({ uuid: `b${i}`, onboarding_status: "admin_onboarding_incomplete" })),

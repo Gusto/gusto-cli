@@ -6,7 +6,6 @@
  * (employee personal details, bank verification) and post-onboarding review
  * (approval). The dedicated GET /v1/companies/{uuid}/payrolls/blockers endpoint
  * is the authoritative readiness signal - an empty list means payroll-ready.
- * See AINT-643.
  *
  * Blocker keys come from the Payroll-Blocker schema's `key` enum. Where a blocker
  * maps to a CLI command we reuse the same onboarding step ids (and thus the same
@@ -72,7 +71,7 @@ export function payrollBlockerAction(key: string): SuggestedAction | null {
  * command, so a key-less value is unusable and dropped. `message` is only descriptive, so a
  * missing/non-string message is normalized to "" rather than dropping the blocker: dropping a
  * still-identifiable blocker would shrink the list and could flip the company to a false
- * `payroll_ready: true`, the very failure this feature exists to prevent (AINT-643). */
+ * `payroll_ready: true`, the very failure this feature exists to prevent. */
 function toPayrollBlocker(value: unknown): PayrollBlocker | null {
   if (typeof value !== "object" || value === null) return null;
   const { key, message } = value as Record<string, unknown>;

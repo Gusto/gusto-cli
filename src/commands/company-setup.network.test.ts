@@ -306,7 +306,7 @@ describe("stateTaxHandler (network)", () => {
     expect(d.ready).toBe(true);
     const putCall = calls.find((c) => c.method === "PUT" && c.url.includes("/tax_requirements/CA"));
     expect(putCall?.body).toMatchObject({
-      // AINT-609: the API requires `state` on every requirement_set; without it the PUT 422s.
+      // The API requires `state` on every requirement_set; without it the PUT 422s.
       requirement_sets: [{ state: "CA", key: "taxrates", requirements: [{ key: "usedefaultsuirates", value: true }] }],
     });
   });
@@ -348,7 +348,7 @@ describe("stateTaxHandler (network)", () => {
   });
 
   test("does not report ready:true for a state whose submit errored, even if the readback says ready", async () => {
-    // AINT-609 secondary: the readback reflects out-of-band state. A failed submit
+    // Secondary case: the readback reflects out-of-band state. A failed submit
     // this run must not be masked as ready by a stale/optimistic readback.
     stubFetch([
       { status: 200, body: [{ uuid: "emp-1" }] }, // employees

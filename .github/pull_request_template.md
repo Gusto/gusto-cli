@@ -2,9 +2,9 @@
 
 <!-- 1-3 bullets on what this changes and why -->
 
-## Linked Jira
+## Linked issue
 
-<!-- e.g. AINT-561 -->
+<!-- Link the related issue, if any -->
 
 ## Test plan
 

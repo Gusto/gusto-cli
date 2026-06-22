@@ -24,7 +24,7 @@ describe("buildTaxRequirementSets", () => {
     expect(result.requirement_sets).toHaveLength(1);
     const set = result.requirement_sets[0];
     expect(set?.key).toBe("taxrates");
-    // AINT-609: each requirement_set must carry `state` or the API 422s.
+    // Each requirement_set must carry `state` or the API 422s.
     expect(set?.state).toBe("CA");
     expect(set?.effective_from).toBe("2026-01-01");
     expect(set?.requirements).toEqual([

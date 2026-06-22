@@ -90,7 +90,7 @@ function employeeCreateHandler(opts: EmployeeCreateOpts): CommandHandler {
 
 // ───────────────────────────── add home-address ─────────────────────────────
 
-// Documented quirk (AINT-649): for an employee's FIRST address the API clamps the
+// Documented quirk: for an employee's FIRST address the API clamps the
 // effective_date to the job's hire_date - a date on/after the hire date is set to the
 // hire date, an earlier date is kept, and without a hire date on file it isn't anchored
 // correctly. We surface this in --help rather than blocking; the call is still valid.

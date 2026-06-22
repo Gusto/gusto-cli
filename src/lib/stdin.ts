@@ -2,7 +2,7 @@
  * Read a single access token piped on stdin - the `gh auth login --with-token` /
  * `docker login --password-stdin` pattern. A piped secret travels through an
  * in-memory pipe and never lands in argv, shell history, or `set -x`/audit logs,
- * unlike a `--token <value>` flag. See AINT-588.
+ * unlike a `--token <value>` flag.
  *
  * Consumes stdin to EOF and returns the first non-empty line, trimmed, or null
  * when nothing (or only whitespace) was piped. Only the first line is used: a

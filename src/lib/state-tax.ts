@@ -30,7 +30,7 @@ export interface TaxRequirementsResponse {
 }
 
 /** A requirement_set in the tax_requirements PUT payload. Unlike the response
- * shape (`RequirementSet`), the API requires `state` on every set (AINT-609), so
+ * shape (`RequirementSet`), the API requires `state` on every set, so
  * it is mandatory here — the compiler rejects a built set that omits it. */
 export interface TaxRequirementSetPayload {
   state: string;
