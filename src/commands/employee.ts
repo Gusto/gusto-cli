@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { ApiError } from "../lib/api-client.ts";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
-import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { ALL_OPT, CURSOR_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { type CommandHandler, missingArgs, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
@@ -64,9 +64,9 @@ export function registerEmployeeCommand(parent: Command): void {
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
-    .option("--cursor <token>", "Pagination cursor from a previous response's next value")
+    .option(...CURSOR_OPT)
     .option("--limit <n>", "Maximum employees to return across pages")
-    .option("--all", "Fetch every page (may issue multiple requests)")
+    .option(...ALL_OPT)
     .addHelpText(
       "after",
       `

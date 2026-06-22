@@ -16,3 +16,9 @@ export const TOKEN_STDIN_OPT = [
   "--token-stdin",
   "Read the access token from stdin (one line); for automation",
 ] as const;
+
+/** `--cursor`: resume paging from a prior response's `next` value. */
+export const CURSOR_OPT = ["--cursor <token>", "Pagination cursor from a previous response's next value"] as const;
+
+/** `--all`: walk every page, issuing as many requests as it takes. */
+export const ALL_OPT = ["--all", "Fetch every page (may issue multiple requests)"] as const;

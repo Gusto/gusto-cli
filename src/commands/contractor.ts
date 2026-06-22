@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
 import { createCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
@@ -251,9 +251,9 @@ export function registerContractorCommand(parent: Command): void {
     .description("List company contractors")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
-    .option("--cursor <token>", "Pagination cursor from a previous response's next value")
+    .option(...CURSOR_OPT)
     .option("--limit <n>", "Maximum contractors to return across pages")
-    .option("--all", "Fetch every page (may issue multiple requests)")
+    .option(...ALL_OPT)
     .action((opts: ContractorListOpts) =>
       runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );
