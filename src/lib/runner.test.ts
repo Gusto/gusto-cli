@@ -311,3 +311,8 @@ describe("notImplementedHandler", () => {
     expect(result.error.message).toContain("gusto company provision");
   });
 });
+
+test("runner forwards a handler's next into the envelope", async () => {
+  const result = await runWithExitCapture("t", async () => ({ ok: true, data: { employees: [] }, next: "CURSOR" }));
+  expect(JSON.parse(result.stdout).next).toBe("CURSOR");
+});

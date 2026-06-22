@@ -147,4 +147,22 @@ describe("emit", () => {
     emit({ mode: "agent", color: false, verbose: false }, { ok: true }, sinks);
     expect(stdout.buffer).toBe(`${JSON.stringify({ ok: true })}\n`);
   });
+
+  test("agent mode includes next in the JSON envelope", () => {
+    const { sinks, stdout } = captureSinks();
+    emit({ mode: "agent", color: false, verbose: false }, { ok: true, data: [1, 2], next: "CURSOR" }, sinks);
+    expect(JSON.parse(stdout.buffer)).toEqual({ ok: true, data: [1, 2], next: "CURSOR" });
+  });
+
+  test("human mode prints a more-results hint to stderr when next is set", () => {
+    const { sinks, stderr } = captureSinks();
+    emit({ mode: "human", color: false, verbose: false }, { ok: true, data: [1], next: "CURSOR" }, sinks);
+    expect(stderr.buffer).toContain("--cursor CURSOR");
+  });
+
+  test("human mode prints no hint when next is absent", () => {
+    const { sinks, stderr } = captureSinks();
+    emit({ mode: "human", color: false, verbose: false }, { ok: true, data: [1] }, sinks);
+    expect(stderr.buffer).toBe("");
+  });
 });

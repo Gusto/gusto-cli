@@ -21,6 +21,7 @@ export type CommandResult<T = unknown> =
   | {
       ok: true;
       data?: T;
+      next?: string;
       /** Optional renderer for `--human` output, as a thunk over this result's data. Applied only
        * when stdout is human mode and no `--fields` projection is in play (a projection changes the
        * data shape the renderer expects). Agent/JSON output ignores it entirely. A thunk keeps this
@@ -136,14 +137,14 @@ async function run<T>(
         );
         code = ExitCode.CliUsage;
       } else {
-        emit(output, { ok: true, data: selectFields(result.data, selection.keys) }, deps.sinks);
+        emit(output, { ok: true, data: selectFields(result.data, selection.keys), next: result.next }, deps.sinks);
         code = ExitCode.Success;
       }
     } else {
       // Without `--fields`, successful data passes through untouched. A handler-supplied human
       // renderer is forwarded here only — the projection branches above reshape the data, so the
       // renderer (which expects the full shape) would no longer apply.
-      emit(output, { ok: true, data: result.data }, deps.sinks, result.human);
+      emit(output, { ok: true, data: result.data, next: result.next }, deps.sinks, result.human);
       code = ExitCode.Success;
     }
   } catch (err) {
