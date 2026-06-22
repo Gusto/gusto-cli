@@ -42,6 +42,12 @@ interface FinishOnboardingOpts {
   dryRun?: boolean;
 }
 
+interface ApproveOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+}
+
 export function registerCompanyCommand(parent: Command): void {
   const cmd = parent.command("company").description("Provision, inspect, and onboard a company");
 
@@ -88,6 +94,15 @@ export function registerCompanyCommand(parent: Command): void {
       .option("--dry-run", "Describe the request without sending"),
   ).action((opts: FinishOnboardingOpts) =>
     runCommand("gusto company finish", readGlobalFlags(parent.opts()), companyFinishOnboardingHandler(opts)),
+  );
+
+  withContextOptions(
+    cmd
+      .command("approve")
+      .description("[DEMO ONLY, non-production] Approve the company so it can run payroll (clears needs_approval)")
+      .option("--dry-run", "Describe the request without sending"),
+  ).action((opts: ApproveOpts) =>
+    runCommand("gusto company approve", readGlobalFlags(parent.opts()), companyApproveHandler(opts)),
   );
 
   registerCompanySetup(cmd, parent);
@@ -432,6 +447,69 @@ export function companyFinishOnboardingHandler(opts: FinishOnboardingOpts): Comm
           message: completed
             ? "Onboarding finished (onboarding_completed -> true)."
             : "finish_onboarding accepted, but onboarding_completed isn't confirmed yet - re-check with `gusto company onboarding-status`.",
+        },
+      };
+    });
+  };
+}
+
+interface ApproveResult {
+  company_status?: string;
+}
+
+export function companyApproveHandler(opts: ApproveOpts): CommandHandler {
+  return async ({ globals }) => {
+    // Demo-only escape hatch: approving server-side bypasses Gusto's underwriting/
+    // review. Never allow it against production - there, approval is an out-of-band
+    // Gusto process, not a CLI action. Mirrors the `company forms --demo-sign` guard.
+    if (globals.env === "production") {
+      return {
+        ok: false,
+        exitCode: ExitCode.Blocked,
+        error: {
+          code: "demo_only",
+          message:
+            "`gusto company approve` is a non-production demo escape hatch. In production a company is approved by Gusto's review, not the CLI.",
+        },
+      };
+    }
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        data: {
+          steps: [{ method: "PUT", path: "/v1/companies/{company_uuid}/approve" }],
+          note: "[DEMO ONLY] approve clears the needs_approval payroll blocker and generates the company's draft payrolls",
+        },
+      };
+    }
+
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      // A 422 means the API rejected the approval (e.g. a prerequisite is unmet);
+      // toResult surfaces the upstream body so the agent sees why rather than a bare
+      // "422". A 200 can still carry an empty/malformed body (null), so the read
+      // below is null-safe - the same malformed-but-200 discipline `finish` uses.
+      let approved: ApproveResult | null;
+      try {
+        approved = (await ctx.client.put<ApproveResult | null>(`/v1/companies/${ctx.companyUuid}/approve`)).body;
+      } catch (err) {
+        return toResult(err);
+      }
+
+      // A 200 doesn't guarantee the status flipped: the body can be empty/malformed
+      // (null). Only claim approval when company_status actually reads "Approved";
+      // otherwise report accepted-but-unconfirmed so an agent doesn't tell the user
+      // the company is approved when the API never said so.
+      const status = approved?.company_status ?? null;
+      const approvedOk = status === "Approved";
+      return {
+        ok: true,
+        data: {
+          company_status: status,
+          approve: approved,
+          message: approvedOk
+            ? "Company approved (company_status -> Approved). Draft payrolls will be generated - re-check with `gusto company onboarding-status`."
+            : "approve accepted, but company_status isn't confirmed yet - re-check with `gusto company onboarding-status`.",
         },
       };
     });
