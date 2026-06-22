@@ -732,7 +732,7 @@ describe("api request", () => {
   });
 });
 
-// AINT-588: the inline `--token <value>` flag was dropped (it leaks secrets into
+// The inline `--token <value>` flag was dropped (it leaks secrets into
 // ps/shell history/audit logs). Tokens now come from a stored session, the
 // GUSTO_ACCESS_TOKEN env var, or `--token-stdin`.
 describe("token-stdin authentication", () => {

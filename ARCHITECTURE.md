@@ -6,7 +6,7 @@ A one-page map of the CLI so a new contributor can find their way around in unde
 
 - **Agent-first**: every command emits a JSON envelope by default when piped, falling back to human-readable text in a TTY.
 - **Predictable exit codes**: agents and shell scripts branch on numeric exit codes, not stderr scraping.
-- **Thin wrapper over the Gusto Embedded API**: the CLI does not own business logic. It validates input, calls the API, and shapes the response for the caller.
+- **Thin wrapper over the Gusto API**: the CLI does not own business logic. It validates input, calls the API, and shapes the response for the caller.
 
 ## Layout
 
@@ -29,7 +29,7 @@ Tests for each `lib/` module live next to it as `<name>.test.ts`.
 user CLI invocation
   -> commander parses argv
   -> command handler in src/commands/*.ts
-       -> resolveApiContext()    reads --token / --company-uuid / env vars
+       -> resolveApiContext()    resolves the access token + --company-uuid (stdin / env / session)
        -> validates required fields (returns Validation exit code with blocked_on envelope)
        -> ApiClient.{get,post,put,delete}()
             -> retries 5xx + network errors on idempotent verbs (GET/DELETE)
@@ -45,7 +45,7 @@ user CLI invocation
 - **`lib/output.ts`** — `AgentEnvelope` shape (`{ ok, data?, error? }`) and the agent-vs-human emit logic. The `--agent` / `--human` / `--json` flags resolve to a single `OutputMode`.
 - **`lib/runner.ts`** — wraps every command handler so exceptions can't leak past the envelope. Centralizes exit code propagation.
 - **`lib/exit-codes.ts`** — the only place exit codes are defined. See the table in README.
-- **`lib/api-context.ts`** — resolves token + company UUID precedence: explicit flag > `GUSTO_ACCESS_TOKEN` / `GUSTO_COMPANY_UUID` > config file. Returns either a usable context or a Validation result with `blocked_on`.
+- **`lib/api-context.ts`** — resolves the access token (`--token-stdin` > `GUSTO_ACCESS_TOKEN` > stored login session) and the company UUID (`--company-uuid` > `GUSTO_COMPANY_UUID` > the login session's bound company). An explicit token always wins, so a bad one surfaces a real auth error instead of silently falling back to the session. Returns either a usable context or a Validation result with `blocked_on`.
 
 ## Output contract
 
@@ -70,7 +70,7 @@ Every command produces an `AgentEnvelope`:
 
 ## Auth
 
-Out of scope for V0. The CLI accepts a bearer token via `--token`, `GUSTO_ACCESS_TOKEN`, or config. OAuth/DCR flow is tracked separately and will land before public release.
+`gusto auth login` runs an OAuth flow (Dynamic Client Registration + PKCE) and stores the resulting session. An explicitly supplied token takes precedence over that session - `--token-stdin` > `GUSTO_ACCESS_TOKEN` > the stored session - so a bad explicit token surfaces a real auth error rather than silently falling back to the logged-in identity. See `lib/oauth/` for the login flow and `lib/api-context.ts` for resolution precedence.
 
 ## Adding a command
 

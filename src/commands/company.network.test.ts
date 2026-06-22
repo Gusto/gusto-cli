@@ -190,7 +190,7 @@ describe("companyOnboardingStatusHandler", () => {
     expect(d.ready_to_finish).toBe(true);
     expect(d.blocked_on).toEqual([]);
     // No blockers remain, so the navigation hook points at the finish verb rather
-    // than dead-ending at next_command: null one step short of done (AINT-615).
+    // than dead-ending at next_command: null one step short of done.
     expect(d.next_command).toBe("gusto company finish");
     expect((d.suggested_action as { command: string }).command).toBe("gusto company finish");
   });
@@ -220,7 +220,7 @@ describe("companyOnboardingStatusHandler", () => {
   });
 
   test("onboarding_completed but payroll blockers remain -> not_payroll_ready, not done", async () => {
-    // The AINT-643 bug: finish_onboarding flips onboarding_completed but the company
+    // The bug: finish_onboarding flips onboarding_completed but the company
     // still can't run payroll. The payroll blockers surface as their own section, each
     // mapped to a resolving command (null for wait-states like needs_approval), and
     // next_command drives the first actionable one.
@@ -249,7 +249,7 @@ describe("companyOnboardingStatusHandler", () => {
   test("a keyed blocker with no message still blocks payroll (no false-ready)", async () => {
     // The sole blocker is identifiable (has a key) but the API omitted message. It must
     // keep the company not-payroll-ready - dropping it would shrink the list to empty and
-    // report payroll_ready: true, the failure AINT-643 exists to prevent.
+    // report payroll_ready: true, the failure this guard exists to prevent.
     routeFetch([
       { match: "/payrolls/blockers", status: 200, body: [{ key: "missing_employee_setup" }] },
       { match: "/onboarding_status", status: 200, body: { onboarding_completed: true, onboarding_steps: [] } },
@@ -330,7 +330,7 @@ describe("companyOnboardingStatusHandler", () => {
   });
 
   // The API never lists a signatory step; when sign_all_forms is pending the
-  // handler GETs /signatories and synthesizes the blocker (AINT-618).
+  // handler GETs /signatories and synthesizes the blocker.
   const SIGN_FORMS_PENDING = {
     onboarding_completed: false,
     onboarding_steps: [{ id: "sign_all_forms", title: "Sign forms", required: true, completed: false }],
@@ -373,7 +373,7 @@ describe("companyOnboardingStatusHandler", () => {
 
   // add_employees is backed by verify_employees: it clears on a verified employee, not
   // a merely-added one. When an unverified employee exists, the handler GETs /employees
-  // and rewrites the blocker so an agent isn't told to add a duplicate (AINT-642).
+  // and rewrites the blocker so an agent isn't told to add a duplicate.
   const ADD_EMPLOYEES_PENDING = {
     onboarding_completed: false,
     onboarding_steps: [{ id: "add_employees", title: "Add Your Employees", required: true, completed: false }],

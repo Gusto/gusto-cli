@@ -159,7 +159,7 @@ describe("api request --auto-version", () => {
 
   test("an empty/invalid caller version does not clobber the fetched one", async () => {
     // "" is rejected by the version check, so the GET still fires - but the fetched
-    // version must win, not the caller's empty string (regression: AINT-610 spread order).
+    // version must win, not the caller's empty string (regression: spread order).
     const { calls, restore } = stubGlobalFetch([
       { status: 200, body: { version: "v-current" } },
       { status: 200, body: { updated: true } },

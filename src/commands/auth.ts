@@ -88,8 +88,8 @@ export interface SkillInstallDeps {
 }
 
 /** Decide whether to install bundled skills after a successful login, prompting in TTY mode
- * if the user hasn't answered before and auto-installing in agent/piped mode (since that's
- * the case AINT-680 is fixing - an agent driving the CLI can't see a prompt). The persisted
+ * if the user hasn't answered before and auto-installing in agent/piped mode (an agent
+ * driving the CLI can't see a prompt). The persisted
  * answer lives in `~/.config/gusto/config.toml` so subsequent logins are non-interactive. */
 export async function maybeInstallSkillsAfterLogin(
   globals: GlobalFlags,

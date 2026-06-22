@@ -201,7 +201,7 @@ describe("login", () => {
       { status: 200, body: { resource: { type: "Company", uuid: "comp-1" } } },
     ]);
 
-    // AINT-625 holds the loopback callback response open until server.complete();
+    // The handler holds the loopback callback response open until server.complete();
     // fire-and-forget the fetch (don't await) so login can progress past openBrowser.
     const eventOrder: string[] = [];
     const events: { event: string; sign_in_url: string; state: string }[] = [];

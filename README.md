@@ -2,9 +2,7 @@
 
 Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboarded payroll in a single chat session with an agent.
 
-> **Status: V0.0.1.** Command surface is locked. Config, skill bundling, and most REST commands are implemented and callable today against a sandbox API token. OAuth login (`gusto auth login`) and `gusto company provision` are live (AINT-561). The `gusto company` onboarding surface - `onboarding-status`, `setup <federal-tax|state-tax|bank-account|pay-schedule>`, and `forms` - is implemented (AINT-562). See the [shape spec](https://www.notion.so/36ead673c6c281efacd0c2e2c533f9f7) and the [V1 sprint epic AINT-552](https://gustohq.atlassian.net/browse/AINT-552).
-
-> **Repo name:** currently `gusto-cli-public` because `Gusto/gusto-cli` is taken by an unrelated internal engineering CLI (`gdev-eng`). Once that collision is resolved, this repo will move to `Gusto/gusto-cli`.
+> **Status: v0.0.1.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) and `gusto company provision` are live, along with the `gusto company` onboarding surface - `onboarding-status`, `setup <federal-tax|state-tax|bank-account|pay-schedule>`, and `forms`.
 
 > **Driving this with an agent?** See [`AGENTS.md`](AGENTS.md). Discover commands with `gusto --help` and `gusto <command> --help` - that's the source of truth, not this README.
 
@@ -14,7 +12,7 @@ Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboar
 curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh
 ```
 
-> `cli.gusto.com` isn't set up yet, so install pulls the script straight from GitHub for now. While the repo is internal this needs a GitHub login (or wait for the public release); once public, the `curl | sh` above works anonymously.
+> A `cli.gusto.com` shortcut isn't set up yet, so the installer pulls the script directly from GitHub.
 
 This detects your OS/arch, downloads the matching binary from the latest GitHub Release, verifies its SHA256, and installs to `~/.gusto/bin/gusto` (no sudo). If that dir isn't on your `PATH`, it adds a line to your shell profile (`.zshrc`/`.bashrc`/`.profile`). Set `GUSTO_CLI_VERSION` to pin a release or `GUSTO_INSTALL_DIR` to install elsewhere.
 
@@ -22,7 +20,14 @@ New binaries are published to GitHub Releases on each `v*.*.*` tag (see `.github
 
 ## Authentication
 
-Until `gusto auth login` lands (AINT-561), pass an access token explicitly:
+The simplest path is an interactive OAuth login:
+
+```sh
+gusto auth login
+gusto auth whoami   # confirm it worked
+```
+
+You can also pass an access token explicitly - useful for CI and other scripted environments:
 
 ```sh
 export GUSTO_ACCESS_TOKEN="..."
@@ -30,7 +35,7 @@ export GUSTO_COMPANY_UUID="..."
 gusto employee list
 ```
 
-Or pipe the token on stdin (for automation - keeps the secret out of argv, shell history, and `set -x`/audit logs):
+Or pipe the token on stdin (keeps the secret out of argv, shell history, and `set -x`/audit logs):
 
 ```sh
 echo "$TOKEN" | gusto employee list --token-stdin --company-uuid <uuid>
@@ -85,7 +90,7 @@ Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `
 
 ## Bundled skills
 
-V0.0.1 ships one bundled skill, `onboard-company`. Install it into a project's agent workspace:
+The CLI ships bundled skills - `onboard-company` (drives a full company onboarding) and `cash-forecasting` (projects upcoming payroll cash needs). Install one into a project's agent workspace:
 
 ```sh
 gusto skill list

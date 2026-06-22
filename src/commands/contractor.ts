@@ -299,7 +299,7 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
 
     // Self-onboarding is two calls: creating the contractor with self_onboarding:true only
     // registers them at status self_onboarding_not_invited - the invite email is sent by a
-    // separate PUT to onboarding_status. Doing only the POST left them uninvited (AINT-656).
+    // separate PUT to onboarding_status. Doing only the POST left them uninvited.
     if (opts.dryRun) {
       return { ok: true, data: { steps: contractorSelfOnboardSteps(body) } };
     }
@@ -316,7 +316,7 @@ const SELF_ONBOARDING_INVITE_STATUS = "self_onboarding_invited";
 
 /** Create the contractor, then - when self-onboarding - send the invite. Creating a contractor
  * with self_onboarding:true only registers them at status self_onboarding_not_invited; the invite
- * email is a separate PUT to /v1/contractors/{uuid}/onboarding_status (AINT-656). A failed invite
+ * email is a separate PUT to /v1/contractors/{uuid}/onboarding_status. A failed invite
  * after a successful create surfaces the created contractor (+uuid) so a retry can resend the
  * invite via that PUT rather than POSTing a duplicate contractor. */
 export async function runContractorAdd(

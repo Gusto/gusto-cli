@@ -13,11 +13,11 @@ const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];
 
 /** Placeholder callers can write instead of pasting the bound company UUID into the
- * path; resolved from the token / GUSTO_COMPANY_UUID / --company-uuid. See AINT-610. */
+ * path; resolved from the token / GUSTO_COMPANY_UUID / --company-uuid. */
 const COMPANY_UUID_PLACEHOLDER = "{company_uuid}";
 
 /** Methods that carry an optimistic-concurrency `version`. --auto-version fetches
- * the resource's current version for these before sending the write. See AINT-610. */
+ * the resource's current version for these before sending the write. */
 const VERSIONED_METHODS = new Set(["PUT", "PATCH"]);
 
 interface ApiRequestOpts {

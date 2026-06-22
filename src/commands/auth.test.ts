@@ -77,7 +77,7 @@ describe("buildSignInUrlEmitter", () => {
     );
   });
 
-  // Auto-on agent mode (piped stdout) is what makes the AINT-644 event reachable
+  // Auto-on agent mode (piped stdout) is what makes the event reachable
   // for harnesses that don't pass --agent explicitly. The flags carry agent=false
   // and human=false; resolveOutputMode reads the TTY to decide. Stub the TTY check
   // via the writable stream to assert the resolver routes piped runs to agent mode.

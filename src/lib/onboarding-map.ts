@@ -88,7 +88,7 @@ const BLOCKER_TO_COMMAND: Record<string, MapEntry> = {
 /** The action that completes onboarding once every required step is satisfied.
  * It's the navigation hook at stage `ready_to_finish`, where `blocked_on` is
  * empty so there's no per-blocker suggestion — without it an agent following
- * `next_command` dead-ends one step short of done (AINT-615). */
+ * `next_command` dead-ends one step short of done. */
 export const FINISH_ONBOARDING_ACTION: SuggestedAction = {
   command: "gusto company finish",
   required_flags: [],

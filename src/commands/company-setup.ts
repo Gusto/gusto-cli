@@ -401,7 +401,7 @@ export function stateTaxHandler(opts: StateTaxOpts): CommandHandler {
       // `ready` reconciles the readback against this run's submit results. A state
       // whose submit errored this run can never count as ready, even if the
       // readback reports ready_to_run_payroll (that reflects out-of-band state and
-      // would otherwise mask the failure — AINT-609 secondary issue).
+      // would otherwise mask the failure).
       const erroredStates = new Set(results.filter((r) => r.status === "error").map((r) => r.state));
       const allReady = found.every((s) => stateStatuses[s]?.ready_to_run_payroll === true && !erroredStates.has(s));
 
@@ -904,7 +904,7 @@ async function hostedSigningFlow(
     // Signatory must exist before signing: the hosted flow signs on behalf of the
     // signatory, and without one the flow folds signatory setup into what should be
     // a pure signing experience. Refuse early with an actionable next step so the
-    // agent assigns the signatory first (AINT-618) rather than landing in the
+    // agent assigns the signatory first rather than landing in the
     // bundled flow.
     if (!(await companyHasSignatory(ctx.client, ctx.companyUuid))) {
       return {
