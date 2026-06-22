@@ -15,7 +15,7 @@ import {
   TEST_GLOBALS,
   okData as data,
   routeFetch as setupRouteFetch,
-  stubFetchRouter,
+  stubGlobalFetch,
 } from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
@@ -471,7 +471,11 @@ describe("companyFinishOnboardingHandler", () => {
 
   /** Stub fetch with a router and return both the result and the recorded calls so a
    * test can assert which PUTs were (or weren't) sent. */
-  const stub = (router: (u: string) => MockResponse) => stubFetchRouter(router, (r) => (restore = r));
+  function stub(router: (u: string) => MockResponse) {
+    const s = stubGlobalFetch(router);
+    restore = s.restore;
+    return s;
+  }
 
   test("finishes onboarding via finish_onboarding only - the approve endpoint is gone", async () => {
     const s = stub((u) => {

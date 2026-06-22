@@ -173,7 +173,9 @@ export function payrollPrepareHandler(payrollUuid: string, opts: PayrollPrepareO
     // raw `/`, `?` or `#` would otherwise retarget the PUT (the client resolves paths via `new URL`,
     // which treats those as separators) — e.g. `x?e=1` drops `/prepare` and hits the payroll-update
     // endpoint instead. Valid hex UUIDs are unaffected.
-    putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, {
+    // prepare has no request body; pass `undefined` to keep the body/opts arg order aligned with
+    // createCompanyResource.
+    putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, undefined, {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,

@@ -219,8 +219,8 @@ export async function createCompanyResource(
 export async function putCompanyResource(
   globals: GlobalFlags,
   resource: string,
+  body: unknown,
   opts: CompanyResourceOpts,
-  body?: unknown,
 ): Promise<CommandResult> {
   return companyResourceRequest(globals, "PUT", resource, body, body !== undefined, opts);
 }

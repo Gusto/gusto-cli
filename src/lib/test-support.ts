@@ -70,19 +70,6 @@ export function routeFetch(routes: Route[]): { calls: RecordedCall[]; restore: (
   return stubGlobalFetch((u) => routes.find((rt) => u.includes(rt.match)) ?? { status: 404 });
 }
 
-/** Stub fetch with a URL-substring router and hand the `restore()` to `onRestore` (wire it to your
- * file's `afterEach`). Returns the same `{ calls, restore }` handle as `stubGlobalFetch` so a test
- * can assert which requests were (or weren't) sent. Saves network-test files from re-deriving the
- * `restore = stubGlobalFetch(...).restore; return s` dance. */
-export function stubFetchRouter(
-  router: (url: string) => MockResponse,
-  onRestore: (restore: () => void) => void,
-): { calls: RecordedCall[]; restore: () => void } {
-  const s = stubGlobalFetch(router);
-  onRestore(s.restore);
-  return s;
-}
-
 /**
  * Stub `globalThis.fetch` for command-handler tests that build their own
  * ApiClient internally (so there's no `fetchImpl` seam to inject).
