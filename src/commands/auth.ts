@@ -158,11 +158,25 @@ export function buildSignInUrlEmitter(
   return (event) => sinks.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
-export function authLoginHandler(opts: { noBrowser?: boolean; noSkills?: boolean } = {}): CommandHandler {
+/** Injectable transports so handler tests can drive the post-login skill-install
+ * branches without standing up a real OAuth flow or filesystem. Production callers
+ * omit `deps`; both fields fall back to the real implementations. */
+type LoginFn = (env: Environment, deps: Parameters<typeof login>[1]) => Promise<TokenInfo>;
+export interface AuthLoginDeps {
+  login?: LoginFn;
+  installSkills?: typeof maybeInstallSkillsAfterLogin;
+}
+
+export function authLoginHandler(
+  opts: { noBrowser?: boolean; noSkills?: boolean } = {},
+  deps: AuthLoginDeps = {},
+): CommandHandler {
+  const doLogin = deps.login ?? login;
+  const doInstallSkills = deps.installSkills ?? maybeInstallSkillsAfterLogin;
   return async ({ globals, sinks }) => {
     let data: LoginData;
     try {
-      const info = await login(resolveEnv(globals), {
+      const info = await doLogin(resolveEnv(globals), {
         store: resolveStore(),
         http: oauthHttp(globals),
         noBrowser: opts.noBrowser,
@@ -178,7 +192,7 @@ export function authLoginHandler(opts: { noBrowser?: boolean; noSkills?: boolean
     // already signed in and will be confused if we say otherwise.
     if (!opts.noSkills) {
       try {
-        const skills = await maybeInstallSkillsAfterLogin(globals, sinks);
+        const skills = await doInstallSkills(globals, sinks);
         if (skills) data.skills_installed = skills;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

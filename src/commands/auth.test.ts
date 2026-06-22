@@ -8,6 +8,7 @@ import { memoryStore } from "../lib/oauth/test-support.ts";
 import type { SkillsDir } from "../lib/skills.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import {
+  authLoginHandler,
   authWhoamiHandler,
   buildSignInUrlEmitter,
   loginResultData,
@@ -215,6 +216,42 @@ describe("maybeInstallSkillsAfterLogin", () => {
     expect(result).toBeDefined();
     expect(result!.length).toBeGreaterThan(0);
     expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
+  });
+});
+
+describe("authLoginHandler - skill-install failure must not negate a successful login", () => {
+  const tokenInfo = {
+    resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+    resource: { type: "Company" as const, uuid: "co-1" },
+  };
+  const fakeLogin = () => Promise.resolve(tokenInfo);
+
+  test("an installSkills throw surfaces as a stderr warning, not an error envelope", async () => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler(
+      {},
+      {
+        login: fakeLogin,
+        installSkills: async () => {
+          throw new Error("EACCES: ~/.claude/skills is read-only");
+        },
+      },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).identity).toEqual(tokenInfo.resource_owner);
+    expect(stderr.buffer.toLowerCase()).toContain("warning");
+    expect(stderr.buffer).toContain("EACCES");
+  });
+
+  test("--no-skills skips the installer entirely (the throwing stub is never reached)", async () => {
+    const { sinks, stderr } = captureSinks();
+    const installSkills = async () => {
+      throw new Error("installer should not run with --no-skills");
+    };
+    const result = await authLoginHandler({ noSkills: true }, { login: fakeLogin, installSkills })({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).toBe("");
   });
 });
 
