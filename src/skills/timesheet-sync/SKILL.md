@@ -1,6 +1,6 @@
 ---
 name: timesheet-sync
-description: Record tracked hours as Gusto time sheets and sync a pay period's hours into a draft payroll - create, prepare, sync, verify on the payroll.
+description: Record tracked hours as Gusto time sheets and sync a pay period's hours into a draft payroll - create, sync, verify on the payroll.
 ---
 
 # Sync time sheets to payroll
@@ -20,7 +20,7 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 ## What syncs into what
 
 - `timesheet create` writes one **time sheet** = a single shift for one worker, carrying classified hours (`Regular` / `Overtime` / `Double overtime`). Time sheets are created **approved** - creating one is consequential, not a draft.
-- A **draft payroll** for a pay period starts as an empty shell (0 `employee_compensations`). `payroll prepare <payroll_uuid>` populates its employee compensations. The draft must be prepared **before** the sync will accept it, and prepared **again afterwards** to pull the synced hours onto the payroll so you can read them back.
+- A **draft payroll** for a pay period reports its per-worker hours through `employee_compensations`, which are only materialized when you run `payroll prepare <payroll_uuid>`. That's how you read the synced hours back off the payroll - you don't need to prepare _before_ syncing (the sync handles an unprepared draft on its own); you prepare _after_ to verify.
 - `timesheet sync` is the bridge: it tells Time Tracking to pull every approved time sheet whose shift falls in `[pay_period_start_date, pay_period_end_date]` into the draft payroll for that pay period on the given pay schedule. It is **async** - the response is a `PayrollSync` with `status: pending`, not a finished payroll. Only `kind: "regular"` is supported (the CLI hard-codes it). Off-cycle payrolls are out of scope.
 
 ## Steps
@@ -38,11 +38,9 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
    - **Contractor:** same, but `--contractor-uuid <uuid>` and **no** `--job-uuid`.
    - `--start` / `--end` are ISO 8601 timestamps. `shift_started_at` must be **in the past** (the API rejects future shifts). Keep every shift inside the pay-period window from step 2, or the sync won't pick it up. `--time-zone` is required; at least one hour flag is required.
 
-6. **Prepare the draft payroll.** Run `gusto payroll prepare <payroll_uuid>` (the uuid from step 2). This populates the payroll's `employee_compensations`. It's required before the sync: an unprepared draft is an empty shell and the sync fails with `"There are no employees to run payroll for in the selected pay period."`
+6. **Sync the pay period.** `gusto timesheet sync --pay-schedule-uuid <uuid> --pay-period-start <YYYY-MM-DD> --pay-period-end <YYYY-MM-DD>`. Preview with `--dry-run` first. The sync needs a payroll-ready company (step 1) and approved time sheets in the period - you do **not** need to prepare the payroll first. The response is a `PayrollSync` with `status: pending` (or `in_progress`); it runs asynchronously.
 
-7. **Sync the pay period.** `gusto timesheet sync --pay-schedule-uuid <uuid> --pay-period-start <YYYY-MM-DD> --pay-period-end <YYYY-MM-DD>`. Preview with `--dry-run` first. The response is a `PayrollSync` with `status: pending` - the sync runs asynchronously.
-
-8. **Prepare again and verify the hours landed.** Run `gusto payroll prepare <payroll_uuid>` once more and read the worker's `employee_compensations` -> `hourly_compensations`. Confirm the `Regular` / `Overtime` / `Double overtime` hours match what you synced. If they're still zero, the sync may still be `pending` - wait briefly and re-prepare. Report the prepared payroll's hours to the user; stop here.
+7. **Verify the hours landed on the payroll.** Run `gusto payroll prepare <payroll_uuid>` (the uuid from step 2) and read the worker's `employee_compensations` -> `hourly_compensations`. Confirm the `Regular` / `Overtime` / `Double overtime` hours match what you synced. Because the sync is async, if the hours still read zero it may not have finished - wait briefly and re-run `payroll prepare`. Report the hours to the user; stop here.
 
 ## Pause points (user input required)
 
@@ -57,8 +55,8 @@ Pass `--agent` to every call for parseable JSON (`{ "ok": true, "data": {...} }`
 ## Risk and rollback
 
 - **Time sheets are created approved**, not as drafts - `timesheet create` is a mutating call. Preview with `--dry-run` and confirm hours with the user first.
-- **`timesheet sync` is async.** A `pending` response is not confirmation; always verify with step 8 (prepare + read the hours) before telling the user the hours are in.
-- **The target payroll stays a draft (unprocessed).** Preparing and syncing only populate the draft; they don't submit or process payroll, and it's reversible until someone processes it. Processing/submitting payroll is out of scope for this skill.
+- **`timesheet sync` is async.** A `pending` / `in_progress` response is not confirmation; always verify with step 7 (prepare + read the hours) before telling the user the hours are in.
+- **The target payroll stays a draft (unprocessed).** The sync only populates the draft; it doesn't submit or process payroll, and the draft is reversible until someone processes it. Processing/submitting payroll is out of scope for this skill.
 - Shifts whose start/end fall outside `[pay_period_start, pay_period_end]` are silently not picked up - mismatched windows look like "nothing synced." Re-check the dates if the hours don't move.
 
 ## Out of scope
