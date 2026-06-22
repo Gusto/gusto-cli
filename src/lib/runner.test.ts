@@ -316,3 +316,16 @@ test("runner forwards a handler's next into the envelope", async () => {
   const result = await runWithExitCapture("t", async () => ({ ok: true, data: { employees: [] }, next: "CURSOR" }));
   expect(JSON.parse(result.stdout).next).toBe("CURSOR");
 });
+
+test("next cursor survives a --fields projection", async () => {
+  const result = await runWithExitCapture(
+    "t",
+    async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com", extra: "field" }, next: "NEXT_CURSOR" }),
+    { ...flags, fields: { mode: "select", keys: ["uuid"] } },
+  );
+  expect(result.exitCode).toBe(ExitCode.Success);
+  const envelope = JSON.parse(result.stdout.trim());
+  expect(envelope.next).toBe("NEXT_CURSOR");
+  expect(envelope.data).toEqual({ uuid: "u1" });
+  expect(envelope.data.email).toBeUndefined();
+});
