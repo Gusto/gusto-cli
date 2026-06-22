@@ -1,11 +1,11 @@
 import type { Command } from "commander";
 import { fetchCompanyResource, putCompanyResource } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
-import { type CommandHandler, runCommand } from "../lib/runner.ts";
+import { type CommandHandler, missingArgs, runCommand } from "../lib/runner.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -111,6 +111,7 @@ interface PayrollPrepareOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 export function registerPayrollCommand(parent: Command): void {
@@ -146,11 +147,12 @@ All filters are optional. Defaults: processed regular payrolls, ascending.
     );
 
   cmd
-    .command("prepare <payroll_uuid>")
+    .command("prepare [payroll_uuid]")
     .description("Prepare a draft payroll: populates its employee compensations so totals can be verified")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
-    .option("--dry-run", "Build the request without sending")
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",
       `
@@ -158,28 +160,43 @@ A draft payroll starts as an empty shell (0 employee_compensations); 'timesheet 
 running payroll both require it to be prepared first. The response echoes the populated
 payroll so the synced hours/compensations can be read back and verified.
 
-Example:
+Examples:
   $ gusto payroll prepare 1a2b3c4d-0000-1111-2222-333344445555
+  $ gusto payroll prepare --example   (print the request/response shape, no uuid or auth needed)
 `,
     )
-    .action((payrollUuid: string, opts: PayrollPrepareOpts) =>
+    .action((payrollUuid: string | undefined, opts: PayrollPrepareOpts) =>
       runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
     );
 }
 
-export function payrollPrepareHandler(payrollUuid: string, opts: PayrollPrepareOpts): CommandHandler {
-  return async ({ globals }) =>
+export function payrollPrepareHandler(payrollUuid: string | undefined, opts: PayrollPrepareOpts): CommandHandler {
+  return async ({ globals }) => {
+    // --example publishes the path and canonical response shape without auth/company resolution, so
+    // an agent can learn the command from `--help` without a real uuid or a live request.
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/prepare",
+          note: "no request body; response is the populated payroll. Read back employee_compensations to verify.",
+        },
+      };
+    }
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
     // Encode the UUID as a single path segment: the value can come from agent/tool output, and a
     // raw `/`, `?` or `#` would otherwise retarget the PUT (the client resolves paths via `new URL`,
-    // which treats those as separators) — e.g. `x?e=1` drops `/prepare` and hits the payroll-update
+    // which treats those as separators), e.g. `x?e=1` drops `/prepare` and hits the payroll-update
     // endpoint instead. Valid hex UUIDs are unaffected.
     // prepare has no request body; pass `undefined` to keep the body/opts arg order aligned with
     // createCompanyResource.
-    putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, undefined, {
+    return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, undefined, {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
+  };
 }
 
 function payrollListHandler(opts: PayrollListOpts): CommandHandler {

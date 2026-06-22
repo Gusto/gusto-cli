@@ -4,6 +4,7 @@ import {
   type MockResponse,
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
+  blockedFields,
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
@@ -71,5 +72,24 @@ describe("payrollPrepareHandler", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
     expect(result.error.details).toMatchObject({ errors: [{ category: "invalid_operation" }] });
+  });
+
+  test("--example publishes the path and response shape without a uuid, auth, or any request", async () => {
+    const s = stub(() => ({ status: 500 })); // any real call would fail the test
+    const d = data(await payrollPrepareHandler(undefined, { example: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/prepare");
+    // No body key: prepare sends nothing.
+    expect(d.body).toBeUndefined();
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("missing payroll_uuid blocks before any request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollPrepareHandler(undefined, auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(blockedFields(result)).toEqual(["payroll_uuid"]);
+    expect(s.calls).toHaveLength(0);
   });
 });
