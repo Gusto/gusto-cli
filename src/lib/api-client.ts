@@ -240,8 +240,10 @@ export class ApiClient {
       page = nextPage;
     }
     const complete = nextPage === undefined;
-    if (maxItems !== undefined && items.length > maxItems) items.length = maxItems;
-    return { items, next: complete ? undefined : encodeCursor(nextPage as number, per), complete };
+    const truncated = maxItems !== undefined && items.length > maxItems;
+    if (truncated) items.length = maxItems;
+    const next = complete || truncated ? undefined : encodeCursor(nextPage as number, per);
+    return { items, next, complete };
   }
 
   async request<T = unknown>(
