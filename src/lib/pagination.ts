@@ -96,7 +96,9 @@ export function parsePaginationFlags(opts: PaginationFlags): ValidationResult<Pa
       return {
         ok: false,
         message: "invalid --cursor",
-        blocked: [{ field: "cursor", reason: "not a valid pagination cursor; use the next value from a previous response" }],
+        blocked: [
+          { field: "cursor", reason: "not a valid pagination cursor; use the next value from a previous response" },
+        ],
       };
     }
     return { ok: true, body: { startPage: decoded.page, per: decoded.per, maxItems: decoded.per, surfaceNext: true } };

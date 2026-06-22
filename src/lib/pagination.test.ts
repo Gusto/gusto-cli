@@ -23,9 +23,7 @@ describe("cursor codec", () => {
 
 describe("withPageParams", () => {
   test("sets page and per on a relative path", () => {
-    expect(withPageParams("/v1/companies/co-1/employees", 2, 100)).toBe(
-      "/v1/companies/co-1/employees?page=2&per=100",
-    );
+    expect(withPageParams("/v1/companies/co-1/employees", 2, 100)).toBe("/v1/companies/co-1/employees?page=2&per=100");
   });
 });
 

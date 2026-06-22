@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { pagedRouter, stubApiClient, stubGlobalFetch, TEST_AUTH, TEST_CONTEXT } from "../lib/test-support.ts";
-import { contractorListHandler, contractorSelfOnboardSteps, runContractorAdd, validateContractorAdd } from "./contractor.ts";
+import {
+  contractorListHandler,
+  contractorSelfOnboardSteps,
+  runContractorAdd,
+  validateContractorAdd,
+} from "./contractor.ts";
 
 const SELF_ONBOARD_INDIVIDUAL = {
   type: "Individual" as const,

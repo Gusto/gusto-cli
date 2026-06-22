@@ -131,10 +131,7 @@ export function stubApiClient(routes: Record<string, [number, unknown]>): { clie
  * `page`/`per` query (defaults page=1, per=25). With `withHeaders`, emits the same
  * pagination headers the contractors endpoint sets; without, emits none — exercising the
  * employee fullness fallback. */
-export function pagedRouter(
-  items: unknown[],
-  opts: { withHeaders?: boolean } = {},
-): (url: string) => MockResponse {
+export function pagedRouter(items: unknown[], opts: { withHeaders?: boolean } = {}): (url: string) => MockResponse {
   return (url: string) => {
     const params = new URL(url).searchParams;
     const page = Math.max(1, Number(params.get("page") ?? "1") || 1);

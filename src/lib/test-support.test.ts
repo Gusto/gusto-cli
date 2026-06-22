@@ -6,7 +6,12 @@ let restore: () => void = () => {};
 afterEach(() => restore());
 
 function client(): ApiClient {
-  return new ApiClient({ baseUrl: "https://api.example.com", token: "t", apiVersion: "2026-02-01", retrySleepMs: () => 0 });
+  return new ApiClient({
+    baseUrl: "https://api.example.com",
+    token: "t",
+    apiVersion: "2026-02-01",
+    retrySleepMs: () => 0,
+  });
 }
 
 describe("pagedRouter", () => {
@@ -14,9 +19,18 @@ describe("pagedRouter", () => {
     const items = Array.from({ length: 30 }, (_, i) => ({ uuid: `u${i}` }));
     restore = stubGlobalFetch(pagedRouter(items)).restore;
     const page2 = await client().get<unknown[]>("/v1/things?page=2&per=10");
-    expect((page2.body as unknown[]).map((x) => (x as { uuid: string }).uuid)).toEqual(
-      ["u10", "u11", "u12", "u13", "u14", "u15", "u16", "u17", "u18", "u19"],
-    );
+    expect((page2.body as unknown[]).map((x) => (x as { uuid: string }).uuid)).toEqual([
+      "u10",
+      "u11",
+      "u12",
+      "u13",
+      "u14",
+      "u15",
+      "u16",
+      "u17",
+      "u18",
+      "u19",
+    ]);
   });
 
   test("emits pagination headers when asked", async () => {

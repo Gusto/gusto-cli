@@ -7,7 +7,12 @@ let restore: () => void = () => {};
 afterEach(() => restore());
 
 function client(): ApiClient {
-  return new ApiClient({ baseUrl: "https://api.example.com", token: "t", apiVersion: "2026-02-01", retrySleepMs: () => 0 });
+  return new ApiClient({
+    baseUrl: "https://api.example.com",
+    token: "t",
+    apiVersion: "2026-02-01",
+    retrySleepMs: () => 0,
+  });
 }
 
 const itemsOf = (n: number) => Array.from({ length: n }, (_, i) => ({ uuid: `u${i}` }));
