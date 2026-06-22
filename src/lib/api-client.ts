@@ -220,7 +220,7 @@ export class ApiClient {
   /** Walk page-based list results starting at `startPage`. Continues while another page
    * exists (per `detectNext`) and `maxItems` (when set) is not yet reached, concatenating
    * each page's items. Returns the items (truncated to `maxItems`), `complete` (whether the
-   * end was reached), and `next` — an opaque cursor for the following page when the walk
+   * end was reached), and `next` - an opaque cursor for the following page when the walk
    * stopped before the end, else undefined. A single-page fetch is `maxItems === per`. */
   async paginate<T = unknown>(
     path: string,

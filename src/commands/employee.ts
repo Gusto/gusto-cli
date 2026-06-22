@@ -78,7 +78,8 @@ Examples:
 
 When more pages exist the response carries an opaque \`next\`; pass it back via --cursor,
 or use --all to fetch everything. \`summary\` (the full active/onboarding/terminated
-breakdown) is included only when the result is complete (--all or a single full page).
+breakdown) is included only when the result is complete, so a partial page's counts are
+never read as company totals.
 `,
     )
     .action((opts: EmployeeListOpts) =>
@@ -252,7 +253,7 @@ export interface EmployeeListData {
 }
 
 /** Shape the list response: the `--status` subset in `employees`, plus a full
- * active/onboarding/terminated breakdown in `summary` — included only when `complete`
+ * active/onboarding/terminated breakdown in `summary` - included only when `complete`
  * (the walk reached the end), so a partial page's counts are never read as company totals.
  * A non-array body (empty or malformed 200) yields an empty list. */
 export function buildEmployeeList(body: unknown, status: EmployeeStatus, complete: boolean): EmployeeListData {

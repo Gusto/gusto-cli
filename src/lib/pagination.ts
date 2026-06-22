@@ -36,8 +36,8 @@ export function decodeCursor(token: string): { page: number; per: number } | nul
 }
 
 /** Set `page` and `per` on a (possibly relative) path's query string. Uses a throwaway
- * base purely to parse; only the pathname + search are returned, so the real origin is
- * applied later by ApiClient.resolveUrl. */
+ * base purely to parse; only the pathname + search are returned, so the caller resolves
+ * the path against the real base URL and enforces same-origin. */
 export function withPageParams(path: string, page: number, per: number): string {
   const url = new URL(path, "http://placeholder.invalid");
   url.searchParams.set("page", String(page));
@@ -46,8 +46,8 @@ export function withPageParams(path: string, page: number, per: number): string 
 }
 
 /** Next page number, or undefined at the end. Trusts an `x-total-pages` header when the
- * response carries one (contractors); otherwise falls back to page fullness — a full raw
- * page (count >= per) implies another page may exist, a short/empty page ends the walk. */
+ * response carries one, otherwise falls back to page fullness - a full raw page
+ * (count >= per) implies another page may exist, a short/empty page ends the walk. */
 export function detectNext(
   headers: Record<string, string>,
   currentPage: number,

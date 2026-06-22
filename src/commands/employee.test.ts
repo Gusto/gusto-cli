@@ -7,6 +7,7 @@ import {
   employeeDeleteHandler,
   jobDeleteHandler,
   parseStatus,
+  type EmployeeListSummary,
 } from "./employee.ts";
 
 describe("parseStatus", () => {
@@ -88,7 +89,7 @@ describe("buildEmployeeList", () => {
   test("all filter returns every record in original order", () => {
     const { employees, summary } = buildEmployeeList(FIXTURE, "all", true);
     expect(employees).toHaveLength(85);
-    expect(summary?.filter_applied).toBe("all");
+    expect((summary as EmployeeListSummary).filter_applied).toBe("all");
     expect((employees[0] as { uuid: string }).uuid).toBe("a0");
   });
 
