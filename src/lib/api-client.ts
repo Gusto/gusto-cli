@@ -114,6 +114,7 @@ export interface ApiResponse<T = unknown> {
   status: number;
   body: T;
   requestId?: string;
+  headers: Record<string, string>;
 }
 
 /** Minimal read surface of ApiClient that GET-only helpers depend on. Lets a helper
@@ -323,8 +324,13 @@ export class ApiClient {
     const text = await response.text();
     const parsed: unknown = text.length === 0 ? null : safeParseJson(text);
 
+    const responseHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      responseHeaders[key.toLowerCase()] = value;
+    });
+
     if (response.ok) {
-      return { status: response.status, body: parsed as T, requestId };
+      return { status: response.status, body: parsed as T, requestId, headers: responseHeaders };
     }
 
     const exitCode = response.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient;
