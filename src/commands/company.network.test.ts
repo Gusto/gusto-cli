@@ -27,6 +27,14 @@ function routeFetch(routes: Route[]): void {
   restore = setupRouteFetch(routes).restore;
 }
 
+/** Stub fetch with a router and return both the result and the recorded calls so a
+ * test can assert which PUTs were (or weren't) sent. Assigns the file-level `restore`. */
+function stub(router: (u: string) => MockResponse) {
+  const s = stubGlobalFetch(router);
+  restore = s.restore;
+  return s;
+}
+
 describe("companyShowHandler", () => {
   test("aggregates the three GETs and surfaces a partial 404 without failing", async () => {
     // Order matters: more specific suffixes before the bare /companies/co-1.
@@ -470,14 +478,6 @@ describe("companyLocationsHandler", () => {
 describe("companyFinishOnboardingHandler", () => {
   const prodCtx: CommandContext = { ...ctx, globals: { ...TEST_GLOBALS, env: "production" } };
 
-  /** Stub fetch with a router and return both the result and the recorded calls so a
-   * test can assert which PUTs were (or weren't) sent. */
-  function stub(router: (u: string) => MockResponse) {
-    const s = stubGlobalFetch(router);
-    restore = s.restore;
-    return s;
-  }
-
   test("finishes onboarding via finish_onboarding only - the approve endpoint is gone", async () => {
     const s = stub((u) => {
       if (u.includes("/finish_onboarding")) return { status: 200, body: { onboarding_completed: true } };
@@ -553,13 +553,6 @@ describe("companyFinishOnboardingHandler", () => {
 
 describe("companyApproveHandler", () => {
   const prodCtx: CommandContext = { ...ctx, globals: { ...TEST_GLOBALS, env: "production" } };
-
-  /** Stub fetch with a router and record calls so tests can assert which PUTs were sent. */
-  function stub(router: (u: string) => MockResponse) {
-    const s = stubGlobalFetch(router);
-    restore = s.restore;
-    return s;
-  }
 
   test("approves via PUT /approve and reports company_status Approved", async () => {
     const s = stub((u) =>

@@ -443,7 +443,7 @@ export function companyApproveHandler(opts: ApproveOpts): CommandHandler {
         ok: true,
         data: {
           company_status: status,
-          company: approved,
+          approve: approved,
           message: approvedOk
             ? "Company approved (company_status -> Approved). Draft payrolls will be generated - re-check with `gusto company onboarding-status`."
             : "approve accepted, but company_status isn't confirmed yet - re-check with `gusto company onboarding-status`.",
