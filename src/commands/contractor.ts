@@ -1,10 +1,11 @@
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
-import { createCompanyResource, fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { parsePaginationFlags } from "../lib/pagination.ts";
 import { parsePositiveNumber } from "../lib/parse.ts";
 import { readString } from "../lib/read-string.ts";
 import {
@@ -198,6 +199,9 @@ interface ContractorAddOpts {
 interface ContractorListOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
+  cursor?: string;
+  limit?: string;
+  all?: boolean;
 }
 
 interface ContractorShowOpts {
@@ -247,6 +251,9 @@ export function registerContractorCommand(parent: Command): void {
     .description("List company contractors")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
+    .option("--cursor <token>", "Pagination cursor from a previous response's next value")
+    .option("--limit <n>", "Maximum contractors to return across pages")
+    .option("--all", "Fetch every page (may issue multiple requests)")
     .action((opts: ContractorListOpts) =>
       runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );
@@ -377,11 +384,13 @@ function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts)
     fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/contractors/${contractorUuid}`);
 }
 
-function contractorListHandler(opts: ContractorListOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchCompanyResource(
-      globals,
-      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}/contractors`,
-    );
+export function contractorListHandler(opts: ContractorListOpts): CommandHandler {
+  return async ({ globals }) => {
+    const pg = parsePaginationFlags(opts);
+    if (!pg.ok) return validationFailure(pg.message, pg.blocked);
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const { items, next } = await ctx.client.paginate(`/v1/companies/${ctx.companyUuid}/contractors`, pg.body);
+      return { ok: true, data: items, next: pg.body.surfaceNext ? next : undefined };
+    });
+  };
 }
