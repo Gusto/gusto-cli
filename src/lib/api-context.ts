@@ -13,9 +13,13 @@ import { readTokenFromStdin } from "./stdin.ts";
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
 
+/** Which credential supplied the resolved access token, in precedence order. */
+export type TokenSource = "stdin" | "env" | "session";
+
 interface ApiContextBase {
   client: ApiClient;
   baseUrl: string;
+  tokenSource: TokenSource;
 }
 
 export type ApiContext =
@@ -42,22 +46,24 @@ export interface ApiContextOpts extends AuthOpts {
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
 
 export type ResolvedToken =
-  | { ok: true; token: string; sessionToken: string | null }
+  | { ok: true; token: string; source: TokenSource }
   | { ok: false; result: CommandResult<never> };
 
-/** Resolve the access token using the precedence shared by every transport:
- * stored login session > GUSTO_ACCESS_TOKEN env > --token-stdin (piped). stdin
- * is the lowest rung and read lazily so a piped secret is only consumed when no
- * more secure source is present. `gusto auth login` always wins. See AINT-588.
- * `sessionToken` is non-null when the resolved token came from the stored login —
- * callers use it to decide whether to fall back to the session's bound company. */
+/** Resolve the access token using the precedence every CLI converges on - an
+ * explicit token always overrides the stored login: --token-stdin (piped) >
+ * GUSTO_ACCESS_TOKEN env > stored login session. Once an explicit token is
+ * supplied we never fall back to the session, even if that token is invalid, so
+ * a typo'd secret surfaces the real auth error instead of silently running as the
+ * logged-in identity. The session is only loaded when no explicit
+ * token is present, so a bad GUSTO_ACCESS_TOKEN can't be masked by an on-disk
+ * session refresh. An empty pipe under `--token-stdin` is treated as an explicit
+ * credential choice that failed, not a falls-through-to-other-sources case - same
+ * silent-identity-drift hazard as a bad env token. `source` tells callers which
+ * credential won. */
 export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Promise<ResolvedToken> {
-  const session = await sessionToken(globals, opts);
-  let token = session ?? getAccessToken();
-  if (!token && opts.tokenStdin) {
-    token = await (opts.readStdin ?? readTokenFromStdin)();
-  }
-  if (!token) {
+  if (opts.tokenStdin) {
+    const piped = await (opts.readStdin ?? readTokenFromStdin)();
+    if (piped) return { ok: true, token: piped, source: "stdin" };
     return {
       ok: false,
       result: {
@@ -65,12 +71,29 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
         exitCode: ExitCode.Auth,
         error: {
           code: "no_access_token",
-          message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
+          message:
+            "--token-stdin was passed but no token arrived on stdin. Pipe one (e.g. `echo $TOKEN | gusto ...`) or drop --token-stdin to fall back to GUSTO_ACCESS_TOKEN / the stored session.",
         },
       },
     };
   }
-  return { ok: true, token, sessionToken: session };
+  const envToken = getAccessToken();
+  if (envToken) return { ok: true, token: envToken, source: "env" };
+
+  const session = await sessionToken(globals, opts);
+  if (session) return { ok: true, token: session, source: "session" };
+
+  return {
+    ok: false,
+    result: {
+      ok: false,
+      exitCode: ExitCode.Auth,
+      error: {
+        code: "no_access_token",
+        message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
+      },
+    },
+  };
 }
 
 export function resolveApiContext(
@@ -84,19 +107,18 @@ export async function resolveApiContext(
 ): Promise<Resolved<ApiContext>> {
   const resolved = await resolveAuthToken(globals, opts);
   if (!resolved.ok) return resolved;
-  const { token, sessionToken: session } = resolved;
+  const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
   const client = new ApiClient({ baseUrl, token, apiVersion: resolveApiVersion() });
 
   if (opts.requireCompany === false) {
-    return { ok: true, ctx: { client, baseUrl, hasCompany: false } };
+    return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };
   }
 
   // Only borrow the session's company when the token came from the session; an
-  // env/stdin token must not silently target an unrelated login's company. Since
-  // the session wins when present, a non-null session means its token was used.
-  const fallbackCompany = session ? await sessionCompanyUuid(globals, opts) : null;
+  // env/stdin token must not silently target an unrelated login's company.
+  const fallbackCompany = tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
   const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
     return {
@@ -113,7 +135,7 @@ export async function resolveApiContext(
     };
   }
 
-  return { ok: true, ctx: { client, baseUrl, hasCompany: true, companyUuid } };
+  return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: true, companyUuid } };
 }
 
 /** The token from the stored login session, refreshed on near-expiry; null if none. */
@@ -276,6 +298,19 @@ export async function withCompanyContext(
   }
 }
 
+/** GET a path with an already-resolved client and map API/network errors. The bare
+ * primitive shared by `fetchResource` and any handler that already holds a context
+ * (e.g. `authWhoamiHandler` needs the resolved `tokenSource` *and* the response body,
+ * so it resolves the context itself and reuses this helper for the request). */
+export async function fetchAtPath<T = unknown>(client: ApiClient, path: string): Promise<CommandResult<T>> {
+  try {
+    const response = await client.get<T>(path);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
 /** Resolve auth context only (no company required), GET the path, and map API/network errors.
  * Use for resource endpoints where the resource UUID is already in the path
  * (e.g. /v1/employees/{uuid}). For company-scoped paths, use `fetchCompanyResource`. */
@@ -299,11 +334,5 @@ export async function fetchResource<T = unknown>(
     now: opts.now,
   });
   if (!resolved.ok) return resolved.result;
-
-  try {
-    const response = await resolved.ctx.client.get<T>(buildPath());
-    return { ok: true, data: response.body };
-  } catch (err) {
-    return toResult(err);
-  }
+  return fetchAtPath<T>(resolved.ctx.client, buildPath());
 }
