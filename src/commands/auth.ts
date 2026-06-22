@@ -121,8 +121,11 @@ function authLogoutHandler(): CommandHandler {
   };
 }
 
-/** Human-facing name for each credential source, matching how a user supplies it. */
-const CREDENTIAL_SOURCE_LABEL: Record<TokenSource, string> = {
+/** Human-facing name for each credential source, matching how a user supplies it.
+ * Exported so the label table itself is unit-testable - whoami's integration test
+ * can't easily reach the `session` branch without a real session file, and the
+ * concern is "label typo slipped through", which a direct const-map test catches. */
+export const CREDENTIAL_SOURCE_LABEL: Record<TokenSource, string> = {
   stdin: "--token-stdin",
   env: "GUSTO_ACCESS_TOKEN",
   session: "stored session",

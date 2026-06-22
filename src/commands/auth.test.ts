@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
-import { authLoginHandler, authWhoamiHandler, buildSignInUrlEmitter, loginResultData, performLogout } from "./auth.ts";
+import {
+  CREDENTIAL_SOURCE_LABEL,
+  authLoginHandler,
+  authWhoamiHandler,
+  buildSignInUrlEmitter,
+  loginResultData,
+  performLogout,
+} from "./auth.ts";
 
 // whoami's token resolution (explicit token first: --token-stdin > env > session)
 // is covered by api-context.test.ts; the cases below cover the capabilities
@@ -166,5 +173,17 @@ describe("authWhoamiHandler", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect((result.data as Record<string, unknown>).credential_source).toBe("--token-stdin");
+  });
+});
+
+// The `session` branch is hard to drive through whoami without standing up a real
+// session file; the underlying concern (a label typo slipping through) is captured
+// by asserting the const map directly. `Record<TokenSource, string>` enforces
+// exhaustive keys at compile time; this pins the values.
+describe("CREDENTIAL_SOURCE_LABEL", () => {
+  test("each TokenSource maps to the expected user-facing label", () => {
+    expect(CREDENTIAL_SOURCE_LABEL.stdin).toBe("--token-stdin");
+    expect(CREDENTIAL_SOURCE_LABEL.env).toBe("GUSTO_ACCESS_TOKEN");
+    expect(CREDENTIAL_SOURCE_LABEL.session).toBe("stored session");
   });
 });
