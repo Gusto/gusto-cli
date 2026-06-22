@@ -85,6 +85,14 @@ describe("auth required commands without a token", () => {
     expect(envelope.error.code).toBe("no_access_token");
   });
 
+  test("pay-schedule list (alias for show) dispatches the show handler instead of erroring", async () => {
+    // Without a token the show handler still exits 3 (no_access_token); the win is
+    // not getting commander's "unknown command 'list'" (exit 2) before we ever reach it.
+    const result = await run(["pay-schedule", "list"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll list without a token returns no_access_token (exit 3)", async () => {
     const result = await run(["payroll", "list"]);
     expect(result.exitCode).toBe(3);
@@ -383,13 +391,39 @@ describe("employee add per-domain subcommands", () => {
   });
 
   test("an optional-positional subcommand missing [employee_uuid] returns blocked_on (exit 7)", async () => {
-    // job/federal-tax/payment-method/state-tax take [employee_uuid] so --example needs no uuid;
+    // Every `employee add` subcommand takes [employee_uuid] so --example needs no uuid;
     // a non-example call without it falls to missingEmployeeUuid() rather than a commander error.
     const result = await run(["employee", "add", "job", "--title", "X", "--hire-date", "2026-01-06"]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("validation");
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
+
+  test("home-address and work-address (formerly <required>, now [optional]) also return blocked_on", async () => {
+    const home = await run(["employee", "add", "home-address", "--street-1", "X"]);
+    expect(home.exitCode).toBe(7);
+    expect(JSON.parse(home.stdout.trim()).error.blocked_on).toContainEqual(
+      expect.objectContaining({ field: "employee_uuid" }),
+    );
+    const work = await run(["employee", "add", "work-address", "--effective-date", "2026-01-01"]);
+    expect(work.exitCode).toBe(7);
+    expect(JSON.parse(work.stdout.trim()).error.blocked_on).toContainEqual(
+      expect.objectContaining({ field: "employee_uuid" }),
+    );
+  });
+
+  test("--example on home-address / work-address prints canned payload without an employee_uuid", async () => {
+    const home = JSON.parse((await run(["employee", "add", "home-address", "--example"])).stdout.trim());
+    expect(home.ok).toBe(true);
+    expect(home.data.method).toBe("POST");
+    expect(home.data.path).toBe("/v1/employees/{employee_uuid}/home_addresses");
+    expect(home.data.body).toMatchObject({ street_1: expect.any(String), city: expect.any(String), state: "CA" });
+    const work = JSON.parse((await run(["employee", "add", "work-address", "--example"])).stdout.trim());
+    expect(work.ok).toBe(true);
+    expect(work.data.method).toBe("POST");
+    expect(work.data.path).toBe("/v1/employees/{employee_uuid}/work_addresses");
+    expect(work.data.body).toMatchObject({ location_uuid: expect.any(String), effective_date: expect.any(String) });
   });
 });
 

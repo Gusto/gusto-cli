@@ -97,6 +97,7 @@ export interface HomeAddressOpts extends TokenOpts {
   zip?: string;
   effectiveDate?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 export function homeAddressBlockers(opts: HomeAddressOpts): BlockedOn[] {
@@ -121,6 +122,17 @@ export function homeAddressBody(opts: HomeAddressOpts): Record<string, unknown> 
 
 function homeAddressHandler(employeeUuid: string | undefined, opts: HomeAddressOpts): CommandHandler {
   return async (ctx) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/employees/{employee_uuid}/home_addresses",
+          body: { street_1: "300 3rd St", city: "San Francisco", state: "CA", zip: "94107" },
+          note: "example: requires a real employee_uuid in the path at send time",
+        },
+      };
+    }
     if (!employeeUuid) return missingEmployeeUuid();
     return postSubdomainHandler(
       opts,
@@ -137,6 +149,7 @@ export interface WorkAddressOpts extends CompanyContextOpts {
   locationUuid?: string;
   effectiveDate?: string;
   dryRun?: boolean;
+  example?: boolean;
 }
 
 export function workAddressBlockers(opts: WorkAddressOpts): BlockedOn[] {
@@ -175,6 +188,17 @@ export async function resolveWorkAddressLocation(
 
 export function workAddressHandler(employeeUuid: string | undefined, opts: WorkAddressOpts): CommandHandler {
   return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/employees/{employee_uuid}/work_addresses",
+          body: { location_uuid: "{location_uuid}", effective_date: "2026-01-01" },
+          note: "example: omit --location-uuid to default to the company's primary location at send time",
+        },
+      };
+    }
     if (!employeeUuid) return missingEmployeeUuid();
     const blocked = workAddressBlockers(opts);
     if (blocked.length > 0) return missingArgs(blocked);
@@ -1252,6 +1276,7 @@ Examples:
     .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: HomeAddressOpts) =>
       runCommand(
         "gusto employee add home-address",
@@ -1270,6 +1295,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
     .action((employeeUuid: string | undefined, opts: WorkAddressOpts) =>
       runCommand(
         "gusto employee add work-address",
