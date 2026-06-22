@@ -29,9 +29,9 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 2. **Find the draft payroll and the pay period.** Run `gusto payroll list --processing-status unprocessed` (add `--include payroll_status_meta` for check dates). Pick the draft payroll whose pay period you're logging hours for, and note three things from it: its **`payroll_uuid`**, the **`pay_schedule_uuid`**, and the **pay-period start/end dates** (`pay_period.start_date` / `.end_date`, both `YYYY-MM-DD`). Don't guess these - read them off the payroll.
 
-3. **Gather the workers.** `gusto employee list` (employees) and `gusto contractor list` (contractors) give the entity UUIDs. For each employee you need a **`job_uuid`**: read it off the employee's record (`gusto employee show <employee_uuid>` -> the `jobs` array). Employee time sheets _require_ a job; contractor time sheets must _not_ carry one.
+3. **Gather the workers.** `gusto employee list` (employees) and `gusto contractor list` (contractors) give the entity UUIDs. For each employee you need a **`job_uuid`**: read it off the employee's record (`gusto employee show <employee_uuid>` -> the `jobs` array). Employee time sheets _require_ a job; contractor time sheets must _not_ carry one. If `jobs` has **more than one entry**, there's no safe default - **pause and ask the user which job the hours were worked under**. Attaching hours to the wrong `job_uuid` silently mis-routes them.
 
-4. **Confirm the hours with the user.** For each worker, get real `--regular` (and any `--overtime` / `--double-overtime`) hours, plus the shift window and time zone. This is the one pause point - don't invent hours or shift times.
+4. **Confirm the hours with the user.** For each worker, get real `--regular` (and any `--overtime` / `--double-overtime`) hours, plus the shift window and time zone. Don't invent hours or shift times.
 
 5. **Create the time sheets.** One `gusto timesheet create` per shift. Preview with `--dry-run` first.
    - **Employee:** `gusto timesheet create --employee-uuid <uuid> --job-uuid <uuid> --start <ISO8601> --end <ISO8601> --time-zone <tz> --regular <hours> [--overtime <hours>] [--double-overtime <hours>]`
@@ -45,8 +45,9 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 ## Pause points (user input required)
 
 - **Actual hours per worker** (step 4) - regular/overtime/double-overtime, shift window, and time zone. Never fabricate; they flow into a real draft payroll.
+- **Which job** (step 3) - only when an employee has more than one job. Ask which one the hours were worked under; don't guess.
 
-Everything else - the draft payroll, pay schedule, pay-period dates, entity and job UUIDs - is discoverable from the CLI and should be looked up, not asked.
+Everything else - the draft payroll, pay schedule, pay-period dates, entity UUIDs, and a single-job employee's `job_uuid` - is discoverable from the CLI and should be looked up, not asked.
 
 ## Output mode
 
