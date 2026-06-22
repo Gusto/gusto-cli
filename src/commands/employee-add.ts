@@ -10,6 +10,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure, toResult } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { isValidIsoDate } from "../lib/parse.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 import { getAndInjectVersion, withVersion } from "../lib/versioning.ts";
@@ -89,6 +90,17 @@ function employeeCreateHandler(opts: EmployeeCreateOpts): CommandHandler {
 
 // ───────────────────────────── add home-address ─────────────────────────────
 
+// Documented quirk (AINT-649): for an employee's FIRST address the API clamps the
+// effective_date to the job's hire_date - a date on/after the hire date is set to the
+// hire date, an earlier date is kept, and without a hire date on file it isn't anchored
+// correctly. We surface this in --help rather than blocking; the call is still valid.
+const ADDRESS_EFFECTIVE_DATE_NOTE = `
+Note: for an employee's first address, the effective date is clamped to the job's
+hire date - a date on or after the hire date is set to the hire date, and an earlier
+date is kept. Add the job (\`gusto employee add job <employee_uuid> --hire-date ...\`)
+first so the effective date anchors to a hire date.
+`;
+
 export interface HomeAddressOpts extends TokenOpts {
   street1?: string;
   street2?: string;
@@ -106,6 +118,12 @@ export function homeAddressBlockers(opts: HomeAddressOpts): BlockedOn[] {
   if (!opts.city) blocked.push({ field: "city", reason: "required" });
   if (!opts.state) blocked.push({ field: "state", reason: "required (2-letter code)" });
   if (!opts.zip) blocked.push({ field: "zip", reason: "required" });
+  // --effective-date is optional here, but if given it must be a real date (mirrors the
+  // client-side date validation in payroll/timesheet/contractor). Without this the API
+  // rejects a bad date with a slower, vaguer 422.
+  if (opts.effectiveDate !== undefined && !isValidIsoDate(opts.effectiveDate)) {
+    blocked.push({ field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
   return blocked;
 }
 
@@ -154,7 +172,11 @@ export interface WorkAddressOpts extends CompanyContextOpts {
 
 export function workAddressBlockers(opts: WorkAddressOpts): BlockedOn[] {
   const blocked: BlockedOn[] = [];
-  if (!opts.effectiveDate) blocked.push({ field: "effective-date", reason: "required (YYYY-MM-DD)" });
+  if (!opts.effectiveDate) {
+    blocked.push({ field: "effective-date", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(opts.effectiveDate)) {
+    blocked.push({ field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
   return blocked;
 }
 
@@ -1273,10 +1295,14 @@ Examples:
     .option("--city <city>", "City")
     .option("--state <state>", "2-letter state code")
     .option("--zip <zip>", "ZIP code")
-    .option("--effective-date <date>", "Effective date (YYYY-MM-DD)")
+    .option(
+      "--effective-date <date>",
+      "Date this home address takes effect (YYYY-MM-DD; clamped to the hire date - see below)",
+    )
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
+    .addHelpText("after", ADDRESS_EFFECTIVE_DATE_NOTE)
     .action((employeeUuid: string | undefined, opts: HomeAddressOpts) =>
       runCommand(
         "gusto employee add home-address",
@@ -1291,11 +1317,15 @@ Examples:
       "--location-uuid <uuid>",
       "Company location UUID (defaults to the primary location; see `gusto company locations`)",
     )
-    .option("--effective-date <date>", "Effective date (YYYY-MM-DD, required)")
+    .option(
+      "--effective-date <date>",
+      "Date the employee starts at this work location (YYYY-MM-DD, required; clamped to the hire date - see below)",
+    )
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
     .option(...EXAMPLE_OPT)
+    .addHelpText("after", ADDRESS_EFFECTIVE_DATE_NOTE)
     .action((employeeUuid: string | undefined, opts: WorkAddressOpts) =>
       runCommand(
         "gusto employee add work-address",
