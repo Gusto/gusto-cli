@@ -10,6 +10,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure, toResult } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, pickPrimaryLocation } from "../lib/locations.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { isValidIsoDate } from "../lib/parse.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 import { getAndInjectVersion, withVersion } from "../lib/versioning.ts";
@@ -117,6 +118,12 @@ export function homeAddressBlockers(opts: HomeAddressOpts): BlockedOn[] {
   if (!opts.city) blocked.push({ field: "city", reason: "required" });
   if (!opts.state) blocked.push({ field: "state", reason: "required (2-letter code)" });
   if (!opts.zip) blocked.push({ field: "zip", reason: "required" });
+  // --effective-date is optional here, but if given it must be a real date (mirrors the
+  // client-side date validation in payroll/timesheet/contractor). Without this the API
+  // rejects a bad date with a slower, vaguer 422.
+  if (opts.effectiveDate !== undefined && !isValidIsoDate(opts.effectiveDate)) {
+    blocked.push({ field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
   return blocked;
 }
 
@@ -165,7 +172,11 @@ export interface WorkAddressOpts extends CompanyContextOpts {
 
 export function workAddressBlockers(opts: WorkAddressOpts): BlockedOn[] {
   const blocked: BlockedOn[] = [];
-  if (!opts.effectiveDate) blocked.push({ field: "effective-date", reason: "required (YYYY-MM-DD)" });
+  if (!opts.effectiveDate) {
+    blocked.push({ field: "effective-date", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(opts.effectiveDate)) {
+    blocked.push({ field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
   return blocked;
 }
 

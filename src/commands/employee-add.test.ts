@@ -76,6 +76,29 @@ describe("homeAddressBlockers", () => {
   test("accepts a complete address", () => {
     expect(homeAddressBlockers({ street1: "300 3rd St", city: "SF", state: "CA", zip: "94107" })).toEqual([]);
   });
+
+  test("accepts a complete address with a valid effective-date", () => {
+    expect(
+      homeAddressBlockers({
+        street1: "300 3rd St",
+        city: "SF",
+        state: "CA",
+        zip: "94107",
+        effectiveDate: "2026-01-01",
+      }),
+    ).toEqual([]);
+  });
+
+  test("flags a malformed effective-date (it's optional, but must be a real date when given)", () => {
+    const addr = { street1: "300 3rd St", city: "SF", state: "CA", zip: "94107" };
+    expect(homeAddressBlockers({ ...addr, effectiveDate: "not-a-date" }).map((b) => b.field)).toEqual([
+      "effective-date",
+    ]);
+    // impossible calendar date is rejected too (2026-02-30 doesn't exist)
+    expect(homeAddressBlockers({ ...addr, effectiveDate: "2026-02-30" }).map((b) => b.field)).toEqual([
+      "effective-date",
+    ]);
+  });
 });
 
 describe("homeAddressBody", () => {
@@ -113,6 +136,11 @@ describe("workAddressBlockers", () => {
 
   test("accepts an effective-date alone (the primary location will be resolved server-side)", () => {
     expect(workAddressBlockers({ effectiveDate: "2026-01-01" })).toEqual([]);
+  });
+
+  test("flags a malformed effective-date instead of passing it through to the API", () => {
+    expect(workAddressBlockers({ effectiveDate: "not-a-date" }).map((b) => b.field)).toEqual(["effective-date"]);
+    expect(workAddressBlockers({ effectiveDate: "2026-02-30" }).map((b) => b.field)).toEqual(["effective-date"]);
   });
 });
 
