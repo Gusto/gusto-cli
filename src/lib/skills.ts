@@ -125,10 +125,15 @@ export async function installSkill(name: string, dir: SkillsDir = findSkillsDir(
   return { skill: skill.name, installedAt: targetFile, kind: dir.kind, scope: dir.scope, action };
 }
 
+/** Subset of `InstallAction` that `installBundledSkills` can actually emit, plus the
+ * conservative "skipped" branch on stale files. `"refreshed"` is intentionally absent -
+ * the auto-install path skips stale files so it never refreshes them. */
+export type AutoInstallAction = "installed" | "already_up_to_date" | "skipped_user_edited";
+
 export interface AutoInstallResult {
   skill: string;
   installedAt: string;
-  action: InstallAction | "skipped_user_edited";
+  action: AutoInstallAction;
 }
 
 /** Install every bundled skill conservatively into `~/.claude/skills`:

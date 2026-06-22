@@ -70,7 +70,6 @@ export interface SkillInstallDeps {
   configPaths?: ConfigPaths;
   skillsDir?: SkillsDir;
   prompt?: () => Promise<SkillsAutoInstall>;
-  installBundledSkills?: typeof installBundledSkills;
 }
 
 /** Decide whether to install bundled skills after a successful login, prompting in TTY mode
@@ -96,8 +95,15 @@ export async function maybeInstallSkillsAfterLogin(
     }
   }
   if (pref === "never") return undefined;
-  const install = deps.installBundledSkills ?? installBundledSkills;
-  return install(deps.skillsDir);
+  return installBundledSkills(deps.skillsDir);
+}
+
+/** Map a raw answer to the `[Y/n]` prompt to a persisted preference. Empty / y / yes
+ * (case-insensitive, trimmed) opt in; anything else opts out. Extracted so the boundary
+ * cases (Y, YES, whitespace, "no", garbage) are unit-testable without driving readline. */
+export function parseAutoInstallAnswer(raw: string): SkillsAutoInstall {
+  const norm = raw.trim().toLowerCase();
+  return norm === "" || norm === "y" || norm === "yes" ? "always" : "never";
 }
 
 async function promptForSkillsAutoInstall(sinks: StreamSinks): Promise<SkillsAutoInstall> {
@@ -106,12 +112,10 @@ async function promptForSkillsAutoInstall(sinks: StreamSinks): Promise<SkillsAut
     .join(", ");
   const rl = createInterface({ input: process.stdin, output: sinks.stderr });
   try {
-    const answer = (
-      await rl.question(`Install bundled Gusto skills (${names}) to ~/.claude/skills for Claude Code? [Y/n] `)
-    )
-      .trim()
-      .toLowerCase();
-    return answer === "" || answer === "y" || answer === "yes" ? "always" : "never";
+    const raw = await rl.question(
+      `Install bundled Gusto skills (${names}) to ~/.claude/skills for Claude Code? [Y/n] `,
+    );
+    return parseAutoInstallAnswer(raw);
   } finally {
     rl.close();
   }
@@ -137,6 +141,7 @@ export function buildSignInUrlEmitter(
 
 export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHandler {
   return async ({ globals, sinks }) => {
+    let data: LoginData;
     try {
       const info = await login(resolveEnv(globals), {
         store: resolveStore(),
@@ -144,13 +149,22 @@ export function authLoginHandler(opts: { noBrowser?: boolean } = {}): CommandHan
         noBrowser: opts.noBrowser,
         emitEvent: buildSignInUrlEmitter(globals, sinks),
       });
-      const data = loginResultData(info);
-      const skills = await maybeInstallSkillsAfterLogin(globals, sinks);
-      if (skills) data.skills_installed = skills;
-      return { ok: true, data };
+      data = loginResultData(info);
     } catch (err) {
       return toResult(err);
     }
+    // Login succeeded and the token is persisted; the bundled-skills install is a
+    // best-effort side-effect. An fs error, prompt EOF/Ctrl+C, or readonly config
+    // dir mustn't flip a successful login into an error envelope - the user is
+    // already signed in and will be confused if we say otherwise.
+    try {
+      const skills = await maybeInstallSkillsAfterLogin(globals, sinks);
+      if (skills) data.skills_installed = skills;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      sinks.stderr.write(`warning: signed in but skipped bundled skill install: ${message}\n`);
+    }
+    return { ok: true, data };
   };
 }
 

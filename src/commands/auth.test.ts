@@ -12,6 +12,7 @@ import {
   buildSignInUrlEmitter,
   loginResultData,
   maybeInstallSkillsAfterLogin,
+  parseAutoInstallAnswer,
   performLogout,
 } from "./auth.ts";
 
@@ -93,6 +94,30 @@ describe("buildSignInUrlEmitter", () => {
     } finally {
       Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
     }
+  });
+});
+
+describe("parseAutoInstallAnswer", () => {
+  test("empty input (just hitting Enter on the default) opts in", () => {
+    expect(parseAutoInstallAnswer("")).toBe("always");
+    expect(parseAutoInstallAnswer("   ")).toBe("always");
+    expect(parseAutoInstallAnswer("\n")).toBe("always");
+  });
+
+  test("y / yes opt in regardless of case", () => {
+    expect(parseAutoInstallAnswer("y")).toBe("always");
+    expect(parseAutoInstallAnswer("Y")).toBe("always");
+    expect(parseAutoInstallAnswer("yes")).toBe("always");
+    expect(parseAutoInstallAnswer("YES")).toBe("always");
+    expect(parseAutoInstallAnswer("  Yes  ")).toBe("always");
+  });
+
+  test("anything else opts out", () => {
+    expect(parseAutoInstallAnswer("n")).toBe("never");
+    expect(parseAutoInstallAnswer("NO")).toBe("never");
+    expect(parseAutoInstallAnswer("nope")).toBe("never");
+    expect(parseAutoInstallAnswer("yes please")).toBe("never");
+    expect(parseAutoInstallAnswer("garbage")).toBe("never");
   });
 });
 
