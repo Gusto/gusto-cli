@@ -66,34 +66,34 @@ describe("bucketEmployees", () => {
 
 describe("buildEmployeeList", () => {
   test("summary always carries the full breakdown regardless of filter", () => {
-    const { summary } = buildEmployeeList(FIXTURE, "active");
+    const { summary } = buildEmployeeList(FIXTURE, "active", true);
     expect(summary).toEqual({ total: 85, active: 16, onboarding: 63, terminated: 6, filter_applied: "active" });
   });
 
   test("active filter returns only the 16 active employees", () => {
-    const { employees } = buildEmployeeList(FIXTURE, "active");
+    const { employees } = buildEmployeeList(FIXTURE, "active", true);
     expect(employees).toHaveLength(16);
   });
 
   test("onboarding filter returns only the 63 onboarding employees", () => {
-    const { employees } = buildEmployeeList(FIXTURE, "onboarding");
+    const { employees } = buildEmployeeList(FIXTURE, "onboarding", true);
     expect(employees).toHaveLength(63);
   });
 
   test("terminated filter returns only the 6 terminated employees", () => {
-    const { employees } = buildEmployeeList(FIXTURE, "terminated");
+    const { employees } = buildEmployeeList(FIXTURE, "terminated", true);
     expect(employees).toHaveLength(6);
   });
 
   test("all filter returns every record in original order", () => {
-    const { employees, summary } = buildEmployeeList(FIXTURE, "all");
+    const { employees, summary } = buildEmployeeList(FIXTURE, "all", true);
     expect(employees).toHaveLength(85);
-    expect(summary.filter_applied).toBe("all");
+    expect(summary?.filter_applied).toBe("all");
     expect((employees[0] as { uuid: string }).uuid).toBe("a0");
   });
 
   test("a non-array body yields zero counts and an empty list", () => {
-    const { summary, employees } = buildEmployeeList(null, "active");
+    const { summary, employees } = buildEmployeeList(null, "active", true);
     expect(summary).toEqual({ total: 0, active: 0, onboarding: 0, terminated: 0, filter_applied: "active" });
     expect(employees).toHaveLength(0);
   });

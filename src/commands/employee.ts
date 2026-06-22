@@ -3,6 +3,7 @@ import { ApiError } from "../lib/api-client.ts";
 import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import { parsePaginationFlags } from "../lib/pagination.ts";
 import { type CommandHandler, missingArgs, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
 import {
   missingEmployeeUuid,
@@ -16,6 +17,9 @@ interface EmployeeListOpts {
   status?: string;
   companyUuid?: string;
   tokenStdin?: boolean;
+  cursor?: string;
+  limit?: string;
+  all?: boolean;
 }
 
 interface EmployeeShowOpts {
@@ -60,17 +64,21 @@ export function registerEmployeeCommand(parent: Command): void {
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
+    .option("--cursor <token>", "Pagination cursor from a previous response's next value")
+    .option("--limit <n>", "Maximum employees to return across pages")
+    .option("--all", "Fetch every page (may issue multiple requests)")
     .addHelpText(
       "after",
       `
 Examples:
-  $ gusto employee list                      # active, payroll-ready employees (default)
-  $ gusto employee list --status all         # every record
-  $ gusto employee list --status onboarding  # not yet onboarded
-  $ gusto employee list --status terminated
+  $ gusto employee list                      # active employees, first page (100)
+  $ gusto employee list --all                # every active employee, all pages
+  $ gusto employee list --status all         # every record, first page
+  $ gusto employee list --cursor <next>      # the next page, using a prior response's next
 
-Every response carries a \`summary\` with the full active/onboarding/terminated
-breakdown, so \`data.summary.total\` is the real headcount regardless of filter.
+When more pages exist the response carries an opaque \`next\`; pass it back via --cursor,
+or use --all to fetch everything. \`summary\` (the full active/onboarding/terminated
+breakdown) is included only when the result is complete (--all or a single full page).
 `,
     )
     .action((opts: EmployeeListOpts) =>
@@ -172,10 +180,19 @@ export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
     if (!parsed.ok) {
       return validationFailure("invalid --status", [{ field: "status", reason: parsed.reason }]);
     }
+    const pg = parsePaginationFlags(opts);
+    if (!pg.ok) return validationFailure(pg.message, pg.blocked);
 
     return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
-      const response = await ctx.client.get(`/v1/companies/${ctx.companyUuid}/employees`);
-      return { ok: true, data: buildEmployeeList(response.body, parsed.status) };
+      const { items, next, complete } = await ctx.client.paginate<EmployeeRecord>(
+        `/v1/companies/${ctx.companyUuid}/employees`,
+        pg.body,
+      );
+      return {
+        ok: true,
+        data: buildEmployeeList(items, parsed.status, complete),
+        next: pg.body.surfaceNext ? next : undefined,
+      };
     });
   };
 }
@@ -230,15 +247,19 @@ export interface EmployeeListSummary {
 }
 
 export interface EmployeeListData {
-  summary: EmployeeListSummary;
+  summary?: EmployeeListSummary;
   employees: EmployeeRecord[];
 }
 
-/** Shape the list response: a full breakdown in `summary` plus the `--status` subset
- * in `employees`. A non-array body (empty or malformed 200) yields zero counts. */
-export function buildEmployeeList(body: unknown, status: EmployeeStatus): EmployeeListData {
+/** Shape the list response: the `--status` subset in `employees`, plus a full
+ * active/onboarding/terminated breakdown in `summary` — included only when `complete`
+ * (the walk reached the end), so a partial page's counts are never read as company totals.
+ * A non-array body (empty or malformed 200) yields an empty list. */
+export function buildEmployeeList(body: unknown, status: EmployeeStatus, complete: boolean): EmployeeListData {
   const employees = Array.isArray(body) ? (body as EmployeeRecord[]) : [];
   const buckets = bucketEmployees(employees);
+  const selected = status === "all" ? employees : buckets[status];
+  if (!complete) return { employees: selected };
   const summary: EmployeeListSummary = {
     total: employees.length,
     active: buckets.active.length,
@@ -246,6 +267,5 @@ export function buildEmployeeList(body: unknown, status: EmployeeStatus): Employ
     terminated: buckets.terminated.length,
     filter_applied: status,
   };
-  if (status === "all") return { summary, employees };
-  return { summary, employees: buckets[status] };
+  return { summary, employees: selected };
 }
