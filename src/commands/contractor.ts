@@ -6,7 +6,7 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
-import { parsePositiveNumber } from "../lib/parse.ts";
+import { isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
 import { readString } from "../lib/read-string.ts";
 import {
   type CommandHandler,
@@ -46,13 +46,6 @@ export type ContractorValidation = ValidationResult<ContractorBody>;
  * only ever receives this variant — the admin-driven path is a single POST via
  * `createCompanyResource` — so the type lets the compiler prove the invite step always runs. */
 type SelfOnboardingContractorBody = Extract<ContractorBody, { self_onboarding: true }>;
-
-// Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
-function isValidStartDate(raw: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
-  const date = new Date(`${raw}T00:00:00Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === raw;
-}
 
 /** Validate contractor-add args and, on success, return the fully-populated request body.
  * `--type` drives which identity fields are required (individual: first/last name; business:
@@ -97,7 +90,7 @@ export function validateContractorAdd(
   const startDate = opts.startDate;
   if (!startDate) {
     blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidStartDate(startDate)) {
+  } else if (!isValidIsoDate(startDate)) {
     blocked.push({ field: "start-date", reason: `must be a valid YYYY-MM-DD date, got: ${startDate}` });
   }
 
