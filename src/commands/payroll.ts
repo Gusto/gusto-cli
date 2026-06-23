@@ -156,9 +156,9 @@ All filters are optional. Defaults: processed regular payrolls, ascending.
     .addHelpText(
       "after",
       `
-A draft payroll starts as an empty shell (0 employee_compensations); 'timesheet sync' and
-running payroll both require it to be prepared first. The response echoes the populated
-payroll so the synced hours/compensations can be read back and verified.
+A draft payroll starts as an empty shell (0 employee_compensations). Preparing it populates
+them so the payroll's hours/compensations can be read back and verified - e.g. to confirm the
+hours a 'timesheet sync' landed. Running payroll requires a prepared draft.
 
 Examples:
   $ gusto payroll prepare 1a2b3c4d-0000-1111-2222-333344445555
