@@ -33,11 +33,12 @@ describe("ApiClient.paginate", () => {
     expect(r.next).toBeUndefined();
   });
 
-  test("--limit truncates to exactly maxItems across pages", async () => {
+  test("--limit truncates to exactly maxItems across pages and emits no next cursor", async () => {
     restore = stubGlobalFetch(pagedRouter(itemsOf(1000))).restore;
     const r = await testApiClient().paginate("/v1/things", { startPage: 1, per: 500, maxItems: 600 });
     expect(r.items).toHaveLength(600);
     expect(r.complete).toBe(false);
+    expect(r.next).toBeUndefined();
   });
 
   test("uses X-Total-Pages when present (no extra empty fetch on exact multiple)", async () => {
@@ -54,13 +55,5 @@ describe("ApiClient.paginate", () => {
     restore = stubGlobalFetch(pagedRouter(itemsOf(250))).restore;
     const r = await testApiClient().paginate<{ uuid: string }>("/v1/things", { startPage: 3, per: 100, maxItems: 100 });
     expect(r.items[0]?.uuid).toBe("u200");
-  });
-
-  test("truncating bounded walk does not emit a next cursor", async () => {
-    restore = stubGlobalFetch(pagedRouter(itemsOf(1000))).restore;
-    const r = await testApiClient().paginate("/v1/things", { startPage: 1, per: 500, maxItems: 600 });
-    expect(r.items).toHaveLength(600);
-    expect(r.complete).toBe(false);
-    expect(r.next).toBeUndefined();
   });
 });
