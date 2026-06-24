@@ -97,6 +97,39 @@ describe("parsePaginationFlags", () => {
     expect(parsePaginationFlags({ limit: "abc" }).ok).toBe(false);
   });
 
+  test("coerced --limit '1e3' is rejected", () => {
+    const r = parsePaginationFlags({ limit: "1e3" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.blocked[0]?.field).toBe("limit");
+  });
+
+  test("coerced --limit '0x10' is rejected", () => {
+    const r = parsePaginationFlags({ limit: "0x10" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.blocked[0]?.field).toBe("limit");
+  });
+
+  test("coerced --limit '100.0' is rejected", () => {
+    const r = parsePaginationFlags({ limit: "100.0" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.blocked[0]?.field).toBe("limit");
+  });
+
+  test("coerced --limit ' 5 ' is rejected", () => {
+    const r = parsePaginationFlags({ limit: " 5 " });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.blocked[0]?.field).toBe("limit");
+  });
+
+  test("valid --limit '50' returns ok: true with per: 50, maxItems: 50", () => {
+    const r = parsePaginationFlags({ limit: "50" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.body.per).toBe(50);
+      expect(r.body.maxItems).toBe(50);
+    }
+  });
+
   test("malformed --cursor fails validation", () => {
     const r = parsePaginationFlags({ cursor: "garbage" });
     expect(r.ok).toBe(false);

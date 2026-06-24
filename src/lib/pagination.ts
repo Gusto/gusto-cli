@@ -75,7 +75,8 @@ export function parsePaginationFlags(opts: PaginationFlags): ValidationResult<Pa
   }
 
   if (hasLimit) {
-    const n = Number(opts.limit);
+    const raw = opts.limit!;
+    const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isInteger(n) || n < 1) {
       return {
         ok: false,
