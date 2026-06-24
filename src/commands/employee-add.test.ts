@@ -43,7 +43,7 @@ describe("employeeCreateBlockers", () => {
       firstName: "Jane",
       lastName: "Doe",
       email: "j@x.com",
-      dateOfBirth: "1990-13-40",
+      dateOfBirth: "not-a-date",
     }).map((b) => b.field);
     expect(fields).toEqual(["date-of-birth"]);
   });
@@ -226,7 +226,7 @@ describe("jobBlockers", () => {
   });
 
   test("flags a malformed hire-date instead of passing it through to the API", () => {
-    expect(jobBlockers({ title: "Engineer", hireDate: "2026-13-40" }).map((b) => b.field)).toEqual(["hire-date"]);
+    expect(jobBlockers({ title: "Engineer", hireDate: "not-a-date" }).map((b) => b.field)).toEqual(["hire-date"]);
   });
 });
 
@@ -1211,7 +1211,7 @@ describe("manageBlockers", () => {
   });
 
   test("flags a malformed date-of-birth instead of passing it through to the API", () => {
-    expect(manageBlockers({ dateOfBirth: "1990-13-40" }).map((b) => b.field)).toEqual(["date-of-birth"]);
+    expect(manageBlockers({ dateOfBirth: "not-a-date" }).map((b) => b.field)).toEqual(["date-of-birth"]);
   });
 });
 

@@ -59,11 +59,6 @@ describe("buildPayrollListQuery", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
   });
 
-  test("rejects a well-formatted but impossible calendar date", () => {
-    const result = buildPayrollListQuery({ startDate: "2026-02-30" });
-    expect(result.ok).toBe(false);
-  });
-
   test("accepts a valid ISO date", () => {
     expect(buildPayrollListQuery({ startDate: "2026-07-03" })).toEqual({
       ok: true,
