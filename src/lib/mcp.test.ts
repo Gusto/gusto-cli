@@ -3,7 +3,7 @@ import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { callMcpTool } from "./mcp.ts";
 import { memoryStore, mockHttp } from "./oauth/test-support.ts";
-import { stubGlobalFetch } from "./test-support.ts";
+import { stubGlobalFetch, successEnvelope } from "./test-support.ts";
 
 const sandbox: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 const prod: GlobalFlags = { ...sandbox, env: "production" };
@@ -32,12 +32,6 @@ afterEach(() => {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
-});
-
-const successEnvelope = (payload: unknown) => ({
-  jsonrpc: "2.0",
-  id: 1,
-  result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
 });
 
 const errorEnvelope = (code: number, message: string, details?: string) => ({

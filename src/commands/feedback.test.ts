@@ -1,17 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { feedbackHandler } from "./feedback.ts";
-import { TEST_CONTEXT as ctx, blockedFields, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import { TEST_CONTEXT as ctx, blockedFields, okData, stubGlobalFetch, successEnvelope } from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
 
 const noStdin = async () => null;
-
-const successEnvelope = (payload: unknown) => ({
-  jsonrpc: "2.0",
-  id: 1,
-  result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
-});
 
 describe("feedbackHandler", () => {
   test("--dry-run returns tool+arguments without making a network call", async () => {
