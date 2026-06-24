@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildProgram } from "../index.ts";
-import { describeTree, generateBashCompletion } from "./completion.ts";
+import { describeTree, generateBashCompletion, generateZshCompletion } from "./completion.ts";
 
 function findNode(model: ReturnType<typeof describeTree>, path: string) {
   const stack = [model.root];
@@ -78,5 +78,28 @@ describe("generateBashCompletion", () => {
   test("completes static flag choices", () => {
     const script = generateBashCompletion(describeTree(buildProgram()));
     expect(script).toContain("sandbox production");
+  });
+});
+
+describe("generateZshCompletion", () => {
+  test("emits a valid zsh script", async () => {
+    const script = generateZshCompletion(describeTree(buildProgram()));
+    expect(await syntaxCheck("zsh", script)).toBe(0);
+  });
+
+  test("declares the compdef header", () => {
+    const script = generateZshCompletion(describeTree(buildProgram()));
+    expect(script).toContain("#compdef gusto");
+    expect(script).toContain("compdef _gusto gusto");
+  });
+
+  test("includes a case arm for a nested command path", () => {
+    const script = generateZshCompletion(describeTree(buildProgram()));
+    expect(script).toContain('"/employee")');
+  });
+
+  test("completes static flag choices", () => {
+    const script = generateZshCompletion(describeTree(buildProgram()));
+    expect(script).toContain("compadd sandbox production");
   });
 });
