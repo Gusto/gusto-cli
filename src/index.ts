@@ -2,6 +2,7 @@ import { Command, CommanderError, Option } from "commander";
 import { registerApiCommand } from "./commands/api.ts";
 import { registerAuthCommand } from "./commands/auth.ts";
 import { registerCompanyCommand } from "./commands/company.ts";
+import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigCommand } from "./commands/config.ts";
 import { registerContractorCommand } from "./commands/contractor.ts";
 import { registerEmployeeCommand } from "./commands/employee.ts";
@@ -61,6 +62,7 @@ export function buildProgram(): Command {
   registerConfigCommand(program);
   registerApiCommand(program);
   registerFeedbackCommand(program);
+  registerCompletionCommand(program);
 
   // Cascade exitOverride to every command at every depth (some commands, e.g. `employee add`,
   // nest subcommands two levels deep) so commander throws CommanderError instead of calling
