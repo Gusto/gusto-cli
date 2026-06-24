@@ -1,12 +1,19 @@
 import type { Command } from "commander";
 import { fetchCompanyResource, putCompanyResource } from "../lib/api-context.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { CsvError, parseCsv } from "../lib/csv.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIsoDate } from "../lib/parse.ts";
+import { isValidIsoDate, parseNonNegativeNumber } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
-import { type CommandHandler, missingArgs, runCommand } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type ValidationResult,
+  missingArgs,
+  runCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -104,6 +111,236 @@ interface PayrollPrepareOpts {
   example?: boolean;
 }
 
+// --- payroll update (CSV -> employee_compensations) -------------------------------------------
+//
+// `payroll update` writes per-cycle inputs onto a draft payroll via PUT
+// /v1/companies/{uuid}/payrolls/{uuid}. The wire body is `{ employee_compensations: [...] }`
+// (unwrapped - the API wraps it in `payroll` server-side). Each compensation is matched to an
+// existing payroll line by its API `name`, so the column -> name map below uses the exact strings
+// the Embedded API expects: 'Regular Hours' (ApiConstants::V1.regular_hours_compensation_name) and
+// the 'Bonus' / 'Commission' / 'Paycheck Tips' / 'Cash Tips' earning-type names.
+
+interface HourlyCompensationInput {
+  name: string;
+  hours: number;
+  job_uuid?: string;
+}
+
+interface FixedCompensationInput {
+  name: string;
+  amount: number;
+  job_uuid?: string;
+}
+
+interface ReimbursementInput {
+  amount: number;
+  description: string;
+}
+
+interface EmployeeCompensationUpdate {
+  employee_uuid: string;
+  version?: string;
+  hourly_compensations?: HourlyCompensationInput[];
+  fixed_compensations?: FixedCompensationInput[];
+  reimbursements?: ReimbursementInput[];
+}
+
+export interface PayrollUpdateBody {
+  employee_compensations: EmployeeCompensationUpdate[];
+}
+
+export type PayrollUpdateValidation = ValidationResult<PayrollUpdateBody>;
+
+// Only 'Regular Hours' has a stable, company-agnostic API name; overtime/double-overtime hourly
+// compensations are named after each company's own pay types (see employee_compensation_facade),
+// so they're deliberately excluded from this first pass rather than guessed at.
+const HOURLY_COLUMNS = [{ column: "regular_hours", name: "Regular Hours" }] as const;
+const FIXED_COLUMNS = [
+  { column: "bonus", name: "Bonus" },
+  { column: "commission", name: "Commission" },
+  { column: "paycheck_tips", name: "Paycheck Tips" },
+  { column: "cash_tips", name: "Cash Tips" },
+] as const;
+const REIMBURSEMENT_COLUMN = "reimbursement";
+const SCALAR_COLUMNS = ["employee_uuid", "version", "job_uuid"] as const;
+const INPUT_COLUMNS = [
+  ...HOURLY_COLUMNS.map((c) => c.column),
+  ...FIXED_COLUMNS.map((c) => c.column),
+  REIMBURSEMENT_COLUMN,
+];
+const ALLOWED_COLUMNS = new Set<string>([...SCALAR_COLUMNS, ...INPUT_COLUMNS]);
+
+/** Header-level validation: every column must be known, `employee_uuid` must be present, and at
+ * least one input column must exist. Unknown columns are treated as errors (not ignored) because a
+ * typo'd header would otherwise silently drop an entire input - the same fail-loud stance the rest
+ * of the CLI takes on bad enum tokens. */
+function validatePayrollUpdateHeaders(headers: string[]): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  const seen = new Set<string>();
+  for (const h of headers) {
+    if (seen.has(h)) blocked.push({ field: h, reason: `duplicate column "${h}"` });
+    seen.add(h);
+    if (!ALLOWED_COLUMNS.has(h)) {
+      blocked.push({ field: h, reason: `unknown column "${h}"; allowed: ${[...ALLOWED_COLUMNS].join(", ")}` });
+    }
+  }
+  if (!seen.has("employee_uuid")) blocked.push({ field: "employee_uuid", reason: "required column is missing" });
+  if (!INPUT_COLUMNS.some((c) => seen.has(c))) {
+    blocked.push({ field: "input", reason: `provide at least one input column: ${INPUT_COLUMNS.join(", ")}` });
+  }
+  return blocked;
+}
+
+/** Build one employee_compensation from a CSV row, pushing any per-cell problems onto `blocked`.
+ * A blank cell is omitted entirely (the API leaves omitted inputs untouched); an explicit `0` is
+ * sent (the API overrides to zero). Returns null when the row can't yield a usable compensation. */
+function buildEmployeeCompensationRow(
+  headers: string[],
+  cells: string[],
+  line: number,
+  blocked: BlockedOn[],
+): EmployeeCompensationUpdate | null {
+  if (cells.length > headers.length) {
+    blocked.push({ field: `row ${line}`, reason: `has ${cells.length} cells but the header has ${headers.length}` });
+    return null;
+  }
+  const get = (column: string): string => {
+    const i = headers.indexOf(column);
+    return i >= 0 ? (cells[i] ?? "").trim() : "";
+  };
+
+  const employeeUuid = get("employee_uuid");
+  if (!employeeUuid) {
+    blocked.push({ field: `row ${line}: employee_uuid`, reason: "required" });
+    return null;
+  }
+
+  const jobUuid = get("job_uuid");
+  const job = jobUuid ? { job_uuid: jobUuid } : {};
+  const errorsBefore = blocked.length;
+
+  const hourly: HourlyCompensationInput[] = [];
+  for (const { column, name } of HOURLY_COLUMNS) {
+    const raw = get(column);
+    if (raw === "") continue;
+    const parsed = parseNonNegativeNumber(raw);
+    if (!parsed.ok) blocked.push({ field: `row ${line}: ${column}`, reason: parsed.reason });
+    else hourly.push({ name, hours: parsed.value, ...job });
+  }
+
+  const fixed: FixedCompensationInput[] = [];
+  for (const { column, name } of FIXED_COLUMNS) {
+    const raw = get(column);
+    if (raw === "") continue;
+    const parsed = parseNonNegativeNumber(raw);
+    if (!parsed.ok) blocked.push({ field: `row ${line}: ${column}`, reason: parsed.reason });
+    else fixed.push({ name, amount: parsed.value, ...job });
+  }
+
+  const reimbursements: ReimbursementInput[] = [];
+  const reimbRaw = get(REIMBURSEMENT_COLUMN);
+  if (reimbRaw !== "") {
+    const parsed = parseNonNegativeNumber(reimbRaw);
+    if (!parsed.ok) blocked.push({ field: `row ${line}: ${REIMBURSEMENT_COLUMN}`, reason: parsed.reason });
+    else reimbursements.push({ amount: parsed.value, description: "Reimbursement" });
+  }
+
+  // Only flag an empty row when no per-cell error already explains why it produced nothing.
+  if (hourly.length === 0 && fixed.length === 0 && reimbursements.length === 0) {
+    if (blocked.length === errorsBefore) {
+      blocked.push({
+        field: `row ${line}`,
+        reason: `no input values; provide at least one of ${INPUT_COLUMNS.join(", ")}`,
+      });
+    }
+    return null;
+  }
+
+  const version = get("version");
+  return {
+    employee_uuid: employeeUuid,
+    ...(version ? { version } : {}),
+    ...(hourly.length ? { hourly_compensations: hourly } : {}),
+    ...(fixed.length ? { fixed_compensations: fixed } : {}),
+    ...(reimbursements.length ? { reimbursements } : {}),
+  };
+}
+
+/** Parse a CSV of per-employee inputs into a payroll-update request body, accumulating every
+ * structural, header, and per-row problem into a single blocked_on list (so one run surfaces all
+ * the fixes, not just the first). See HOURLY_COLUMNS/FIXED_COLUMNS for the column -> API-name map. */
+export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation {
+  let rows: string[][];
+  try {
+    rows = parseCsv(text);
+  } catch (err) {
+    const reason = err instanceof CsvError ? err.message : String(err);
+    return { ok: false, message: "could not parse CSV", blocked: [{ field: "input", reason }] };
+  }
+
+  const nonBlank = rows.filter((r) => r.some((c) => c.trim() !== ""));
+  if (nonBlank.length === 0) {
+    return { ok: false, message: "empty CSV", blocked: [{ field: "input", reason: "the file has no rows" }] };
+  }
+
+  const headers = nonBlank[0].map((h) => h.trim());
+  const headerBlocked = validatePayrollUpdateHeaders(headers);
+  if (headerBlocked.length > 0) return { ok: false, message: "invalid CSV header", blocked: headerBlocked };
+
+  const blocked: BlockedOn[] = [];
+  const employee_compensations: EmployeeCompensationUpdate[] = [];
+  nonBlank.slice(1).forEach((cells, idx) => {
+    // Header is line 1; the first data row is line 2.
+    const row = buildEmployeeCompensationRow(headers, cells, idx + 2, blocked);
+    if (row) employee_compensations.push(row);
+  });
+
+  if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
+  if (employee_compensations.length === 0) {
+    return { ok: false, message: "empty CSV", blocked: [{ field: "input", reason: "no data rows after the header" }] };
+  }
+  return { ok: true, body: { employee_compensations } };
+}
+
+/** The canonical request/CSV shape published by `--example` - learnable without a uuid or auth. */
+function payrollUpdateExample(): Record<string, unknown> {
+  const jobUuid = "1f2e3d4c-0000-1111-2222-333344445555";
+  return {
+    method: "PUT",
+    path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}",
+    csv_columns: {
+      required: ["employee_uuid"],
+      optional: ["version", "job_uuid", ...INPUT_COLUMNS],
+    },
+    csv_example: [
+      "employee_uuid,version,job_uuid,regular_hours,bonus,cash_tips",
+      `9b8c7d6e-0000-1111-2222-333344445555,a1b2c3,${jobUuid},80,250,40`,
+    ].join("\n"),
+    body: {
+      employee_compensations: [
+        {
+          employee_uuid: "9b8c7d6e-0000-1111-2222-333344445555",
+          version: "a1b2c3",
+          hourly_compensations: [{ name: "Regular Hours", hours: 80, job_uuid: jobUuid }],
+          fixed_compensations: [
+            { name: "Bonus", amount: 250, job_uuid: jobUuid },
+            { name: "Cash Tips", amount: 40, job_uuid: jobUuid },
+          ],
+        },
+      ],
+    },
+    note: "One CSV row per employee. Blank cells are left untouched; a 0 overrides to zero. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
+  };
+}
+
+interface PayrollUpdateOpts {
+  input?: string;
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  example?: boolean;
+}
+
 export function registerPayrollCommand(parent: Command): void {
   const cmd = parent.command("payroll").description("Inspect and prepare payrolls");
 
@@ -158,6 +395,37 @@ Examples:
     .action((payrollUuid: string | undefined, opts: PayrollPrepareOpts) =>
       runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
     );
+
+  cmd
+    .command("update [payroll_uuid]")
+    .description(
+      "Write per-employee inputs (tips, commission, bonus, reimbursement, regular hours) from a CSV onto a draft",
+    )
+    .option("--input <file>", "Path to a CSV of per-employee inputs (run --example to see the columns)")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Updates an unprocessed (draft) payroll from a CSV, one row per employee. Columns:
+  employee_uuid (required), version, job_uuid,
+  regular_hours, bonus, commission, paycheck_tips, cash_tips, reimbursement
+
+Blank cells are left untouched; an explicit 0 overrides to zero. Each row's 'version' is the
+optimistic-lock token from the prepared payroll. Overtime/double-overtime are not supported yet
+(their names vary per company). After updating, run 'payroll prepare' to get a reviewable draft.
+
+Examples:
+  $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
+  $ gusto payroll update 1a2b... --input inputs.csv --dry-run
+  $ gusto payroll update --example   (print the CSV columns and request shape, no uuid or auth)
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollUpdateOpts) =>
+      runCommand("gusto payroll update", readGlobalFlags(parent.opts()), payrollUpdateHandler(payrollUuid, opts)),
+    );
 }
 
 export function payrollPrepareHandler(payrollUuid: string | undefined, opts: PayrollPrepareOpts): CommandHandler {
@@ -182,6 +450,49 @@ export function payrollPrepareHandler(payrollUuid: string | undefined, opts: Pay
     // prepare has no request body; pass `undefined` to keep the body/opts arg order aligned with
     // createCompanyResource.
     return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, undefined, {
+      tokenStdin: opts.tokenStdin,
+      companyUuid: opts.companyUuid,
+      dryRun: opts.dryRun,
+    });
+  };
+}
+
+/** `readFile` is injected so tests can drive the handler without touching the filesystem; it
+ * defaults to Bun's native file read (the same seam company provision uses). */
+export function payrollUpdateHandler(
+  payrollUuid: string | undefined,
+  opts: PayrollUpdateOpts,
+  readFile: (path: string) => Promise<string> = (p) => Bun.file(p).text(),
+): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) return { ok: true, data: payrollUpdateExample() };
+
+    if (!payrollUuid || !opts.input) {
+      const blocked: BlockedOn[] = [];
+      if (!payrollUuid) blocked.push({ field: "payroll_uuid", reason: "required" });
+      if (!opts.input)
+        blocked.push({ field: "input", reason: "provide --input <file.csv> (or --example for the shape)" });
+      return missingArgs(blocked);
+    }
+
+    let text: string;
+    try {
+      text = await readFile(opts.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "invalid_input", message: `cannot read --input file ${opts.input}: ${message}` },
+      };
+    }
+
+    const built = buildPayrollUpdateFromCsv(text);
+    if (!built.ok) return validationFailure(built.message, built.blocked);
+
+    // Encode the UUID as one path segment: a stray '/' or '?' (e.g. from agent output) must not
+    // retarget the PUT. See payrollPrepareHandler for the same guard.
+    return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}`, built.body, {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildPayrollListQuery } from "./payroll.ts";
+import { buildPayrollListQuery, buildPayrollUpdateFromCsv } from "./payroll.ts";
 
 describe("buildPayrollListQuery", () => {
   test("no options yields an empty query", () => {
@@ -115,5 +115,128 @@ describe("buildPayrollListQuery", () => {
       ok: true,
       query: { payroll_types: "regular," },
     });
+  });
+});
+
+describe("buildPayrollUpdateFromCsv", () => {
+  test("maps hourly, fixed, and reimbursement columns to the API names", () => {
+    const csv = [
+      "employee_uuid,version,job_uuid,regular_hours,bonus,commission,paycheck_tips,cash_tips,reimbursement",
+      "ee-1,v1,job-1,80,250,100,15,40,30",
+    ].join("\n");
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body).toEqual({
+      employee_compensations: [
+        {
+          employee_uuid: "ee-1",
+          version: "v1",
+          hourly_compensations: [{ name: "Regular Hours", hours: 80, job_uuid: "job-1" }],
+          fixed_compensations: [
+            { name: "Bonus", amount: 250, job_uuid: "job-1" },
+            { name: "Commission", amount: 100, job_uuid: "job-1" },
+            { name: "Paycheck Tips", amount: 15, job_uuid: "job-1" },
+            { name: "Cash Tips", amount: 40, job_uuid: "job-1" },
+          ],
+          reimbursements: [{ amount: 30, description: "Reimbursement" }],
+        },
+      ],
+    });
+  });
+
+  test("omits blank cells but keeps an explicit zero (blanks don't override, zeros do)", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,0,");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 0 }]);
+    // The blank bonus cell must not produce a fixed_compensations entry.
+    expect(comp?.fixed_compensations).toBeUndefined();
+  });
+
+  test("omits job_uuid and version when those columns are absent", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,500");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      fixed_compensations: [{ name: "Bonus", amount: 500 }],
+    });
+  });
+
+  test("builds one compensation per row", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,100\nee-2,200");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations.map((c) => c.employee_uuid)).toEqual(["ee-1", "ee-2"]);
+  });
+
+  test("ignores fully blank lines between rows", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,100\n\nee-2,200\n");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations).toHaveLength(2);
+  });
+
+  test("rejects an unknown column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,overtime_hours\nee-1,5");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "overtime_hours" }));
+  });
+
+  test("rejects a CSV missing the employee_uuid column", () => {
+    const result = buildPayrollUpdateFromCsv("bonus\n100");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
+
+  test("rejects a CSV with no input columns", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,version\nee-1,v1");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
+  });
+
+  test("reports a row missing employee_uuid with its line number", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\n,100");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: employee_uuid" }));
+  });
+
+  test("reports a non-numeric input value with its row and column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: bonus" }));
+  });
+
+  test("rejects a negative amount", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,-5");
+    expect(result.ok).toBe(false);
+  });
+
+  test("flags a row that has an employee but no input values", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,,");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2" }));
+  });
+
+  test("rejects an empty file", () => {
+    const result = buildPayrollUpdateFromCsv("");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
+  });
+
+  test("surfaces a malformed CSV (unterminated quote) as an input error", () => {
+    const result = buildPayrollUpdateFromCsv('employee_uuid,bonus\nee-1,"oops');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
   });
 });
