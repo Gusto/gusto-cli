@@ -189,9 +189,14 @@ export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
         `/v1/companies/${ctx.companyUuid}/employees`,
         pg.body,
       );
+      // `complete` only means the walk reached the last page. A summary built from
+      // `items` only reflects the whole roster when the walk also started at page 1;
+      // a `--cursor <pageN>` resume that lands on the end would otherwise emit
+      // counts that under-report by pages 1..N-1.
+      const coversAll = complete && pg.body.startPage === 1;
       return {
         ok: true,
-        data: buildEmployeeList(items, parsed.status, complete),
+        data: buildEmployeeList(items, parsed.status, coversAll),
         next: pg.body.surfaceNext ? next : undefined,
       };
     });
@@ -253,14 +258,16 @@ export interface EmployeeListData {
 }
 
 /** Shape the list response: the `--status` subset in `employees`, plus a full
- * active/onboarding/terminated breakdown in `summary` - included only when `complete`
- * (the walk reached the end), so a partial page's counts are never read as company totals.
- * A non-array body (empty or malformed 200) yields an empty list. */
-export function buildEmployeeList(body: unknown, status: EmployeeStatus, complete: boolean): EmployeeListData {
+ * active/onboarding/terminated breakdown in `summary` - included only when
+ * `coversAll` is true, meaning `items` represents the entire company roster (the
+ * walk started at page 1 *and* reached the end). A partial page or a cursor-resumed
+ * walk yields `summary === undefined` so the partial counts are never mistaken for
+ * company totals. A non-array body (empty or malformed 200) yields an empty list. */
+export function buildEmployeeList(body: unknown, status: EmployeeStatus, coversAll: boolean): EmployeeListData {
   const employees = Array.isArray(body) ? (body as EmployeeRecord[]) : [];
   const buckets = bucketEmployees(employees);
   const selected = status === "all" ? employees : buckets[status];
-  if (!complete) return { employees: selected };
+  if (!coversAll) return { employees: selected };
   const summary: EmployeeListSummary = {
     total: employees.length,
     active: buckets.active.length,

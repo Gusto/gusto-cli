@@ -98,6 +98,21 @@ describe("buildEmployeeList", () => {
     expect(summary).toEqual({ total: 0, active: 0, onboarding: 0, terminated: 0, filter_applied: "active" });
     expect(employees).toHaveLength(0);
   });
+
+  // coversAll=false is what the handler passes for partial pages and for cursor-resumed
+  // walks (where the walk reached the end but didn't start at page 1). Summary must be
+  // absent so consumers don't read partial counts as company totals.
+  test("coversAll=false: summary is omitted, employees is the filtered subset", () => {
+    const { summary, employees } = buildEmployeeList(FIXTURE, "active", false);
+    expect(summary).toBeUndefined();
+    expect(employees).toHaveLength(16);
+  });
+
+  test("coversAll=false with --status all returns every item but no summary", () => {
+    const { summary, employees } = buildEmployeeList(FIXTURE, "all", false);
+    expect(summary).toBeUndefined();
+    expect(employees).toHaveLength(85);
+  });
 });
 
 describe("employeeDeleteHandler", () => {
