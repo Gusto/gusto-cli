@@ -30,10 +30,12 @@ After it runs, `~/.gusto/bin` may not be on the current shell's `PATH` yet - sou
 
 Two paths depending on whether the user already has a demo company they can sign into:
 
-- **No existing demo company:** `gusto company provision` creates one and returns an `account_claim_url`. Surface that URL to the user so they can claim it in their browser, then run `gusto auth login --no-browser`. The CLI mints and stores an OAuth token bound to the new company.
-- **Existing admin access:** `gusto auth login --no-browser` direct.
+- **No existing demo company:** `gusto company provision` creates one and returns an `account_claim_url`. Surface that URL to the user so they can claim it in their browser, then run `gusto auth login`. The CLI mints and stores an OAuth token bound to the new company.
+- **Existing admin access:** `gusto auth login` direct.
 
-Always pass `--no-browser` when *you* (the agent) are running `auth login`. It prints the sign-in URL on stderr instead of trying to `open` a browser from your shell - you surface that URL to the user, who completes sign-in in a browser running on the same machine. The OAuth callback hits `127.0.0.1`, so the user has to be on the same host as the CLI.
+You usually don't need to pass `--no-browser`. `auth login` decides whether to auto-open a browser by looking at the environment - it opens one when there's a usable graphical session (a real `BROWSER`, `DISPLAY`/`WAYLAND_DISPLAY` on Linux, a logged-in GUI on macOS/Windows) and falls back to printing the sign-in URL on stderr when it can't (CI, headless boxes, SSH'd shells without X forwarding). Either way, surface the printed URL to the user if it shows up. Pass `--no-browser` explicitly only when you want to force print-only behavior - the detection is good but defensive forcing is fine.
+
+The OAuth callback hits `127.0.0.1`, so the user has to be on the same host as the CLI to complete sign-in.
 
 ## Bundled skills
 
