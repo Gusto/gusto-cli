@@ -545,3 +545,21 @@ describe("ApiClient timeout", () => {
     }
   });
 });
+
+describe("ApiClient response headers", () => {
+  test("get() surfaces response headers (lowercased)", async () => {
+    const client = new ApiClient({
+      baseUrl: "https://api.example.com",
+      token: "tok",
+      apiVersion: "2026-02-01",
+      fetchImpl: (async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "X-Total-Pages": "3", "X-Page": "1" },
+        })) as unknown as typeof fetch,
+    });
+    const res = await client.get("/v1/things");
+    expect(res.headers["x-total-pages"]).toBe("3");
+    expect(res.headers["x-page"]).toBe("1");
+  });
+});

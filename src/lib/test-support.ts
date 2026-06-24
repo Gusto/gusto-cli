@@ -50,6 +50,7 @@ export function blockedFields(result: CommandResult): string[] {
 export interface MockResponse {
   status: number;
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
 export interface RecordedCall {
@@ -91,7 +92,7 @@ export function stubGlobalFetch(plan: MockResponse[] | ((url: string) => MockRes
     const r = Array.isArray(plan) ? (plan[Math.min(calls.length - 1, plan.length - 1)] ?? { status: 200 }) : plan(u);
     return new Response(r.body !== undefined ? JSON.stringify(r.body) : "", {
       status: r.status,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(r.headers ?? {}) },
     });
   }) as unknown as typeof fetch;
   return { calls, restore: () => void (globalThis.fetch = original) };
@@ -124,4 +125,40 @@ export function stubApiClient(routes: Record<string, [number, unknown]>): { clie
     retrySleepMs: () => 0,
   });
   return { client, calls };
+}
+
+/** Shared ApiClient for unit tests that inject via `fetchImpl`. Retries disabled. */
+export function testApiClient(): ApiClient {
+  return new ApiClient({
+    baseUrl: "https://api.example.com",
+    token: "t",
+    apiVersion: "2026-02-01",
+    retrySleepMs: () => 0,
+  });
+}
+
+/** A `stubGlobalFetch` router that serves a flat `items` array paginated by the URL's
+ * `page`/`per` query (defaults page=1, per=25). With `withHeaders`, emits the same
+ * pagination headers the contractors endpoint sets; without, emits none — exercising the
+ * employee fullness fallback. */
+export function pagedRouter(items: unknown[], opts: { withHeaders?: boolean } = {}): (url: string) => MockResponse {
+  return (url: string) => {
+    const params = new URL(url).searchParams;
+    const page = Math.max(1, Number(params.get("page") ?? "1") || 1);
+    const per = Math.max(1, Number(params.get("per") ?? "25") || 25);
+    const start = (page - 1) * per;
+    const body = items.slice(start, start + per);
+    if (!opts.withHeaders) return { status: 200, body };
+    const totalPages = Math.max(1, Math.ceil(items.length / per));
+    return {
+      status: 200,
+      body,
+      headers: {
+        "x-page": String(page),
+        "x-total-pages": String(totalPages),
+        "x-total-count": String(items.length),
+        "x-per-page": String(per),
+      },
+    };
+  };
 }
