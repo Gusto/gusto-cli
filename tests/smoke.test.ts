@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
@@ -760,4 +760,36 @@ describe("employee add: consistent missing employee_uuid contract", () => {
       expect(result.stdout).toContain("employee_uuid");
     });
   }
+});
+
+describe("completion scripts", () => {
+  async function syntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
+    const dir = mkdtempSync(path.join(tmpdir(), "gusto-completion-smoke-"));
+    const file = path.join(dir, shell === "bash" ? "gusto.bash" : "_gusto");
+    writeFileSync(file, script);
+    const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
+    const code = await proc.exited;
+    rmSync(dir, { recursive: true, force: true });
+    return code;
+  }
+
+  test("completion bash emits a script that parses with bash -n", async () => {
+    const result = await run(["completion", "bash"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("complete -F _gusto gusto");
+    expect(await syntaxCheck("bash", result.stdout)).toBe(0);
+  });
+
+  test("completion zsh emits a script that parses with zsh -n", async () => {
+    const result = await run(["completion", "zsh"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("#compdef gusto");
+    expect(await syntaxCheck("zsh", result.stdout)).toBe(0);
+  });
+
+  test("completion with an unsupported shell exits 2", async () => {
+    const result = await run(["completion", "fish"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe("");
+  });
 });
