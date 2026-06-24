@@ -37,6 +37,22 @@ describe("employeeCreateBlockers", () => {
   test("accepts a complete identity", () => {
     expect(employeeCreateBlockers({ firstName: "Jane", lastName: "Doe", email: "j@x.com" })).toEqual([]);
   });
+
+  test("flags a malformed date-of-birth (it's optional, but must be a real date when given)", () => {
+    const fields = employeeCreateBlockers({
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "j@x.com",
+      dateOfBirth: "not-a-date",
+    }).map((b) => b.field);
+    expect(fields).toEqual(["date-of-birth"]);
+  });
+
+  test("accepts a valid date-of-birth", () => {
+    expect(
+      employeeCreateBlockers({ firstName: "Jane", lastName: "Doe", email: "j@x.com", dateOfBirth: "1990-01-01" }),
+    ).toEqual([]);
+  });
 });
 
 describe("employeeCreateBody", () => {
@@ -207,6 +223,10 @@ describe("jobBlockers", () => {
     const fields = jobBlockers({ title: "Engineer", hireDate: "2026-01-06", rate: "120000" }).map((b) => b.field);
     expect(fields).toContain("payment-unit");
     expect(fields).toContain("flsa-status");
+  });
+
+  test("flags a malformed hire-date instead of passing it through to the API", () => {
+    expect(jobBlockers({ title: "Engineer", hireDate: "not-a-date" }).map((b) => b.field)).toEqual(["hire-date"]);
   });
 });
 
@@ -1188,6 +1208,10 @@ describe("manageBlockers", () => {
 
   test("a mixed identity + mode call is allowed", () => {
     expect(manageBlockers({ firstName: "Jane", mode: "invite" })).toEqual([]);
+  });
+
+  test("flags a malformed date-of-birth instead of passing it through to the API", () => {
+    expect(manageBlockers({ dateOfBirth: "not-a-date" }).map((b) => b.field)).toEqual(["date-of-birth"]);
   });
 });
 
