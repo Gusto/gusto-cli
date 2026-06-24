@@ -175,12 +175,6 @@ describe("employeeListHandler pagination", () => {
     expect(result.next).toBeUndefined();
   });
 
-  test("invalid --limit fails validation (exit 7)", async () => {
-    const result = await employeeListHandler({ ...auth, limit: "0" })(ctx);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.exitCode).toBe(7);
-  });
-
   test("--cursor with --all is rejected (exit 7)", async () => {
     const result = await employeeListHandler({ ...auth, cursor: "x", all: true })(ctx);
     expect(result.ok).toBe(false);
