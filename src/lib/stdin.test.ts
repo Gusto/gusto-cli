@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Readable } from "node:stream";
-import { readTokenFromStdin } from "./stdin.ts";
+import { readAllFromStdin, readTokenFromStdin } from "./stdin.ts";
 
 describe("readTokenFromStdin", () => {
   test("returns the piped token with the trailing newline stripped", async () => {
@@ -41,5 +41,34 @@ describe("readTokenFromStdin", () => {
 
   test("returns null for whitespace-only input", async () => {
     expect(await readTokenFromStdin(Readable.from(["\n"]))).toBeNull();
+  });
+});
+
+describe("readAllFromStdin", () => {
+  test("preserves interior newlines across multiple chunks", async () => {
+    expect(await readAllFromStdin(Readable.from(["line one\n", "line two\n"]))).toBe("line one\nline two");
+  });
+
+  test("trims only trailing whitespace and newlines, not interior newlines", async () => {
+    expect(await readAllFromStdin(Readable.from(["first\nsecond\nthird\n\n"]))).toBe("first\nsecond\nthird");
+  });
+
+  test("returns null for empty input", async () => {
+    expect(await readAllFromStdin(Readable.from([]))).toBeNull();
+  });
+
+  test("returns null for whitespace-only input", async () => {
+    expect(await readAllFromStdin(Readable.from(["\n\n   \n"]))).toBeNull();
+  });
+
+  test("fast-fails to null on an interactive TTY without blocking on stdin", async () => {
+    const tty = {
+      isTTY: true,
+      async *[Symbol.asyncIterator]() {
+        throw new Error("stdin must not be read on a TTY");
+        yield Buffer.from(""); // unreachable; satisfies the generator signature
+      },
+    } as unknown as AsyncIterable<Buffer | string>;
+    expect(await readAllFromStdin(tty)).toBeNull();
   });
 });

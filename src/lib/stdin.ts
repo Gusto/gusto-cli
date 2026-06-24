@@ -26,3 +26,22 @@ export async function readTokenFromStdin(
   const token = firstLine.trim();
   return token.length > 0 ? token : null;
 }
+
+/**
+ * Read all of stdin to EOF, preserving interior newlines. Designed for prose
+ * input (e.g. feedback messages) where content may span multiple lines.
+ *
+ * Mirrors readTokenFromStdin's TTY guard: returns null immediately on an
+ * interactive terminal rather than blocking for user input. Trailing
+ * whitespace/newlines are trimmed; interior newlines are kept. Returns null
+ * if the result is empty after trim.
+ */
+export async function readAllFromStdin(input: AsyncIterable<Buffer | string> = process.stdin): Promise<string | null> {
+  if ((input as { isTTY?: boolean }).isTTY) return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of input) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const text = Buffer.concat(chunks).toString("utf8").trimEnd();
+  return text.length > 0 ? text : null;
+}

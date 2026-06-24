@@ -5,6 +5,7 @@ import { registerCompanyCommand } from "./commands/company.ts";
 import { registerConfigCommand } from "./commands/config.ts";
 import { registerContractorCommand } from "./commands/contractor.ts";
 import { registerEmployeeCommand } from "./commands/employee.ts";
+import { registerFeedbackCommand } from "./commands/feedback.ts";
 import { registerLedgerCommand } from "./commands/ledger.ts";
 import { registerPayScheduleCommand } from "./commands/pay-schedule.ts";
 import { registerPayrollCommand } from "./commands/payroll.ts";
@@ -59,6 +60,7 @@ function buildProgram(): Command {
   registerSkillCommand(program);
   registerConfigCommand(program);
   registerApiCommand(program);
+  registerFeedbackCommand(program);
 
   // Cascade exitOverride to every command at every depth (some commands, e.g. `employee add`,
   // nest subcommands two levels deep) so commander throws CommanderError instead of calling
