@@ -23,7 +23,7 @@ Report issues:
   https://github.com/Gusto/gusto-cli-public/issues
 `;
 
-function buildProgram(): Command {
+export function buildProgram(): Command {
   const program = new Command();
 
   program
@@ -107,4 +107,6 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-await main(process.argv);
+if (import.meta.main) {
+  await main(process.argv);
+}
