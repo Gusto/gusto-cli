@@ -24,11 +24,10 @@ describe("feedbackHandler", () => {
     expect(d).toEqual({ status: "received", feedback_id: "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed" });
     expect(fetchStub.calls).toHaveLength(1);
     const call = fetchStub.calls[0];
-    expect(call?.method).toBe("POST");
+    // Command-level concern: routes to the MCP host and calls the right tool with the right args.
+    // The JSON-RPC envelope mechanics (method/version) are covered by mcp.test.ts.
     expect(call?.url).toContain("mcp.api.gusto-demo.com");
     expect(call?.body).toMatchObject({
-      jsonrpc: "2.0",
-      method: "tools/call",
       params: { name: "submit_feedback", arguments: { message: "hi", category: "bug" } },
     });
   });
