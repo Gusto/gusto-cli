@@ -1,8 +1,12 @@
-async function collectStdin(input: AsyncIterable<Buffer | string>): Promise<string | null> {
+async function collectStdin(input: AsyncIterable<Buffer | string>, maxBytes?: number): Promise<string | null> {
   if ((input as { isTTY?: boolean }).isTTY) return null;
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of input) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(buf);
+    total += buf.length;
+    if (maxBytes !== undefined && total > maxBytes) break;
   }
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -42,8 +46,11 @@ export async function readTokenFromStdin(
  * whitespace/newlines are trimmed; interior newlines are kept. Returns null
  * if the result is empty after trim.
  */
-export async function readAllFromStdin(input: AsyncIterable<Buffer | string> = process.stdin): Promise<string | null> {
-  const raw = await collectStdin(input);
+export async function readAllFromStdin(
+  input: AsyncIterable<Buffer | string> = process.stdin,
+  maxBytes?: number,
+): Promise<string | null> {
+  const raw = await collectStdin(input, maxBytes);
   if (raw === null) return null;
   const text = raw.trimEnd();
   return text.length > 0 ? text : null;

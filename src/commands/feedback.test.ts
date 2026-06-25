@@ -84,4 +84,23 @@ describe("feedbackHandler", () => {
     expect(blockedFields(result)).toEqual(["category"]);
     expect(fetchStub.calls).toHaveLength(0);
   });
+
+  test("--message exceeding 5000 chars returns validation failure and does not call MCP", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const result = await feedbackHandler({ message: "x".repeat(5001) }, noStdin)(ctx);
+    expect(result.ok).toBe(false);
+    expect(blockedFields(result)).toEqual(["message"]);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test("stdin message exceeding 5000 chars returns validation failure and does not call MCP", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const oversized = async () => "y".repeat(5001);
+    const result = await feedbackHandler({}, oversized)(ctx);
+    expect(result.ok).toBe(false);
+    expect(blockedFields(result)).toEqual(["message"]);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
 });

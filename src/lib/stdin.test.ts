@@ -71,4 +71,16 @@ describe("readAllFromStdin", () => {
     } as unknown as AsyncIterable<Buffer | string>;
     expect(await readAllFromStdin(tty)).toBeNull();
   });
+
+  test("stops reading once maxBytes is exceeded and returns the oversized string", async () => {
+    const result = await readAllFromStdin(Readable.from(["a".repeat(10), "b".repeat(10)]), 5);
+    // Stopped early; result is longer than maxBytes (not silently truncated)
+    expect(result).not.toBeNull();
+    expect(result!.length).toBeGreaterThan(5);
+  });
+
+  test("respects maxBytes of 0 and stops on the first chunk", async () => {
+    const result = await readAllFromStdin(Readable.from(["hello"]), 0);
+    expect(result).not.toBeNull();
+  });
 });

@@ -15,6 +15,7 @@ interface FeedbackOpts {
 }
 
 const CATEGORY_CHOICES = ["bug", "feature_request", "general", "praise"] as const;
+const MAX_MESSAGE_LENGTH = 5000;
 
 export function registerFeedbackCommand(parent: Command): void {
   parent
@@ -30,15 +31,23 @@ export function registerFeedbackCommand(parent: Command): void {
     );
 }
 
-export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = readAllFromStdin): CommandHandler {
+const readMessageFromStdin: StdinReader = () => readAllFromStdin(process.stdin, MAX_MESSAGE_LENGTH);
+
+export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = readMessageFromStdin): CommandHandler {
   return async ({ globals }) => {
     if (opts.tokenStdin && !opts.message) {
       return missingArgs([{ field: "message", reason: "--token-stdin uses stdin, so --message is required" }]);
     }
 
-    const message = (opts.message ?? (await readStdin()))?.trim() ?? "";
+    const message = (opts.message ?? (await readStdin()))?.trim();
     if (!message) {
       return missingArgs([{ field: "message", reason: "provide --message <text> or pipe the message to stdin" }]);
+    }
+
+    if (message.length > MAX_MESSAGE_LENGTH) {
+      return validationFailure(`message exceeds ${MAX_MESSAGE_LENGTH} characters`, [
+        { field: "message", reason: `message exceeds ${MAX_MESSAGE_LENGTH} characters` },
+      ]);
     }
 
     if (opts.category && !(CATEGORY_CHOICES as readonly string[]).includes(opts.category)) {
