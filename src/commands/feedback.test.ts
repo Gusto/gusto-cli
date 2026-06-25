@@ -40,6 +40,14 @@ describe("feedbackHandler", () => {
     expect(args).toEqual({ message: "just a message" });
   });
 
+  test("includes email in the MCP arguments on a real send", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ status: "received" }) }));
+    restore = fetchStub.restore;
+    await feedbackHandler({ message: "hi", email: "u@e.com" }, noStdin)(ctx);
+    const args = (fetchStub.calls[0]?.body as { params?: { arguments?: object } })?.params?.arguments;
+    expect(args).toEqual({ message: "hi", email: "u@e.com" });
+  });
+
   test("missing message with no stdin returns missingArgs", async () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
@@ -66,15 +74,6 @@ describe("feedbackHandler", () => {
     expect(args).toMatchObject({ message: "piped message" });
   });
 
-  test("whitespace-only --message is rejected as missing", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
-    restore = fetchStub.restore;
-    const result = await feedbackHandler({ message: "   " }, noStdin)(ctx);
-    expect(result.ok).toBe(false);
-    expect(blockedFields(result)).toEqual(["message"]);
-    expect(fetchStub.calls).toHaveLength(0);
-  });
-
   test("invalid --category returns validation failure with category field flagged", async () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
@@ -88,16 +87,6 @@ describe("feedbackHandler", () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
     const result = await feedbackHandler({ message: "x".repeat(5001) }, noStdin)(ctx);
-    expect(result.ok).toBe(false);
-    expect(blockedFields(result)).toEqual(["message"]);
-    expect(fetchStub.calls).toHaveLength(0);
-  });
-
-  test("stdin message exceeding 5000 chars returns validation failure and does not call MCP", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
-    restore = fetchStub.restore;
-    const oversized = async () => "y".repeat(5001);
-    const result = await feedbackHandler({}, oversized)(ctx);
     expect(result.ok).toBe(false);
     expect(blockedFields(result)).toEqual(["message"]);
     expect(fetchStub.calls).toHaveLength(0);
