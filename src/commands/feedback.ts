@@ -18,6 +18,10 @@ type FeedbackCategory = "bug" | "feature_request" | "general" | "praise";
 const CATEGORY_CHOICES: readonly FeedbackCategory[] = ["bug", "feature_request", "general", "praise"];
 const MAX_MESSAGE_LENGTH = 5000;
 
+function isFeedbackCategory(v: string): v is FeedbackCategory {
+  return CATEGORY_CHOICES.includes(v as FeedbackCategory);
+}
+
 export function registerFeedbackCommand(parent: Command): void {
   parent
     .command("feedback")
@@ -51,15 +55,19 @@ export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = rea
       ]);
     }
 
-    if (opts.category && !(CATEGORY_CHOICES as readonly string[]).includes(opts.category)) {
-      return validationFailure("invalid --category", [
-        { field: "category", reason: `must be one of: ${CATEGORY_CHOICES.join(", ")}, got: ${opts.category}` },
-      ]);
+    let category: FeedbackCategory | undefined;
+    if (opts.category) {
+      if (!isFeedbackCategory(opts.category)) {
+        return validationFailure("invalid --category", [
+          { field: "category", reason: `must be one of: ${CATEGORY_CHOICES.join(", ")}, got: ${opts.category}` },
+        ]);
+      }
+      category = opts.category;
     }
 
     const body: { message: string; email?: string; category?: FeedbackCategory } = { message };
     if (opts.email) body.email = opts.email;
-    if (opts.category) body.category = opts.category as FeedbackCategory;
+    if (category) body.category = category;
 
     if (opts.dryRun) {
       return { ok: true, data: { tool: "submit_feedback", arguments: body } };
