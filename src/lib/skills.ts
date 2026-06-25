@@ -3,7 +3,6 @@ import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import cashForecasting from "../skills/cash-forecasting/SKILL.md" with { type: "text" };
-import onboardCompany from "../skills/onboard-company/SKILL.md" with { type: "text" };
 import timesheetSync from "../skills/timesheet-sync/SKILL.md" with { type: "text" };
 
 export interface Skill {
@@ -43,7 +42,6 @@ function defineSkill(name: string, content: string): Skill {
 }
 
 const SKILLS: Record<string, Skill> = {
-  "onboard-company": defineSkill("onboard-company", onboardCompany),
   "cash-forecasting": defineSkill("cash-forecasting", cashForecasting),
   "timesheet-sync": defineSkill("timesheet-sync", timesheetSync),
 };

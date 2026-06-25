@@ -260,7 +260,7 @@ describe("authLoginHandler - skill-install failure must not negate a successful 
   test("happy path: installSkills's results are attached to the login envelope", async () => {
     const { sinks } = captureSinks();
     const stubInstall = [
-      { skill: "onboard-company", installedAt: "/p/onboard-company/SKILL.md", action: "installed" as const },
+      { skill: "cash-forecasting", installedAt: "/p/cash-forecasting/SKILL.md", action: "installed" as const },
     ];
     const result = await authLoginHandler(
       {},

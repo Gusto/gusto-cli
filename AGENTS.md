@@ -26,10 +26,7 @@ Pulls the notarized binary for the user's OS/arch from the latest GitHub Release
 
 ## Driving `auth login`
 
-Two paths:
-
-- **No demo company yet:** `gusto company provision` returns an `account_claim_url`. Surface it to the user, then run `gusto auth login`.
-- **Existing admin access on demo:** `gusto auth login` direct.
+`gusto auth login` signs into an existing Gusto company you administer - company creation and onboarding happen in Gusto, not the CLI.
 
 `auth login` auto-detects browser capability - opens one when there's a usable GUI session (a real `BROWSER`, `DISPLAY`/`WAYLAND_DISPLAY` on Linux, a logged-in macOS/Windows session), prints the sign-in URL on stderr otherwise (CI, headless boxes, SSH without X forwarding). Surface whatever it prints. Pass `--no-browser` only to force print-only.
 
@@ -37,4 +34,4 @@ The OAuth callback hits `127.0.0.1`, so the user signs in on the same host as th
 
 ## Bundled skills
 
-`gusto skill list` shows what's available; `gusto skill install <name>` installs one into the project's agent workspace. `gusto auth login` offers to auto-install bundled skills on first sign-in. The `onboard-company` skill drives a full company onboarding - read `~/.claude/skills/onboard-company/SKILL.md` after install for the steps and pause points.
+`gusto skill list` shows what's available; `gusto skill install <name>` installs one into the project's agent workspace. `gusto auth login` offers to auto-install bundled skills on first sign-in. `cash-forecasting` projects upcoming payroll cash needs and `timesheet-sync` drives the per-cycle timesheet input flow.

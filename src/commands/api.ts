@@ -51,7 +51,7 @@ Examples:
   $ gusto api request GET /v1/me
   $ gusto api request GET /v1/companies/{company_uuid}/employees
   $ gusto api request POST /v1/companies/{company_uuid}/employees --data '{"first_name":"Jane"}'
-  $ gusto api request PUT /v1/companies/{company_uuid}/federal_tax_details --auto-version --data '{"filing_form":"941"}'
+  $ gusto api request PUT /v1/jobs/{job_uuid} --auto-version --data '{"title":"Senior Engineer"}'
 `,
     )
     .action((method: string, path: string, opts: ApiRequestOpts) =>

@@ -136,26 +136,6 @@ describe("payroll/ledger validate before auth (exit 7)", () => {
   });
 });
 
-describe("company provision input handling (offline)", () => {
-  test("no --input/--example is a missing-args validation envelope", async () => {
-    const result = await run(["company", "provision"]);
-    expect(result.exitCode).toBe(7);
-    const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.error.code).toBe("validation");
-    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "input" }));
-  });
-
-  test("--dry-run --example emits the unwrapped request without auth", async () => {
-    const result = await run(["company", "provision", "--dry-run", "--example"]);
-    expect(result.exitCode).toBe(0);
-    const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.ok).toBe(true);
-    expect(envelope.data.path).toBe("/v1/provision");
-    expect(envelope.data.body.user).toBeDefined();
-    expect(envelope.data.body.company).toBeDefined();
-  });
-});
-
 describe("dry-run works without auth", () => {
   test("employee add --dry-run emits the would-be request even without a token", async () => {
     const result = await run([
@@ -175,16 +155,6 @@ describe("dry-run works without auth", () => {
     expect(envelope.ok).toBe(true);
     expect(envelope.data.method).toBe("POST");
     expect(envelope.data.body.email).toBe("j@example.com");
-  });
-
-  test("company finish --dry-run lists only finish_onboarding without a token", async () => {
-    const result = await run(["company", "finish", "--dry-run", "--company-uuid", "co-1"]);
-    expect(result.exitCode).toBe(0);
-    const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.ok).toBe(true);
-    expect(envelope.data.steps.map((s: { path: string }) => s.path)).toEqual([
-      "/v1/companies/{company_uuid}/finish_onboarding",
-    ]);
   });
 
   test("pay-schedule create maps every frequency alias to its canonical Gusto value", async () => {
@@ -607,17 +577,17 @@ describe("skill commands work without auth", () => {
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
-    expect(envelope.data.skills).toContainEqual(expect.objectContaining({ name: "onboard-company" }));
+    expect(envelope.data.skills).toContainEqual(expect.objectContaining({ name: "cash-forecasting" }));
   });
 
-  test("skill install onboard-company installs the bundled skill", async () => {
+  test("skill install cash-forecasting installs the bundled skill", async () => {
     const { mkdirSync, existsSync: exists, readFileSync, realpathSync } = await import("node:fs");
     const scratchRaw = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-skill-"));
     const scratch = realpathSync(scratchRaw);
     try {
       const target = path.join(scratch, ".claude", "skills");
       mkdirSync(target, { recursive: true });
-      const proc = Bun.spawn([BIN_PATH, "skill", "install", "onboard-company"], {
+      const proc = Bun.spawn([BIN_PATH, "skill", "install", "cash-forecasting"], {
         cwd: scratch,
         stdout: "pipe",
         stderr: "pipe",
@@ -626,7 +596,7 @@ describe("skill commands work without auth", () => {
       const stdout = await new Response(proc.stdout).text();
       const exitCode = await proc.exited;
       expect(exitCode).toBe(0);
-      const installed = path.join(target, "onboard-company", "SKILL.md");
+      const installed = path.join(target, "cash-forecasting", "SKILL.md");
       expect(exists(installed)).toBe(true);
       expect(readFileSync(installed, "utf8")).toContain("user-invocable: true");
       expect(JSON.parse(stdout.trim()).data.installedAt).toBe(installed);

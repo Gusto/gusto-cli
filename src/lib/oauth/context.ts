@@ -12,7 +12,7 @@ export function oauthHttp(globals: GlobalFlags): OAuthHttpOptions {
 }
 
 /** A single-shot bearer ApiClient for the authed endpoints the oauth flows hit
- * (token_info, /v1/provision) - no retries, shares the injected fetch. */
+ * (token_info) - no retries, shares the injected fetch. */
 export function oauthApiClient(http: OAuthHttpOptions, token: string): ApiClient {
   return new ApiClient({
     baseUrl: http.baseUrl,
