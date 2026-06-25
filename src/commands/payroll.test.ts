@@ -240,11 +240,62 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
   });
 
-  test("rejects a duplicate employee_uuid instead of sending two ambiguous compensations", () => {
+  test("rejects a repeated employee with no job_uuid (ambiguous duplicate)", () => {
     const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,250\nee-1,300");
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: employee_uuid" }));
+  });
+
+  test("merges multiple rows for one employee (one per job) into a single compensation", () => {
+    const csv = ["employee_uuid,job_uuid,regular_hours,cash_tips", "ee-1,job-a,30,40", "ee-1,job-b,25,"].join("\n");
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations).toHaveLength(1);
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.employee_uuid).toBe("ee-1");
+    expect(comp?.hourly_compensations).toEqual([
+      { name: "Regular Hours", hours: 30, job_uuid: "job-a" },
+      { name: "Regular Hours", hours: 25, job_uuid: "job-b" },
+    ]);
+    expect(comp?.fixed_compensations).toEqual([{ name: "Cash Tips", amount: 40, job_uuid: "job-a" }]);
+  });
+
+  test("rejects the same (employee_uuid, job_uuid) pair appearing twice", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,job_uuid,regular_hours\nee-1,job-a,30\nee-1,job-a,25");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: employee_uuid" }));
+  });
+
+  test("rejects conflicting version values across one employee's job rows", () => {
+    const result = buildPayrollUpdateFromCsv(
+      "employee_uuid,version,job_uuid,regular_hours\nee-1,v1,job-a,30\nee-1,v2,job-b,25",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: version" }));
+  });
+
+  test("accepts a shared version across an employee's job rows", () => {
+    const result = buildPayrollUpdateFromCsv(
+      "employee_uuid,version,job_uuid,regular_hours\nee-1,v1,job-a,30\nee-1,v1,job-b,25",
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]?.version).toBe("v1");
+  });
+
+  test("matches headers case-insensitively", () => {
+    const result = buildPayrollUpdateFromCsv("Employee_UUID,Regular_Hours,Bonus\nee-1,80,250");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      hourly_compensations: [{ name: "Regular Hours", hours: 80 }],
+      fixed_compensations: [{ name: "Bonus", amount: 250 }],
+    });
   });
 
   test("trims surrounding whitespace in headers and values", () => {

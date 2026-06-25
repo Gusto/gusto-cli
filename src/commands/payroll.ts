@@ -191,15 +191,28 @@ function validatePayrollUpdateHeaders(headers: string[]): BlockedOn[] {
   return blocked;
 }
 
-/** Build one employee_compensation from a CSV row, pushing any per-cell problems onto `blocked`.
- * A blank cell is omitted entirely (the API leaves omitted inputs untouched); an explicit `0` is
- * sent (the API overrides to zero). Returns null when the row can't yield a usable compensation. */
-function buildEmployeeCompensationRow(
+/** One CSV data row's raw contribution: a single employee, optionally scoped to one job. Rows are
+ * merged per employee afterwards (see mergeRowsByEmployee), so an employee with multiple jobs is
+ * expressed as multiple rows (one per job) that fold into a single compensation. */
+interface ParsedPayrollUpdateRow {
+  line: number;
+  employeeUuid: string;
+  version?: string;
+  jobUuid?: string;
+  hourly: HourlyCompensationInput[];
+  fixed: FixedCompensationInput[];
+  reimbursements: ReimbursementInput[];
+}
+
+/** Parse one CSV row, pushing any per-cell problems onto `blocked`. A blank cell is omitted (the
+ * API leaves omitted inputs untouched); an explicit `0` is sent (the API overrides to zero).
+ * Returns null when the row can't yield a usable contribution. */
+function parsePayrollUpdateRow(
   headers: string[],
   cells: string[],
   line: number,
   blocked: BlockedOn[],
-): EmployeeCompensationUpdate | null {
+): ParsedPayrollUpdateRow | null {
   if (cells.length > headers.length) {
     blocked.push({ field: `row ${line}`, reason: `has ${cells.length} cells but the header has ${headers.length}` });
     return null;
@@ -258,17 +271,84 @@ function buildEmployeeCompensationRow(
 
   const version = get("version");
   return {
-    employee_uuid: employeeUuid,
+    line,
+    employeeUuid,
     ...(version ? { version } : {}),
-    ...(hourly.length ? { hourly_compensations: hourly } : {}),
-    ...(fixed.length ? { fixed_compensations: fixed } : {}),
-    ...(reimbursements.length ? { reimbursements } : {}),
+    ...(jobUuid ? { jobUuid } : {}),
+    hourly,
+    fixed,
+    reimbursements,
   };
+}
+
+interface EmployeeGroup {
+  employeeUuid: string;
+  version?: string;
+  versionLine?: number;
+  hourly: HourlyCompensationInput[];
+  fixed: FixedCompensationInput[];
+  reimbursements: ReimbursementInput[];
+  /** job_uuid ("" when a row omits it) -> the first line that used it, for duplicate detection. */
+  jobLines: Map<string, number>;
+}
+
+/** Fold parsed rows into one employee_compensation per employee. Repeating an employee_uuid across
+ * rows is how a multi-job employee splits hours over jobs, so it's allowed - but the same
+ * (employee_uuid, job_uuid) pair twice is a genuine duplicate, and two different `version` values
+ * for one employee can't be reconciled; both become blocked_on errors. */
+function mergeRowsByEmployee(rows: ParsedPayrollUpdateRow[], blocked: BlockedOn[]): EmployeeCompensationUpdate[] {
+  const groups = new Map<string, EmployeeGroup>();
+
+  for (const row of rows) {
+    let group = groups.get(row.employeeUuid);
+    if (!group) {
+      group = { employeeUuid: row.employeeUuid, hourly: [], fixed: [], reimbursements: [], jobLines: new Map() };
+      groups.set(row.employeeUuid, group);
+    }
+
+    const jobKey = row.jobUuid ?? "";
+    const firstLine = group.jobLines.get(jobKey);
+    if (firstLine !== undefined) {
+      const what = row.jobUuid ? "employee_uuid + job_uuid" : "employee_uuid (no job_uuid)";
+      blocked.push({
+        field: `row ${row.line}: employee_uuid`,
+        reason: `duplicate ${what} (already on row ${firstLine}); use one row per employee-job`,
+      });
+      continue;
+    }
+    group.jobLines.set(jobKey, row.line);
+
+    if (row.version) {
+      if (group.version !== undefined && group.version !== row.version) {
+        blocked.push({
+          field: `row ${row.line}: version`,
+          reason: `conflicting version for this employee (row ${group.versionLine} has a different value)`,
+        });
+        continue;
+      }
+      group.version = row.version;
+      group.versionLine ??= row.line;
+    }
+
+    group.hourly.push(...row.hourly);
+    group.fixed.push(...row.fixed);
+    group.reimbursements.push(...row.reimbursements);
+  }
+
+  // Map preserves insertion order, so employees come out in first-seen order.
+  return [...groups.values()].map((g) => ({
+    employee_uuid: g.employeeUuid,
+    ...(g.version ? { version: g.version } : {}),
+    ...(g.hourly.length ? { hourly_compensations: g.hourly } : {}),
+    ...(g.fixed.length ? { fixed_compensations: g.fixed } : {}),
+    ...(g.reimbursements.length ? { reimbursements: g.reimbursements } : {}),
+  }));
 }
 
 /** Parse a CSV of per-employee inputs into a payroll-update request body, accumulating every
  * structural, header, and per-row problem into a single blocked_on list (so one run surfaces all
- * the fixes, not just the first). See HOURLY_COLUMNS/FIXED_COLUMNS for the column -> API-name map. */
+ * the fixes, not just the first). Headers are lowercased so 'Employee_UUID' and 'employee_uuid'
+ * both work. See HOURLY_COLUMNS/FIXED_COLUMNS for the column -> API-name map. */
 export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation {
   let rows: string[][];
   try {
@@ -283,31 +363,18 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
     return { ok: false, message: "empty CSV", blocked: [{ field: "input", reason: "the file has no rows" }] };
   }
 
-  const headers = nonBlank[0].map((h) => h.trim());
+  const headers = nonBlank[0].map((h) => h.trim().toLowerCase());
   const headerBlocked = validatePayrollUpdateHeaders(headers);
   if (headerBlocked.length > 0) return { ok: false, message: "invalid CSV header", blocked: headerBlocked };
 
   const blocked: BlockedOn[] = [];
-  const employee_compensations: EmployeeCompensationUpdate[] = [];
-  // One row per employee: a repeated employee_uuid would send two compensations for the same person,
-  // which is ambiguous (the API can't tell which wins), so flag it rather than pass it through.
-  const seenEmployees = new Map<string, number>();
+  const parsed: ParsedPayrollUpdateRow[] = [];
   nonBlank.slice(1).forEach((cells, idx) => {
     // Header is line 1; the first data row is line 2.
-    const line = idx + 2;
-    const row = buildEmployeeCompensationRow(headers, cells, line, blocked);
-    if (!row) return;
-    const firstSeen = seenEmployees.get(row.employee_uuid);
-    if (firstSeen !== undefined) {
-      blocked.push({
-        field: `row ${line}: employee_uuid`,
-        reason: `duplicate employee_uuid (already on row ${firstSeen}); use one row per employee`,
-      });
-      return;
-    }
-    seenEmployees.set(row.employee_uuid, line);
-    employee_compensations.push(row);
+    const row = parsePayrollUpdateRow(headers, cells, idx + 2, blocked);
+    if (row) parsed.push(row);
   });
+  const employee_compensations = mergeRowsByEmployee(parsed, blocked);
 
   if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
   if (employee_compensations.length === 0) {
@@ -316,9 +383,13 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
   return { ok: true, body: { employee_compensations } };
 }
 
-/** The canonical request/CSV shape published by `--example` - learnable without a uuid or auth. */
+/** The canonical request/CSV shape published by `--example` - learnable without a uuid or auth.
+ * Shows the multi-job pattern: the same employee on two rows (one per job) merges into a single
+ * compensation with one hourly entry per job. */
 function payrollUpdateExample(): Record<string, unknown> {
-  const jobUuid = "1f2e3d4c-0000-1111-2222-333344445555";
+  const jobA = "1f2e3d4c-0000-1111-2222-333344445555";
+  const jobB = "2a3b4c5d-0000-1111-2222-333344445555";
+  const employee = "9b8c7d6e-0000-1111-2222-333344445555";
   return {
     method: "PUT",
     path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}",
@@ -328,22 +399,26 @@ function payrollUpdateExample(): Record<string, unknown> {
     },
     csv_example: [
       "employee_uuid,version,job_uuid,regular_hours,bonus,cash_tips",
-      `9b8c7d6e-0000-1111-2222-333344445555,a1b2c3,${jobUuid},80,250,40`,
+      `${employee},a1b2c3,${jobA},30,250,40`,
+      `${employee},a1b2c3,${jobB},25,,`,
     ].join("\n"),
     body: {
       employee_compensations: [
         {
-          employee_uuid: "9b8c7d6e-0000-1111-2222-333344445555",
+          employee_uuid: employee,
           version: "a1b2c3",
-          hourly_compensations: [{ name: "Regular Hours", hours: 80, job_uuid: jobUuid }],
+          hourly_compensations: [
+            { name: "Regular Hours", hours: 30, job_uuid: jobA },
+            { name: "Regular Hours", hours: 25, job_uuid: jobB },
+          ],
           fixed_compensations: [
-            { name: "Bonus", amount: 250, job_uuid: jobUuid },
-            { name: "Cash Tips", amount: 40, job_uuid: jobUuid },
+            { name: "Bonus", amount: 250, job_uuid: jobA },
+            { name: "Cash Tips", amount: 40, job_uuid: jobA },
           ],
         },
       ],
     },
-    note: "One CSV row per employee. Blank cells are left untouched; a 0 overrides to zero. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
+    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. Hours and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
   };
 }
 
@@ -423,13 +498,15 @@ Examples:
     .addHelpText(
       "after",
       `
-Updates an unprocessed (draft) payroll from a CSV, one row per employee. Columns:
+Updates an unprocessed (draft) payroll from a CSV. Columns (case-insensitive):
   employee_uuid (required), version, job_uuid,
   regular_hours, bonus, commission, paycheck_tips, cash_tips, reimbursement
 
-Blank cells are left untouched; an explicit 0 overrides to zero. Each row's 'version' is the
-optimistic-lock token from the prepared payroll. Overtime/double-overtime are not supported yet
-(their names vary per company). After updating, run 'payroll prepare' to get a reviewable draft.
+One row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (the
+rows merge into one compensation). Blank cells are left untouched; an explicit 0 overrides to zero.
+Each row's 'version' is the optimistic-lock token from the prepared payroll. Overtime/double-overtime
+are not supported yet (their names vary per company). After updating, run 'payroll prepare' to get a
+reviewable draft.
 
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
