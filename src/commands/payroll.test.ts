@@ -239,4 +239,39 @@ describe("buildPayrollUpdateFromCsv", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
   });
+
+  test("rejects a duplicate employee_uuid instead of sending two ambiguous compensations", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,250\nee-1,300");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: employee_uuid" }));
+  });
+
+  test("trims surrounding whitespace in headers and values", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid, bonus ,regular_hours\nee-1, 250 , 80 ");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      hourly_compensations: [{ name: "Regular Hours", hours: 80 }],
+      fixed_compensations: [{ name: "Bonus", amount: 250 }],
+    });
+  });
+
+  test("rejects currency-formatted values ($ and thousands separators) with a clear message", () => {
+    const result = buildPayrollUpdateFromCsv('employee_uuid,bonus,cash_tips\nee-1,$500,"1,000"');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: bonus" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: cash_tips" }));
+  });
+
+  test("accepts decimal hours and amounts", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,80.5,12.75");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 80.5 }]);
+    expect(comp?.fixed_compensations).toEqual([{ name: "Bonus", amount: 12.75 }]);
+  });
 });

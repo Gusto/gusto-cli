@@ -289,10 +289,24 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
 
   const blocked: BlockedOn[] = [];
   const employee_compensations: EmployeeCompensationUpdate[] = [];
+  // One row per employee: a repeated employee_uuid would send two compensations for the same person,
+  // which is ambiguous (the API can't tell which wins), so flag it rather than pass it through.
+  const seenEmployees = new Map<string, number>();
   nonBlank.slice(1).forEach((cells, idx) => {
     // Header is line 1; the first data row is line 2.
-    const row = buildEmployeeCompensationRow(headers, cells, idx + 2, blocked);
-    if (row) employee_compensations.push(row);
+    const line = idx + 2;
+    const row = buildEmployeeCompensationRow(headers, cells, line, blocked);
+    if (!row) return;
+    const firstSeen = seenEmployees.get(row.employee_uuid);
+    if (firstSeen !== undefined) {
+      blocked.push({
+        field: `row ${line}: employee_uuid`,
+        reason: `duplicate employee_uuid (already on row ${firstSeen}); use one row per employee`,
+      });
+      return;
+    }
+    seenEmployees.set(row.employee_uuid, line);
+    employee_compensations.push(row);
   });
 
   if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
