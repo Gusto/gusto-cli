@@ -18,6 +18,7 @@ Pulls the notarized binary for the user's OS/arch from the latest GitHub Release
 ## Conventions
 
 - **`--agent` / `--json`** emits a stable JSON envelope: `{ "ok": true, "data": {...} }` or `{ "ok": false, "error": {...} }`. Auto-on when stdout is piped.
+- **Pagination:** `list` commands return one page by default plus an opaque top-level `next` cursor when more results exist. Pass it back via `--cursor <next>`, or use `--all` to fetch every page and `--limit <n>` to cap the total. `next` is absent on the last page.
 - **`--dry-run`** on any create command prints the request body without sending.
 - **Missing required args** return a `blocked_on` envelope (exit code `7`) listing the fields to retry with. Exit codes live in `src/lib/exit-codes.ts`.
 - **Auth precedence:** `--token-stdin` > `GUSTO_ACCESS_TOKEN` > stored session (`gusto auth login`). An explicit token always wins so a bad secret surfaces the real auth error rather than silently running as the logged-in identity. `GUSTO_COMPANY_UUID` (or `--company-uuid`) sets the company.

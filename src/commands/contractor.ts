@@ -1,11 +1,12 @@
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
-import { createCompanyResource, fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { createCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { parsePositiveNumber } from "../lib/parse.ts";
+import { parsePaginationFlags } from "../lib/pagination.ts";
+import { isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
 import { readString } from "../lib/read-string.ts";
 import {
   type CommandHandler,
@@ -45,13 +46,6 @@ export type ContractorValidation = ValidationResult<ContractorBody>;
  * only ever receives this variant — the admin-driven path is a single POST via
  * `createCompanyResource` — so the type lets the compiler prove the invite step always runs. */
 type SelfOnboardingContractorBody = Extract<ContractorBody, { self_onboarding: true }>;
-
-// Accepts YYYY-MM-DD and confirms it's a real calendar date (rejects e.g. 2026-13-40).
-function isValidStartDate(raw: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
-  const date = new Date(`${raw}T00:00:00Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === raw;
-}
 
 /** Validate contractor-add args and, on success, return the fully-populated request body.
  * `--type` drives which identity fields are required (individual: first/last name; business:
@@ -96,7 +90,7 @@ export function validateContractorAdd(
   const startDate = opts.startDate;
   if (!startDate) {
     blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidStartDate(startDate)) {
+  } else if (!isValidIsoDate(startDate)) {
     blocked.push({ field: "start-date", reason: `must be a valid YYYY-MM-DD date, got: ${startDate}` });
   }
 
@@ -198,6 +192,9 @@ interface ContractorAddOpts {
 interface ContractorListOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
+  cursor?: string;
+  limit?: string;
+  all?: boolean;
 }
 
 interface ContractorShowOpts {
@@ -247,6 +244,9 @@ export function registerContractorCommand(parent: Command): void {
     .description("List company contractors")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
+    .option(...CURSOR_OPT)
+    .option("--limit <n>", "Maximum contractors to return across pages")
+    .option(...ALL_OPT)
     .action((opts: ContractorListOpts) =>
       runReadCommand("gusto contractor list", readGlobalFlags(parent.opts()), contractorListHandler(opts)),
     );
@@ -377,11 +377,13 @@ function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts)
     fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/contractors/${contractorUuid}`);
 }
 
-function contractorListHandler(opts: ContractorListOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchCompanyResource(
-      globals,
-      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}/contractors`,
-    );
+export function contractorListHandler(opts: ContractorListOpts): CommandHandler {
+  return async ({ globals }) => {
+    const pg = parsePaginationFlags(opts);
+    if (!pg.ok) return validationFailure(pg.message, pg.blocked);
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const { items, next } = await ctx.client.paginate(`/v1/companies/${ctx.companyUuid}/contractors`, pg.body);
+      return { ok: true, data: items, next: pg.body.surfaceNext ? next : undefined };
+    });
+  };
 }

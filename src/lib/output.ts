@@ -24,7 +24,7 @@ export interface EnvelopeError {
   request_id?: string;
 }
 
-export type AgentEnvelope<T = unknown> = { ok: true; data?: T } | { ok: false; error: EnvelopeError };
+export type AgentEnvelope<T = unknown> = { ok: true; data?: T; next?: string } | { ok: false; error: EnvelopeError };
 
 export interface StreamSinks {
   stdout: NodeJS.WritableStream;
@@ -81,6 +81,9 @@ export function emit<T>(
     if (payload.data !== undefined) {
       const text = renderHuman ? renderHuman() : formatHuman(payload.data);
       sinks.stdout.write(`${text}\n`);
+    }
+    if (payload.next !== undefined) {
+      sinks.stderr.write(`more results: pass --cursor ${payload.next} (or --all)\n`);
     }
     return;
   }

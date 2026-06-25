@@ -49,6 +49,10 @@ export function employeeCreateBlockers(opts: EmployeeCreateOpts): BlockedOn[] {
   if (!opts.firstName) blocked.push({ field: "first-name", reason: "required" });
   if (!opts.lastName) blocked.push({ field: "last-name", reason: "required" });
   if (!opts.email) blocked.push({ field: "email", reason: "required" });
+  // date_of_birth is optional, so only format-check it when supplied.
+  if (opts.dateOfBirth !== undefined && !isValidIsoDate(opts.dateOfBirth)) {
+    blocked.push({ field: "date-of-birth", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
   return blocked;
 }
 
@@ -267,7 +271,11 @@ export interface JobOpts extends TokenOpts {
 export function jobBlockers(opts: JobOpts): BlockedOn[] {
   const blocked: BlockedOn[] = [];
   if (!opts.title) blocked.push({ field: "title", reason: "required" });
-  if (!opts.hireDate) blocked.push({ field: "hire-date", reason: "required (YYYY-MM-DD)" });
+  if (!opts.hireDate) {
+    blocked.push({ field: "hire-date", reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(opts.hireDate)) {
+    blocked.push({ field: "hire-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
   // Compensation is all-or-nothing: a partial set can't form a valid compensation, so requiring any
   // one of the three requires the others.
   if (opts.rate !== undefined || opts.paymentUnit !== undefined || opts.flsaStatus !== undefined) {
@@ -1035,6 +1043,10 @@ export function resolveManageMode(
 export function manageBlockers(opts: ManageOpts): BlockedOn[] {
   const mode = resolveManageMode(opts);
   if (!mode.ok) return mode.blocked;
+  // date_of_birth is optional, so only format-check it when supplied.
+  if (opts.dateOfBirth !== undefined && !isValidIsoDate(opts.dateOfBirth)) {
+    return [{ field: "date-of-birth", reason: "must be a valid date in YYYY-MM-DD format" }];
+  }
   const hasIdentity = Object.keys(manageIdentityBody(opts)).length > 0;
   if (!hasIdentity && mode.status === null) {
     return [

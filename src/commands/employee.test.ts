@@ -7,6 +7,7 @@ import {
   employeeDeleteHandler,
   jobDeleteHandler,
   parseStatus,
+  type EmployeeListSummary,
 } from "./employee.ts";
 
 describe("parseStatus", () => {
@@ -66,36 +67,51 @@ describe("bucketEmployees", () => {
 
 describe("buildEmployeeList", () => {
   test("summary always carries the full breakdown regardless of filter", () => {
-    const { summary } = buildEmployeeList(FIXTURE, "active");
+    const { summary } = buildEmployeeList(FIXTURE, "active", true);
     expect(summary).toEqual({ total: 85, active: 16, onboarding: 63, terminated: 6, filter_applied: "active" });
   });
 
   test("active filter returns only the 16 active employees", () => {
-    const { employees } = buildEmployeeList(FIXTURE, "active");
+    const { employees } = buildEmployeeList(FIXTURE, "active", true);
     expect(employees).toHaveLength(16);
   });
 
   test("onboarding filter returns only the 63 onboarding employees", () => {
-    const { employees } = buildEmployeeList(FIXTURE, "onboarding");
+    const { employees } = buildEmployeeList(FIXTURE, "onboarding", true);
     expect(employees).toHaveLength(63);
   });
 
   test("terminated filter returns only the 6 terminated employees", () => {
-    const { employees } = buildEmployeeList(FIXTURE, "terminated");
+    const { employees } = buildEmployeeList(FIXTURE, "terminated", true);
     expect(employees).toHaveLength(6);
   });
 
   test("all filter returns every record in original order", () => {
-    const { employees, summary } = buildEmployeeList(FIXTURE, "all");
+    const { employees, summary } = buildEmployeeList(FIXTURE, "all", true);
     expect(employees).toHaveLength(85);
-    expect(summary.filter_applied).toBe("all");
+    expect((summary as EmployeeListSummary).filter_applied).toBe("all");
     expect((employees[0] as { uuid: string }).uuid).toBe("a0");
   });
 
   test("a non-array body yields zero counts and an empty list", () => {
-    const { summary, employees } = buildEmployeeList(null, "active");
+    const { summary, employees } = buildEmployeeList(null, "active", true);
     expect(summary).toEqual({ total: 0, active: 0, onboarding: 0, terminated: 0, filter_applied: "active" });
     expect(employees).toHaveLength(0);
+  });
+
+  // coversAll=false is what the handler passes for partial pages and for cursor-resumed
+  // walks (where the walk reached the end but didn't start at page 1). Summary must be
+  // absent so consumers don't read partial counts as company totals.
+  test("coversAll=false: summary is omitted, employees is the filtered subset", () => {
+    const { summary, employees } = buildEmployeeList(FIXTURE, "active", false);
+    expect(summary).toBeUndefined();
+    expect(employees).toHaveLength(16);
+  });
+
+  test("coversAll=false with --status all returns every item but no summary", () => {
+    const { summary, employees } = buildEmployeeList(FIXTURE, "all", false);
+    expect(summary).toBeUndefined();
+    expect(employees).toHaveLength(85);
   });
 });
 

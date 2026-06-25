@@ -4,6 +4,7 @@ import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { isValidIsoDate } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import { type CommandHandler, missingArgs, runCommand } from "../lib/runner.ts";
 
@@ -21,8 +22,6 @@ export interface PayrollListOpts {
 
 export type PayrollListQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
 // Closed enums, sourced from zenpayroll Api::V1::PayrollsController (the index
 // endpoint's constants - deliberately NOT the public docs, which are stale: the
 // docs omit `external` and list the SHOW-only `benefits`/`deductions` for
@@ -37,15 +36,6 @@ const SORT_ORDERS = ["asc", "desc"] as const;
 // period). The server already rejects unknown values with a 422, but validating
 // here gives the same fast exit-7 blocked_on feedback as the other enums.
 const DATE_FILTER_BY = ["check_date"] as const;
-
-/** True for a real calendar date in `YYYY-MM-DD` form (rejects bad formats and
- * impossible dates like 2026-02-30). */
-function isValidIsoDate(value: string): boolean {
-  if (!ISO_DATE.test(value)) return false;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return false;
-  return parsed.toISOString().slice(0, 10) === value;
-}
 
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry
  * for any unrecognized token (or null if all are valid). `multi` splits the
