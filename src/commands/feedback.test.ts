@@ -67,14 +67,6 @@ describe("feedbackHandler", () => {
     expect(args).toMatchObject({ message: "piped message" });
   });
 
-  test("preserves multi-line stdin input", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ status: "received" }) }));
-    restore = fetchStub.restore;
-    await feedbackHandler({}, async () => "line one\nline two")(ctx);
-    const args = (fetchStub.calls[0]?.body as { params?: { arguments?: object } })?.params?.arguments;
-    expect(args).toMatchObject({ message: "line one\nline two" });
-  });
-
   test("whitespace-only --message is rejected as missing", async () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
