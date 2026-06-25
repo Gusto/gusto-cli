@@ -10,6 +10,7 @@ interface FeedbackOpts {
   message?: string;
   email?: string;
   category?: string;
+  context?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
 }
@@ -29,6 +30,7 @@ export function registerFeedbackCommand(parent: Command): void {
     .option("--message <text>", "Feedback message (or pipe it via stdin)")
     .option("--email <addr>", "Optional reply-to email")
     .option("--category <value>", "Optional feedback category")
+    .option("--context <json>", "Optional context metadata as a JSON object")
     .option(...DRY_RUN_OPT)
     .option(...TOKEN_STDIN_OPT)
     .action((opts: FeedbackOpts) =>
@@ -65,9 +67,30 @@ export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = rea
       category = opts.category;
     }
 
-    const body: { message: string; email?: string; category?: FeedbackCategory } = { message };
+    let context: Record<string, unknown> | undefined;
+    if (opts.context !== undefined) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(opts.context);
+      } catch {
+        return validationFailure("--context must be valid JSON", [
+          { field: "context", reason: "--context must be valid JSON" },
+        ]);
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return validationFailure("--context must be a JSON object", [
+          { field: "context", reason: "--context must be a JSON object, not an array or scalar" },
+        ]);
+      }
+      context = parsed as Record<string, unknown>;
+    }
+
+    const body: { message: string; email?: string; category?: FeedbackCategory; context?: Record<string, unknown> } = {
+      message,
+    };
     if (opts.email) body.email = opts.email;
     if (category) body.category = category;
+    if (context) body.context = context;
 
     if (opts.dryRun) {
       return { ok: true, data: { tool: "submit_feedback", arguments: body } };

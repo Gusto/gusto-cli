@@ -100,4 +100,52 @@ describe("feedbackHandler", () => {
     const args = (fetchStub.calls[0]?.body as { params?: { arguments?: { message?: string } } })?.params?.arguments;
     expect(args?.message).toHaveLength(5000);
   });
+
+  test("--context is parsed and included in the MCP arguments on a real send", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ status: "received" }) }));
+    restore = fetchStub.restore;
+    await feedbackHandler({ message: "hi", context: '{"os":"darwin"}' }, noStdin)(ctx);
+    const args = (fetchStub.calls[0]?.body as { params?: { arguments?: object } })?.params?.arguments;
+    expect(args).toEqual({ message: "hi", context: { os: "darwin" } });
+  });
+
+  test("invalid --context JSON returns validationFailure with context field, no MCP call", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const result = await feedbackHandler({ message: "hi", context: "not json" }, noStdin)(ctx);
+    expect(result.ok).toBe(false);
+    expect(blockedFields(result)).toEqual(["context"]);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test("--context with an array returns validationFailure with context field, no MCP call", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const result = await feedbackHandler({ message: "hi", context: "[1,2]" }, noStdin)(ctx);
+    expect(result.ok).toBe(false);
+    expect(blockedFields(result)).toEqual(["context"]);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test("--context with a scalar string returns validationFailure with context field, no MCP call", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const result = await feedbackHandler({ message: "hi", context: '"x"' }, noStdin)(ctx);
+    expect(result.ok).toBe(false);
+    expect(blockedFields(result)).toEqual(["context"]);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test("dry-run includes the parsed context object in the returned arguments", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const d = okData(
+      await feedbackHandler({ message: "hi", context: '{"os":"darwin","version":"1.0"}', dryRun: true }, noStdin)(ctx),
+    );
+    expect(d).toEqual({
+      tool: "submit_feedback",
+      arguments: { message: "hi", context: { os: "darwin", version: "1.0" } },
+    });
+    expect(fetchStub.calls).toHaveLength(0);
+  });
 });
