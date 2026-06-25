@@ -57,9 +57,9 @@ export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = rea
       ]);
     }
 
-    const body: { message: string; email?: string; category?: string } = { message };
+    const body: { message: string; email?: string; category?: FeedbackCategory } = { message };
     if (opts.email) body.email = opts.email;
-    if (opts.category) body.category = opts.category;
+    if (opts.category) body.category = opts.category as FeedbackCategory;
 
     if (opts.dryRun) {
       return { ok: true, data: { tool: "submit_feedback", arguments: body } };

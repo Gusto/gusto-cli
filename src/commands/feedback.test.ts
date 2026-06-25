@@ -103,4 +103,13 @@ describe("feedbackHandler", () => {
     expect(blockedFields(result)).toEqual(["message"]);
     expect(fetchStub.calls).toHaveLength(0);
   });
+
+  test("a message of exactly 5000 chars is accepted and sent", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ status: "received" }) }));
+    restore = fetchStub.restore;
+    const exact = "z".repeat(5000);
+    okData(await feedbackHandler({ message: exact }, noStdin)(ctx));
+    const args = (fetchStub.calls[0]?.body as { params?: { arguments?: { message?: string } } })?.params?.arguments;
+    expect(args?.message).toHaveLength(5000);
+  });
 });
