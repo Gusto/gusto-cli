@@ -1,12 +1,18 @@
+const MAX_TOKEN_BYTES = 65536;
+
 async function collectStdin(input: AsyncIterable<Buffer | string>, maxBytes?: number): Promise<string | null> {
   if ((input as { isTTY?: boolean }).isTTY) return null;
   const chunks: Buffer[] = [];
   let total = 0;
-  for await (const chunk of input) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    chunks.push(buf);
-    total += buf.length;
-    if (maxBytes !== undefined && total > maxBytes) break;
+  try {
+    for await (const chunk of input) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(buf);
+      total += buf.length;
+      if (maxBytes !== undefined && total > maxBytes) break;
+    }
+  } catch {
+    return null;
   }
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -30,7 +36,7 @@ async function collectStdin(input: AsyncIterable<Buffer | string>, maxBytes?: nu
 export async function readTokenFromStdin(
   input: AsyncIterable<Buffer | string> = process.stdin,
 ): Promise<string | null> {
-  const raw = await collectStdin(input);
+  const raw = await collectStdin(input, MAX_TOKEN_BYTES);
   if (raw === null) return null;
   const firstLine = raw.trim().split(/\r?\n/, 1)[0] ?? "";
   const token = firstLine.trim();
