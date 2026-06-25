@@ -47,6 +47,11 @@ describe("describeTree", () => {
     const completion = findNode(model, "/completion");
     expect(completion!.argChoices).toEqual(expect.arrayContaining(["bash", "zsh"]));
   });
+
+  test("captures required-value flags", () => {
+    const model = describeTree(buildProgram());
+    expect(model.valueFlags).toContain("--env");
+  });
 });
 
 async function syntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
@@ -57,6 +62,19 @@ async function syntaxCheck(shell: "bash" | "zsh", script: string): Promise<numbe
   const code = await proc.exited;
   rmSync(dir, { recursive: true, force: true });
   return code;
+}
+
+async function bashComplete(script: string, words: string[], cword: number): Promise<string[]> {
+  const dir = mkdtempSync(path.join(tmpdir(), "gusto-complete-run-"));
+  const file = path.join(dir, "gusto.bash");
+  writeFileSync(file, script);
+  const compWords = words.map((w) => `'${w}'`).join(" ");
+  const driver = `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`;
+  const proc = Bun.spawn(["bash", "-c", driver], { stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  rmSync(dir, { recursive: true, force: true });
+  return out.split("\n").filter((l) => l.length > 0);
 }
 
 describe("generateBashCompletion", () => {
@@ -78,6 +96,18 @@ describe("generateBashCompletion", () => {
   test("completes static flag choices", () => {
     const script = generateBashCompletion(describeTree(buildProgram()));
     expect(script).toContain("sandbox production");
+  });
+
+  test("completes a subcommand after a space-separated global flag value", async () => {
+    const script = generateBashCompletion(describeTree(buildProgram()));
+    const reply = await bashComplete(script, ["gusto", "--env", "sandbox", "employee", ""], 4);
+    expect(reply).toContain("list");
+  });
+
+  test("completes top-level commands with no preceding flags", async () => {
+    const script = generateBashCompletion(describeTree(buildProgram()));
+    const reply = await bashComplete(script, ["gusto", ""], 1);
+    expect(reply).toContain("employee");
   });
 });
 
