@@ -7,13 +7,7 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIsoDate, parseNonNegativeNumber } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
-import {
-  type CommandHandler,
-  type ValidationResult,
-  missingArgs,
-  runCommand,
-  validationFailure,
-} from "../lib/runner.ts";
+import { type CommandHandler, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -149,7 +143,19 @@ export interface PayrollUpdateBody {
   employee_compensations: EmployeeCompensationUpdate[];
 }
 
-export type PayrollUpdateValidation = ValidationResult<PayrollUpdateBody>;
+/** An employee whose row(s) carried no input values and so was left out of the update (the API
+ * leaves untouched anyone not in the body). Reported back so a blank row in a master sheet is
+ * visible, not silently dropped. */
+export interface SkippedEmployee {
+  employee_uuid: string;
+  line: number;
+}
+
+/** Success carries the request body plus any employees skipped for having no inputs; failure keeps
+ * the generic message + blocked_on shape so `validationFailure` can consume it directly. */
+export type PayrollUpdateValidation =
+  | { ok: true; body: PayrollUpdateBody; skipped: SkippedEmployee[] }
+  | { ok: false; message: string; blocked: BlockedOn[] };
 
 // Only 'Regular Hours' has a stable, company-agnostic API name; overtime/double-overtime hourly
 // compensations are named after each company's own pay types (see employee_compensation_facade),
@@ -204,14 +210,17 @@ interface ParsedPayrollUpdateRow {
   reimbursements: ReimbursementInput[];
 }
 
-/** Parse one CSV row, pushing any per-cell problems onto `blocked`. A blank cell is omitted (the
- * API leaves omitted inputs untouched); an explicit `0` is sent (the API overrides to zero).
- * Returns null when the row can't yield a usable contribution. */
+/** Parse one CSV row. Per-cell problems (bad numbers, too many cells) go on `blocked`; a row that
+ * names an employee but carries no inputs goes on `skipped` instead of failing the import (a blank
+ * row in a master sheet is expected). A blank cell is omitted (the API leaves omitted inputs
+ * untouched); an explicit `0` is sent (overrides to zero). Returns null when the row yields no
+ * usable contribution (whether errored or skipped). */
 function parsePayrollUpdateRow(
   headers: string[],
   cells: string[],
   line: number,
   blocked: BlockedOn[],
+  skipped: SkippedEmployee[],
 ): ParsedPayrollUpdateRow | null {
   if (cells.length > headers.length) {
     blocked.push({ field: `row ${line}`, reason: `has ${cells.length} cells but the header has ${headers.length}` });
@@ -258,14 +267,10 @@ function parsePayrollUpdateRow(
     else reimbursements.push({ amount: parsed.value, description: "Reimbursement" });
   }
 
-  // Only flag an empty row when no per-cell error already explains why it produced nothing.
+  // A row with no inputs is skipped (reported), not failed - unless a per-cell error already
+  // explains why it produced nothing, in which case it stays an error.
   if (hourly.length === 0 && fixed.length === 0 && reimbursements.length === 0) {
-    if (blocked.length === errorsBefore) {
-      blocked.push({
-        field: `row ${line}`,
-        reason: `no input values; provide at least one of ${INPUT_COLUMNS.join(", ")}`,
-      });
-    }
+    if (blocked.length === errorsBefore) skipped.push({ employee_uuid: employeeUuid, line });
     return null;
   }
 
@@ -368,19 +373,35 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
   if (headerBlocked.length > 0) return { ok: false, message: "invalid CSV header", blocked: headerBlocked };
 
   const blocked: BlockedOn[] = [];
+  const skippedRows: SkippedEmployee[] = [];
   const parsed: ParsedPayrollUpdateRow[] = [];
   nonBlank.slice(1).forEach((cells, idx) => {
     // Header is line 1; the first data row is line 2.
-    const row = parsePayrollUpdateRow(headers, cells, idx + 2, blocked);
+    const row = parsePayrollUpdateRow(headers, cells, idx + 2, blocked, skippedRows);
     if (row) parsed.push(row);
   });
   const employee_compensations = mergeRowsByEmployee(parsed, blocked);
 
   if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
-  if (employee_compensations.length === 0) {
-    return { ok: false, message: "empty CSV", blocked: [{ field: "input", reason: "no data rows after the header" }] };
+
+  // Report only employees with NO usable data anywhere - a blank row for someone who has data on
+  // another row (e.g. their second job) is just padding, not a skip.
+  const included = new Set(employee_compensations.map((c) => c.employee_uuid));
+  const skipped: SkippedEmployee[] = [];
+  const reported = new Set<string>();
+  for (const s of skippedRows) {
+    if (included.has(s.employee_uuid) || reported.has(s.employee_uuid)) continue;
+    reported.add(s.employee_uuid);
+    skipped.push(s);
   }
-  return { ok: true, body: { employee_compensations } };
+
+  if (employee_compensations.length === 0) {
+    const reason = skipped.length
+      ? `every row had no input values (${skipped.length} employee(s) skipped)`
+      : "no data rows after the header";
+    return { ok: false, message: "nothing to update", blocked: [{ field: "input", reason }] };
+  }
+  return { ok: true, body: { employee_compensations }, skipped };
 }
 
 /** The canonical request/CSV shape published by `--example` - learnable without a uuid or auth.
@@ -418,7 +439,7 @@ function payrollUpdateExample(): Record<string, unknown> {
         },
       ],
     },
-    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. Hours and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
+    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. A row with no input values is skipped and listed under `skipped_employees`, not failed. Hours and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
   };
 }
 
@@ -583,11 +604,19 @@ export function payrollUpdateHandler(
 
     // Encode the UUID as one path segment: a stray '/' or '?' (e.g. from agent output) must not
     // retarget the PUT. See payrollPrepareHandler for the same guard.
-    return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}`, built.body, {
+    const result = await putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}`, built.body, {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
     });
+
+    // Surface skipped (no-input) employees alongside the response so a blank row in a master sheet
+    // is visible rather than silently dropped. Only attach when there are any and the data is an
+    // object to extend (the API payroll on a real run, or the dry-run shape).
+    if (result.ok && built.skipped.length > 0 && result.data !== null && typeof result.data === "object") {
+      return { ok: true, data: { ...(result.data as Record<string, unknown>), skipped_employees: built.skipped } };
+    }
+    return result;
   };
 }
 

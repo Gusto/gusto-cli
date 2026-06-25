@@ -171,6 +171,19 @@ describe("payrollUpdateHandler", () => {
     expect(s.calls).toHaveLength(0);
   });
 
+  test("reports skipped (no-input) employees in the result data", async () => {
+    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
+    const csv = "employee_uuid,bonus\nee-1,250\nee-2,";
+    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
+    expect(d.uuid).toBe("pay-1");
+    expect(d.skipped_employees).toEqual([{ employee_uuid: "ee-2", line: 3 }]);
+    // ee-2 must not have been sent in the body.
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect((put?.body as { employee_compensations: { employee_uuid: string }[] }).employee_compensations).toHaveLength(
+      1,
+    );
+  });
+
   test("an invalid CSV blocks with exit 7 before any request", async () => {
     const s = stub(() => ({ status: 500 }));
     const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv("nope\n1"))(ctx);

@@ -219,11 +219,29 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("flags a row that has an employee but no input values", () => {
-    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,,");
+  test("skips a no-input employee and reports it while importing the rest", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,250,\nee-2,,");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations.map((c) => c.employee_uuid)).toEqual(["ee-1"]);
+    expect(result.skipped).toEqual([{ employee_uuid: "ee-2", line: 3 }]);
+  });
+
+  test("errors when every row has no input values", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,,\nee-2,,");
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2" }));
+    expect(result.message).toBe("nothing to update");
+  });
+
+  test("does not report a blank row for an employee who has data on another row", () => {
+    // ee-1 has data on row 2 (job-a) and a blank row 3 (job-b); the blank row is padding, not a skip.
+    const csv = "employee_uuid,job_uuid,regular_hours\nee-1,job-a,30\nee-1,job-b,";
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.skipped).toEqual([]);
+    expect(result.body.employee_compensations).toHaveLength(1);
   });
 
   test("rejects an empty file", () => {
