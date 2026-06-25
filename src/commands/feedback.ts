@@ -14,7 +14,8 @@ interface FeedbackOpts {
   dryRun?: boolean;
 }
 
-const CATEGORY_CHOICES = ["bug", "feature_request", "general", "praise"] as const;
+type FeedbackCategory = "bug" | "feature_request" | "general" | "praise";
+const CATEGORY_CHOICES: readonly FeedbackCategory[] = ["bug", "feature_request", "general", "praise"];
 const MAX_MESSAGE_LENGTH = 5000;
 
 export function registerFeedbackCommand(parent: Command): void {
