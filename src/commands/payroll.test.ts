@@ -207,6 +207,21 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: employee_uuid" }));
   });
 
+  test("reports the true file line number when a blank line precedes the bad row", () => {
+    // header=line1, blank=line2, bad row=line3. The error must cite row 3, not row 2.
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\n\nee-1,abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: bonus" }));
+  });
+
+  test("reports the true file line number for a skipped (no-input) row after a blank line", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,100\n\nee-2,");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.skipped).toEqual([{ employee_uuid: "ee-2", line: 4 }]);
+  });
+
   test("reports a non-numeric input value with its row and column", () => {
     const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,abc");
     expect(result.ok).toBe(false);

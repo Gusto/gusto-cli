@@ -369,23 +369,24 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
     return { ok: false, message: "could not parse CSV", blocked: [{ field: "input", reason }] };
   }
 
-  const nonBlank = rows.filter((r) => r.some((c) => c.trim() !== ""));
+  // Keep each row's 1-based file line before dropping blank rows, so `row N` in errors and the
+  // skipped line numbers point at the real line even when blank lines precede a row.
+  const nonBlank = rows.map((cells, i) => ({ cells, line: i + 1 })).filter((r) => r.cells.some((c) => c.trim() !== ""));
   if (nonBlank.length === 0) {
     return { ok: false, message: "empty CSV", blocked: [{ field: "input", reason: "the file has no rows" }] };
   }
 
-  const headers = nonBlank[0].map((h) => h.trim().toLowerCase());
+  const headers = nonBlank[0].cells.map((h) => h.trim().toLowerCase());
   const headerBlocked = validatePayrollUpdateHeaders(headers);
   if (headerBlocked.length > 0) return { ok: false, message: "invalid CSV header", blocked: headerBlocked };
 
   const blocked: BlockedOn[] = [];
   const skippedRows: SkippedEmployee[] = [];
   const parsed: ParsedPayrollUpdateRow[] = [];
-  nonBlank.slice(1).forEach((cells, idx) => {
-    // Header is line 1; the first data row is line 2.
-    const row = parsePayrollUpdateRow(headers, cells, idx + 2, blocked, skippedRows);
+  for (const { cells, line } of nonBlank.slice(1)) {
+    const row = parsePayrollUpdateRow(headers, cells, line, blocked, skippedRows);
     if (row) parsed.push(row);
-  });
+  }
   const employee_compensations = mergeRowsByEmployee(parsed, blocked);
 
   if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
