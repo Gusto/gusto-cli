@@ -6,6 +6,11 @@ import { type Run, spawnCapture } from "./support";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
+// The smoke matrix runs on ubuntu (no zsh) and macOS (has zsh). Skip the zsh -n
+// check where zsh is absent; it still runs for real on the macOS legs. bash is
+// present on every leg.
+const HAS_ZSH = Bun.which("zsh") !== null;
+
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
 const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
@@ -780,7 +785,7 @@ describe("completion scripts", () => {
     expect(await syntaxCheck("bash", result.stdout)).toBe(0);
   });
 
-  test("completion zsh emits a script that parses with zsh -n", async () => {
+  test.skipIf(!HAS_ZSH)("completion zsh emits a script that parses with zsh -n", async () => {
     const result = await run(["completion", "zsh"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("#compdef gusto");

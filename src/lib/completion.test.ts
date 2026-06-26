@@ -5,6 +5,11 @@ import path from "node:path";
 import { buildProgram } from "../index.ts";
 import { describeTree, generateBashCompletion, generateZshCompletion } from "./completion.ts";
 
+// CI Linux runners ship bash but not zsh, so `zsh -n` would ENOENT. Skip the zsh
+// syntax check where zsh is absent; it still runs for real on macOS (dev + the macOS
+// smoke matrix legs). bash is present everywhere we run.
+const HAS_ZSH = Bun.which("zsh") !== null;
+
 function findNode(model: ReturnType<typeof describeTree>, path: string) {
   const stack = [model.root];
   while (stack.length) {
@@ -112,7 +117,7 @@ describe("generateBashCompletion", () => {
 });
 
 describe("generateZshCompletion", () => {
-  test("emits a valid zsh script", async () => {
+  test.skipIf(!HAS_ZSH)("emits a valid zsh script", async () => {
     const script = generateZshCompletion(describeTree(buildProgram()));
     expect(await syntaxCheck("zsh", script)).toBe(0);
   });
