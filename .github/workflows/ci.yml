@@ -48,7 +48,10 @@ jobs:
             case "$author" in
               *"[bot]@"*|*"bot@users.noreply.github.com") echo "skip bot: ${sha:0:8} $subject"; continue ;;
             esac
-            if git show -s --format='%(trailers:key=Signed-off-by,valueonly=true)' "$sha" | grep -qiF "<$author>"; then
+            # Capture (not pipe) so a git failure aborts under set -e instead of
+            # masking as a missing sign-off; grep only sees a successful read.
+            signoffs=$(git show -s --format='%(trailers:key=Signed-off-by,valueonly=true)' "$sha")
+            if printf '%s\n' "$signoffs" | grep -qiF "<$author>"; then
               echo "ok: ${sha:0:8} $subject"
             else
               echo "MISSING DCO sign-off matching author <$author>: ${sha:0:8} $subject"
