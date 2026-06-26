@@ -585,6 +585,12 @@ export function payrollPrepareHandler(payrollUuid: string | undefined, opts: Pay
   };
 }
 
+/** True for a plain object (not null, not an array). Narrows `unknown` so the skipped_employees
+ * merge can spread the API/dry-run data without a cast - an array would spread by numeric index. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** `readFile` is injected so tests can drive the handler without touching the filesystem; it
  * defaults to Bun's native file read (the same seam company provision uses). */
 export function payrollUpdateHandler(
@@ -622,16 +628,9 @@ export function payrollUpdateHandler(
 
     // Surface skipped (no-input) employees alongside the response so a blank row in a master sheet
     // is visible rather than silently dropped. Only attach when there are any and the data is a
-    // plain object to extend (the API payroll on a real run, or the dry-run shape) - not an array,
-    // which would spread by numeric index.
-    if (
-      result.ok &&
-      built.skipped.length > 0 &&
-      result.data !== null &&
-      typeof result.data === "object" &&
-      !Array.isArray(result.data)
-    ) {
-      return { ok: true, data: { ...(result.data as Record<string, unknown>), skipped_employees: built.skipped } };
+    // plain object to extend (the API payroll on a real run, or the dry-run shape).
+    if (result.ok && built.skipped.length > 0 && isRecord(result.data)) {
+      return { ok: true, data: { ...result.data, skipped_employees: built.skipped } };
     }
     return result;
   };
