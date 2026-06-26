@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "./parse.ts";
+import { isValidIso8601, isValidIsoDate, parseNonNegativeNumber, parsePositiveNumber } from "./parse.ts";
 
 describe("parsePositiveNumber", () => {
   test("accepts a positive integer", () => {
@@ -31,6 +31,41 @@ describe("parsePositiveNumber", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toContain("1e1000");
+  });
+});
+
+describe("parseNonNegativeNumber", () => {
+  test("accepts a positive number", () => {
+    expect(parseNonNegativeNumber("42")).toEqual({ ok: true, value: 42 });
+  });
+
+  test("accepts zero (an explicit override-to-zero, unlike parsePositiveNumber)", () => {
+    expect(parseNonNegativeNumber("0")).toEqual({ ok: true, value: 0 });
+  });
+
+  test("rejects a negative number", () => {
+    const result = parseNonNegativeNumber("-1");
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects a non-numeric string", () => {
+    const result = parseNonNegativeNumber("abc");
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects non-finite overflow values", () => {
+    const result = parseNonNegativeNumber("1e1000");
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects hex, binary, and scientific notation (decimal-only)", () => {
+    for (const raw of ["0x10", "0b11", "1e3", "+5", ".5", "5."]) {
+      expect(parseNonNegativeNumber(raw).ok).toBe(false);
+    }
+  });
+
+  test("accepts a plain decimal with a fractional part", () => {
+    expect(parseNonNegativeNumber("12.75")).toEqual({ ok: true, value: 12.75 });
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildPayrollListQuery } from "./payroll.ts";
+import { buildPayrollListQuery, buildPayrollUpdateFromCsv } from "./payroll.ts";
 
 describe("buildPayrollListQuery", () => {
   test("no options yields an empty query", () => {
@@ -115,5 +115,301 @@ describe("buildPayrollListQuery", () => {
       ok: true,
       query: { payroll_types: "regular," },
     });
+  });
+});
+
+describe("buildPayrollUpdateFromCsv", () => {
+  test("maps hourly, fixed, and reimbursement columns to the API names", () => {
+    const csv = [
+      "employee_uuid,version,job_uuid,regular_hours,bonus,commission,paycheck_tips,cash_tips,reimbursement",
+      "ee-1,v1,job-1,80,250,100,15,40,30",
+    ].join("\n");
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body).toEqual({
+      employee_compensations: [
+        {
+          employee_uuid: "ee-1",
+          version: "v1",
+          hourly_compensations: [{ name: "Regular Hours", hours: 80, job_uuid: "job-1" }],
+          fixed_compensations: [
+            { name: "Bonus", amount: 250, job_uuid: "job-1" },
+            { name: "Commission", amount: 100, job_uuid: "job-1" },
+            { name: "Paycheck Tips", amount: 15, job_uuid: "job-1" },
+            { name: "Cash Tips", amount: 40, job_uuid: "job-1" },
+          ],
+          reimbursements: [{ amount: 30, description: "Reimbursement" }],
+        },
+      ],
+    });
+  });
+
+  test("omits blank cells but keeps an explicit zero (blanks don't override, zeros do)", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,0,");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 0 }]);
+    // The blank bonus cell must not produce a fixed_compensations entry.
+    expect(comp?.fixed_compensations).toBeUndefined();
+  });
+
+  test("omits job_uuid and version when those columns are absent", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,500");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      fixed_compensations: [{ name: "Bonus", amount: 500 }],
+    });
+  });
+
+  test("builds one compensation per row", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,100\nee-2,200");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations.map((c) => c.employee_uuid)).toEqual(["ee-1", "ee-2"]);
+  });
+
+  test("ignores fully blank lines between rows", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,100\n\nee-2,200\n");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations).toHaveLength(2);
+  });
+
+  test("rejects an unknown column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,overtime_hours\nee-1,5");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "overtime_hours" }));
+  });
+
+  test("rejects a CSV missing the employee_uuid column", () => {
+    const result = buildPayrollUpdateFromCsv("bonus\n100");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
+
+  test("rejects a CSV with no input columns", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,version\nee-1,v1");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
+  });
+
+  test("reports a row missing employee_uuid with its line number", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\n,100");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: employee_uuid" }));
+  });
+
+  test("reports the true file line number when a blank line precedes the bad row", () => {
+    // header=line1, blank=line2, bad row=line3. The error must cite row 3, not row 2.
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\n\nee-1,abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: bonus" }));
+  });
+
+  test("reports the true file line number for a skipped (no-input) row after a blank line", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,100\n\nee-2,");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.skipped).toEqual([{ employee_uuid: "ee-2", line: 4 }]);
+  });
+
+  test("reports a non-numeric input value with its row and column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: bonus" }));
+  });
+
+  test("rejects a negative amount", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,-5");
+    expect(result.ok).toBe(false);
+  });
+
+  test("reports an invalid or negative reimbursement with its row and column", () => {
+    for (const bad of ["nope", "-5"]) {
+      const result = buildPayrollUpdateFromCsv(`employee_uuid,reimbursement\nee-1,${bad}`);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: reimbursement" }));
+    }
+  });
+
+  test("skips a no-input employee and reports it while importing the rest", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,250,\nee-2,,");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations.map((c) => c.employee_uuid)).toEqual(["ee-1"]);
+    expect(result.skipped).toEqual([{ employee_uuid: "ee-2", line: 3 }]);
+  });
+
+  test("errors when every row has no input values", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,,\nee-2,,");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("nothing to update");
+  });
+
+  test("does not report a blank row for an employee who has data on another row", () => {
+    // ee-1 has data on row 2 (job-a) and a blank row 3 (job-b); the blank row is padding, not a skip.
+    const csv = "employee_uuid,job_uuid,regular_hours\nee-1,job-a,30\nee-1,job-b,";
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.skipped).toEqual([]);
+    expect(result.body.employee_compensations).toHaveLength(1);
+  });
+
+  test("rejects an empty file", () => {
+    const result = buildPayrollUpdateFromCsv("");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
+  });
+
+  test("surfaces a malformed CSV (unterminated quote) as an input error", () => {
+    const result = buildPayrollUpdateFromCsv('employee_uuid,bonus\nee-1,"oops');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "input" }));
+  });
+
+  test("rejects a repeated employee with no job_uuid (ambiguous duplicate)", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus\nee-1,250\nee-1,300");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: employee_uuid" }));
+  });
+
+  test("merges multiple rows for one employee (one per job) into a single compensation", () => {
+    const csv = ["employee_uuid,job_uuid,regular_hours,cash_tips", "ee-1,job-a,30,40", "ee-1,job-b,25,"].join("\n");
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations).toHaveLength(1);
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.employee_uuid).toBe("ee-1");
+    expect(comp?.hourly_compensations).toEqual([
+      { name: "Regular Hours", hours: 30, job_uuid: "job-a" },
+      { name: "Regular Hours", hours: 25, job_uuid: "job-b" },
+    ]);
+    expect(comp?.fixed_compensations).toEqual([{ name: "Cash Tips", amount: 40, job_uuid: "job-a" }]);
+  });
+
+  test("rejects the same (employee_uuid, job_uuid) pair appearing twice", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,job_uuid,regular_hours\nee-1,job-a,30\nee-1,job-a,25");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: employee_uuid" }));
+  });
+
+  test("rejects conflicting version values across one employee's job rows", () => {
+    const result = buildPayrollUpdateFromCsv(
+      "employee_uuid,version,job_uuid,regular_hours\nee-1,v1,job-a,30\nee-1,v2,job-b,25",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 3: version" }));
+  });
+
+  test("accepts a shared version across an employee's job rows", () => {
+    const result = buildPayrollUpdateFromCsv(
+      "employee_uuid,version,job_uuid,regular_hours\nee-1,v1,job-a,30\nee-1,v1,job-b,25",
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]?.version).toBe("v1");
+  });
+
+  test("matches headers case-insensitively", () => {
+    const result = buildPayrollUpdateFromCsv("Employee_UUID,Regular_Hours,Bonus\nee-1,80,250");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      hourly_compensations: [{ name: "Regular Hours", hours: 80 }],
+      fixed_compensations: [{ name: "Bonus", amount: 250 }],
+    });
+  });
+
+  test("trims surrounding whitespace in headers and values", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid, bonus ,regular_hours\nee-1, 250 , 80 ");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      hourly_compensations: [{ name: "Regular Hours", hours: 80 }],
+      fixed_compensations: [{ name: "Bonus", amount: 250 }],
+    });
+  });
+
+  test("rejects currency-formatted values ($ and thousands separators) with a clear message", () => {
+    const result = buildPayrollUpdateFromCsv('employee_uuid,bonus,cash_tips\nee-1,$500,"1,000"');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: bonus" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: cash_tips" }));
+  });
+
+  test("accepts decimal hours and amounts", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,80.5,12.75");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 80.5 }]);
+    expect(comp?.fixed_compensations).toEqual([{ name: "Bonus", amount: 12.75 }]);
+  });
+
+  test("pads a short row (fewer cells than the header) with blanks", () => {
+    // Exporters often drop trailing empty columns; the missing trailing cells are treated as blank.
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,80");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      hourly_compensations: [{ name: "Regular Hours", hours: 80 }],
+    });
+  });
+
+  test("treats a whitespace-only value as blank, not as a bad number", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,80,   ");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 80 }]);
+    expect(comp?.fixed_compensations).toBeUndefined();
+  });
+
+  test("rejects a duplicate column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,bonus\nee-1,250,300");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("invalid CSV header");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "bonus" }));
+  });
+
+  test("rejects an empty header name from a trailing comma", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,\nee-1,250,");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("invalid CSV header");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "" }));
+  });
+
+  test("rejects a tab-delimited file (wrong delimiter) as a single unknown header", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid\tbonus\nee-1\t250");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("invalid CSV header");
+    // The whole tab-joined line is read as one column, so employee_uuid is "missing".
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
   });
 });

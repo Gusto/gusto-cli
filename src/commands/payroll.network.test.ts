@@ -8,7 +8,7 @@ import {
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-import { payrollPrepareHandler } from "./payroll.ts";
+import { payrollPrepareHandler, payrollUpdateHandler } from "./payroll.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -90,6 +90,119 @@ describe("payrollPrepareHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(blockedFields(result)).toEqual(["payroll_uuid"]);
+    expect(s.calls).toHaveLength(0);
+  });
+});
+
+/** A readFile stub that always returns the same CSV text, ignoring the path. */
+const readingCsv = (csv: string) => async (): Promise<string> => csv;
+
+describe("payrollUpdateHandler", () => {
+  const CSV = "employee_uuid,job_uuid,regular_hours,bonus\nee-1,job-1,80,250";
+
+  test("PUTs the parsed compensations to the company's payroll-update endpoint", async () => {
+    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
+
+    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx));
+    expect(d.uuid).toBe("pay-1");
+
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/v1/companies/co-1/payrolls/pay-1");
+    // The path must NOT be the prepare endpoint.
+    expect(put?.url).not.toContain("/prepare");
+    expect(put?.body).toEqual({
+      employee_compensations: [
+        {
+          employee_uuid: "ee-1",
+          hourly_compensations: [{ name: "Regular Hours", hours: 80, job_uuid: "job-1" }],
+          fixed_compensations: [{ name: "Bonus", amount: 250, job_uuid: "job-1" }],
+        },
+      ],
+    });
+  });
+
+  test("surfaces an API 422 (e.g. stale version) as a failed result with the upstream body", async () => {
+    stub((u) =>
+      u.includes("/payrolls/pay-1")
+        ? { status: 422, body: { errors: [{ category: "invalid_attribute_value", message: "stale version" }] } }
+        : { status: 404 },
+    );
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.details).toMatchObject({ errors: [{ category: "invalid_attribute_value" }] });
+  });
+
+  test("dry-run describes the PUT and its body, and sends nothing", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const d = data(
+      await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(CSV))(ctx),
+    );
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/companies/co-1/payrolls/pay-1");
+    expect(d.body).toMatchObject({ employee_compensations: [{ employee_uuid: "ee-1" }] });
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("percent-encodes the UUID so a stray '/' or '?' can't retarget the PUT", async () => {
+    const s = stub(() => ({ status: 404 }));
+    await payrollUpdateHandler("evil?x=1/y", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy");
+    expect(put?.url).not.toContain("evil?x=1");
+  });
+
+  test("--example publishes the CSV columns and request shape without a uuid, auth, or request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const d = data(await payrollUpdateHandler(undefined, { example: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/companies/{company_uuid}/payrolls/{payroll_uuid}");
+    expect((d.csv_columns as { required: string[] }).required).toEqual(["employee_uuid"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("missing payroll_uuid and --input both block before any request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollUpdateHandler(undefined, auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(blockedFields(result)).toEqual(["payroll_uuid", "input"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an unreadable --input file is an invalid_input error, not a crash", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const failingRead = async (): Promise<string> => {
+      throw new Error("ENOENT: no such file");
+    };
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "missing.csv" }, failingRead)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(result.error.code).toBe("invalid_input");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("reports skipped (no-input) employees in the result data", async () => {
+    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
+    const csv = "employee_uuid,bonus\nee-1,250\nee-2,";
+    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
+    expect(d.uuid).toBe("pay-1");
+    expect(d.skipped_employees).toEqual([{ employee_uuid: "ee-2", line: 3 }]);
+    // ee-2 must not have been sent in the body.
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect((put?.body as { employee_compensations: { employee_uuid: string }[] }).employee_compensations).toHaveLength(
+      1,
+    );
+  });
+
+  test("an invalid CSV blocks with exit 7 before any request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv("nope\n1"))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Validation);
     expect(s.calls).toHaveLength(0);
   });
 });
