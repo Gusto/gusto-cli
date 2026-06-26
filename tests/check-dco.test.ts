@@ -97,4 +97,56 @@ describe("check-dco.sh", () => {
     expect(r.exitCode).not.toBe(0);
     expect(r.output).toContain("range");
   });
+
+  test("fails when the range is empty (BASE equals HEAD)", () => {
+    const repo = setupRepo();
+    commit(repo, "base");
+    const head = commit(repo, "feature", { signoff: true });
+    const r = runCheck(repo, head, head);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.output).toContain("No commits");
+  });
+
+  test("fails when any commit in a multi-commit range is unsigned", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base");
+    commit(repo, "signed one", { signoff: true });
+    commit(repo, "unsigned two");
+    const head = commit(repo, "signed three", { signoff: true });
+    const r = runCheck(repo, base, head);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.output).toContain("MISSING");
+    expect(r.output).toContain("ok:");
+  });
+
+  test("fails when the Signed-off-by email does not match the author", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base");
+    // Author defaults to jane@example.com; the sign-off names someone else.
+    git(repo, [
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "feature",
+      "-m",
+      "Signed-off-by: Imposter <imposter@example.com>",
+    ]);
+    const head = git(repo, ["rev-parse", "HEAD"]);
+    const r = runCheck(repo, base, head);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.output).toContain("MISSING");
+  });
+
+  test("exempts the *bot@users.noreply.github.com pattern", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base");
+    const head = commit(repo, "automated bump", {
+      authorName: "Build Bot",
+      authorEmail: "buildbot@users.noreply.github.com",
+    });
+    const r = runCheck(repo, base, head);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("skip bot:");
+  });
 });
