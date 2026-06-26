@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildProgram } from "../index.ts";
+import { shellSyntaxCheck } from "../../tests/support.ts";
 import { describeTree, generateBashCompletion, generateZshCompletion } from "./completion.ts";
 
 // CI Linux runners ship bash but not zsh, so `zsh -n` would ENOENT. Skip the zsh
@@ -59,16 +60,6 @@ describe("describeTree", () => {
   });
 });
 
-async function syntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
-  const dir = mkdtempSync(path.join(tmpdir(), "gusto-completion-"));
-  const file = path.join(dir, shell === "bash" ? "gusto.bash" : "_gusto");
-  writeFileSync(file, script);
-  const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
-  const code = await proc.exited;
-  rmSync(dir, { recursive: true, force: true });
-  return code;
-}
-
 async function bashComplete(script: string, words: string[], cword: number): Promise<string[]> {
   const dir = mkdtempSync(path.join(tmpdir(), "gusto-complete-run-"));
   const file = path.join(dir, "gusto.bash");
@@ -85,7 +76,7 @@ async function bashComplete(script: string, words: string[], cword: number): Pro
 describe("generateBashCompletion", () => {
   test("emits a valid bash script", async () => {
     const script = generateBashCompletion(describeTree(buildProgram()));
-    expect(await syntaxCheck("bash", script)).toBe(0);
+    expect(await shellSyntaxCheck("bash", script)).toBe(0);
   });
 
   test("registers the completion function for gusto", () => {
@@ -119,7 +110,7 @@ describe("generateBashCompletion", () => {
 describe("generateZshCompletion", () => {
   test.skipIf(!HAS_ZSH)("emits a valid zsh script", async () => {
     const script = generateZshCompletion(describeTree(buildProgram()));
-    expect(await syntaxCheck("zsh", script)).toBe(0);
+    expect(await shellSyntaxCheck("zsh", script)).toBe(0);
   });
 
   test("declares the compdef header", () => {
