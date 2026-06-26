@@ -343,4 +343,49 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 80.5 }]);
     expect(comp?.fixed_compensations).toEqual([{ name: "Bonus", amount: 12.75 }]);
   });
+
+  test("pads a short row (fewer cells than the header) with blanks", () => {
+    // Exporters often drop trailing empty columns; the missing trailing cells are treated as blank.
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,80");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]).toEqual({
+      employee_uuid: "ee-1",
+      hourly_compensations: [{ name: "Regular Hours", hours: 80 }],
+    });
+  });
+
+  test("treats a whitespace-only value as blank, not as a bad number", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,regular_hours,bonus\nee-1,80,   ");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const comp = result.body.employee_compensations[0];
+    expect(comp?.hourly_compensations).toEqual([{ name: "Regular Hours", hours: 80 }]);
+    expect(comp?.fixed_compensations).toBeUndefined();
+  });
+
+  test("rejects a duplicate column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,bonus\nee-1,250,300");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("invalid CSV header");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "bonus" }));
+  });
+
+  test("rejects an empty header name from a trailing comma", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,\nee-1,250,");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("invalid CSV header");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "" }));
+  });
+
+  test("rejects a tab-delimited file (wrong delimiter) as a single unknown header", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid\tbonus\nee-1\t250");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.message).toBe("invalid CSV header");
+    // The whole tab-joined line is read as one column, so employee_uuid is "missing".
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
 });
