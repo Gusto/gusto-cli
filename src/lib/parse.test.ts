@@ -57,6 +57,16 @@ describe("parseNonNegativeNumber", () => {
     const result = parseNonNegativeNumber("1e1000");
     expect(result.ok).toBe(false);
   });
+
+  test("rejects hex, binary, and scientific notation (decimal-only)", () => {
+    for (const raw of ["0x10", "0b11", "1e3", "+5", ".5", "5."]) {
+      expect(parseNonNegativeNumber(raw).ok).toBe(false);
+    }
+  });
+
+  test("accepts a plain decimal with a fractional part", () => {
+    expect(parseNonNegativeNumber("12.75")).toEqual({ ok: true, value: 12.75 });
+  });
 });
 
 describe("isValidIsoDate", () => {

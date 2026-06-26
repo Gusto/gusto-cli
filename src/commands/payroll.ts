@@ -175,6 +175,7 @@ const INPUT_COLUMNS = [
   REIMBURSEMENT_COLUMN,
 ];
 const ALLOWED_COLUMNS = new Set<string>([...SCALAR_COLUMNS, ...INPUT_COLUMNS]);
+const ALLOWED_COLUMNS_LIST = [...ALLOWED_COLUMNS].join(", ");
 
 /** Header-level validation: every column must be known, `employee_uuid` must be present, and at
  * least one input column must exist. Unknown columns are treated as errors (not ignored) because a
@@ -187,7 +188,7 @@ function validatePayrollUpdateHeaders(headers: string[]): BlockedOn[] {
     if (seen.has(h)) blocked.push({ field: h, reason: `duplicate column "${h}"` });
     seen.add(h);
     if (!ALLOWED_COLUMNS.has(h)) {
-      blocked.push({ field: h, reason: `unknown column "${h}"; allowed: ${[...ALLOWED_COLUMNS].join(", ")}` });
+      blocked.push({ field: h, reason: `unknown column "${h}"; allowed: ${ALLOWED_COLUMNS_LIST}` });
     }
   }
   if (!seen.has("employee_uuid")) blocked.push({ field: "employee_uuid", reason: "required column is missing" });
@@ -237,19 +238,20 @@ function parseNumericColumns<T>(
  * untouched); an explicit `0` is sent (overrides to zero). Returns null when the row yields no
  * usable contribution (whether errored or skipped). */
 function parsePayrollUpdateRow(
-  headers: string[],
+  colIndex: Map<string, number>,
+  headerCount: number,
   cells: string[],
   line: number,
   blocked: BlockedOn[],
   skipped: SkippedEmployee[],
 ): ParsedPayrollUpdateRow | null {
-  if (cells.length > headers.length) {
-    blocked.push({ field: `row ${line}`, reason: `has ${cells.length} cells but the header has ${headers.length}` });
+  if (cells.length > headerCount) {
+    blocked.push({ field: `row ${line}`, reason: `has ${cells.length} cells but the header has ${headerCount}` });
     return null;
   }
   const get = (column: string): string => {
-    const i = headers.indexOf(column);
-    return i >= 0 ? (cells[i] ?? "").trim() : "";
+    const i = colIndex.get(column);
+    return i !== undefined ? (cells[i] ?? "").trim() : "";
   };
 
   const employeeUuid = get("employee_uuid");
@@ -380,11 +382,14 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
   const headerBlocked = validatePayrollUpdateHeaders(headers);
   if (headerBlocked.length > 0) return { ok: false, message: "invalid CSV header", blocked: headerBlocked };
 
+  // Resolve column positions once (headers are duplicate-free past validation) so per-cell lookups
+  // are O(1) instead of a linear scan per access.
+  const colIndex = new Map(headers.map((h, i) => [h, i] as const));
   const blocked: BlockedOn[] = [];
   const skippedRows: SkippedEmployee[] = [];
   const parsed: ParsedPayrollUpdateRow[] = [];
   for (const { cells, line } of nonBlank.slice(1)) {
-    const row = parsePayrollUpdateRow(headers, cells, line, blocked, skippedRows);
+    const row = parsePayrollUpdateRow(colIndex, headers.length, cells, line, blocked, skippedRows);
     if (row) parsed.push(row);
   }
   const employee_compensations = mergeRowsByEmployee(parsed, blocked);

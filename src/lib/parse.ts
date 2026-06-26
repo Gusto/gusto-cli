@@ -14,19 +14,21 @@ export function parsePositiveNumber(raw: string): PositiveNumberResult {
   return { ok: true, value: num };
 }
 
-/** Parse a string as a non-negative, finite number, where `0` is a legitimate value.
+/** Plain non-negative decimal: digits with an optional fractional part, nothing else. */
+const NON_NEGATIVE_DECIMAL = /^\d+(\.\d+)?$/;
+
+/** Parse a string as a non-negative decimal number, where `0` is a legitimate value.
  *
  * Payroll inputs distinguish "leave untouched" (a blank cell) from "set to zero" (an explicit
- * `0`), so unlike parsePositiveNumber this accepts `0`. Callers must reject blank/whitespace input
- * before calling - `Number("")` and `Number("   ")` both coerce to `0`, which would otherwise slip
- * through as a real zero. Rejects non-finite overflows (`"1e1000"` -> Infinity) for the same reason
- * as parsePositiveNumber. */
+ * `0`), so unlike parsePositiveNumber this accepts `0`. Accepts only a plain decimal: this rejects
+ * blank/whitespace (`Number("")` -> 0), overflows (`"1e1000"` -> Infinity), and the surprises
+ * `Number()` would otherwise wave through for a money/hours cell - hex (`"0x10"` -> 16), binary
+ * (`"0b11"` -> 3), and scientific (`"1e3"` -> 1000) - which should error like `$500` or `1,000` do. */
 export function parseNonNegativeNumber(raw: string): PositiveNumberResult {
-  const num = Number(raw);
-  if (!Number.isFinite(num) || num < 0) {
+  if (!NON_NEGATIVE_DECIMAL.test(raw)) {
     return { ok: false, reason: `must be a non-negative number, got: ${raw}` };
   }
-  return { ok: true, value: num };
+  return { ok: true, value: Number(raw) };
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
