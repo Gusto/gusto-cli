@@ -100,6 +100,17 @@ function safeJoin(tokens: string[]): string {
   return tokens.map(assertSafeToken).join(" ");
 }
 
+// A command path is "" (root) or "/seg/seg" of safe segments. Validated for the same fail-fast
+// defense-in-depth as the tokens, even though paths are built from already-safe command names.
+const SAFE_PATH = /^(\/[A-Za-z0-9._:@=-]+)*$/;
+
+function assertSafePath(path: string): string {
+  if (!SAFE_PATH.test(path)) {
+    throw new Error(`completion: refusing to emit shell-unsafe command path ${JSON.stringify(path)}`);
+  }
+  return path;
+}
+
 /** Words a node can complete: its subcommands, its positional choices, then its flags. */
 function candidatesFor(node: CompletionNode): string {
   return safeJoin([...node.subcommands, ...node.argChoices, ...node.flags]);
@@ -119,7 +130,7 @@ function renderArms(
   dialect: ShellDialect,
 ): { pathArms: string; choiceArms: string; valueFlagsList: string } {
   const pathArms = flatten(model.root)
-    .map((n) => dialect.pathArm(n.path, candidatesFor(n)))
+    .map((n) => dialect.pathArm(assertSafePath(n.path), candidatesFor(n)))
     .join("\n");
   const choiceArms = model.flagChoices
     .map((c) => dialect.choiceArm(assertSafeToken(c.flag), safeJoin(c.choices)))

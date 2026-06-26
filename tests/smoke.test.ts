@@ -1,15 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Run, shellSyntaxCheck, spawnCapture } from "./support";
+import { HAS_ZSH, type Run, shellSyntaxCheck, spawnCapture } from "./support";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
-
-// The smoke matrix runs on ubuntu (no zsh) and macOS (has zsh). Skip the zsh -n
-// check where zsh is absent; it still runs for real on the macOS legs. bash is
-// present on every leg.
-const HAS_ZSH = Bun.which("zsh") !== null;
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -786,5 +781,39 @@ describe("completion scripts", () => {
     const result = await run(["completion", "fish"]);
     expect(result.exitCode).toBe(2);
     expect(result.stdout).toBe("");
+  });
+
+  // End-to-end behavior: take the binary's emitted bash script, source it, drive the `_gusto`
+  // completion function with a fixed COMP_WORDS / COMP_CWORD, and read back the candidates. This
+  // executes the generated script (which `bash -n` does not), so it catches command-path-walk
+  // regressions. bash is present on every smoke leg.
+  async function bashComplete(words: string[], cword: number): Promise<string[]> {
+    const { stdout } = await run(["completion", "bash"]);
+    const dir = mkdtempSync(path.join(tmpdir(), "gusto-complete-run-"));
+    const file = path.join(dir, "gusto.bash");
+    writeFileSync(file, stdout);
+    const compWords = words.map((w) => `'${w}'`).join(" ");
+    const driver = `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`;
+    const proc = Bun.spawn(["bash", "-c", driver], { stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    rmSync(dir, { recursive: true, force: true });
+    return out.split("\n").filter((l) => l.length > 0);
+  }
+
+  test("completes top-level commands with no preceding flags", async () => {
+    expect(await bashComplete(["gusto", ""], 1)).toContain("employee");
+  });
+
+  test("completes a subcommand after a space-separated required-value flag value", async () => {
+    expect(await bashComplete(["gusto", "--env", "sandbox", "employee", ""], 4)).toContain("list");
+  });
+
+  test("completes a subcommand after a space-separated optional-value flag value", async () => {
+    expect(await bashComplete(["gusto", "--fields", "name", "employee", ""], 4)).toContain("list");
+  });
+
+  test("does not skip the subcommand after a boolean flag", async () => {
+    expect(await bashComplete(["gusto", "--json", "employee", ""], 3)).toContain("list");
   });
 });

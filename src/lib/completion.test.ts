@@ -1,16 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Command, Option } from "commander";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { buildProgram } from "../index.ts";
-import { shellSyntaxCheck } from "../../tests/support.ts";
+import { HAS_ZSH, shellSyntaxCheck } from "../../tests/support.ts";
 import { describeTree, generateBashCompletion, generateZshCompletion } from "./completion.ts";
-
-// CI Linux runners ship bash but not zsh, so `zsh -n` would ENOENT. Skip the zsh
-// syntax check where zsh is absent; it still runs for real on macOS (dev + the macOS
-// smoke matrix legs). bash is present everywhere we run.
-const HAS_ZSH = Bun.which("zsh") !== null;
 
 function findNode(model: ReturnType<typeof describeTree>, path: string) {
   const stack = [model.root];
@@ -71,20 +63,19 @@ describe("describeTree", () => {
     // --json takes no value; the token after it is a real subcommand and must not be skipped.
     expect(model.valueFlags).not.toContain("--json");
   });
-});
 
-async function bashComplete(script: string, words: string[], cword: number): Promise<string[]> {
-  const dir = mkdtempSync(path.join(tmpdir(), "gusto-complete-run-"));
-  const file = path.join(dir, "gusto.bash");
-  writeFileSync(file, script);
-  const compWords = words.map((w) => `'${w}'`).join(" ");
-  const driver = `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`;
-  const proc = Bun.spawn(["bash", "-c", driver], { stdout: "pipe", stderr: "pipe" });
-  const out = await new Response(proc.stdout).text();
-  await proc.exited;
-  rmSync(dir, { recursive: true, force: true });
-  return out.split("\n").filter((l) => l.length > 0);
-}
+  test("excludes hidden options from a node's flags", () => {
+    const program = new Command();
+    program.name("gusto");
+    program
+      .command("demo")
+      .addOption(new Option("--visible").hideHelp(false))
+      .addOption(new Option("--secret").hideHelp());
+    const demo = findNode(describeTree(program), "/demo");
+    expect(demo!.flags).toContain("--visible");
+    expect(demo!.flags).not.toContain("--secret");
+  });
+});
 
 describe("generateBashCompletion", () => {
   test("emits a valid bash script", async () => {
@@ -106,24 +97,9 @@ describe("generateBashCompletion", () => {
     const script = generateBashCompletion(describeTree(buildProgram()));
     expect(script).toContain("sandbox production");
   });
-
-  test("completes a subcommand after a space-separated required-value flag value", async () => {
-    const script = generateBashCompletion(describeTree(buildProgram()));
-    const reply = await bashComplete(script, ["gusto", "--env", "sandbox", "employee", ""], 4);
-    expect(reply).toContain("list");
-  });
-
-  test("completes a subcommand after a space-separated optional-value flag value", async () => {
-    const script = generateBashCompletion(describeTree(buildProgram()));
-    const reply = await bashComplete(script, ["gusto", "--fields", "name", "employee", ""], 4);
-    expect(reply).toContain("list");
-  });
-
-  test("completes top-level commands with no preceding flags", async () => {
-    const script = generateBashCompletion(describeTree(buildProgram()));
-    const reply = await bashComplete(script, ["gusto", ""], 1);
-    expect(reply).toContain("employee");
-  });
+  // Behavioral tests that source the generated script and execute `_gusto` live in the smoke
+  // suite (tests/smoke.test.ts), driven off the compiled binary's output - they are integration
+  // level, not unit level.
 });
 
 describe("generateZshCompletion", () => {

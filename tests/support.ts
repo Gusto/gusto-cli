@@ -4,6 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+// CI Linux runners ship bash but not zsh, so `zsh -n` would ENOENT. The completion suites guard
+// their zsh checks on this; it is true on macOS (dev + the macOS smoke matrix legs) and false on
+// the Linux unit/smoke legs. bash is present everywhere we run.
+export const HAS_ZSH = Bun.which("zsh") !== null;
+
 export interface Run {
   stdout: string;
   stderr: string;
