@@ -11,3 +11,7 @@
 - [ ] `bun run test:all` passes locally
 - [ ] Manual run of touched commands works against sandbox
 - [ ] `--agent` and `--human` output verified where touched
+
+## DCO
+
+- [ ] Every commit is signed off (`git commit -s`) per the [DCO](../blob/main/CONTRIBUTING.md#developer-certificate-of-origin)
