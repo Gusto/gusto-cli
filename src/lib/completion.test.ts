@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Command, Option } from "commander";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -58,6 +59,18 @@ describe("describeTree", () => {
     const model = describeTree(buildProgram());
     expect(model.valueFlags).toContain("--env");
   });
+
+  test("captures optional-value flags too (so their value is not read as a subcommand)", () => {
+    const model = describeTree(buildProgram());
+    // --fields takes an optional value ([list]); its following token must still be skipped.
+    expect(model.valueFlags).toContain("--fields");
+  });
+
+  test("does not capture boolean flags as value flags", () => {
+    const model = describeTree(buildProgram());
+    // --json takes no value; the token after it is a real subcommand and must not be skipped.
+    expect(model.valueFlags).not.toContain("--json");
+  });
 });
 
 async function bashComplete(script: string, words: string[], cword: number): Promise<string[]> {
@@ -94,9 +107,15 @@ describe("generateBashCompletion", () => {
     expect(script).toContain("sandbox production");
   });
 
-  test("completes a subcommand after a space-separated global flag value", async () => {
+  test("completes a subcommand after a space-separated required-value flag value", async () => {
     const script = generateBashCompletion(describeTree(buildProgram()));
     const reply = await bashComplete(script, ["gusto", "--env", "sandbox", "employee", ""], 4);
+    expect(reply).toContain("list");
+  });
+
+  test("completes a subcommand after a space-separated optional-value flag value", async () => {
+    const script = generateBashCompletion(describeTree(buildProgram()));
+    const reply = await bashComplete(script, ["gusto", "--fields", "name", "employee", ""], 4);
     expect(reply).toContain("list");
   });
 
@@ -127,5 +146,24 @@ describe("generateZshCompletion", () => {
   test("completes static flag choices", () => {
     const script = generateZshCompletion(describeTree(buildProgram()));
     expect(script).toContain("compadd sandbox production");
+  });
+});
+
+describe("generator shell-safety guard", () => {
+  function programWithChoice(value: string): Command {
+    const program = new Command();
+    program.name("gusto");
+    program.command("demo").addOption(new Option("--mode <mode>").choices(["safe", value]));
+    return program;
+  }
+
+  test("bash generator throws on a shell-unsafe choice value rather than emitting it", () => {
+    const program = programWithChoice('evil"; rm -rf /');
+    expect(() => generateBashCompletion(describeTree(program))).toThrow(/shell-unsafe/);
+  });
+
+  test("zsh generator throws on a shell-unsafe choice value rather than emitting it", () => {
+    const program = programWithChoice("has space");
+    expect(() => generateZshCompletion(describeTree(program))).toThrow(/shell-unsafe/);
   });
 });
