@@ -149,4 +149,66 @@ describe("check-dco.sh", () => {
     expect(r.exitCode).toBe(0);
     expect(r.output).toContain("skip bot:");
   });
+
+  test("fails closed on a bad HEAD ref instead of passing silently", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base");
+    commit(repo, "feature", { signoff: true });
+    const r = runCheck(repo, base, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+    expect(r.exitCode).not.toBe(0);
+    expect(r.output).not.toContain("ok:");
+  });
+
+  test("ignores merge commits (--no-merges)", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base", { signoff: true });
+    git(repo, ["checkout", "-q", "-b", "side"]);
+    commit(repo, "side work", { signoff: true });
+    git(repo, ["checkout", "-q", "main"]);
+    // --no-ff forces a merge commit, which git creates without a sign-off.
+    git(repo, ["merge", "-q", "--no-ff", "--no-edit", "side"]);
+    const head = git(repo, ["rev-parse", "HEAD"]);
+    const r = runCheck(repo, base, head);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("side work");
+  });
+
+  test("validates each commit against its own author", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base");
+    git(
+      repo,
+      ["commit", "-q", "--allow-empty", "-m", "alice change", "-m", "Signed-off-by: Alice <alice@example.com>"],
+      {
+        GIT_AUTHOR_NAME: "Alice",
+        GIT_AUTHOR_EMAIL: "alice@example.com",
+      },
+    );
+    git(repo, ["commit", "-q", "--allow-empty", "-m", "bob change", "-m", "Signed-off-by: Bob <bob@example.com>"], {
+      GIT_AUTHOR_NAME: "Bob",
+      GIT_AUTHOR_EMAIL: "bob@example.com",
+    });
+    const head = git(repo, ["rev-parse", "HEAD"]);
+    const r = runCheck(repo, base, head);
+    expect(r.exitCode).toBe(0);
+  });
+
+  test("passes when one of several sign-offs matches the author", () => {
+    const repo = setupRepo();
+    const base = commit(repo, "base");
+    // Author is jane@example.com; one of the two sign-offs matches her.
+    git(repo, [
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "co-developed change",
+      "-m",
+      "Signed-off-by: Other <other@example.com>\nSigned-off-by: Jane Doe <jane@example.com>",
+    ]);
+    const head = git(repo, ["rev-parse", "HEAD"]);
+    const r = runCheck(repo, base, head);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("ok:");
+  });
 });
