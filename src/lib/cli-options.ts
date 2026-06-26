@@ -1,6 +1,8 @@
 /** Commander option tuples shared across command groups so their flag text can't drift.
  * Spread into `.option(...)`: `cmd.option(...DRY_RUN_OPT)`. */
 
+import type { Command } from "commander";
+
 /** `--dry-run`: build (but don't send) the request(s). `(s)` covers multi-request commands
  * like `employee add job` (job + compensation) and `payment-method` (bank account + method). */
 export const DRY_RUN_OPT = ["--dry-run", "Build the request(s) without sending"] as const;
@@ -22,3 +24,9 @@ export const CURSOR_OPT = ["--cursor <token>", "Pagination cursor from a previou
 
 /** `--all`: walk every page, issuing as many requests as it takes. */
 export const ALL_OPT = ["--all", "Fetch every page (may issue multiple requests)"] as const;
+
+/** Add the company-context options (`--company-uuid` + `--token-stdin`) every company-scoped
+ * command shares, so a single command can resolve which company to act on and how to auth. */
+export function withContextOptions(cmd: Command): Command {
+  return cmd.option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)").option(...TOKEN_STDIN_OPT);
+}
