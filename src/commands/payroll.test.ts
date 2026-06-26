@@ -234,6 +234,15 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("reports an invalid or negative reimbursement with its row and column", () => {
+    for (const bad of ["nope", "-5"]) {
+      const result = buildPayrollUpdateFromCsv(`employee_uuid,reimbursement\nee-1,${bad}`);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: reimbursement" }));
+    }
+  });
+
   test("skips a no-input employee and reports it while importing the rest", () => {
     const result = buildPayrollUpdateFromCsv("employee_uuid,bonus,cash_tips\nee-1,250,\nee-2,,");
     expect(result.ok).toBe(true);
