@@ -121,6 +121,19 @@ describe("payrollUpdateHandler", () => {
     });
   });
 
+  test("surfaces an API 422 (e.g. stale version) as a failed result with the upstream body", async () => {
+    stub((u) =>
+      u.includes("/payrolls/pay-1")
+        ? { status: 422, body: { errors: [{ category: "invalid_attribute_value", message: "stale version" }] } }
+        : { status: 404 },
+    );
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.details).toMatchObject({ errors: [{ category: "invalid_attribute_value" }] });
+  });
+
   test("dry-run describes the PUT and its body, and sends nothing", async () => {
     const s = stub(() => ({ status: 500 }));
     const d = data(

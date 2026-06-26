@@ -3,11 +3,11 @@ import { fetchCompanyResource, putCompanyResource } from "../lib/api-context.ts"
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { CsvError, parseCsv } from "../lib/csv.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { readGlobalFlags } from "../lib/global-flags.ts";
+import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIsoDate, parseNonNegativeNumber } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
-import { type CommandHandler, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
+import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -210,6 +210,27 @@ interface ParsedPayrollUpdateRow {
   reimbursements: ReimbursementInput[];
 }
 
+/** Parse each named numeric column from the row: skip blanks, push a `blocked_on` for a bad value,
+ * and `build` an entry from each valid one. Shared by the hourly and fixed-comp columns so the two
+ * can't drift. */
+function parseNumericColumns<T>(
+  columns: readonly { column: string; name: string }[],
+  get: (column: string) => string,
+  line: number,
+  blocked: BlockedOn[],
+  build: (name: string, value: number) => T,
+): T[] {
+  const out: T[] = [];
+  for (const { column, name } of columns) {
+    const raw = get(column);
+    if (raw === "") continue;
+    const parsed = parseNonNegativeNumber(raw);
+    if (!parsed.ok) blocked.push({ field: `row ${line}: ${column}`, reason: parsed.reason });
+    else out.push(build(name, parsed.value));
+  }
+  return out;
+}
+
 /** Parse one CSV row. Per-cell problems (bad numbers, too many cells) go on `blocked`; a row that
  * names an employee but carries no inputs goes on `skipped` instead of failing the import (a blank
  * row in a master sheet is expected). A blank cell is omitted (the API leaves omitted inputs
@@ -241,23 +262,8 @@ function parsePayrollUpdateRow(
   const job = jobUuid ? { job_uuid: jobUuid } : {};
   const errorsBefore = blocked.length;
 
-  const hourly: HourlyCompensationInput[] = [];
-  for (const { column, name } of HOURLY_COLUMNS) {
-    const raw = get(column);
-    if (raw === "") continue;
-    const parsed = parseNonNegativeNumber(raw);
-    if (!parsed.ok) blocked.push({ field: `row ${line}: ${column}`, reason: parsed.reason });
-    else hourly.push({ name, hours: parsed.value, ...job });
-  }
-
-  const fixed: FixedCompensationInput[] = [];
-  for (const { column, name } of FIXED_COLUMNS) {
-    const raw = get(column);
-    if (raw === "") continue;
-    const parsed = parseNonNegativeNumber(raw);
-    if (!parsed.ok) blocked.push({ field: `row ${line}: ${column}`, reason: parsed.reason });
-    else fixed.push({ name, amount: parsed.value, ...job });
-  }
+  const hourly = parseNumericColumns(HOURLY_COLUMNS, get, line, blocked, (name, hours) => ({ name, hours, ...job }));
+  const fixed = parseNumericColumns(FIXED_COLUMNS, get, line, blocked, (name, amount) => ({ name, amount, ...job }));
 
   const reimbursements: ReimbursementInput[] = [];
   const reimbRaw = get(REIMBURSEMENT_COLUMN);
@@ -385,15 +391,14 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
   if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
 
   // Report only employees with NO usable data anywhere - a blank row for someone who has data on
-  // another row (e.g. their second job) is just padding, not a skip.
+  // another row (e.g. their second job) is just padding, not a skip. One pass, deduping by uuid.
   const included = new Set(employee_compensations.map((c) => c.employee_uuid));
-  const skipped: SkippedEmployee[] = [];
-  const reported = new Set<string>();
-  for (const s of skippedRows) {
-    if (included.has(s.employee_uuid) || reported.has(s.employee_uuid)) continue;
-    reported.add(s.employee_uuid);
-    skipped.push(s);
-  }
+  const seen = new Set<string>();
+  const skipped = skippedRows.filter((s) => {
+    if (included.has(s.employee_uuid) || seen.has(s.employee_uuid)) return false;
+    seen.add(s.employee_uuid);
+    return true;
+  });
 
   if (employee_compensations.length === 0) {
     const reason = skipped.length
@@ -540,6 +545,25 @@ Examples:
     );
 }
 
+/** PUT to a payroll path with the UUID encoded as a single segment and the standard
+ * token/company/dry-run options pulled from `opts`. Shared by prepare and update so the encoding
+ * guard and option wiring can't drift. `suffix` is appended after the uuid (e.g. "/prepare").
+ * Encoding matters: a raw `/`, `?` or `#` in a uuid from agent/tool output would otherwise retarget
+ * the PUT (the client resolves paths via `new URL`), e.g. `x?e=1` dropping `/prepare`. */
+function putPayrollResource(
+  globals: GlobalFlags,
+  payrollUuid: string,
+  suffix: string,
+  body: unknown,
+  opts: { tokenStdin?: boolean; companyUuid?: string; dryRun?: boolean },
+): Promise<CommandResult> {
+  return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}${suffix}`, body, {
+    tokenStdin: opts.tokenStdin,
+    companyUuid: opts.companyUuid,
+    dryRun: opts.dryRun,
+  });
+}
+
 export function payrollPrepareHandler(payrollUuid: string | undefined, opts: PayrollPrepareOpts): CommandHandler {
   return async ({ globals }) => {
     // --example publishes the path and canonical response shape without auth/company resolution, so
@@ -555,17 +579,8 @@ export function payrollPrepareHandler(payrollUuid: string | undefined, opts: Pay
       };
     }
     if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
-    // Encode the UUID as a single path segment: the value can come from agent/tool output, and a
-    // raw `/`, `?` or `#` would otherwise retarget the PUT (the client resolves paths via `new URL`,
-    // which treats those as separators), e.g. `x?e=1` drops `/prepare` and hits the payroll-update
-    // endpoint instead. Valid hex UUIDs are unaffected.
-    // prepare has no request body; pass `undefined` to keep the body/opts arg order aligned with
-    // createCompanyResource.
-    return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}/prepare`, undefined, {
-      tokenStdin: opts.tokenStdin,
-      companyUuid: opts.companyUuid,
-      dryRun: opts.dryRun,
-    });
+    // prepare has no request body.
+    return putPayrollResource(globals, payrollUuid, "/prepare", undefined, opts);
   };
 }
 
@@ -602,18 +617,19 @@ export function payrollUpdateHandler(
     const built = buildPayrollUpdateFromCsv(text);
     if (!built.ok) return validationFailure(built.message, built.blocked);
 
-    // Encode the UUID as one path segment: a stray '/' or '?' (e.g. from agent output) must not
-    // retarget the PUT. See payrollPrepareHandler for the same guard.
-    const result = await putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}`, built.body, {
-      tokenStdin: opts.tokenStdin,
-      companyUuid: opts.companyUuid,
-      dryRun: opts.dryRun,
-    });
+    const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
 
     // Surface skipped (no-input) employees alongside the response so a blank row in a master sheet
-    // is visible rather than silently dropped. Only attach when there are any and the data is an
-    // object to extend (the API payroll on a real run, or the dry-run shape).
-    if (result.ok && built.skipped.length > 0 && result.data !== null && typeof result.data === "object") {
+    // is visible rather than silently dropped. Only attach when there are any and the data is a
+    // plain object to extend (the API payroll on a real run, or the dry-run shape) - not an array,
+    // which would spread by numeric index.
+    if (
+      result.ok &&
+      built.skipped.length > 0 &&
+      result.data !== null &&
+      typeof result.data === "object" &&
+      !Array.isArray(result.data)
+    ) {
       return { ok: true, data: { ...(result.data as Record<string, unknown>), skipped_employees: built.skipped } };
     }
     return result;
