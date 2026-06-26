@@ -1,7 +1,28 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { ApiClient } from "./api-client.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { type StreamSinks, defaultSinks } from "./output.ts";
 import type { CommandContext, CommandResult } from "./runner.ts";
+
+// CI Linux runners ship bash but not zsh, so `zsh -n` would ENOENT. The completion suites guard
+// their zsh checks on this; it is true on macOS (dev + the macOS smoke matrix legs) and false on
+// the Linux unit/smoke legs. bash is present everywhere we run.
+export const HAS_ZSH = Bun.which("zsh") !== null;
+
+/** Write a completion script to a temp file and syntax-check it with `<shell> -n`, returning the
+ * exit code (0 = parses cleanly). Shared by the generator unit tests and the binary smoke tests.
+ * Callers guard on `HAS_ZSH` first - on a runner without the shell this would ENOENT. */
+export async function shellSyntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
+  const dir = mkdtempSync(path.join(tmpdir(), "gusto-completion-syntax-"));
+  const file = path.join(dir, shell === "bash" ? "gusto.bash" : "_gusto");
+  writeFileSync(file, script);
+  const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
+  const code = await proc.exited;
+  rmSync(dir, { recursive: true, force: true });
+  return code;
+}
 
 export interface CapturedStream {
   buffer: string;

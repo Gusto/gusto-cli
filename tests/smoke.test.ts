@@ -2,7 +2,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:te
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { HAS_ZSH, type Run, shellSyntaxCheck, spawnCapture } from "./support";
+import { HAS_ZSH, shellSyntaxCheck } from "../src/lib/test-support.ts";
+import { type Run, spawnCapture } from "./support";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 

@@ -1,14 +1,5 @@
 // Shared test helpers for the subprocess-based suites (install.test.ts, smoke.test.ts).
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-
-// CI Linux runners ship bash but not zsh, so `zsh -n` would ENOENT. The completion suites guard
-// their zsh checks on this; it is true on macOS (dev + the macOS smoke matrix legs) and false on
-// the Linux unit/smoke legs. bash is present everywhere we run.
-export const HAS_ZSH = Bun.which("zsh") !== null;
-
 export interface Run {
   stdout: string;
   stderr: string;
@@ -31,17 +22,4 @@ export async function spawnCapture(
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   const exitCode = await proc.exited;
   return { stdout, stderr, exitCode };
-}
-
-/** Write a completion script to a temp file and syntax-check it with `<shell> -n`, returning the
- * exit code (0 = parses cleanly). Shared by the generator unit tests and the binary smoke tests.
- * Callers guard on `Bun.which(shell)` first - on a runner without the shell this would ENOENT. */
-export async function shellSyntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
-  const dir = mkdtempSync(path.join(tmpdir(), "gusto-completion-syntax-"));
-  const file = path.join(dir, shell === "bash" ? "gusto.bash" : "_gusto");
-  writeFileSync(file, script);
-  const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
-  const code = await proc.exited;
-  rmSync(dir, { recursive: true, force: true });
-  return code;
 }

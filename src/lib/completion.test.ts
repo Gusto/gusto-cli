@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Command, Option } from "commander";
 import { buildProgram } from "../index.ts";
-import { HAS_ZSH, shellSyntaxCheck } from "../../tests/support.ts";
 import { describeTree, generateBashCompletion, generateZshCompletion } from "./completion.ts";
+import { HAS_ZSH, shellSyntaxCheck } from "./test-support.ts";
 
 function findNode(model: ReturnType<typeof describeTree>, path: string) {
   const stack = [model.root];
