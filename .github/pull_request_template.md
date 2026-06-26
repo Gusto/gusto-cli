@@ -14,4 +14,4 @@
 
 ## DCO
 
-- [ ] Every commit is signed off (`git commit -s`) per the [DCO](https://github.com/Gusto/gusto-cli-public/blob/main/CONTRIBUTING.md#developer-certificate-of-origin)
+- [ ] Every commit is signed off (`git commit -s`) per the [DCO](https://github.com/Gusto/gusto-cli/blob/main/CONTRIBUTING.md#developer-certificate-of-origin)

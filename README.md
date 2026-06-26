@@ -4,12 +4,12 @@ Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboar
 
 > **Status: v0.0.1.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) and `gusto company provision` are live, along with the `gusto company` onboarding surface - `onboarding-status`, `setup <federal-tax|state-tax|bank-account|pay-schedule>`, and `forms`.
 
-> **Driving this with an agent?** Point it at [`AGENTS.md`](AGENTS.md) (raw: <https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/AGENTS.md>) - it covers install, `auth login`, and the conventions. `gusto --help` / `gusto <command> --help` is the authoritative command surface.
+> **Driving this with an agent?** Point it at [`AGENTS.md`](AGENTS.md) (raw: <https://raw.githubusercontent.com/Gusto/gusto-cli/main/AGENTS.md>) - it covers install, `auth login`, and the conventions. `gusto --help` / `gusto <command> --help` is the authoritative command surface.
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli-public/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli/main/install.sh | sh
 ```
 
 > A `cli.gusto.com` shortcut isn't set up yet, so the installer pulls the script directly from GitHub.
