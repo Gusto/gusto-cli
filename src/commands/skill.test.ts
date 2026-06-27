@@ -36,23 +36,23 @@ describe("skillListHandler", () => {
 
   test("reports status='not_installed' before install and 'installed' after", async () => {
     const before = (await skillListHandler(dir)(ctx)) as { data: { skills: Array<{ name: string; status: string }> } };
-    expect(before.data.skills.find((s) => s.name === "onboard-company")?.status).toBe("not_installed");
+    expect(before.data.skills.find((s) => s.name === "cash-forecasting")?.status).toBe("not_installed");
 
-    await installSkill("onboard-company", dir);
+    await installSkill("cash-forecasting", dir);
 
     const after = (await skillListHandler(dir)(ctx)) as { data: { skills: Array<{ name: string; status: string }> } };
-    expect(after.data.skills.find((s) => s.name === "onboard-company")?.status).toBe("installed");
+    expect(after.data.skills.find((s) => s.name === "cash-forecasting")?.status).toBe("installed");
   });
 });
 
 describe("skillInstallHandler", () => {
   test("installs a known skill and returns the install action", async () => {
-    const result = (await skillInstallHandler("onboard-company", {}, dir)(ctx)) as {
+    const result = (await skillInstallHandler("cash-forecasting", {}, dir)(ctx)) as {
       ok: boolean;
       data: { skill: string; action: string };
     };
     expect(result.ok).toBe(true);
-    expect(result.data.skill).toBe("onboard-company");
+    expect(result.data.skill).toBe("cash-forecasting");
     expect(result.data.action).toBe("installed");
   });
 
@@ -74,7 +74,7 @@ describe("skillInstallHandler", () => {
   });
 
   test("--all combined with a name is rejected as ambiguous", async () => {
-    const result = await skillInstallHandler("onboard-company", { all: true }, dir)(ctx);
+    const result = await skillInstallHandler("cash-forecasting", { all: true }, dir)(ctx);
     expect(result.ok).toBe(false);
     expect((result as { error: { code: string } }).error.code).toBe("ambiguous_install");
   });

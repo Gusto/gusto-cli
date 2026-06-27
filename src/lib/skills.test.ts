@@ -24,20 +24,20 @@ afterEach(() => {
 
 describe("skill description", () => {
   test("is sourced from the SKILL.md frontmatter (no hand-duplicated drift)", () => {
-    const onboard = getSkill("onboard-company");
-    expect(onboard).not.toBeNull();
-    if (!onboard) throw new Error("unreachable");
+    const skill = getSkill("cash-forecasting");
+    expect(skill).not.toBeNull();
+    if (!skill) throw new Error("unreachable");
     // The description must literally appear in the bundled SKILL.md content; that's
     // the invariant a regression-by-drift would break.
-    expect(onboard.content).toContain(onboard.description);
-    expect(onboard.content).toContain(`description: ${onboard.description}`);
+    expect(skill.content).toContain(skill.description);
+    expect(skill.content).toContain(`description: ${skill.description}`);
   });
 });
 
 describe("listSkills + getSkill", () => {
-  test("includes onboard-company", () => {
+  test("includes cash-forecasting", () => {
     const skills = listSkills();
-    expect(skills.find((s) => s.name === "onboard-company")).toBeDefined();
+    expect(skills.find((s) => s.name === "cash-forecasting")).toBeDefined();
   });
 
   test("returns null for unknown skills", () => {
@@ -103,35 +103,35 @@ describe("findSkillsDir", () => {
 describe("installSkill", () => {
   test("writes SKILL.md and injects user-invocable for .claude targets", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    const result = await installSkill("onboard-company", dir);
+    const result = await installSkill("cash-forecasting", dir);
     expect(existsSync(result.installedAt)).toBe(true);
     const content = readFileSync(result.installedAt, "utf8");
     expect(content).toContain("user-invocable: true");
-    expect(content).toContain("# Onboard a Gusto company");
+    expect(content).toContain("# Forecast payroll cash needs");
     expect(result.action).toBe("installed");
   });
 
   test("does NOT inject user-invocable for non-claude targets", async () => {
     const dir = { path: path.join(scratch, ".cursor", "skills"), kind: "cursor" as const, scope: "local" as const };
-    const result = await installSkill("onboard-company", dir);
+    const result = await installSkill("cash-forecasting", dir);
     const content = readFileSync(result.installedAt, "utf8");
     expect(content).not.toContain("user-invocable: true");
   });
 
   test("returns action='refreshed' when overwriting a stale installed copy", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    const target = path.join(dir.path, "onboard-company", "SKILL.md");
+    const target = path.join(dir.path, "cash-forecasting", "SKILL.md");
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, "stale content from an older CLI");
-    const result = await installSkill("onboard-company", dir);
+    const result = await installSkill("cash-forecasting", dir);
     expect(result.action).toBe("refreshed");
-    expect(readFileSync(result.installedAt, "utf8")).toContain("# Onboard a Gusto company");
+    expect(readFileSync(result.installedAt, "utf8")).toContain("# Forecast payroll cash needs");
   });
 
   test("returns action='already_up_to_date' when content matches", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    await installSkill("onboard-company", dir);
-    const second = await installSkill("onboard-company", dir);
+    await installSkill("cash-forecasting", dir);
+    const second = await installSkill("cash-forecasting", dir);
     expect(second.action).toBe("already_up_to_date");
   });
 
@@ -144,21 +144,21 @@ describe("installSkill", () => {
 describe("getSkillStatus", () => {
   test("returns 'not_installed' when SKILL.md does not exist", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    expect(await getSkillStatus("onboard-company", dir)).toBe("not_installed");
+    expect(await getSkillStatus("cash-forecasting", dir)).toBe("not_installed");
   });
 
   test("returns 'installed' when the on-disk copy matches the bundled content", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    await installSkill("onboard-company", dir);
-    expect(await getSkillStatus("onboard-company", dir)).toBe("installed");
+    await installSkill("cash-forecasting", dir);
+    expect(await getSkillStatus("cash-forecasting", dir)).toBe("installed");
   });
 
   test("returns 'stale' when the on-disk copy differs from the bundled content", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    const target = path.join(dir.path, "onboard-company", "SKILL.md");
+    const target = path.join(dir.path, "cash-forecasting", "SKILL.md");
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, "an older version of the skill");
-    expect(await getSkillStatus("onboard-company", dir)).toBe("stale");
+    expect(await getSkillStatus("cash-forecasting", dir)).toBe("stale");
   });
 
   test("returns 'not_installed' for an unknown skill name", async () => {
@@ -170,7 +170,7 @@ describe("getSkillStatus", () => {
 describe("symlink-follow guard", () => {
   test("installSkill refuses to write through a symlink at the target file", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    const skillDir = path.join(dir.path, "onboard-company");
+    const skillDir = path.join(dir.path, "cash-forecasting");
     mkdirSync(skillDir, { recursive: true });
     // Plant a symlink where SKILL.md should land - simulating an attacker who controls
     // the discovered .claude/skills tree (e.g. a malicious repo). The installer must
@@ -178,18 +178,18 @@ describe("symlink-follow guard", () => {
     const decoy = path.join(scratch, "sensitive-target.txt");
     writeFileSync(decoy, "original content");
     symlinkSync(decoy, path.join(skillDir, "SKILL.md"));
-    await expect(installSkill("onboard-company", dir)).rejects.toThrow(/symlink/);
+    await expect(installSkill("cash-forecasting", dir)).rejects.toThrow(/symlink/);
     expect(readFileSync(decoy, "utf8")).toBe("original content");
   });
 
   test("installSkill refuses when the parent dir resolves outside the skills root", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    // .claude/skills/onboard-company points at /tmp/<scratch>/elsewhere via symlink.
+    // .claude/skills/cash-forecasting points at /tmp/<scratch>/elsewhere via symlink.
     const elsewhere = path.join(scratch, "elsewhere");
     mkdirSync(elsewhere, { recursive: true });
     mkdirSync(dir.path, { recursive: true });
-    symlinkSync(elsewhere, path.join(dir.path, "onboard-company"));
-    await expect(installSkill("onboard-company", dir)).rejects.toThrow(/escapes the skills dir/);
+    symlinkSync(elsewhere, path.join(dir.path, "cash-forecasting"));
+    await expect(installSkill("cash-forecasting", dir)).rejects.toThrow(/escapes the skills dir/);
     expect(existsSync(path.join(elsewhere, "SKILL.md"))).toBe(false);
   });
 
@@ -203,7 +203,7 @@ describe("symlink-follow guard", () => {
     const elsewhere = path.join(scratch, "elsewhere");
     mkdirSync(elsewhere, { recursive: true });
     mkdirSync(dir.path, { recursive: true });
-    symlinkSync(elsewhere, path.join(dir.path, "onboard-company"));
+    symlinkSync(elsewhere, path.join(dir.path, "cash-forecasting"));
     await expect(installBundledSkills(dir)).rejects.toThrow(/escapes the skills dir/);
     expect(existsSync(path.join(elsewhere, "SKILL.md"))).toBe(false);
   });
@@ -229,12 +229,12 @@ describe("installBundledSkills", () => {
 
   test("skips stale (possibly user-edited) skills instead of clobbering them", async () => {
     const dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "local" as const };
-    const target = path.join(dir.path, "onboard-company", "SKILL.md");
+    const target = path.join(dir.path, "cash-forecasting", "SKILL.md");
     mkdirSync(path.dirname(target), { recursive: true });
     const userEdit = "user-edited content I don't want clobbered";
     writeFileSync(target, userEdit);
     const results = await installBundledSkills(dir);
-    expect(results.find((r) => r.skill === "onboard-company")?.action).toBe("skipped_user_edited");
+    expect(results.find((r) => r.skill === "cash-forecasting")?.action).toBe("skipped_user_edited");
     expect(readFileSync(target, "utf8")).toBe(userEdit);
   });
 });

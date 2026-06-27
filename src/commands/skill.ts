@@ -24,7 +24,7 @@ export function registerSkillCommand(parent: Command): void {
       "after",
       `
 Examples:
-  $ gusto skill install onboard-company
+  $ gusto skill install cash-forecasting
   $ gusto skill install --all
 
 The skill is installed into the first of .claude/skills, .cursor/skills,

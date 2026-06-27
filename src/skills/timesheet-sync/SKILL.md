@@ -10,7 +10,7 @@ Drives the `gusto` CLI to take a pay period's worth of tracked hours, record the
 ## Preconditions
 
 - Gusto CLI installed and authenticated (`gusto auth login`); company set via `GUSTO_COMPANY_UUID` or `--company-uuid`.
-- The company is **payroll-ready** - onboarding is finished and it has a pay schedule plus at least one fully set-up employee/contractor. Confirm with `gusto company onboarding-status` (`payroll_ready: true`, empty `payroll_blockers`). If it isn't, drive the `onboard-company` skill first. A company that hasn't finished onboarding rejects the sync with `422 invalid_operation: "Payroll is currently blocked for your account and cannot be modified."`
+- The company is **payroll-ready** - it has a pay schedule plus at least one fully set-up employee/contractor and is approved to run payroll. There's no CLI readiness check; an unready company rejects the sync with `422 invalid_operation: "Payroll is currently blocked for your account and cannot be modified."`. The CLI can still set up a pay schedule (`gusto pay-schedule create`) and add workers (`gusto employee add` / `gusto contractor`); company-level setup (taxes, bank, forms, approval) happens in the Gusto dashboard.
 - The user knows the **actual hours** each worker logged for the pay period. Never fabricate hours - they flow straight into a real (draft) payroll.
 
 ## Discovering commands
@@ -25,7 +25,7 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 ## Steps
 
-1. **Confirm payroll readiness.** Run `gusto company onboarding-status`. Require `payroll_ready: true` and an empty `payroll_blockers`. If onboarding isn't finished, the sync is blocked (see Preconditions) - resolve the blockers (or hand to `onboard-company`) first.
+1. **Know the readiness bar.** There's no CLI readiness check - if the company isn't payroll-ready, `timesheet sync` (step 6) comes back with the `422` from Preconditions. If you hit it, finish setup first (`gusto pay-schedule create` / `gusto employee add` for what the CLI covers, otherwise the Gusto dashboard), then retry.
 
 2. **Find the draft payroll and the pay period.** Run `gusto payroll list --processing-status unprocessed` (add `--include payroll_status_meta` for check dates). Pick the draft payroll whose pay period you're logging hours for, and note three things from it: its **`payroll_uuid`**, the **`pay_schedule_uuid`**, and the **pay-period start/end dates** (`pay_period.start_date` / `.end_date`, both `YYYY-MM-DD`). Don't guess these - read them off the payroll.
 

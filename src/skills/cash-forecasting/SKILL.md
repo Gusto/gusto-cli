@@ -92,7 +92,7 @@ Always pass `--agent` to every CLI call so the output is parseable JSON (`{ "ok"
 
 ## Out of scope
 
-- Running or scheduling payroll (this only forecasts; use the onboarding/payroll commands to act).
+- Running or scheduling payroll (this only forecasts; the V1 CLI doesn't move money - no run / schedule command).
 - Wage-base / tax-rate **table-driven** modeling — the accounting forecast is trajectory-driven from observed ledger history by design, with no maintained threshold tables.
 - Modeling raises or planned hires — projections follow observed trajectories, not future events.
 - Multi-company / partner-level aggregation (single company per run).

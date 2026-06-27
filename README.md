@@ -1,8 +1,8 @@
 # Gusto CLI
 
-Agent-friendly developer interface for Gusto payroll. From `curl | sh` to onboarded payroll in a single chat session with an agent.
+Agent-friendly developer interface for Gusto payroll. From `curl | sh` to running per-cycle payroll prep in a single chat session with an agent.
 
-> **Status: v0.0.1.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) and `gusto company provision` are live, along with the `gusto company` onboarding surface - `onboarding-status`, `setup <federal-tax|state-tax|bank-account|pay-schedule>`, and `forms`.
+> **Status: v0.0.1.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) is live, along with per-cycle payroll prep: `gusto timesheet`, `gusto payroll`, `gusto pay-schedule`, and the `gusto employee` / `gusto contractor` commands.
 
 > **Driving this with an agent?** Point it at [`AGENTS.md`](AGENTS.md) (raw: <https://raw.githubusercontent.com/Gusto/gusto-cli/main/AGENTS.md>) - it covers install, `auth login`, and the conventions. `gusto --help` / `gusto <command> --help` is the authoritative command surface.
 
@@ -51,8 +51,8 @@ Token resolution order: `--token-stdin` (piped) > `GUSTO_ACCESS_TOKEN` > stored 
 gusto --help
 gusto auth whoami          # confirm the token works
 gusto employee list        # company-scoped read
-gusto employee add --first-name Jane --last-name Doe --email jane@example.com
-gusto skill install onboard-company
+gusto employee add personal-details --first-name Jane --last-name Doe --email jane@example.com
+gusto skill install cash-forecasting
 ```
 
 The commands above are examples. `gusto --help` lists every top-level command and `gusto <command> --help` lists its flags - that's the authoritative command surface (and what agents should reach for first), since this README can drift.
@@ -90,11 +90,11 @@ Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `
 
 ## Bundled skills
 
-The CLI ships bundled skills - `onboard-company` (drives a full company onboarding) and `cash-forecasting` (projects upcoming payroll cash needs). Install one into a project's agent workspace:
+The CLI ships bundled skills - `cash-forecasting` (projects upcoming payroll cash needs) and `timesheet-sync` (drives the per-cycle timesheet input flow). Install one into a project's agent workspace:
 
 ```sh
 gusto skill list
-gusto skill install onboard-company
+gusto skill install cash-forecasting
 ```
 
 The install command walks up the cwd looking for `.claude/skills`, `.cursor/skills`, or `.windsurf/skills`. Falls back to `~/.claude/skills`. For `.claude` targets, the SKILL.md frontmatter gets `user-invocable: true` so the skill appears as a slash command in Claude Code.
