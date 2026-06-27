@@ -11,17 +11,32 @@ import type { CommandContext, CommandResult } from "./runner.ts";
 // the Linux unit/smoke legs. bash is present everywhere we run.
 export const HAS_ZSH = Bun.which("zsh") !== null;
 
+/** Write `script` to a temp file named `filename` and pass its path to `fn`, removing the temp
+ * directory afterward even if `fn` throws. Shared by the completion helpers that need to source or
+ * shell-check a generated script. */
+export async function withTempScript<T>(
+  filename: string,
+  script: string,
+  fn: (file: string) => Promise<T>,
+): Promise<T> {
+  const dir = mkdtempSync(path.join(tmpdir(), "gusto-completion-"));
+  const file = path.join(dir, filename);
+  writeFileSync(file, script);
+  try {
+    return await fn(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** Write a completion script to a temp file and syntax-check it with `<shell> -n`, returning the
  * exit code (0 = parses cleanly). Shared by the generator unit tests and the binary smoke tests.
  * Callers guard on `HAS_ZSH` first - on a runner without the shell this would ENOENT. */
-export async function shellSyntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
-  const dir = mkdtempSync(path.join(tmpdir(), "gusto-completion-syntax-"));
-  const file = path.join(dir, shell === "bash" ? "gusto.bash" : "_gusto");
-  writeFileSync(file, script);
-  const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
-  const code = await proc.exited;
-  rmSync(dir, { recursive: true, force: true });
-  return code;
+export function shellSyntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
+  return withTempScript(shell === "bash" ? "gusto.bash" : "_gusto", script, async (file) => {
+    const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
+    return proc.exited;
+  });
 }
 
 export interface CapturedStream {

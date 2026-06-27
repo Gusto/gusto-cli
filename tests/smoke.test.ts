@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { HAS_ZSH, shellSyntaxCheck } from "../src/lib/test-support.ts";
+import { HAS_ZSH, shellSyntaxCheck, withTempScript } from "../src/lib/test-support.ts";
 import { type Run, spawnCapture } from "./support";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
@@ -790,16 +790,14 @@ describe("completion scripts", () => {
   // regressions. bash is present on every smoke leg.
   async function bashComplete(words: string[], cword: number): Promise<string[]> {
     const { stdout } = await run(["completion", "bash"]);
-    const dir = mkdtempSync(path.join(tmpdir(), "gusto-complete-run-"));
-    const file = path.join(dir, "gusto.bash");
-    writeFileSync(file, stdout);
-    const compWords = words.map((w) => `'${w}'`).join(" ");
-    const driver = `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`;
-    const proc = Bun.spawn(["bash", "-c", driver], { stdout: "pipe", stderr: "pipe" });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    rmSync(dir, { recursive: true, force: true });
-    return out.split("\n").filter((l) => l.length > 0);
+    return withTempScript("gusto.bash", stdout, async (file) => {
+      const compWords = words.map((w) => `'${w}'`).join(" ");
+      const driver = `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`;
+      const proc = Bun.spawn(["bash", "-c", driver], { stdout: "pipe", stderr: "pipe" });
+      const out = await new Response(proc.stdout).text();
+      await proc.exited;
+      return out.split("\n").filter((l) => l.length > 0);
+    });
   }
 
   test("completes top-level commands with no preceding flags", async () => {

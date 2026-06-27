@@ -1,5 +1,10 @@
 import { Argument, type Command } from "commander";
-import { describeTree, generateBashCompletion, generateZshCompletion } from "../lib/completion.ts";
+import {
+  type CompletionModel,
+  describeTree,
+  generateBashCompletion,
+  generateZshCompletion,
+} from "../lib/completion.ts";
 
 const HELP_FOOTER = `
 Install (zsh):
@@ -16,6 +21,21 @@ Install (bash, macOS):
 fish and PowerShell are not yet supported.
 `;
 
+/** Pick the generator for a shell. A switch with a `never` guard makes adding a third shell to the
+ * argument's `.choices()` without a generator a compile error, not a silent wrong-branch fallthrough. */
+function scriptFor(shell: "bash" | "zsh", model: CompletionModel): string {
+  switch (shell) {
+    case "bash":
+      return generateBashCompletion(model);
+    case "zsh":
+      return generateZshCompletion(model);
+    default: {
+      const unhandled: never = shell;
+      throw new Error(`no completion generator for shell: ${String(unhandled)}`);
+    }
+  }
+}
+
 export function registerCompletionCommand(program: Command): void {
   program
     .command("completion")
@@ -24,7 +44,6 @@ export function registerCompletionCommand(program: Command): void {
     .addHelpText("after", HELP_FOOTER)
     .action((shell: "bash" | "zsh") => {
       const model = describeTree(program);
-      const script = shell === "bash" ? generateBashCompletion(model) : generateZshCompletion(model);
-      process.stdout.write(script);
+      process.stdout.write(scriptFor(shell, model));
     });
 }
