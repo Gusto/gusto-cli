@@ -35,6 +35,13 @@ export const TEST_CONTEXT: CommandContext = { command: "test", globals: TEST_GLO
 // tests/preload.ts (explicit token wins: stdin > env > session).
 export const TEST_AUTH = { companyUuid: "co-1" };
 
+/** JSON-RPC 2.0 success envelope wrapping a single text content block. */
+export const successEnvelope = (payload: unknown) => ({
+  jsonrpc: "2.0",
+  id: 1,
+  result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
+});
+
 /** Unwrap a successful CommandResult's data, throwing if it failed. */
 export function okData(result: CommandResult): Record<string, unknown> {
   if (!result.ok) throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
