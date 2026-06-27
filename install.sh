@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="${GUSTO_CLI_REPO:-Gusto/gusto-cli-public}"
+REPO="${GUSTO_CLI_REPO:-Gusto/gusto-cli}"
 VERSION="${GUSTO_CLI_VERSION:-latest}"
 if [ -z "${GUSTO_INSTALL_DIR:-}" ] && [ -z "${HOME:-}" ]; then
   echo "gusto: HOME is not set; set GUSTO_INSTALL_DIR or HOME and re-run" >&2

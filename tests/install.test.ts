@@ -351,13 +351,13 @@ describe("install.sh URL construction", () => {
 
   test("builds the latest-release URL by default", async () => {
     expect(await recordCurlUrl({})).toContain(
-      "https://github.com/Gusto/gusto-cli-public/releases/latest/download/gusto-",
+      "https://github.com/Gusto/gusto-cli/releases/latest/download/gusto-",
     );
   });
 
   test("builds a pinned-version URL when GUSTO_CLI_VERSION is set", async () => {
     expect(await recordCurlUrl({ GUSTO_CLI_VERSION: "v1.2.3" })).toContain(
-      "https://github.com/Gusto/gusto-cli-public/releases/download/v1.2.3/gusto-",
+      "https://github.com/Gusto/gusto-cli/releases/download/v1.2.3/gusto-",
     );
   });
 
