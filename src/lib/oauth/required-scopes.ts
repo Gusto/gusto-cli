@@ -8,7 +8,13 @@
  * The set is intentionally narrow. Scopes dropped from the original 50+ grant
  * (`payrolls:run`, `company_bank_accounts:write`, `signatories:manage`, etc.)
  * have no in-surface consumer and are listed in `DROPPED_SCOPES` below for
- * audit history. */
+ * audit history.
+ *
+ * This list enumerates scopes that individual CLI commands exercise. Two
+ * categories are deliberately NOT listed and remain granted: baseline auth
+ * scopes (`public`, `access_token:read`), and `webhook_subscriptions:read/write`,
+ * which is retained as a partner platform capability even though no CLI command
+ * uses it. Their absence here is not a signal to drop them from the grant. */
 
 export interface ScopeRequirement {
   scope: string;
@@ -26,15 +32,16 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "pay_schedules:read", usedBy: ["pay-schedule show"] },
   { scope: "payrolls:read", usedBy: ["payroll list", "ledger show"] },
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
-  { scope: "payroll_syncs:read", usedBy: ["timesheet sync"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
-  { scope: "company_federal_taxes:read", usedBy: ["company show"] },
+  { scope: "company_payment_configs:read", usedBy: ["company show"] },
   { scope: "employee_federal_taxes:read", usedBy: ["employee inspect"] },
   { scope: "employee_state_taxes:read", usedBy: ["employee inspect"] },
 
-  // Writes (intentionally narrow)
+  // Writes (intentionally narrow); `:manage` is the scope the create endpoints require.
   { scope: "employees:write", usedBy: ["employee add personal-details"] },
+  { scope: "employees:manage", usedBy: ["employee add personal-details"] },
   { scope: "contractors:write", usedBy: ["contractor add"] },
+  { scope: "contractors:manage", usedBy: ["contractor add"] },
   { scope: "jobs:write", usedBy: ["employee add job"] },
   { scope: "compensations:write", usedBy: ["employee add job"] },
   { scope: "employee_federal_taxes:write", usedBy: ["employee add federal-tax"] },
