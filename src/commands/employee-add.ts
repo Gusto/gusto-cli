@@ -2,7 +2,6 @@ import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
 import { createCompanyResource, resolveApiContext, withCompanyContext } from "../lib/api-context.ts";
-import { bankCreateNoUuidError } from "../lib/bank-account.ts";
 import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { errMsg } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
@@ -17,8 +16,8 @@ import { getAndInjectVersion, withVersion } from "../lib/versioning.ts";
 
 // `employee add` mirrors `company setup`: bare `employee add` creates the employee, then each
 // sub-domain is its own subcommand (`employee add <domain> <employee_uuid>`) with typed flags, a
-// blockers() validator, and a body builder. The `state-tax` and `payment-method` commands carry a
-// little orchestration (discovery / bank-account create) behind their single command.
+// blockers() validator, and a body builder. The `state-tax` command carries a little orchestration
+// (discovery) behind its single command.
 
 /** Every subcommand accepts --token-stdin (auth: session > env > stdin). */
 interface TokenOpts {
@@ -538,144 +537,6 @@ function federalTaxHandler(employeeUuid: string | undefined, opts: FederalTaxOpt
       };
     }
     return withEmployeeClient(globals, opts.tokenStdin, (client) => runFederalTax(client, employeeUuid, opts));
-  };
-}
-
-// ───────────────────────────── add payment-method (absorbs bank-account) ─────────────────────────────
-
-export interface PaymentMethodOpts extends TokenOpts {
-  type?: string;
-  name?: string;
-  routingNumber?: string;
-  accountNumber?: string;
-  accountType?: string;
-  dryRun?: boolean;
-  example?: boolean;
-}
-
-const PAYMENT_TYPES: Record<string, string> = { check: "Check", "direct-deposit": "Direct Deposit" };
-
-export function paymentMethodBlockers(opts: PaymentMethodOpts): BlockedOn[] {
-  const blocked: BlockedOn[] = [];
-  if (!opts.type || !(opts.type in PAYMENT_TYPES)) {
-    // Can't validate the bank fields until the type is known, so stop here.
-    blocked.push({ field: "type", reason: 'required ("check" or "direct-deposit")' });
-    return blocked;
-  }
-  if (opts.type === "direct-deposit") {
-    if (!opts.name) blocked.push({ field: "name", reason: "required for direct-deposit" });
-    if (!opts.routingNumber) blocked.push({ field: "routing-number", reason: "required for direct-deposit" });
-    if (!opts.accountNumber) blocked.push({ field: "account-number", reason: "required for direct-deposit" });
-    if (opts.accountType !== "Checking" && opts.accountType !== "Savings")
-      blocked.push({ field: "account-type", reason: 'required ("Checking" or "Savings")' });
-  }
-  return blocked;
-}
-
-/** The employee bank-account create body (direct-deposit path). */
-function bankAccountBody(opts: PaymentMethodOpts): Record<string, unknown> {
-  return {
-    name: opts.name,
-    routing_number: opts.routingNumber,
-    account_number: opts.accountNumber,
-    account_type: opts.accountType,
-  };
-}
-
-/** A Direct Deposit payment_method body routing 100% to one bank account. Built once so the dry-run
- * preview and the real PUT can't drift. */
-function directDepositPmBody(bankUuid: string): Record<string, unknown> {
-  return {
-    type: "Direct Deposit",
-    split_by: "Percentage",
-    splits: [{ uuid: bankUuid, priority: 1, split_amount: 100 }],
-  };
-}
-
-/** Check → version-guarded PUT {type:"Check"}. Direct deposit → create the bank account, then PUT a
- * Direct Deposit payment_method routing 100% to it (splits reference the new bank-account uuid). */
-export async function runPaymentMethod(
-  client: ApiClient,
-  employeeUuid: string,
-  opts: PaymentMethodOpts,
-): Promise<CommandResult> {
-  const pmPath = `/v1/employees/${employeeUuid}/payment_method`;
-
-  if (opts.type === "check") {
-    try {
-      const res = await putVersioned(client, pmPath, { type: "Check" });
-      return { ok: true, data: res.body };
-    } catch (err) {
-      return toResult(err);
-    }
-  }
-
-  // Direct deposit: create the bank account first.
-  let bank: unknown;
-  try {
-    const bankRes = await client.post(`/v1/employees/${employeeUuid}/bank_accounts`, bankAccountBody(opts));
-    bank = bankRes.body;
-  } catch (err) {
-    // Nothing was created; surface the API error as-is.
-    return toResult(err);
-  }
-  const bankUuid = readString(bank, "uuid");
-  if (!bankUuid) {
-    return bankCreateNoUuidError(bank);
-  }
-
-  try {
-    const pmRes = await putVersioned(client, pmPath, directDepositPmBody(bankUuid));
-    return { ok: true, data: { bank_account: bank, payment_method: pmRes.body } };
-  } catch (err) {
-    // The bank account already exists. Surface it (uuid + completed steps) so a retry can route the
-    // payment method to the existing account rather than POSTing a duplicate bank account.
-    return partialFailure({
-      code: "payment_method_failed",
-      message: "bank account created but setting the payment method failed",
-      err,
-      completed: { bank_account: bank },
-      failedDomain: "payment_method",
-    });
-  }
-}
-
-function paymentMethodHandler(employeeUuid: string | undefined, opts: PaymentMethodOpts): CommandHandler {
-  return async ({ globals }) => {
-    if (opts.example) {
-      return {
-        ok: true,
-        data: {
-          method: "PUT",
-          path: "/v1/employees/{employee_uuid}/payment_method",
-          body: { type: "Check" },
-          note: "example: --type direct-deposit also creates a bank account and routes 100% to it",
-        },
-      };
-    }
-    if (!employeeUuid) return missingEmployeeUuid();
-    const blocked = paymentMethodBlockers(opts);
-    if (blocked.length > 0) return missingArgs(blocked);
-    if (opts.dryRun) {
-      const pmPath = `/v1/employees/${employeeUuid}/payment_method`;
-      if (opts.type === "check") {
-        return { ok: true, data: { steps: [{ method: "PUT", path: pmPath, body: { type: "Check" } }] } };
-      }
-      return {
-        ok: true,
-        data: {
-          steps: [
-            {
-              method: "POST",
-              path: `/v1/employees/${employeeUuid}/bank_accounts`,
-              body: bankAccountBody(opts),
-            },
-            { method: "PUT", path: pmPath, body: directDepositPmBody("{bank_account_uuid}") },
-          ],
-        },
-      };
-    }
-    return withEmployeeClient(globals, opts.tokenStdin, (client) => runPaymentMethod(client, employeeUuid, opts));
   };
 }
 
@@ -1278,7 +1139,6 @@ Examples:
   $ gusto employee add home-address <employee_uuid> --street-1 "300 3rd St" --city "San Francisco" --state CA --zip 94107
   $ gusto employee add job <employee_uuid> --title Engineer --hire-date 2026-01-06 --rate 120000 --payment-unit Year --flsa-status Exempt
   $ gusto employee add federal-tax <employee_uuid> --filing-status Single --w4-data-type rev_2020_w4
-  $ gusto employee add payment-method <employee_uuid> --type direct-deposit --name Checking --routing-number 266905059 --account-number 5809431207 --account-type Checking
   $ gusto employee add state-tax <employee_uuid> --answer CA:filing_status=Single --answer CA:withholding_allowance=2
 `,
     );
@@ -1377,24 +1237,6 @@ Examples:
         "gusto employee add federal-tax",
         readGlobalFlags(parent.opts()),
         federalTaxHandler(employeeUuid, opts),
-      ),
-    );
-
-  withEmployeeUuidArg(add.command("payment-method"))
-    .description("Set how the employee is paid: check, or direct-deposit (also creates the bank account)")
-    .option("--type <type>", '"check" or "direct-deposit"')
-    .option("--name <name>", "Bank account nickname (direct-deposit)")
-    .option("--routing-number <num>", "9-digit US routing number (direct-deposit)")
-    .option("--account-number <num>", "Bank account number (direct-deposit)")
-    .option("--account-type <type>", "Checking or Savings (direct-deposit)")
-    .option(...TOKEN_STDIN_OPT)
-    .option(...DRY_RUN_OPT)
-    .option(...EXAMPLE_OPT)
-    .action((employeeUuid: string | undefined, opts: PaymentMethodOpts) =>
-      runCommand(
-        "gusto employee add payment-method",
-        readGlobalFlags(parent.opts()),
-        paymentMethodHandler(employeeUuid, opts),
       ),
     );
 

@@ -305,45 +305,12 @@ describe("employee add per-domain subcommands", () => {
     expect(data.body.filing_status).toBe("Single");
   });
 
-  test("payment-method direct-deposit --dry-run emits create-bank then set-method steps", async () => {
-    const result = await run([
-      "employee",
-      "add",
-      "payment-method",
-      EMP,
-      "--type",
-      "direct-deposit",
-      "--name",
-      "Checking",
-      "--routing-number",
-      "266905059",
-      "--account-number",
-      "5809431207",
-      "--account-type",
-      "Checking",
-      "--dry-run",
-    ]);
-    expect(result.exitCode).toBe(0);
-    const data = JSON.parse(result.stdout.trim()).data;
-    expect(data.steps.map((s: { method: string; path: string }) => `${s.method} ${s.path}`)).toEqual([
-      `POST /v1/employees/${EMP}/bank_accounts`,
-      `PUT /v1/employees/${EMP}/payment_method`,
-    ]);
-  });
-
   test("home-address with no fields blocks before auth (exit 7)", async () => {
     const result = await run(["employee", "add", "home-address", EMP, "--dry-run"]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("validation");
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "street-1" }));
-  });
-
-  test("payment-method direct-deposit without the bank fields blocks (exit 7)", async () => {
-    const result = await run(["employee", "add", "payment-method", EMP, "--type", "direct-deposit", "--dry-run"]);
-    expect(result.exitCode).toBe(7);
-    const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "routing-number" }));
   });
 
   test("state-tax with a malformed --answer blocks before auth (exit 7)", async () => {
@@ -776,7 +743,7 @@ describe("token-stdin authentication", () => {
 describe("employee add: consistent missing employee_uuid contract", () => {
   // Omitting the positional employee_uuid must yield the same blocked_on validation
   // envelope (exit 7) across every subcommand - not a bare Commander error (exit 2).
-  for (const sub of ["home-address", "work-address", "job", "federal-tax", "payment-method", "state-tax"]) {
+  for (const sub of ["home-address", "work-address", "job", "federal-tax", "state-tax"]) {
     test(`${sub} without employee_uuid returns a validation envelope (exit 7)`, async () => {
       const result = await run(["employee", "add", sub]);
       expect(result.exitCode).toBe(7);

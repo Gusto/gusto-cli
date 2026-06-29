@@ -237,7 +237,7 @@ export async function createCompanyResource(
  * an existing resource in place (e.g. payroll prepare). Returns the response body, so callers that
  * need to read the mutated resource back (e.g. the payroll's populated compensations) get it for
  * free. Use this for a straight PUT-and-return; reach for withCompanyContext when the result needs
- * further shaping (see companyApproveHandler). */
+ * further shaping (see companyShowHandler). */
 export async function putCompanyResource(
   globals: GlobalFlags,
   resource: string,

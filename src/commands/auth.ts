@@ -8,6 +8,7 @@ import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/glob
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
 import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
+import { findMissingScopes } from "../lib/oauth/required-scopes.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
@@ -247,12 +248,15 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
     if (!resolved.ok) return resolved.result;
     const result = await fetchAtPath<TokenInfo>(resolved.ctx.client, "/v1/token_info");
     if (!result.ok) return result;
+    const granted = parseScopes(result.data?.scope);
+    const missing = findMissingScopes(granted);
     return {
       ok: true,
       data: {
         ...result.data,
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
-        capabilities: summarizeGrantedScopes(parseScopes(result.data?.scope)),
+        capabilities: summarizeGrantedScopes(granted),
+        ...(missing.length > 0 ? { missing_scopes: missing } : {}),
       },
     };
   };

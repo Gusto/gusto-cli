@@ -69,6 +69,21 @@ Mode auto-detects via `process.stdout.isTTY` if no flag is set — piped output 
 | 7 | validation error |
 | 8 | blocked state (precondition not met) |
 
+## OAuth scopes
+
+The CLI doesn't request scopes itself — it inherits whatever the public-beta partner OAuth app is granted. Two things track that grant:
+
+- **`src/lib/oauth/required-scopes.ts`** — the canonical minimum set, one entry per scope with the CLI command(s) that exercise it. This is the source of truth and audit trail.
+- **The partner OAuth app registration in Panda** — the *authoritative* grant, configured per environment (staging / prod / demo). `required-scopes.ts` is kept in sync with it.
+
+**When a change needs a scope** (a new command, or a command that starts hitting a new endpoint):
+
+1. Add the scope to `REQUIRED_SCOPES` in `required-scopes.ts` **in the same PR**, with an accurate `usedBy`. Removing the last consumer of a scope? Drop it from the list (and add it to `DROPPED_SCOPES` if it should never come back).
+2. The actual grant is a separate Panda edit — flag it on the ticket for whoever has partner-app access. It does **not** happen automatically on merge. Note: **prod enforces** scopes; **demo** runs scope assertion in bypass/log mode; confirm **staging** before relying on it.
+3. `gusto auth whoami` lists `missing_scopes` (required scopes the token lacks) — the first thing to check when a command returns `insufficient_scope`.
+
+Baseline auth scopes (`public`, `access_token:read`) and the retained `webhook_subscriptions:read/write` platform pair are granted but intentionally **not** enumerated in `required-scopes.ts`; don't treat their absence there as a signal to drop them.
+
 ## Build
 
 ```sh
