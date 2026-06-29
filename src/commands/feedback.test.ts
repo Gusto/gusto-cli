@@ -11,8 +11,8 @@ describe("feedbackHandler", () => {
   test("--dry-run returns tool+arguments without making a network call", async () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
-    const d = okData(await feedbackHandler({ message: "hi", email: "u@e.com", dryRun: true }, noStdin)(ctx));
-    expect(d).toEqual({ tool: "submit_feedback", arguments: { message: "hi", email: "u@e.com" } });
+    const d = okData(await feedbackHandler({ message: "hi", dryRun: true }, noStdin)(ctx));
+    expect(d).toEqual({ tool: "submit_feedback", arguments: { message: "hi" } });
     expect(fetchStub.calls).toHaveLength(0);
   });
 
@@ -38,14 +38,6 @@ describe("feedbackHandler", () => {
     await feedbackHandler({ message: "just a message" }, noStdin)(ctx);
     const args = (fetchStub.calls[0]?.body as { params?: { arguments?: object } })?.params?.arguments;
     expect(args).toEqual({ message: "just a message" });
-  });
-
-  test("includes email in the MCP arguments on a real send", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ status: "received" }) }));
-    restore = fetchStub.restore;
-    await feedbackHandler({ message: "hi", email: "u@e.com" }, noStdin)(ctx);
-    const args = (fetchStub.calls[0]?.body as { params?: { arguments?: object } })?.params?.arguments;
-    expect(args).toEqual({ message: "hi", email: "u@e.com" });
   });
 
   test("missing message with no stdin returns missingArgs", async () => {
