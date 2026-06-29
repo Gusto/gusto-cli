@@ -31,12 +31,29 @@ export async function withTempScript<T>(
 
 /** Write a completion script to a temp file and syntax-check it with `<shell> -n`, returning the
  * exit code (0 = parses cleanly). Shared by the generator unit tests and the binary smoke tests.
- * Callers guard on `HAS_ZSH` first - on a runner without the shell this would ENOENT. */
+ * Callers guard on `HAS_ZSH` first - on a runner without the shell this would ENOENT. On a non-zero
+ * exit the shell's stderr (the actual parse error, or an ENOENT) is logged so a failing
+ * `expect(...).toBe(0)` is debuggable instead of being a bare exit code. */
 export function shellSyntaxCheck(shell: "bash" | "zsh", script: string): Promise<number> {
   return withTempScript(shell === "bash" ? "gusto.bash" : "_gusto", script, async (file) => {
     const proc = Bun.spawn([shell, "-n", file], { stdout: "pipe", stderr: "pipe" });
-    return proc.exited;
+    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+    if (code !== 0) {
+      console.error(`shellSyntaxCheck: \`${shell} -n\` exited ${code}${stderr.trim() ? `:\n${stderr.trim()}` : ""}`);
+    }
+    return code;
   });
+}
+
+/** Make a fresh temp scratch directory under the OS tmpdir (returns its path). Pair with
+ * `removeScratch` in `afterEach`. Dedupes the mkdtemp/rmSync setup repeated across the suites. */
+export function makeScratch(prefix: string): string {
+  return mkdtempSync(path.join(tmpdir(), prefix));
+}
+
+/** Recursively remove a scratch dir made by `makeScratch`; safe if it's already gone. */
+export function removeScratch(dir: string): void {
+  rmSync(dir, { recursive: true, force: true });
 }
 
 export interface CapturedStream {

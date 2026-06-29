@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   findSkillsDir,
@@ -11,15 +10,16 @@ import {
   installSkill,
   listSkills,
 } from "./skills.ts";
+import { makeScratch, removeScratch } from "./test-support.ts";
 
 let scratch: string;
 
 beforeEach(() => {
-  scratch = mkdtempSync(path.join(tmpdir(), "gusto-cli-skills-"));
+  scratch = makeScratch("gusto-cli-skills-");
 });
 
 afterEach(() => {
-  rmSync(scratch, { recursive: true, force: true });
+  removeScratch(scratch);
 });
 
 describe("skill description", () => {
@@ -97,14 +97,14 @@ describe("findSkillsDir", () => {
   });
 
   test("falls back to ~/.claude/skills when nothing found", () => {
-    const home = mkdtempSync(path.join(tmpdir(), "gusto-cli-skills-home-"));
+    const home = makeScratch("gusto-cli-skills-home-");
     try {
       const result = findSkillsDir(scratch, home);
       expect(result.scope).toBe("global");
       expect(result.kind).toBe("claude");
       expect(result.path).toBe(path.join(home, ".claude", "skills"));
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeScratch(home);
     }
   });
 });

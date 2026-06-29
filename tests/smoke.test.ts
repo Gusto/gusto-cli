@@ -1,15 +1,14 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { HAS_ZSH, shellSyntaxCheck, withTempScript } from "../src/lib/test-support.ts";
+import { HAS_ZSH, makeScratch, removeScratch, shellSyntaxCheck, withTempScript } from "../src/lib/test-support.ts";
 import { type Run, spawnCapture } from "./support";
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
-const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
+const ISOLATED_CONFIG = makeScratch("gusto-cli-smoke-");
 
 async function run(args: string[], env: Record<string, string> = {}, stdin?: string): Promise<Run> {
   return spawnCapture(
@@ -477,11 +476,11 @@ describe("config commands work without auth", () => {
   let scratchHome: string;
 
   beforeEach(() => {
-    scratchHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-config-"));
+    scratchHome = makeScratch("gusto-cli-smoke-config-");
   });
 
   afterEach(() => {
-    rmSync(scratchHome, { recursive: true, force: true });
+    removeScratch(scratchHome);
   });
 
   test("set + get + list + reset round-trip", async () => {
@@ -550,7 +549,7 @@ describe("skill commands work without auth", () => {
 
   test("skill install cash-forecasting installs the bundled skill", async () => {
     const { mkdirSync, existsSync: exists, readFileSync, realpathSync } = await import("node:fs");
-    const scratchRaw = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-skill-"));
+    const scratchRaw = makeScratch("gusto-cli-smoke-skill-");
     const scratch = realpathSync(scratchRaw);
     try {
       const target = path.join(scratch, ".claude", "skills");
@@ -569,7 +568,7 @@ describe("skill commands work without auth", () => {
       expect(readFileSync(installed, "utf8")).toContain("user-invocable: true");
       expect(JSON.parse(stdout.trim()).data.installedAt).toBe(installed);
     } finally {
-      rmSync(scratchRaw, { recursive: true, force: true });
+      removeScratch(scratchRaw);
     }
   });
 });
@@ -814,5 +813,63 @@ describe("completion scripts", () => {
 
   test("does not skip the subcommand after a boolean flag", async () => {
     expect(await bashComplete(["gusto", "--json", "employee", ""], 3)).toContain("list");
+  });
+
+  test("completes a flag's static choices (--env)", async () => {
+    expect(await bashComplete(["gusto", "--env", ""], 2)).toEqual(expect.arrayContaining(["sandbox", "production"]));
+  });
+
+  test("completes a flag's choices in the equals form (--env=)", async () => {
+    // bash word-breaks on `=`, so the words are `gusto --env = <cur>`; the script normalizes the
+    // flag back from `=`. cword 3 is the empty word after `=`.
+    expect(await bashComplete(["gusto", "--env", "=", ""], 3)).toEqual(
+      expect.arrayContaining(["sandbox", "production"]),
+    );
+  });
+
+  test("completes positional choices (completion <shell>)", async () => {
+    expect(await bashComplete(["gusto", "completion", ""], 2)).toEqual(expect.arrayContaining(["bash", "zsh"]));
+  });
+
+  test("offers global flags after a subcommand", async () => {
+    expect(await bashComplete(["gusto", "employee", "list", ""], 3)).toContain("--json");
+  });
+
+  // zsh equivalent of bashComplete: source the emitted zsh script, stub `compadd` (and `compdef`,
+  // which is only defined under compinit) to print the candidates, set the `words`/`CURRENT`
+  // variables the completion system would populate, and run `_gusto`. zsh arrays are 1-indexed and
+  // CURRENT is the 1-based index of the word being completed.
+  async function zshComplete(words: string[], current: number): Promise<string[]> {
+    const { stdout } = await run(["completion", "zsh"]);
+    return withTempScript("_gusto", stdout, async (file) => {
+      const wlist = words.map((w) => `'${w}'`).join(" ");
+      const driver = [
+        `compadd() { while (( $# )); do [[ "$1" == "--" ]] && { shift; continue; }; print -r -- "$1"; shift; done }`,
+        `compdef() { : }`,
+        `source '${file}'`,
+        `words=(${wlist}); CURRENT=${current}`,
+        `_gusto`,
+      ].join("\n");
+      const proc = Bun.spawn(["zsh", "-c", driver], { stdout: "pipe", stderr: "pipe" });
+      const out = await new Response(proc.stdout).text();
+      await proc.exited;
+      return out.split("\n").filter((l) => l.length > 0);
+    });
+  }
+
+  test.skipIf(!HAS_ZSH)("zsh completes top-level commands", async () => {
+    expect(await zshComplete(["gusto", ""], 2)).toContain("employee");
+  });
+
+  test.skipIf(!HAS_ZSH)("zsh completes a subcommand after a space-separated value flag", async () => {
+    expect(await zshComplete(["gusto", "--env", "sandbox", "employee", ""], 5)).toContain("list");
+  });
+
+  test.skipIf(!HAS_ZSH)("zsh completes a flag's static choices (--env)", async () => {
+    expect(await zshComplete(["gusto", "--env", ""], 3)).toEqual(expect.arrayContaining(["sandbox", "production"]));
+  });
+
+  test.skipIf(!HAS_ZSH)("zsh completes positional choices (completion <shell>)", async () => {
+    expect(await zshComplete(["gusto", "completion", ""], 3)).toEqual(expect.arrayContaining(["bash", "zsh"]));
   });
 });

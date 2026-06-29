@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   type ConfigPaths,
@@ -11,17 +9,18 @@ import {
   validateValue,
   writeConfig,
 } from "./config.ts";
+import { makeScratch, removeScratch } from "./test-support.ts";
 
 let scratch: string;
 let paths: ConfigPaths;
 
 beforeEach(() => {
-  scratch = mkdtempSync(path.join(tmpdir(), "gusto-cli-config-"));
+  scratch = makeScratch("gusto-cli-config-");
   paths = { dir: scratch, file: path.join(scratch, "config.toml") };
 });
 
 afterEach(() => {
-  rmSync(scratch, { recursive: true, force: true });
+  removeScratch(scratch);
 });
 
 describe("validateKey", () => {

@@ -36,7 +36,7 @@ describe("describeTree", () => {
 
   test("captures static flag choices across the tree", () => {
     const model = describeTree(buildProgram());
-    const env = model.flagChoices.find((c) => c.flag === "--env");
+    const env = model.flagChoices.find((c) => c.flags.includes("--env"));
     expect(env).toBeDefined();
     expect(env!.choices).toEqual(expect.arrayContaining(["sandbox", "production"]));
   });
@@ -75,6 +75,45 @@ describe("describeTree", () => {
     expect(demo!.flags).toContain("--visible");
     expect(demo!.flags).not.toContain("--secret");
   });
+
+  test("excludes hidden subcommands", () => {
+    const program = new Command();
+    program.name("gusto");
+    program.command("visible");
+    program.addCommand(new Command("secret"), { hidden: true });
+    const model = describeTree(program);
+    expect(model.root.subcommands).toContain("visible");
+    expect(model.root.subcommands).not.toContain("secret");
+    expect(findNode(model, "/secret")).toBeUndefined();
+  });
+
+  test("captures a command's aliases as candidates and gives each its own path arm", () => {
+    const program = new Command();
+    program.name("gusto");
+    program.command("show").alias("list");
+    const model = describeTree(program);
+    expect(model.root.subcommands).toEqual(expect.arrayContaining(["show", "list"]));
+    expect(findNode(model, "/show")).toBeDefined();
+    expect(findNode(model, "/list")).toBeDefined();
+  });
+
+  test("captures choice flags by their short form too", () => {
+    const program = new Command();
+    program.name("gusto");
+    program.command("demo").addOption(new Option("-m, --mode <mode>").choices(["a", "b"]));
+    const model = describeTree(program);
+    const mode = model.flagChoices.find((c) => c.flags.includes("--mode"));
+    expect(mode).toBeDefined();
+    expect(mode!.flags).toEqual(expect.arrayContaining(["-m", "--mode"]));
+  });
+
+  test("throws when the same flag declares conflicting choices across commands", () => {
+    const program = new Command();
+    program.name("gusto");
+    program.command("a").addOption(new Option("--mode <m>").choices(["x", "y"]));
+    program.command("b").addOption(new Option("--mode <m>").choices(["p", "q"]));
+    expect(() => describeTree(program)).toThrow(/conflicting choices/);
+  });
 });
 
 describe("generateBashCompletion", () => {
@@ -96,6 +135,28 @@ describe("generateBashCompletion", () => {
   test("completes static flag choices", () => {
     const script = generateBashCompletion(describeTree(buildProgram()));
     expect(script).toContain("sandbox production");
+  });
+
+  test("folds global flags into a subcommand's candidate list", () => {
+    const script = generateBashCompletion(describeTree(buildProgram()));
+    // The /employee arm should offer the root's --json even though employee doesn't declare it.
+    const arm = script.split("\n").find((l) => l.includes('"/employee")'));
+    expect(arm).toBeDefined();
+    expect(arm).toContain("--json");
+  });
+
+  test("emits a path arm for an aliased command", () => {
+    // `pay-schedule show` aliases `list`, so /pay-schedule/list must complete too.
+    const script = generateBashCompletion(describeTree(buildProgram()));
+    expect(script).toContain('"/pay-schedule/list")');
+  });
+
+  test("matches a choice flag on either its short or long form", () => {
+    const program = new Command();
+    program.name("gusto");
+    program.command("demo").addOption(new Option("-m, --mode <mode>").choices(["a", "b"]));
+    const script = generateBashCompletion(describeTree(program));
+    expect(script).toContain("-m|--mode)");
   });
   // Behavioral tests that source the generated script and execute `_gusto` live in the smoke
   // suite (tests/smoke.test.ts), driven off the compiled binary's output - they are integration

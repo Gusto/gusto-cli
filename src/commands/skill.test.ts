@@ -1,23 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { SkillsDir } from "../lib/skills.ts";
 import { installSkill } from "../lib/skills.ts";
-import { TEST_CONTEXT as ctx } from "../lib/test-support.ts";
+import { TEST_CONTEXT as ctx, makeScratch, removeScratch } from "../lib/test-support.ts";
 import { skillInstallHandler, skillListHandler } from "./skill.ts";
 
 let scratch: string;
 let dir: SkillsDir;
 
 beforeEach(() => {
-  scratch = mkdtempSync(path.join(tmpdir(), "gusto-cli-skill-cmd-"));
+  scratch = makeScratch("gusto-cli-skill-cmd-");
   dir = { path: path.join(scratch, ".claude", "skills"), kind: "claude", scope: "local" };
 });
 
 afterEach(() => {
-  rmSync(scratch, { recursive: true, force: true });
+  removeScratch(scratch);
 });
 
 describe("skillListHandler", () => {
