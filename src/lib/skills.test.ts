@@ -40,6 +40,11 @@ describe("listSkills + getSkill", () => {
     expect(skills.find((s) => s.name === "cash-forecasting")).toBeDefined();
   });
 
+  test("includes payroll-prep", () => {
+    const skills = listSkills();
+    expect(skills.find((s) => s.name === "payroll-prep")).toBeDefined();
+  });
+
   test("returns null for unknown skills", () => {
     expect(getSkill("not-a-skill")).toBeNull();
   });
