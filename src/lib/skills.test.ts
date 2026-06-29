@@ -25,7 +25,11 @@ afterEach(() => {
 describe("skill description", () => {
   test("is sourced from the SKILL.md frontmatter (no hand-duplicated drift)", () => {
     // Cover every bundled skill so a newly added one can't silently skip this invariant.
-    for (const { name } of listSkills()) {
+    const skills = listSkills();
+    // Guard against a vacuous pass: if skill discovery breaks and returns nothing, the
+    // loop below would assert nothing and still go green.
+    expect(skills.length).toBeGreaterThan(0);
+    for (const { name } of skills) {
       const skill = getSkill(name);
       if (!skill) throw new Error(`no skill for ${name}`);
       // The description must literally appear in the bundled SKILL.md content; that's
