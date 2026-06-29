@@ -179,11 +179,23 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.body.employee_compensations).toHaveLength(2);
   });
 
+  test("maps overtime and double-overtime columns to their default pay-type names", () => {
+    const csv = ["employee_uuid,regular_hours,overtime_hours,double_overtime_hours", "ee-1,80,5,2"].join("\n");
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]?.hourly_compensations).toEqual([
+      { name: "Regular Hours", hours: 80 },
+      { name: "Overtime", hours: 5 },
+      { name: "Double overtime", hours: 2 },
+    ]);
+  });
+
   test("rejects an unknown column", () => {
-    const result = buildPayrollUpdateFromCsv("employee_uuid,overtime_hours\nee-1,5");
+    const result = buildPayrollUpdateFromCsv("employee_uuid,holiday_hours\nee-1,5");
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "overtime_hours" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "holiday_hours" }));
   });
 
   test("rejects a CSV missing the employee_uuid column", () => {
