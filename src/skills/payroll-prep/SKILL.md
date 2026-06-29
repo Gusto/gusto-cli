@@ -12,7 +12,7 @@ Drives the `gusto` CLI to take the per-cycle inputs an owner assembles by hand -
 - Gusto CLI installed and authenticated (`gusto auth login`); company set via `GUSTO_COMPANY_UUID` or `--company-uuid`.
 - The company is **payroll-ready** - it has a pay schedule, at least one fully set-up employee, and is approved to run payroll. There's no CLI readiness check; an unready company rejects writes with `422 invalid_operation`. Company-level setup (taxes, bank, forms, approval) happens in the Gusto dashboard.
 - There is an **open (unprocessed) draft payroll** for the pay period you're prepping. The CLI prepares an existing draft; it doesn't create payrolls.
-- The user has the **actual inputs** for the period - real hours and dollar amounts. Never fabricate them; they flow straight into a real (draft) payroll.
+- The user has the **actual inputs** for the period ready as a file - typically a CSV (or a spreadsheet/POS export) of real hours and dollar amounts they've already assembled. Never fabricate them; they flow straight into a real (draft) payroll.
 
 ## Discovering commands
 
@@ -25,11 +25,11 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
   - `employee_uuid` (**required**), `version` (optional), `job_uuid`
   - `regular_hours`, `overtime_hours`, `double_overtime_hours`
   - `bonus`, `commission`, `paycheck_tips`, `cash_tips`, `reimbursement`
-  - Every row needs `employee_uuid` plus **at least one input column**; otherwise the file is rejected.
+  - The header must include `employee_uuid` plus **at least one input column**, or the whole file is rejected; every row must carry an `employee_uuid`.
 - **Repeat `employee_uuid` across rows** to split hours over multiple jobs; the rows merge into one compensation.
 - **Blank cell = leave untouched. Explicit `0` = override to zero.** A row with no input values is skipped and listed under `skipped_employees`, not failed.
 - **Hours (regular/overtime/double-overtime) and fixed comp (bonus/commission/tips) are replaced by name+job** on each run, so re-running with corrected values is safe. **Reimbursements are added on each run, not replaced** - set a reimbursement only once per cycle or you'll duplicate it.
-- `overtime_hours` / `double_overtime_hours` map to Gusto's **default** `Overtime` / `Double overtime` pay types. If a company renamed its overtime pay type the API silently drops the unmatched line, so always **verify overtime on the prepared draft** (step 6). Hour types beyond regular/OT/double-OT aren't supported here.
+- `overtime_hours` / `double_overtime_hours` map to Gusto's built-in `Overtime` / `Double overtime` pay types, matched by their fixed seeded names. These are global pay types, so the line always matches; an unrecognized hourly name is rejected by the API, not silently dropped. Hour types beyond regular/OT/double-OT aren't supported here.
 
 ## Steps
 
@@ -43,7 +43,7 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 5. **Review the mapping with the user before writing.** Echo back, in plain terms: (a) the **column mapping** you inferred (which source column became which Gusto input), (b) the **per-employee values** you're about to write, and (c) a **needs-attention** section that flags _both_ (i) export rows you could **not** resolve to a Gusto employee and (ii) Gusto employees with **no row** in the export. Write only the confidently-matched rows; never silently drop a row. **Get the user's confirmation**, then run `gusto payroll update <payroll_uuid> --input <csv>` - preview with `--dry-run` first.
 
-6. **Re-prepare and surface the review.** Run `gusto payroll prepare <payroll_uuid>` again and read back `employee_compensations`. Confirm the written inputs landed - pay particular attention to **overtime/double-overtime**, which a renamed company pay type can cause the API to drop. Present a per-employee review summary plus any `skipped_employees` and the unmatched rows from step 5. Stop here; the owner reviews and approves the run in the Gusto dashboard.
+6. **Re-prepare and surface the review.** Run `gusto payroll prepare <payroll_uuid>` again and read back `employee_compensations`. Confirm the written inputs landed as expected. Present a per-employee review summary plus any `skipped_employees` and the unmatched rows from step 5. Stop here; the owner reviews and approves the run in the Gusto dashboard.
 
 ## Pause points (user input required)
 
@@ -62,7 +62,6 @@ Pass `--agent` to every call for parseable JSON (`{ "ok": true, "data": {...} }`
 - **`payroll update` writes to a real draft payroll.** Preview with `--dry-run` and confirm the mapping and values with the user (step 5) before writing.
 - **`version` guards against clobbering a concurrent edit.** It's the optimistic-lock token read off the prepared draft - optional on each CSV row, but include it. A successful write bumps an employee's `version`, so re-prepare to read the current value before writing to that same employee again.
 - **Reimbursements are added, not replaced.** Re-running the update duplicates any reimbursement - set each reimbursement only once per cycle. Hours and bonus/commission/tips are replaced by name+job, so those are safe to re-run.
-- **Overtime can silently not land.** `overtime_hours` / `double_overtime_hours` only match a company's **default** OT pay-type names; a renamed pay type makes the API drop the line. Always verify OT on the prepared draft (step 6).
 - **The target payroll stays a draft (unprocessed).** This skill only populates and prepares the draft; it never submits or processes payroll, and the draft is reversible until someone processes it.
 
 ## Out of scope
