@@ -24,13 +24,15 @@ afterEach(() => {
 
 describe("skill description", () => {
   test("is sourced from the SKILL.md frontmatter (no hand-duplicated drift)", () => {
-    const skill = getSkill("cash-forecasting");
-    expect(skill).not.toBeNull();
-    if (!skill) throw new Error("unreachable");
-    // The description must literally appear in the bundled SKILL.md content; that's
-    // the invariant a regression-by-drift would break.
-    expect(skill.content).toContain(skill.description);
-    expect(skill.content).toContain(`description: ${skill.description}`);
+    // Cover every bundled skill so a newly added one can't silently skip this invariant.
+    for (const { name } of listSkills()) {
+      const skill = getSkill(name);
+      if (!skill) throw new Error(`no skill for ${name}`);
+      // The description must literally appear in the bundled SKILL.md content; that's
+      // the invariant a regression-by-drift would break.
+      expect(skill.content).toContain(skill.description);
+      expect(skill.content).toContain(`description: ${skill.description}`);
+    }
   });
 });
 
