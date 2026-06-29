@@ -29,9 +29,7 @@ describe("skill description", () => {
     // Guard against a vacuous pass: if skill discovery breaks and returns nothing, the
     // loop below would assert nothing and still go green.
     expect(skills.length).toBeGreaterThan(0);
-    for (const { name } of skills) {
-      const skill = getSkill(name);
-      if (!skill) throw new Error(`no skill for ${name}`);
+    for (const skill of skills) {
       // The description must literally appear in the bundled SKILL.md content; that's
       // the invariant a regression-by-drift would break.
       expect(skill.content).toContain(skill.description);
