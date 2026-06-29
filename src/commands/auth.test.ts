@@ -337,7 +337,7 @@ describe("authWhoamiHandler", () => {
     const result = await authWhoamiHandler({})(ctx);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    const missing = (result.data as Record<string, unknown>).missing_scopes as string[];
+    const { missing_scopes: missing } = result.data as { missing_scopes?: string[] };
     expect(Array.isArray(missing)).toBe(true);
     // A granted scope is never reported missing; a required-but-ungranted one is.
     expect(missing).not.toContain("companies:read");
@@ -353,7 +353,7 @@ describe("authWhoamiHandler", () => {
     const result = await authWhoamiHandler({})(ctx);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    expect((result.data as Record<string, unknown>).missing_scopes).toBeUndefined();
+    expect((result.data as { missing_scopes?: string[] }).missing_scopes).toBeUndefined();
   });
 
   test("propagates a token_info error and skips the capabilities summary", async () => {
