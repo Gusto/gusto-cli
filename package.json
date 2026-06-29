@@ -3,7 +3,7 @@
   "version": "0.0.1-alpha.7",
   "private": true,
   "description": "Gusto CLI - agent-friendly developer interface for Gusto payroll",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Gusto/gusto-cli-public.git"
