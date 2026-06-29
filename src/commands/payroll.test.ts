@@ -233,6 +233,13 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: overtime_hours" }));
   });
 
+  test("rejects a negative double-overtime value like any other hours column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,double_overtime_hours\nee-1,-5");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: double_overtime_hours" }));
+  });
+
   test("rejects an unknown column", () => {
     const result = buildPayrollUpdateFromCsv("employee_uuid,holiday_hours\nee-1,5");
     expect(result.ok).toBe(false);
