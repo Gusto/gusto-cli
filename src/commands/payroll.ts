@@ -158,11 +158,8 @@ export type PayrollUpdateValidation =
   | { ok: true; body: PayrollUpdateBody; skipped: SkippedEmployee[] }
   | { ok: false; message: string; blocked: BlockedOn[] };
 
-// Each hourly column maps to the API compensation `name` the PUT matches against. 'Regular Hours'
-// is a stable, company-agnostic constant. 'Overtime' / 'Double overtime' are Gusto's default
-// company pay-type names; the API matches the submitted name to a company pay type and silently
-// drops any that doesn't match, so a company that has renamed its overtime pay type won't pick
-// these up (called out in --help). Resolving renamed names is the agent's job, not the parser's.
+// Each hourly column maps to the API compensation `name` the PUT matches against. 'Regular Hours',
+// 'Overtime', and 'Double overtime' are Gusto's seeded default pay-type names, matched by name.
 const HOURLY_COLUMNS = [
   { column: "regular_hours", name: "Regular Hours" },
   { column: "overtime_hours", name: "Overtime" },
@@ -459,7 +456,7 @@ function payrollUpdateExample(): Record<string, unknown> {
         },
       ],
     },
-    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. A row with no input values is skipped and listed under `skipped_employees`, not failed. Hours (regular/overtime/double-overtime) and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. overtime_hours/double_overtime_hours map to the default 'Overtime'/'Double overtime' pay types; if a company renamed its overtime pay type the API drops the unmatched line, so verify overtime on the prepared draft. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
+    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. A row with no input values is skipped and listed under `skipped_employees`, not failed. Hours (regular/overtime/double-overtime) and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. overtime_hours/double_overtime_hours map to the default 'Overtime'/'Double overtime' pay types. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
   };
 }
 
@@ -546,7 +543,7 @@ Updates an unprocessed (draft) payroll from a CSV. Columns (case-insensitive):
 
 One row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (the
 rows merge into one compensation). Blank cells are left untouched; an explicit 0 overrides to zero.
-Each row's 'version' is the optimistic-lock token from the prepared payroll. overtime_hours/double_overtime_hours use the default 'Overtime'/'Double overtime' pay types (a renamed pay type won't match, so verify it on the draft). After updating, run 'payroll prepare' to get a reviewable draft.
+Each row's 'version' is the optimistic-lock token from the prepared payroll. overtime_hours/double_overtime_hours use the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a reviewable draft.
 
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv

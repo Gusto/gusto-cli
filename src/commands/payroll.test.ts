@@ -191,6 +191,25 @@ describe("buildPayrollUpdateFromCsv", () => {
     ]);
   });
 
+  test("overtime columns parse like regular_hours: an explicit 0 is kept, a blank cell is omitted", () => {
+    // ee-1: overtime 0 (kept), double-overtime blank (omitted).
+    // ee-2: overtime blank (omitted), double-overtime 0 (kept).
+    const csv = ["employee_uuid,regular_hours,overtime_hours,double_overtime_hours", "ee-1,80,0,", "ee-2,80,,0"].join(
+      "\n",
+    );
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations[0]?.hourly_compensations).toEqual([
+      { name: "Regular Hours", hours: 80 },
+      { name: "Overtime", hours: 0 },
+    ]);
+    expect(result.body.employee_compensations[1]?.hourly_compensations).toEqual([
+      { name: "Regular Hours", hours: 80 },
+      { name: "Double overtime", hours: 0 },
+    ]);
+  });
+
   test("merges regular and overtime across multiple jobs into one compensation", () => {
     const csv = ["employee_uuid,job_uuid,regular_hours,overtime_hours", "ee-1,job-a,30,5", "ee-1,job-b,20,3"].join(
       "\n",
