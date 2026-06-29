@@ -8,7 +8,6 @@ import { readAllFromStdin } from "../lib/stdin.ts";
 
 interface FeedbackOpts {
   message?: string;
-  email?: string;
   category?: string;
   context?: string;
   tokenStdin?: boolean;
@@ -28,7 +27,6 @@ export function registerFeedbackCommand(parent: Command): void {
     .command("feedback")
     .description("Send feedback to Gusto")
     .option("--message <text>", "Feedback message (or pipe it via stdin)")
-    .option("--email <addr>", "Optional reply-to email")
     .option("--category <value>", "Optional feedback category")
     .option("--context <json>", "Optional context metadata as a JSON object")
     .option(...DRY_RUN_OPT)
@@ -85,10 +83,9 @@ export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = rea
       context = parsed as Record<string, unknown>;
     }
 
-    const body: { message: string; email?: string; category?: FeedbackCategory; context?: Record<string, unknown> } = {
+    const body: { message: string; category?: FeedbackCategory; context?: Record<string, unknown> } = {
       message,
     };
-    if (opts.email) body.email = opts.email;
     if (category) body.category = category;
     if (context) body.context = context;
 
