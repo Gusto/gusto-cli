@@ -65,6 +65,7 @@ export const DROPPED_SCOPES: readonly string[] = [
   "company_signatories:write",
   "employee_bank_accounts:write",
   "companies:write",
+  "employee_payment_methods:read",
   "employee_payment_methods:write",
 ] as const;
 
