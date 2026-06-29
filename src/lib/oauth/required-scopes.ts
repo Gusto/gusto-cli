@@ -46,13 +46,11 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "compensations:write", usedBy: ["employee add job"] },
   { scope: "employee_federal_taxes:write", usedBy: ["employee add federal-tax"] },
   { scope: "employee_state_taxes:write", usedBy: ["employee add state-tax"] },
-  { scope: "employee_payment_methods:write", usedBy: ["employee add payment-method"] },
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
-  { scope: "companies:write", usedBy: ["company approve"] },
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
@@ -66,6 +64,9 @@ export const DROPPED_SCOPES: readonly string[] = [
   "signatories:manage",
   "company_signatories:write",
   "employee_bank_accounts:write",
+  // Dropped with the demo `company approve` and `employee add payment-method` commands.
+  "companies:write",
+  "employee_payment_methods:write",
 ] as const;
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to

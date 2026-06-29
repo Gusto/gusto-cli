@@ -17,13 +17,11 @@ import {
   manageBlockers,
   manageIdentityBody,
   parseAnswerFlags,
-  paymentMethodBlockers,
   resolveManageMode,
   resolveWorkAddressLocation,
   runFederalTax,
   runJob,
   runManage,
-  runPaymentMethod,
   runStateTax,
   workAddressBlockers,
   workAddressBody,
@@ -607,130 +605,6 @@ describe("runFederalTax", () => {
     expect(body.other_income).toBeUndefined();
     expect(body.dependents_amount).toBeUndefined();
     expect(body.deductions).toBeUndefined();
-  });
-});
-
-describe("paymentMethodBlockers", () => {
-  test("requires a type", () => {
-    expect(paymentMethodBlockers({}).map((b) => b.field)).toEqual(["type"]);
-  });
-
-  test("rejects an unknown type", () => {
-    expect(paymentMethodBlockers({ type: "venmo" }).map((b) => b.field)).toEqual(["type"]);
-  });
-
-  test("check needs nothing else", () => {
-    expect(paymentMethodBlockers({ type: "check" })).toEqual([]);
-  });
-
-  test("direct-deposit requires the bank-account fields", () => {
-    const fields = paymentMethodBlockers({ type: "direct-deposit" }).map((b) => b.field);
-    expect(fields).toEqual(["name", "routing-number", "account-number", "account-type"]);
-  });
-
-  test("direct-deposit rejects a bad account-type", () => {
-    const fields = paymentMethodBlockers({
-      type: "direct-deposit",
-      name: "Checking",
-      routingNumber: "266905059",
-      accountNumber: "5809431207",
-      accountType: "Crypto",
-    }).map((b) => b.field);
-    expect(fields).toEqual(["account-type"]);
-  });
-
-  test("a complete direct-deposit passes", () => {
-    expect(
-      paymentMethodBlockers({
-        type: "direct-deposit",
-        name: "Checking",
-        routingNumber: "266905059",
-        accountNumber: "5809431207",
-        accountType: "Checking",
-      }),
-    ).toEqual([]);
-  });
-});
-
-describe("runPaymentMethod", () => {
-  test("check → version-guarded PUT with type Check", async () => {
-    const { client, calls } = stubApiClient({
-      "GET /v1/employees/emp-1/payment_method": [200, { version: "pm-v1", type: "Check" }],
-      "PUT /v1/employees/emp-1/payment_method": [200, { type: "Check" }],
-    });
-    const result = await runPaymentMethod(client, "emp-1", { type: "check" });
-    expect(result.ok).toBe(true);
-    const put = calls.find((c) => c.method === "PUT");
-    expect((put?.body as Record<string, unknown>).type).toBe("Check");
-    expect((put?.body as Record<string, unknown>).version).toBe("pm-v1");
-    expect(calls.some((c) => c.url.includes("/bank_accounts"))).toBe(false);
-  });
-
-  test("direct-deposit → create bank account, then PUT Direct Deposit split to it", async () => {
-    const { client, calls } = stubApiClient({
-      "POST /v1/employees/emp-1/bank_accounts": [201, { uuid: "bank-1" }],
-      "GET /v1/employees/emp-1/payment_method": [200, { version: "pm-v1" }],
-      "PUT /v1/employees/emp-1/payment_method": [200, { type: "Direct Deposit" }],
-    });
-    const result = await runPaymentMethod(client, "emp-1", {
-      type: "direct-deposit",
-      name: "Checking",
-      routingNumber: "266905059",
-      accountNumber: "5809431207",
-      accountType: "Checking",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    expect(Object.keys(result.data as Record<string, unknown>)).toEqual(["bank_account", "payment_method"]);
-    const post = calls.find((c) => c.url.endsWith("/bank_accounts"));
-    expect((post?.body as Record<string, unknown>).routing_number).toBe("266905059");
-    const put = calls.find((c) => c.method === "PUT");
-    const body = put?.body as { type: string; splits: { uuid: string; split_amount: number }[] };
-    expect(body.type).toBe("Direct Deposit");
-    expect(body.splits[0]?.uuid).toBe("bank-1");
-    expect(body.splits[0]?.split_amount).toBe(100);
-  });
-
-  test("direct-deposit errors when the bank account create returns no uuid", async () => {
-    const { client } = stubApiClient({
-      "POST /v1/employees/emp-1/bank_accounts": [201, { routing_number: "266905059" }],
-    });
-    const result = await runPaymentMethod(client, "emp-1", {
-      type: "direct-deposit",
-      name: "Checking",
-      routingNumber: "266905059",
-      accountNumber: "5809431207",
-      accountType: "Checking",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("bank_create_no_uuid");
-  });
-
-  test("a payment_method PUT failure surfaces the created bank account so a retry reuses it (no duplicate)", async () => {
-    const { client } = stubApiClient({
-      "POST /v1/employees/emp-1/bank_accounts": [201, { uuid: "bank-1" }],
-      "GET /v1/employees/emp-1/payment_method": [200, { version: "pm-v1" }],
-      "PUT /v1/employees/emp-1/payment_method": [422, { error: "bad split" }],
-    });
-    const result = await runPaymentMethod(client, "emp-1", {
-      type: "direct-deposit",
-      name: "Checking",
-      routingNumber: "266905059",
-      accountNumber: "5809431207",
-      accountType: "Checking",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("payment_method_failed");
-    const details = result.error.details as {
-      bank_account: { uuid: string };
-      completed: string[];
-      failed: { domain: string };
-    };
-    expect(details.bank_account.uuid).toBe("bank-1");
-    expect(details.completed).toEqual(["bank_account"]);
-    expect(details.failed.domain).toBe("payment_method");
   });
 });
 
