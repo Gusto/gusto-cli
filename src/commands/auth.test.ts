@@ -5,6 +5,7 @@ import path from "node:path";
 import { type ConfigPaths, readConfig, writeConfig } from "../lib/config.ts";
 import type { GlobalFlags } from "../lib/global-flags.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
+import { REQUIRED_SCOPES } from "../lib/oauth/required-scopes.ts";
 import type { SkillsDir } from "../lib/skills.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import {
@@ -325,6 +326,34 @@ describe("authWhoamiHandler", () => {
     const capabilities = data.capabilities as Array<{ resource: string; access: string[] }>;
     expect(capabilities).toContainEqual({ resource: "employees", access: ["read", "write"] });
     expect(capabilities).toContainEqual({ resource: "pay_schedules", access: ["read"] });
+  });
+
+  test("surfaces missing_scopes when the token's grant is narrower than the CLI surface needs", async () => {
+    const tokenInfo = {
+      scope: "companies:read public",
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const missing = (result.data as Record<string, unknown>).missing_scopes as string[];
+    expect(Array.isArray(missing)).toBe(true);
+    // A granted scope is never reported missing; a required-but-ungranted one is.
+    expect(missing).not.toContain("companies:read");
+    expect(missing).toContain("employees:write");
+  });
+
+  test("omits missing_scopes entirely when every required scope is granted", async () => {
+    const tokenInfo = {
+      scope: REQUIRED_SCOPES.map((r) => r.scope).join(" "),
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).missing_scopes).toBeUndefined();
   });
 
   test("propagates a token_info error and skips the capabilities summary", async () => {
