@@ -111,8 +111,9 @@ interface PayrollPrepareOpts {
 // /v1/companies/{uuid}/payrolls/{uuid}. The wire body is `{ employee_compensations: [...] }`
 // (unwrapped - the API wraps it in `payroll` server-side). Each compensation is matched to an
 // existing payroll line by its API `name`, so the column -> name map below uses the exact strings
-// the Embedded API expects: 'Regular Hours' (ApiConstants::V1.regular_hours_compensation_name) and
-// the 'Bonus' / 'Commission' / 'Paycheck Tips' / 'Cash Tips' earning-type names.
+// the Embedded API expects: 'Regular Hours' (ApiConstants::V1.regular_hours_compensation_name), the
+// default 'Overtime' / 'Double overtime' pay-type names, and the 'Bonus' / 'Commission' /
+// 'Paycheck Tips' / 'Cash Tips' earning-type names.
 
 interface HourlyCompensationInput {
   name: string;
@@ -157,10 +158,13 @@ export type PayrollUpdateValidation =
   | { ok: true; body: PayrollUpdateBody; skipped: SkippedEmployee[] }
   | { ok: false; message: string; blocked: BlockedOn[] };
 
-// Only 'Regular Hours' has a stable, company-agnostic API name; overtime/double-overtime hourly
-// compensations are named after each company's own pay types (see employee_compensation_facade),
-// so they're deliberately excluded from this first pass rather than guessed at.
-const HOURLY_COLUMNS = [{ column: "regular_hours", name: "Regular Hours" }] as const;
+// Each hourly column maps to the API compensation `name` the PUT matches against. 'Regular Hours',
+// 'Overtime', and 'Double overtime' are Gusto's seeded default pay-type names, matched by name.
+const HOURLY_COLUMNS = [
+  { column: "regular_hours", name: "Regular Hours" },
+  { column: "overtime_hours", name: "Overtime" },
+  { column: "double_overtime_hours", name: "Double overtime" },
+] as const;
 const FIXED_COLUMNS = [
   { column: "bonus", name: "Bonus" },
   { column: "commission", name: "Commission" },
@@ -417,7 +421,8 @@ export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation
 
 /** The canonical request/CSV shape published by `--example` - learnable without a uuid or auth.
  * Shows the multi-job pattern: the same employee on two rows (one per job) merges into a single
- * compensation with one hourly entry per job. */
+ * compensation. A job can carry more than one hourly entry - jobA here has both regular and
+ * overtime hours. */
 function payrollUpdateExample(): Record<string, unknown> {
   const jobA = "1f2e3d4c-0000-1111-2222-333344445555";
   const jobB = "2a3b4c5d-0000-1111-2222-333344445555";
@@ -430,9 +435,9 @@ function payrollUpdateExample(): Record<string, unknown> {
       optional: ["version", "job_uuid", ...INPUT_COLUMNS],
     },
     csv_example: [
-      "employee_uuid,version,job_uuid,regular_hours,bonus,cash_tips",
-      `${employee},a1b2c3,${jobA},30,250,40`,
-      `${employee},a1b2c3,${jobB},25,,`,
+      "employee_uuid,version,job_uuid,regular_hours,overtime_hours,bonus,cash_tips",
+      `${employee},a1b2c3,${jobA},30,5,250,40`,
+      `${employee},a1b2c3,${jobB},25,,,`,
     ].join("\n"),
     body: {
       employee_compensations: [
@@ -441,6 +446,7 @@ function payrollUpdateExample(): Record<string, unknown> {
           version: "a1b2c3",
           hourly_compensations: [
             { name: "Regular Hours", hours: 30, job_uuid: jobA },
+            { name: "Overtime", hours: 5, job_uuid: jobA },
             { name: "Regular Hours", hours: 25, job_uuid: jobB },
           ],
           fixed_compensations: [
@@ -450,7 +456,7 @@ function payrollUpdateExample(): Record<string, unknown> {
         },
       ],
     },
-    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. A row with no input values is skipped and listed under `skipped_employees`, not failed. Hours and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
+    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. A row with no input values is skipped and listed under `skipped_employees`, not failed. Hours (regular/overtime/double-overtime) and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. overtime_hours/double_overtime_hours map to the default 'Overtime'/'Double overtime' pay types. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
   };
 }
 
@@ -532,13 +538,12 @@ Examples:
       `
 Updates an unprocessed (draft) payroll from a CSV. Columns (case-insensitive):
   employee_uuid (required), version, job_uuid,
-  regular_hours, bonus, commission, paycheck_tips, cash_tips, reimbursement
+  regular_hours, overtime_hours, double_overtime_hours,
+  bonus, commission, paycheck_tips, cash_tips, reimbursement
 
 One row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (the
 rows merge into one compensation). Blank cells are left untouched; an explicit 0 overrides to zero.
-Each row's 'version' is the optimistic-lock token from the prepared payroll. Overtime/double-overtime
-are not supported yet (their names vary per company). After updating, run 'payroll prepare' to get a
-reviewable draft.
+Each row's 'version' is the optimistic-lock token from the prepared payroll. overtime_hours/double_overtime_hours use the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a reviewable draft.
 
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
