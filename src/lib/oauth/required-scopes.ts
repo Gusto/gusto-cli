@@ -64,7 +64,8 @@ export const DROPPED_SCOPES: readonly string[] = [
   "signatories:manage",
   "company_signatories:write",
   "employee_bank_accounts:write",
-  // Dropped with the demo `company approve` and `employee add payment-method` commands.
+  // `companies:write` and `employee_payment_methods:write` lost their only consumers when the demo
+  // `company approve` and `employee add payment-method` commands were removed.
   "companies:write",
   "employee_payment_methods:write",
 ] as const;
