@@ -191,6 +191,29 @@ describe("buildPayrollUpdateFromCsv", () => {
     ]);
   });
 
+  test("merges regular and overtime across multiple jobs into one compensation", () => {
+    const csv = ["employee_uuid,job_uuid,regular_hours,overtime_hours", "ee-1,job-a,30,5", "ee-1,job-b,20,3"].join(
+      "\n",
+    );
+    const result = buildPayrollUpdateFromCsv(csv);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.body.employee_compensations).toHaveLength(1);
+    expect(result.body.employee_compensations[0]?.hourly_compensations).toEqual([
+      { name: "Regular Hours", hours: 30, job_uuid: "job-a" },
+      { name: "Overtime", hours: 5, job_uuid: "job-a" },
+      { name: "Regular Hours", hours: 20, job_uuid: "job-b" },
+      { name: "Overtime", hours: 3, job_uuid: "job-b" },
+    ]);
+  });
+
+  test("rejects a negative overtime value like any other hours column", () => {
+    const result = buildPayrollUpdateFromCsv("employee_uuid,overtime_hours\nee-1,-5");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "row 2: overtime_hours" }));
+  });
+
   test("rejects an unknown column", () => {
     const result = buildPayrollUpdateFromCsv("employee_uuid,holiday_hours\nee-1,5");
     expect(result.ok).toBe(false);
