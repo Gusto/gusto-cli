@@ -24,13 +24,17 @@ afterEach(() => {
 
 describe("skill description", () => {
   test("is sourced from the SKILL.md frontmatter (no hand-duplicated drift)", () => {
-    const skill = getSkill("cash-forecasting");
-    expect(skill).not.toBeNull();
-    if (!skill) throw new Error("unreachable");
-    // The description must literally appear in the bundled SKILL.md content; that's
-    // the invariant a regression-by-drift would break.
-    expect(skill.content).toContain(skill.description);
-    expect(skill.content).toContain(`description: ${skill.description}`);
+    // Cover every bundled skill so a newly added one can't silently skip this invariant.
+    const skills = listSkills();
+    // Guard against a vacuous pass: if skill discovery breaks and returns nothing, the
+    // loop below would assert nothing and still go green.
+    expect(skills.length).toBeGreaterThan(0);
+    for (const skill of skills) {
+      // The description must literally appear in the bundled SKILL.md content; that's
+      // the invariant a regression-by-drift would break.
+      expect(skill.content).toContain(skill.description);
+      expect(skill.content).toContain(`description: ${skill.description}`);
+    }
   });
 });
 
@@ -38,6 +42,11 @@ describe("listSkills + getSkill", () => {
   test("includes cash-forecasting", () => {
     const skills = listSkills();
     expect(skills.find((s) => s.name === "cash-forecasting")).toBeDefined();
+  });
+
+  test("includes payroll-prep", () => {
+    const skills = listSkills();
+    expect(skills.find((s) => s.name === "payroll-prep")).toBeDefined();
   });
 
   test("returns null for unknown skills", () => {

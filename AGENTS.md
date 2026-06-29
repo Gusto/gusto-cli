@@ -34,4 +34,4 @@ The OAuth callback hits `127.0.0.1`, so the user signs in on the same host as th
 
 ## Bundled skills
 
-`gusto skill list` shows what's available; `gusto skill install <name>` installs one into the project's agent workspace. `gusto auth login` offers to auto-install bundled skills on first sign-in. `cash-forecasting` projects upcoming payroll cash needs and `timesheet-sync` drives the per-cycle timesheet input flow.
+`gusto skill list` shows what's available; `gusto skill install <name>` installs one into the project's agent workspace. `gusto auth login` offers to auto-install bundled skills on first sign-in. `cash-forecasting` projects upcoming payroll cash needs, `timesheet-sync` drives the per-cycle timesheet input flow, and `payroll-prep` maps an owner's per-cycle inputs (hours, tips, commission, bonus, reimbursement) onto a draft payroll for review.
