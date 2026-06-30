@@ -565,6 +565,33 @@ describe("contractor add is self-onboarding-only (AINT-707)", () => {
     expect(steps[1].path).toContain("/onboarding_status");
   });
 
+  test("--dry-run with valid args returns the 2-step plan and never calls the API", async () => {
+    const result = await run([
+      "contractor",
+      "add",
+      "--type",
+      "individual",
+      "--first-name",
+      "Sam",
+      "--last-name",
+      "Rivera",
+      "--email",
+      "sam@example.com",
+      "--wage-type",
+      "fixed",
+      "--start-date",
+      "2026-07-01",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    const steps = envelope.data.steps as { method: string; body?: { self_onboarding?: boolean; email?: string } }[];
+    expect(steps).toHaveLength(2);
+    expect(steps[0].body?.self_onboarding).toBe(true);
+    expect(steps[0].body?.email).toBe("sam@example.com");
+  });
+
   test("missing --email is a validation block (exit 7), not an unknown command", async () => {
     const result = await run([
       "contractor",
