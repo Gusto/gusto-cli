@@ -49,6 +49,7 @@ jobs:
       - run: bun run test
       - run: bun run test:install
       - run: bun run test:dco
+      - run: bun run license:check
       # Smoke runs on GitHub-hosted runners whose IPs aren't on the org allowlist,
       # so actions/checkout 403s there. Hand them the source via artifact instead.
       - name: Package source for smoke matrix
