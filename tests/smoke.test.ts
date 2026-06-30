@@ -787,16 +787,37 @@ describe("completion scripts", () => {
   // completion function with a fixed COMP_WORDS / COMP_CWORD, and read back the candidates. This
   // executes the generated script (which `bash -n` does not), so it catches command-path-walk
   // regressions. bash is present on every smoke leg.
-  async function bashComplete(words: string[], cword: number): Promise<string[]> {
-    const { stdout } = await run(["completion", "bash"]);
-    return withTempScript("gusto.bash", stdout, async (file) => {
-      const compWords = words.map((w) => `'${w}'`).join(" ");
-      const driver = `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`;
-      const proc = Bun.spawn(["bash", "-c", driver], { stdout: "pipe", stderr: "pipe" });
-      const out = await new Response(proc.stdout).text();
-      await proc.exited;
+  // Shared driver: emit the script for `shell`, write it to a temp file, run `buildDriver(file)`
+  // under that shell, and return the printed candidates. Throws on a non-zero exit (with the
+  // shell's stderr) so a broken driver surfaces as a test error rather than a silently empty list.
+  async function shellComplete(
+    shell: "bash" | "zsh",
+    filename: string,
+    buildDriver: (file: string) => string,
+  ): Promise<string[]> {
+    const { stdout } = await run(["completion", shell]);
+    return withTempScript(filename, stdout, async (file) => {
+      const proc = Bun.spawn([shell, "-c", buildDriver(file)], { stdout: "pipe", stderr: "pipe" });
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      if (code !== 0) {
+        throw new Error(`${shell} completion driver exited ${code}${err.trim() ? `: ${err.trim()}` : ""}`);
+      }
       return out.split("\n").filter((l) => l.length > 0);
     });
+  }
+
+  function bashComplete(words: string[], cword: number): Promise<string[]> {
+    const compWords = words.map((w) => `'${w}'`).join(" ");
+    return shellComplete(
+      "bash",
+      "gusto.bash",
+      (file) =>
+        `source '${file}'; COMP_WORDS=(${compWords}); COMP_CWORD=${cword}; _gusto; printf '%s\\n' "\${COMPREPLY[@]}"`,
+    );
   }
 
   test("completes top-level commands with no preceding flags", async () => {
@@ -839,22 +860,17 @@ describe("completion scripts", () => {
   // which is only defined under compinit) to print the candidates, set the `words`/`CURRENT`
   // variables the completion system would populate, and run `_gusto`. zsh arrays are 1-indexed and
   // CURRENT is the 1-based index of the word being completed.
-  async function zshComplete(words: string[], current: number): Promise<string[]> {
-    const { stdout } = await run(["completion", "zsh"]);
-    return withTempScript("_gusto", stdout, async (file) => {
-      const wlist = words.map((w) => `'${w}'`).join(" ");
-      const driver = [
+  function zshComplete(words: string[], current: number): Promise<string[]> {
+    const wlist = words.map((w) => `'${w}'`).join(" ");
+    return shellComplete("zsh", "_gusto", (file) =>
+      [
         `compadd() { while (( $# )); do [[ "$1" == "--" ]] && { shift; continue; }; print -r -- "$1"; shift; done }`,
         `compdef() { : }`,
         `source '${file}'`,
         `words=(${wlist}); CURRENT=${current}`,
         `_gusto`,
-      ].join("\n");
-      const proc = Bun.spawn(["zsh", "-c", driver], { stdout: "pipe", stderr: "pipe" });
-      const out = await new Response(proc.stdout).text();
-      await proc.exited;
-      return out.split("\n").filter((l) => l.length > 0);
-    });
+      ].join("\n"),
+    );
   }
 
   test.skipIf(!HAS_ZSH)("zsh completes top-level commands", async () => {
