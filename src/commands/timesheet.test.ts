@@ -353,6 +353,41 @@ describe("timesheetSyncHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("validation");
   });
+
+  const validSync = {
+    ...auth,
+    payScheduleUuid: "ps-1",
+    payPeriodStart: "2026-06-01",
+    payPeriodEnd: "2026-06-15",
+  };
+
+  test("an agent-mode sync without --confirm is blocked and sends nothing", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 500 }));
+    try {
+      const result = await timesheetSyncHandler(validSync)(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("confirmation_required");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("--confirm lets the sync POST the payroll sync", async () => {
+    const { calls, restore } = stubGlobalFetch((u) =>
+      u.includes("/time_tracking/payroll_syncs") ? { status: 201, body: { status: "pending" } } : { status: 404 },
+    );
+    try {
+      const result = await timesheetSyncHandler({ ...validSync, confirm: true })(ctx);
+      expect(result.ok).toBe(true);
+      const post = calls.find((c) => c.method === "POST");
+      expect(post?.url).toContain("/v1/companies/co-1/time_tracking/payroll_syncs");
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe("validateTimesheetList", () => {
