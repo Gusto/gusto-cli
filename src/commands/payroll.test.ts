@@ -715,6 +715,24 @@ describe("inferMissingJobUuids", () => {
     expect(body.employee_compensations[0]?.hourly_compensations?.[0]?.job_uuid).toBeUndefined();
   });
 
+  test("emits a single blocked entry per multi-job employee even with several missing rows", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        {
+          employee_uuid: "ee-multi",
+          hourly_compensations: [
+            { name: "Regular Hours", hours: 40 },
+            { name: "Overtime", hours: 5 },
+          ],
+          fixed_compensations: [{ name: "Bonus", amount: 250 }],
+        },
+      ],
+    };
+    const blocked = inferMissingJobUuids(body, jobs);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.field).toContain("ee-multi");
+  });
+
   test("leaves entries with an explicit job_uuid untouched, even for multi-job employees", () => {
     const body: PayrollUpdateBody = {
       employee_compensations: [

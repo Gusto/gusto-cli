@@ -364,7 +364,7 @@ describe("payrollUpdateHandler", () => {
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 
-  test("a non-array /jobs body degrades to zero known jobs and lets the PUT surface the server error", async () => {
+  test("a non-array /jobs body fails with malformed_response and no PUT happens", async () => {
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: { not: "an array" } };
       return { status: 200, body: { uuid: "pay-1" } };
@@ -372,11 +372,30 @@ describe("payrollUpdateHandler", () => {
 
     const csv = "employee_uuid,regular_hours\nee-1,40";
     const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("malformed_response");
+    expect(result.error.message).toContain("/v1/employees/ee-1/jobs");
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  test("filters out null/undefined/missing uuid fields in the /jobs response", async () => {
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs"))
+        return { status: 200, body: [{ uuid: "job-1" }, { uuid: null }, { title: "no uuid" }] };
+      if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
+      return { status: 404 };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
+    expect(d.uuid).toBe("pay-1");
 
     const put = s.calls.find((c) => c.method === "PUT");
     expect(put?.body).toEqual({
-      employee_compensations: [{ employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] }],
+      employee_compensations: [
+        { employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 40, job_uuid: "job-1" }] },
+      ],
     });
   });
 });

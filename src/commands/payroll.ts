@@ -526,8 +526,20 @@ async function fetchEmployeeJobs(
         },
       };
     }
-    const jobs = Array.isArray(resp.data) ? resp.data.map((j) => j.uuid).filter((u): u is string => !!u) : [];
-    byEmployee.set(employeeUuid, jobs);
+    if (!Array.isArray(resp.data)) {
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiClient,
+        error: {
+          code: "malformed_response",
+          message: `/v1/employees/${employeeUuid}/jobs returned a non-array body`,
+        },
+      };
+    }
+    byEmployee.set(
+      employeeUuid,
+      resp.data.map((j) => j.uuid).filter((u): u is string => !!u),
+    );
   }
   return { ok: true, data: byEmployee };
 }
@@ -554,24 +566,26 @@ function* iterCompensations(
   for (const f of ec.fixed_compensations ?? []) yield { entry: f, kind: "fixed_compensations" };
 }
 
-/** Mutates the body in place: injects the sole job_uuid for single-job employees, returns a
- * blocked_on entry for multi-job employees whose row is genuinely ambiguous. */
+/** Mutates the body in place: injects the sole job_uuid for single-job employees, returns one
+ * blocked_on entry per multi-job employee whose row is genuinely ambiguous. */
 export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
   const blocked: BlockedOn[] = [];
+  const alreadyBlocked = new Set<string>();
   for (const ec of body.employee_compensations) {
     const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
     if (!employeeJobs) continue;
-    for (const { entry, kind } of iterCompensations(ec)) {
+    for (const { entry } of iterCompensations(ec)) {
       if (entry.job_uuid) continue;
       if (employeeJobs.length === 1) {
         entry.job_uuid = employeeJobs[0];
         continue;
       }
-      if (employeeJobs.length > 1) {
+      if (employeeJobs.length > 1 && !alreadyBlocked.has(ec.employee_uuid)) {
         blocked.push({
-          field: `employee ${ec.employee_uuid}: ${kind}`,
+          field: `employee_compensations[${ec.employee_uuid}].job_uuid`,
           reason: `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`,
         });
+        alreadyBlocked.add(ec.employee_uuid);
       }
     }
   }
