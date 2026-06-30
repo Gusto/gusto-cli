@@ -74,18 +74,28 @@ interface Found {
   dir: string;
 }
 
+// Parse a package.json, failing with the offending path. A corrupt manifest
+// aborts the audit rather than being skipped: silently dropping a package could
+// let an unvetted license through, which is exactly what this guards against.
+function readManifest(path: string): Pkg {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Pkg;
+  } catch (e) {
+    throw new Error(`Failed to parse ${path}`, { cause: e });
+  }
+}
+
+function toFound(pkg: Pkg, dir: string): Found {
+  return { id: pkg.name ?? "", version: pkg.version ?? "", license: licenseOf(pkg), dir };
+}
+
 function scanInstalled(): Found[] {
   const found = new Map<string, Found>();
   for (const rel of new Glob("node_modules/**/package.json").scanSync(".")) {
     if (!isPackageRoot(rel)) continue;
-    const pkg: Pkg = JSON.parse(readFileSync(rel, "utf8"));
+    const pkg = readManifest(rel);
     if (!pkg.name) continue;
-    found.set(`${pkg.name}@${pkg.version ?? "0"}`, {
-      id: pkg.name,
-      version: pkg.version ?? "",
-      license: licenseOf(pkg),
-      dir: dirname(rel),
-    });
+    found.set(`${pkg.name}@${pkg.version ?? "0"}`, toFound(pkg, dirname(rel)));
   }
   return [...found.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -118,29 +128,25 @@ function audit(): number {
 
 // Production-dependency closure: what `bun build --compile` actually bundles.
 function bundledDeps(): Found[] {
-  const root: Pkg = JSON.parse(readFileSync("package.json", "utf8"));
+  const root = readManifest("package.json");
   const seen = new Map<string, Found>();
   const queue = Object.keys(root.dependencies ?? {});
   while (queue.length) {
     const name = queue.shift()!;
     if (seen.has(name)) continue;
-    const manifest = join("node_modules", name, "package.json");
+    const dir = join("node_modules", name);
+    const manifest = join(dir, "package.json");
     if (!existsSync(manifest)) {
       throw new Error(`Bundled dependency not installed: ${name}`);
     }
-    const pkg: Pkg = JSON.parse(readFileSync(manifest, "utf8"));
-    seen.set(name, {
-      id: name,
-      version: pkg.version ?? "",
-      license: licenseOf(pkg),
-      dir: join("node_modules", name),
-    });
+    const pkg = readManifest(manifest);
+    seen.set(name, toFound(pkg, dir));
     queue.push(...Object.keys(pkg.dependencies ?? {}));
   }
   return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function licenseText(dir: string): string {
+export function licenseText(dir: string): string {
   for (const name of ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "COPYING"]) {
     const p = join(dir, name);
     if (!existsSync(p)) continue;
@@ -152,11 +158,26 @@ function licenseText(dir: string): string {
   throw new Error(`No non-empty license file found in ${dir}`);
 }
 
+// release.yml builds the shipped binary, so its Bun version is what NOTICES must
+// document; ci.yml must agree or the audited and released runtimes differ.
+export function parseBunVersion(ciYml: string, releaseYml: string): string {
+  const re = /BUN_VERSION:\s*([0-9]+\.[0-9]+\.[0-9]+)/;
+  const ci = ciYml.match(re)?.[1];
+  const release = releaseYml.match(re)?.[1];
+  if (!ci || !release) {
+    throw new Error("Could not read BUN_VERSION from the workflow files.");
+  }
+  if (ci !== release) {
+    throw new Error(`BUN_VERSION mismatch: ci.yml has ${ci}, release.yml has ${release}.`);
+  }
+  return ci;
+}
+
 function bunVersion(): string {
-  const ci = readFileSync(".github/workflows/ci.yml", "utf8");
-  const m = ci.match(/BUN_VERSION:\s*([0-9]+\.[0-9]+\.[0-9]+)/);
-  if (!m) throw new Error("Could not read BUN_VERSION from .github/workflows/ci.yml");
-  return m[1]!;
+  return parseBunVersion(
+    readFileSync(".github/workflows/ci.yml", "utf8"),
+    readFileSync(".github/workflows/release.yml", "utf8"),
+  );
 }
 
 function renderNotices(): string {

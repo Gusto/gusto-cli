@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { isAllowed, isPackageRoot, licenseOf } from "../scripts/licenses.ts";
+import { resolve } from "node:path";
+import { isAllowed, isPackageRoot, licenseOf, licenseText, parseBunVersion } from "../scripts/licenses.ts";
+
+const REPO = resolve(import.meta.dir, "..");
+const SCRIPT = resolve(REPO, "scripts", "licenses.ts");
+
+function runCli(args: string[]): number {
+  return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd: REPO }).exitCode;
+}
 
 describe("licenseOf", () => {
   test("reads a plain SPDX string", () => {
@@ -74,5 +82,39 @@ describe("isPackageRoot", () => {
 
   test("rejects a sub-manifest inside a package", () => {
     expect(isPackageRoot("node_modules/foo/dist/package.json")).toBe(false);
+  });
+});
+
+describe("parseBunVersion", () => {
+  test("returns the version when ci.yml and release.yml agree", () => {
+    expect(parseBunVersion("BUN_VERSION: 1.3.14", "env:\n  BUN_VERSION: 1.3.14")).toBe("1.3.14");
+  });
+
+  test("throws when the two workflows disagree", () => {
+    expect(() => parseBunVersion("BUN_VERSION: 1.3.14", "BUN_VERSION: 1.2.0")).toThrow(/mismatch/);
+  });
+
+  test("throws when a version is missing", () => {
+    expect(() => parseBunVersion("BUN_VERSION: 1.3.14", "nothing here")).toThrow();
+  });
+});
+
+describe("licenseText", () => {
+  test("throws when a directory has no license file", () => {
+    expect(() => licenseText(resolve(import.meta.dir, "does-not-exist"))).toThrow();
+  });
+});
+
+describe("run (CLI dispatch)", () => {
+  test("audit exits 0 on the current tree", () => {
+    expect(runCli(["audit"])).toBe(0);
+  });
+
+  test("--check exits 0 when NOTICES is current", () => {
+    expect(runCli(["--check"])).toBe(0);
+  });
+
+  test("an unknown mode exits 2", () => {
+    expect(runCli(["bogus"])).toBe(2);
   });
 });
