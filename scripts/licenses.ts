@@ -5,13 +5,13 @@
 //   bun run scripts/licenses.ts notices   # regenerate the NOTICES file
 //   bun run scripts/licenses.ts --check   # audit + verify NOTICES has no drift
 
-import { run } from "../src/lib/licenses.ts";
+import { formatError, run } from "../src/lib/licenses.ts";
 
 try {
   process.exit(run(process.argv[2] ?? "audit"));
 } catch (e) {
-  // Surface a clean message (e.g. a corrupt manifest or version mismatch)
-  // instead of a raw stack trace, and exit non-zero so CI still fails.
-  console.error(e instanceof Error ? e.message : String(e));
+  // Surface a clean message plus its cause (e.g. a corrupt manifest or version
+  // mismatch) instead of a raw stack trace, and exit non-zero so CI still fails.
+  console.error(formatError(e));
   process.exit(1);
 }

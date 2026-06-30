@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { isAllowed, isPackageRoot, licenseOf, licenseText, parseBunVersion } from "./licenses.ts";
+import { formatError, isAllowed, isPackageRoot, licenseOf, licenseText, parseBunVersion } from "./licenses.ts";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const SCRIPT = resolve(REPO, "scripts", "licenses.ts");
@@ -150,6 +150,21 @@ describe("licenseText", () => {
     const dir = mkdtempSync(join(tmpdir(), "lictext-"));
     writeFileSync(join(dir, "COPYING"), "copying terms");
     expect(licenseText(dir)).toBe("copying terms");
+  });
+});
+
+describe("formatError", () => {
+  test("appends the cause message when present", () => {
+    const err = new Error("Failed to parse package.json", { cause: new Error("Unexpected token") });
+    expect(formatError(err)).toBe("Failed to parse package.json: Unexpected token");
+  });
+
+  test("returns the message alone when there is no cause", () => {
+    expect(formatError(new Error("boom"))).toBe("boom");
+  });
+
+  test("stringifies a non-Error throwable", () => {
+    expect(formatError("nope")).toBe("nope");
   });
 });
 

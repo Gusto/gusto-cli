@@ -273,6 +273,14 @@ function checkNotices(): number {
   return 1;
 }
 
+// Flatten an error to a single clean line, appending the wrapped cause's
+// message (e.g. the underlying JSON syntax error) without dumping a stack trace.
+export function formatError(e: unknown): string {
+  const head = e instanceof Error ? e.message : String(e);
+  const cause = e instanceof Error && e.cause instanceof Error ? `: ${e.cause.message}` : "";
+  return head + cause;
+}
+
 export function run(mode: string): number {
   switch (mode) {
     case "audit":
