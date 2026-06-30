@@ -128,6 +128,19 @@ describe("licenseText", () => {
   test("throws when a directory has no license file", () => {
     expect(() => licenseText(resolve(import.meta.dir, "does-not-exist"))).toThrow();
   });
+
+  test("skips an empty file and falls back to the next candidate", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lictext-"));
+    writeFileSync(join(dir, "LICENSE"), "   \n");
+    writeFileSync(join(dir, "LICENSE.md"), "real license body");
+    expect(licenseText(dir)).toBe("real license body");
+  });
+
+  test("reads an alternative license filename", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lictext-"));
+    writeFileSync(join(dir, "COPYING"), "copying terms");
+    expect(licenseText(dir)).toBe("copying terms");
+  });
 });
 
 describe("run (CLI dispatch)", () => {
@@ -169,6 +182,20 @@ describe("audit over a fixture tree", () => {
     mkdirSync(join(dir, "node_modules", "corrupt"), { recursive: true });
     writeFileSync(join(dir, "node_modules", "corrupt", "package.json"), "{ not json");
     expect(runCli(["audit"], dir)).not.toBe(0);
+  });
+
+  test("scans same-named packages in different paths independently", () => {
+    const dir = makeProject();
+    // A permissive copy at the top level must not mask a copyleft copy nested
+    // deeper - dir-keying keeps both, so the GPL one is still flagged.
+    addPackage(dir, "dup", { name: "dup", version: "1.0.0", license: "MIT" });
+    addPackage(dir, "host/node_modules/dup", { name: "dup", version: "1.0.0", license: "GPL-3.0-only" });
+    expect(runCli(["audit"], dir)).toBe(1);
+  });
+
+  test("fails when a declared dependency is not installed", () => {
+    const dir = makeProject({ ghost: "1.0.0" });
+    expect(runCli(["notices"], dir)).not.toBe(0);
   });
 
   test("notices round-trips and --check detects drift", () => {

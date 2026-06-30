@@ -187,7 +187,8 @@ export function parseBunVersion(ciYml: string, releaseYml: string): string {
     throw new Error("Could not read BUN_VERSION from the workflow files.");
   }
   if (ci !== release) {
-    throw new Error(`BUN_VERSION mismatch: ci.yml has ${ci}, release.yml has ${release}.`);
+    // release.yml is authoritative (it builds the shipped binary); name it first.
+    throw new Error(`BUN_VERSION mismatch: release.yml has ${release}, ci.yml has ${ci}. Update ci.yml to match.`);
   }
   return ci;
 }
@@ -291,5 +292,12 @@ function run(mode: string): number {
 
 // Only run the CLI when executed directly, so tests can import the helpers.
 if (import.meta.main) {
-  process.exit(run(process.argv[2] ?? "audit"));
+  try {
+    process.exit(run(process.argv[2] ?? "audit"));
+  } catch (e) {
+    // Surface a clean message (e.g. a corrupt manifest or version mismatch)
+    // instead of a raw stack trace, and exit non-zero so CI still fails.
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
 }
