@@ -1,12 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_API_VERSION,
+  defaultEnv,
   getAccessToken,
   getCompanyUuid,
   resolveApiVersion,
   resolveBaseUrl,
   resolveMcpBaseUrl,
 } from "./env.ts";
+
+describe("defaultEnv", () => {
+  test("returns sandbox only for an explicit sandbox env", () => {
+    expect(defaultEnv("sandbox")).toBe("sandbox");
+  });
+  test("returns production for an explicit production env", () => {
+    expect(defaultEnv("production")).toBe("production");
+  });
+  test("defaults to production when env is undefined", () => {
+    expect(defaultEnv(undefined)).toBe("production");
+  });
+});
 
 describe("resolveBaseUrl", () => {
   test("defaults to production when env is undefined and no override", () => {

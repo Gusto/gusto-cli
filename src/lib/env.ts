@@ -10,6 +10,11 @@ export const DEFAULT_API_VERSION = "2026-02-01";
 
 export type EnvSource = Record<string, string | undefined>;
 
+/** Single source of truth for the env default: anything but an explicit `sandbox` resolves to production. */
+export function defaultEnv(env: Environment | undefined): Environment {
+  return env === "sandbox" ? "sandbox" : "production";
+}
+
 function resolveHttpsBaseUrl(
   envVarName: string,
   defaults: { sandbox: string; production: string },
@@ -28,7 +33,7 @@ function resolveHttpsBaseUrl(
     if (parsed.protocol === "http:" && isTruthy(source.GUSTO_ALLOW_HTTP)) return override;
     throw new Error(`${envVarName} must be https:// (set GUSTO_ALLOW_HTTP=1 to allow http for local testing)`);
   }
-  return env === "sandbox" ? defaults.sandbox : defaults.production;
+  return defaults[defaultEnv(env)];
 }
 
 export function resolveBaseUrl(env: Environment | undefined, source: EnvSource = process.env as EnvSource): string {
