@@ -12,5 +12,10 @@ if [ "$current" = ".githooks" ]; then
   exit 0
 fi
 
+if [ -n "$current" ]; then
+  echo "core.hooksPath is already set to '$current'; leaving it untouched. Run 'git config --local core.hooksPath .githooks' to enable DCO auto sign-off." >&2
+  exit 0
+fi
+
 git config --local core.hooksPath .githooks
 echo "configured core.hooksPath=.githooks for DCO auto sign-off"

@@ -127,6 +127,15 @@ describe("install-hooks.sh", () => {
     expect(second.stdout.toString().trim()).toBe("");
   });
 
+  test("leaves a pre-existing custom core.hooksPath untouched and warns", () => {
+    const repo = setupRepo({ prefix: "install" });
+    git(repo, ["config", "--local", "core.hooksPath", ".my-hooks"]);
+    const res = runInstall(repo);
+    expect(res.exitCode).toBe(0);
+    expect(res.stderr.toString()).toContain("already set to '.my-hooks'");
+    expect(git(repo, ["config", "--local", "--get", "core.hooksPath"])).toBe(".my-hooks");
+  });
+
   test("exits 0 outside a git work tree without setting anything", () => {
     const dir = tempDir("no-git");
     const res = runInstall(dir);
