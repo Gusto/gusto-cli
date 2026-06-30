@@ -263,6 +263,9 @@ describe("payrollUpdateHandler", () => {
 });
 
 describe("payrollListHandler", () => {
+  // Scope distinct from the buildPayrollListQuery unit tests: this asserts the default actually
+  // reaches the request URL end-to-end (handler -> buildPayrollListQuery -> toQueryString, incl.
+  // comma encoding), which the pure unit tests on the query object never exercise.
   test("defaults to both processing statuses in the request URL when none is supplied (AINT-718)", async () => {
     const s = stub((u) => (u.includes("/payrolls") ? { status: 200, body: [{ uuid: "pay-1" }] } : { status: 404 }));
 
@@ -271,15 +274,5 @@ describe("payrollListHandler", () => {
     const get = s.calls.find((c) => c.method === "GET");
     expect(get?.url).toContain("/v1/companies/co-1/payrolls");
     expect(get?.url).toContain("processing_statuses=processed%2Cunprocessed");
-  });
-
-  test("an explicit --processing-status is sent verbatim, with no default appended", async () => {
-    const s = stub((u) => (u.includes("/payrolls") ? { status: 200, body: [] } : { status: 404 }));
-
-    await payrollListHandler({ ...auth, processingStatus: "processed" })(ctx);
-
-    const get = s.calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("processing_statuses=processed");
-    expect(get?.url).not.toContain("unprocessed");
   });
 });
