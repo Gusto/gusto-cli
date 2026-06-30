@@ -525,15 +525,15 @@ describe("token-stdin authentication", () => {
   });
 });
 
-describe("the pulled employee/contractor write surface is gone", () => {
+describe("the pulled employee write surface is gone", () => {
   // AINT-713 dropped these from the production surface; commander should reject them
-  // outright (exit 2) rather than reach a handler.
+  // outright (exit 2) rather than reach a handler. `contractor add` came back as
+  // self-onboarding-only (AINT-707); the employee write commands stay gone.
   for (const args of [
     ["employee", "add", "personal-details"],
     ["employee", "manage", "emp-123"],
     ["employee", "delete", "emp-123"],
     ["employee", "job", "delete", "job-123"],
-    ["contractor", "add", "--type", "individual"],
   ]) {
     test(`\`${args.join(" ")}\` is an unknown command (exit 2)`, async () => {
       const result = await run(args);
@@ -550,5 +550,43 @@ describe("the pulled employee/contractor write surface is gone", () => {
       expect(result.exitCode).toBe(3);
       expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
     }
+  });
+});
+
+describe("contractor add is self-onboarding-only (AINT-707)", () => {
+  test("--example returns the 2-step self-onboarding invite shape, no token required", async () => {
+    const result = await run(["contractor", "add", "--example"]);
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    const steps = envelope.data.steps as { method: string; path: string; body?: { self_onboarding?: boolean } }[];
+    expect(steps).toHaveLength(2);
+    expect(steps[0].body?.self_onboarding).toBe(true);
+    expect(steps[1].path).toContain("/onboarding_status");
+  });
+
+  test("missing --email is a validation block (exit 7), not an unknown command", async () => {
+    const result = await run([
+      "contractor",
+      "add",
+      "--type",
+      "individual",
+      "--first-name",
+      "Sam",
+      "--last-name",
+      "Rivera",
+      "--wage-type",
+      "fixed",
+      "--start-date",
+      "2026-07-01",
+      "--dry-run",
+    ]);
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.blocked_on.map((b: { field: string }) => b.field)).toContain("email");
+  });
+
+  test("the admin-driven path stays off the surface: no --self-onboarding flag", async () => {
+    const result = await run(["contractor", "add", "--help"]);
+    expect(result.stdout).not.toContain("--self-onboarding");
   });
 });

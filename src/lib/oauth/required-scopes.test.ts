@@ -24,6 +24,19 @@ describe("REQUIRED_SCOPES", () => {
     expect(DROPPED_SCOPES).toContain("payrolls:run");
     expect(REQUIRED_SCOPES.map((r) => r.scope)).not.toContain("payrolls:run");
   });
+
+  test("contractor write scopes are required for the invite-only contractor add, not dropped", () => {
+    const required = REQUIRED_SCOPES.map((r) => r.scope);
+    expect(required).toContain("contractors:write");
+    expect(required).toContain("contractors:manage");
+    expect(DROPPED_SCOPES).not.toContain("contractors:write");
+    expect(DROPPED_SCOPES).not.toContain("contractors:manage");
+  });
+
+  test("employee write scopes stay dropped (only contractor add returns to the write surface)", () => {
+    expect(DROPPED_SCOPES).toContain("employees:write");
+    expect(DROPPED_SCOPES).toContain("employees:manage");
+  });
 });
 
 describe("findMissingScopes", () => {
