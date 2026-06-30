@@ -1,7 +1,7 @@
 /** The minimum OAuth scope set the public-beta CLI surface needs.
  *
  * This file is the canonical reference for what the public-beta OAuth app
- * should grant. The Panda registration for that app is kept in sync with this
+ * should grant. The partner OAuth registration for that app is kept in sync with this
  * list; any command added in a future PR that needs a new scope must update
  * this set in the same change so the audit trail stays accurate.
  *
@@ -54,10 +54,10 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
- * Listed here so the Panda registration can be cross-checked against the audit
- * trail and so a future regression that introduces a dependent command shows up
- * in the diff. Not enforced at runtime - the Panda registration is the
- * authoritative grant. */
+ * Listed here so the partner OAuth registration can be cross-checked against
+ * the audit trail and so a future regression that introduces a dependent
+ * command shows up in the diff. Not enforced at runtime - the partner OAuth
+ * registration is the authoritative grant. */
 export const DROPPED_SCOPES: readonly string[] = [
   "payrolls:run",
   "company_bank_accounts:write",
