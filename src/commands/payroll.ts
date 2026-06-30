@@ -4,10 +4,18 @@ import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts
 import { CsvError, parseCsv } from "../lib/csv.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
+import { kvLines, table } from "../lib/human.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIsoDate, parseNonNegativeNumber } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
-import { type CommandHandler, type CommandResult, missingArgs, runCommand, validationFailure } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type CommandResult,
+  missingArgs,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -37,6 +45,22 @@ const SORT_ORDERS = ["asc", "desc"] as const;
 // period). The server already rejects unknown values with a 422, but validating
 // here gives the same fast exit-7 blocked_on feedback as the other enums.
 const DATE_FILTER_BY = ["check_date"] as const;
+
+// Sourced from zenpayroll Api::V1::PayrollsController INCLUDE_OPTIONS_SHOW. Differs from the index
+// set above (adds benefits/deductions/payroll_taxes). employee_compensations is intentionally NOT
+// here: comps are part of the default show representation (empty until the draft is prepared), not
+// an include. Unknown tokens are silently dropped server-side, so validating here turns an agent's
+// typo into an actionable blocked_on instead of a misleading empty result.
+const SHOW_INCLUDE_OPTIONS = [
+  "benefits",
+  "deductions",
+  "taxes",
+  "payroll_status_meta",
+  "totals",
+  "risk_blockers",
+  "reversals",
+  "payroll_taxes",
+] as const;
 
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry
  * for any unrecognized token (or null if all are valid). `multi` splits the
@@ -96,6 +120,86 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryRe
   set("include", opts.include);
   set("sort_order", opts.sortOrder);
   return { ok: true, query };
+}
+
+export interface PayrollShowOpts {
+  include?: string;
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+export type PayrollShowQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
+
+/** Validate `payroll show` flags and map onto the show endpoint's query params. Only `include` is
+ * supported; a valid value is passed through verbatim (see SHOW_INCLUDE_OPTIONS for the closed
+ * enum and why it's validated client-side). */
+export function buildPayrollShowQuery(opts: PayrollShowOpts): PayrollShowQueryResult {
+  const entry = validateEnum("include", opts.include, SHOW_INCLUDE_OPTIONS, true);
+  if (entry) return { ok: false, blocked: [entry] };
+  const query: QueryParams = {};
+  if (opts.include !== undefined) query.include = opts.include;
+  return { ok: true, query };
+}
+
+interface PayrollTotals {
+  gross_pay?: string;
+  net_pay?: string;
+  employer_taxes?: string;
+  employee_taxes?: string;
+  reimbursements?: string;
+  company_debit?: string;
+}
+interface PayrollShowComp {
+  employee_uuid?: string;
+  gross_pay?: string;
+  net_pay?: string;
+}
+interface PayrollShowResponse {
+  uuid?: string;
+  processing_status?: string;
+  check_date?: string;
+  pay_period?: { start_date?: string; end_date?: string };
+  totals?: PayrollTotals;
+  employee_compensations?: PayrollShowComp[];
+}
+
+/** Render `payroll show` as human key-value blocks plus a compensation table. The API body is
+ * typed but not runtime-validated, so each section guards its own shape: a missing totals block is
+ * dropped, and a non-array employee_compensations falls back to the prepare hint rather than
+ * crashing the table render. */
+export function renderPayrollShow(data: unknown): string {
+  const p = (isRecord(data) ? data : {}) as PayrollShowResponse;
+  const period = isRecord(p.pay_period) ? p.pay_period : undefined;
+  const overview = kvLines([
+    ["Payroll", p.uuid ?? null],
+    ["Status", p.processing_status ?? null],
+    ["Check date", p.check_date ?? null],
+    ["Pay period", period?.start_date && period?.end_date ? `${period.start_date} to ${period.end_date}` : null],
+  ]);
+
+  const t = isRecord(p.totals) ? (p.totals as PayrollTotals) : undefined;
+  const totals = t
+    ? kvLines([
+        ["Gross pay", t.gross_pay ?? null],
+        ["Net pay", t.net_pay ?? null],
+        ["Employer taxes", t.employer_taxes ?? null],
+        ["Employee taxes", t.employee_taxes ?? null],
+        ["Reimbursements", t.reimbursements ?? null],
+        ["Company debit", t.company_debit ?? null],
+      ])
+    : "";
+  const totalsSection = totals ? `Totals\n${totals}` : "";
+
+  const comps = Array.isArray(p.employee_compensations) ? p.employee_compensations : [];
+  const compTable = table(
+    ["Employee", "Gross", "Net"],
+    comps.map((c) => [c?.employee_uuid, c?.gross_pay, c?.net_pay]),
+  );
+  const compSection = compTable
+    ? `Employee compensations\n${compTable}`
+    : "No compensations yet; run `payroll prepare` to populate this draft.";
+
+  return [overview, totalsSection, compSection].filter((section) => section !== "").join("\n\n");
 }
 
 interface PayrollPrepareOpts {
@@ -501,6 +605,30 @@ All filters are optional. Defaults: processed regular payrolls, ascending.
     );
 
   cmd
+    .command("show [payroll_uuid]")
+    .description("Show one payroll (company-scoped); totals and taxes are opt-in via --include")
+    .option("--include <attrs>", `Include extra attributes: ${SHOW_INCLUDE_OPTIONS.join(", ")} - comma-separate`)
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Reads are company-scoped: the command resolves the company and reads
+/v1/companies/{company}/payrolls/{uuid} (the bare /v1/payrolls/{uuid} path is not available).
+employee_compensations come back by default but are empty until the draft is prepared - run
+'payroll prepare' first (which is why employee_compensations is not an --include value).
+totals and taxes are null unless you request them with --include.
+
+Examples:
+  $ gusto payroll show 1a2b3c4d-0000-1111-2222-333344445555 --include totals
+  $ gusto payroll show 1a2b3c4d-0000-1111-2222-333344445555 --include totals,taxes
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollShowOpts) =>
+      runReadCommand("gusto payroll show", readGlobalFlags(parent.opts()), payrollShowHandler(payrollUuid, opts)),
+    );
+
+  cmd
     .command("prepare [payroll_uuid]")
     .description("Prepare a draft payroll: populates its employee compensations so totals can be verified")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
@@ -662,5 +790,29 @@ function payrollListHandler(opts: PayrollListOpts): CommandHandler {
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls${toQueryString(parsed.query)}`,
     );
+  };
+}
+
+export function payrollShowHandler(payrollUuid: string | undefined, opts: PayrollShowOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+    const parsed = buildPayrollShowQuery(opts);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "validation", message: "invalid arguments", blocked_on: parsed.blocked },
+      };
+    }
+    // Encode the uuid as a single path segment: a raw `/`, `?` or `#` from agent/tool output would
+    // otherwise retarget the GET (the client resolves paths via `new URL`).
+    const result = await fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) =>
+        `/v1/companies/${ctx.companyUuid}/payrolls/${encodeURIComponent(payrollUuid)}${toQueryString(parsed.query)}`,
+    );
+    if (!result.ok) return result;
+    return { ...result, human: () => renderPayrollShow(result.data) };
   };
 }

@@ -8,7 +8,7 @@ import {
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-import { payrollPrepareHandler, payrollUpdateHandler } from "./payroll.ts";
+import { payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -91,6 +91,61 @@ describe("payrollPrepareHandler", () => {
     if (result.ok) throw new Error("expected failure");
     expect(blockedFields(result)).toEqual(["payroll_uuid"]);
     expect(s.calls).toHaveLength(0);
+  });
+});
+
+describe("payrollShowHandler", () => {
+  test("GETs the company-scoped payroll path and returns the body", async () => {
+    const payroll = { uuid: "pay-1", processing_status: "unprocessed" };
+    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: payroll } : { status: 404 }));
+
+    const d = data(await payrollShowHandler("pay-1", auth)(ctx));
+    expect(d.uuid).toBe("pay-1");
+
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/v1/companies/co-1/payrolls/pay-1");
+  });
+
+  test("passes --include through to the query string", async () => {
+    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
+    await payrollShowHandler("pay-1", { ...auth, include: "totals,taxes" })(ctx);
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("include=totals%2Ctaxes");
+  });
+
+  test("an invalid --include token blocks with exit 7 before any request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollShowHandler("pay-1", { ...auth, include: "bogus" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["include"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("percent-encodes the UUID so a stray '/' or '?' can't retarget the GET", async () => {
+    const s = stub(() => ({ status: 404 }));
+    await payrollShowHandler("evil?x=1/y", auth)(ctx);
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy");
+    expect(get?.url).not.toContain("evil?x=1");
+  });
+
+  test("missing payroll_uuid blocks before any request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollShowHandler(undefined, auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(blockedFields(result)).toEqual(["payroll_uuid"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("a 404 (missing payroll) surfaces as a failed result", async () => {
+    stub(() => ({ status: 404, body: { errors: [{ message: "not found" }] } }));
+    const result = await payrollShowHandler("pay-1", auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 });
 
