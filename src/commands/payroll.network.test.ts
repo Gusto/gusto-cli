@@ -359,6 +359,27 @@ describe("payrollUpdateHandler", () => {
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 
+  test("with multiple employees in the CSV, one failing /jobs lookup names that employee and no PUT happens", async () => {
+    // Three employees inferred in parallel; ee-2's lookup fails. The handler must surface ee-2 by
+    // uuid (not ee-1 or ee-3, and not a bare API error), and the PUT must not run with the
+    // partially-resolved bodies.
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1" }] };
+      if (u.includes("/employees/ee-2/jobs")) return { status: 404, body: { error: "missing" } };
+      if (u.includes("/employees/ee-3/jobs")) return { status: 200, body: [{ uuid: "job-3" }] };
+      return { status: 404 };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40\nee-2,30\nee-3,20";
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.message).toContain("ee-2");
+    expect(result.error.message).not.toContain("ee-1:");
+    expect(result.error.message).not.toContain("ee-3:");
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
   test("a non-array /jobs body degrades to zero known jobs and lets the PUT surface the server error", async () => {
     // Defensive guard: an unexpected shape from /jobs (object, null, missing field, etc.) shouldn't
     // crash. The employee falls through with zero known jobs - no inference, no fabricated block -
