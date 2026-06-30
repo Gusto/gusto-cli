@@ -3,8 +3,8 @@
 
 import type { Command } from "commander";
 
-/** `--dry-run`: build (but don't send) the request(s). `(s)` covers multi-request commands
- * like `employee add job` (job + compensation) and `payment-method` (bank account + method). */
+/** `--dry-run`: build (but don't send) the request(s); `(s)` covers any command that issues
+ * more than one request. */
 export const DRY_RUN_OPT = ["--dry-run", "Build the request(s) without sending"] as const;
 
 /** `--example`: print a canned sample payload without calling the API. */

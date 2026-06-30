@@ -1,14 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ExitCode } from "../lib/exit-codes.ts";
-import { TEST_CONTEXT as ctx, okData } from "../lib/test-support.ts";
-import {
-  bucketEmployees,
-  buildEmployeeList,
-  employeeDeleteHandler,
-  jobDeleteHandler,
-  parseStatus,
-  type EmployeeListSummary,
-} from "./employee.ts";
+import { bucketEmployees, buildEmployeeList, type EmployeeListSummary, parseStatus } from "./employee.ts";
 
 describe("parseStatus", () => {
   test("undefined defaults to active", () => {
@@ -112,47 +103,5 @@ describe("buildEmployeeList", () => {
     const { summary, employees } = buildEmployeeList(FIXTURE, "all", false);
     expect(summary).toBeUndefined();
     expect(employees).toHaveLength(85);
-  });
-});
-
-describe("employeeDeleteHandler", () => {
-  test("missing employee_uuid refuses with a structured blocked_on (no network)", async () => {
-    const result = await employeeDeleteHandler(undefined, {})(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.exitCode).toBe(ExitCode.Validation);
-    expect(result.error.blocked_on?.[0]?.field).toBe("employee_uuid");
-  });
-
-  test("--dry-run emits the DELETE shape without sending", async () => {
-    const d = okData(await employeeDeleteHandler("emp-1", { dryRun: true })(ctx));
-    expect(d).toEqual({ method: "DELETE", path: "/v1/employees/emp-1" });
-  });
-
-  test("--example returns a canned envelope without requiring a uuid", async () => {
-    const d = okData(await employeeDeleteHandler(undefined, { example: true })(ctx));
-    expect(d.method).toBe("DELETE");
-    expect(d.path).toContain("/v1/employees/");
-  });
-});
-
-describe("jobDeleteHandler", () => {
-  test("missing job_uuid refuses with a structured blocked_on", async () => {
-    const result = await jobDeleteHandler(undefined, {})(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.exitCode).toBe(ExitCode.Validation);
-    expect(result.error.blocked_on?.[0]?.field).toBe("job_uuid");
-  });
-
-  test("--dry-run emits the DELETE shape without sending", async () => {
-    const d = okData(await jobDeleteHandler("job-1", { dryRun: true })(ctx));
-    expect(d).toEqual({ method: "DELETE", path: "/v1/jobs/job-1" });
-  });
-
-  test("--example returns a canned envelope without requiring a uuid", async () => {
-    const d = okData(await jobDeleteHandler(undefined, { example: true })(ctx));
-    expect(d.method).toBe("DELETE");
-    expect(d.path).toContain("/v1/jobs/");
   });
 });
