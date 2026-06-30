@@ -12,8 +12,9 @@ import { registerPayrollCommand } from "./commands/payroll.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
+import pkg from "../package.json" with { type: "json" };
 
-const VERSION = "0.0.1";
+const VERSION: string = pkg.version;
 
 const HELP_FOOTER = `
 Documentation:
