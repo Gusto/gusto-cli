@@ -2,32 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { git, ISOLATED, setupRepo } from "./helpers/git";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const PREPARE_HOOK = path.join(REPO_ROOT, ".githooks", "prepare-commit-msg");
 const INSTALL_SCRIPT = path.join(REPO_ROOT, "scripts", "install-hooks.sh");
-
-const ISOLATED = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
-
-function git(cwd: string, args: string[]): string {
-  const res = Bun.spawnSync(["git", ...args], {
-    cwd,
-    env: { PATH: process.env.PATH ?? "", ...ISOLATED },
-  });
-  if (res.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr.toString()}`);
-  return res.stdout.toString().trim();
-}
-
-function setupRepo(opts: { configureUser?: boolean } = { configureUser: true }): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "hooks-"));
-  git(dir, ["init", "-q", "-b", "main"]);
-  git(dir, ["config", "commit.gpgsign", "false"]);
-  if (opts.configureUser) {
-    git(dir, ["config", "user.name", "Jane Doe"]);
-    git(dir, ["config", "user.email", "jane@example.com"]);
-  }
-  return dir;
-}
 
 function stageHookOnly(repo: string) {
   mkdirSync(path.join(repo, ".githooks"), { recursive: true });
@@ -39,9 +18,26 @@ function lastCommitBody(repo: string): string {
   return git(repo, ["log", "-1", "--format=%B"]);
 }
 
+function commitWithoutUserConfig(repo: string, message: string) {
+  // GIT_AUTHOR_*/GIT_COMMITTER_* satisfy git's identity requirement for the commit
+  // but, unlike `git -c user.name=...`, don't appear in `git config user.name` inside
+  // the hook - which is exactly how we exercise the hook's "config unset" branch.
+  return Bun.spawnSync(["git", "commit", "--allow-empty", "-m", message], {
+    cwd: repo,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...ISOLATED,
+      GIT_AUTHOR_NAME: "author-env",
+      GIT_AUTHOR_EMAIL: "author@env.test",
+      GIT_COMMITTER_NAME: "committer-env",
+      GIT_COMMITTER_EMAIL: "committer@env.test",
+    },
+  });
+}
+
 describe("prepare-commit-msg hook", () => {
   test("appends Signed-off-by when missing", () => {
-    const repo = setupRepo();
+    const repo = setupRepo({ prefix: "hooks" });
     stageHookOnly(repo);
     git(repo, ["commit", "--allow-empty", "-m", "feature work"]);
     const body = lastCommitBody(repo);
@@ -50,47 +46,52 @@ describe("prepare-commit-msg hook", () => {
   });
 
   test("does not double-append when -s already passed", () => {
-    const repo = setupRepo();
+    const repo = setupRepo({ prefix: "hooks" });
     stageHookOnly(repo);
     git(repo, ["commit", "--allow-empty", "-s", "-m", "feature work"]);
-    const body = lastCommitBody(repo);
-    const matches = body.match(/^Signed-off-by:/gm) ?? [];
-    expect(matches.length).toBe(1);
-  });
-
-  test("does not double-append on amend with existing sign-off", () => {
-    const repo = setupRepo();
-    stageHookOnly(repo);
-    git(repo, ["commit", "--allow-empty", "-s", "-m", "feature work"]);
-    git(repo, ["commit", "--amend", "--allow-empty", "--no-edit"]);
     const body = lastCommitBody(repo);
     expect((body.match(/^Signed-off-by:/gm) ?? []).length).toBe(1);
   });
 
-  test("skips with stderr warning when user.name and user.email are unset", () => {
-    const repo = setupRepo({ configureUser: false });
+  test("does not double-append on amend with existing sign-off", () => {
+    const repo = setupRepo({ prefix: "hooks" });
     stageHookOnly(repo);
-    // GIT_AUTHOR_*/GIT_COMMITTER_* supply the identity git needs to allow the commit, but
-    // unlike `git -c user.name=...` they don't show up in `git config user.name` inside
-    // the hook - which is exactly the scenario we want to test.
-    const res = Bun.spawnSync(["git", "commit", "--allow-empty", "-m", "no-config commit"], {
-      cwd: repo,
-      env: {
-        PATH: process.env.PATH ?? "",
-        ...ISOLATED,
-        GIT_AUTHOR_NAME: "author-env",
-        GIT_AUTHOR_EMAIL: "author@env.test",
-        GIT_COMMITTER_NAME: "committer-env",
-        GIT_COMMITTER_EMAIL: "committer@env.test",
-      },
-    });
+    git(repo, ["commit", "--allow-empty", "-s", "-m", "feature work"]);
+    git(repo, ["commit", "--amend", "--allow-empty", "--no-edit"]);
+    expect((lastCommitBody(repo).match(/^Signed-off-by:/gm) ?? []).length).toBe(1);
+  });
+
+  test("skips with stderr warning when both user.name and user.email are unset", () => {
+    const repo = setupRepo({ prefix: "hooks", configureUser: false });
+    stageHookOnly(repo);
+    const res = commitWithoutUserConfig(repo, "no-config commit");
+    expect(res.exitCode).toBe(0);
+    expect(res.stderr.toString()).toContain("auto sign-off skipped");
+    expect(lastCommitBody(repo)).not.toMatch(/^Signed-off-by:/m);
+  });
+
+  test("skips with stderr warning when only user.email is set (no user.name)", () => {
+    const repo = setupRepo({ prefix: "hooks", configureUser: false });
+    git(repo, ["config", "user.email", "partial@example.com"]);
+    stageHookOnly(repo);
+    const res = commitWithoutUserConfig(repo, "email-only commit");
+    expect(res.exitCode).toBe(0);
+    expect(res.stderr.toString()).toContain("auto sign-off skipped");
+    expect(lastCommitBody(repo)).not.toMatch(/^Signed-off-by:/m);
+  });
+
+  test("skips with stderr warning when only user.name is set (no user.email)", () => {
+    const repo = setupRepo({ prefix: "hooks", configureUser: false });
+    git(repo, ["config", "user.name", "Partial Person"]);
+    stageHookOnly(repo);
+    const res = commitWithoutUserConfig(repo, "name-only commit");
     expect(res.exitCode).toBe(0);
     expect(res.stderr.toString()).toContain("auto sign-off skipped");
     expect(lastCommitBody(repo)).not.toMatch(/^Signed-off-by:/m);
   });
 
   test("preserves multi-line commit message content", () => {
-    const repo = setupRepo();
+    const repo = setupRepo({ prefix: "hooks" });
     stageHookOnly(repo);
     git(repo, ["commit", "--allow-empty", "-m", "subject", "-m", "body line one\n\nbody line two"]);
     const body = lastCommitBody(repo);
@@ -102,22 +103,22 @@ describe("prepare-commit-msg hook", () => {
 });
 
 describe("install-hooks.sh", () => {
-  function runInstall(cwd: string) {
+  function runInstall(cwd: string, extraEnv: Record<string, string> = {}) {
     return Bun.spawnSync(["sh", INSTALL_SCRIPT], {
       cwd,
-      env: { PATH: process.env.PATH ?? "", ...ISOLATED },
+      env: { PATH: process.env.PATH ?? "", ...ISOLATED, ...extraEnv },
     });
   }
 
   test("sets core.hooksPath to .githooks", () => {
-    const repo = setupRepo();
+    const repo = setupRepo({ prefix: "install" });
     const res = runInstall(repo);
     expect(res.exitCode).toBe(0);
     expect(git(repo, ["config", "--local", "--get", "core.hooksPath"])).toBe(".githooks");
   });
 
   test("is idempotent and silent on a second run", () => {
-    const repo = setupRepo();
+    const repo = setupRepo({ prefix: "install" });
     runInstall(repo);
     const second = runInstall(repo);
     expect(second.exitCode).toBe(0);
@@ -131,9 +132,19 @@ describe("install-hooks.sh", () => {
     expect(res.exitCode).toBe(0);
   });
 
+  test("exits 0 when BUN_INSTALL_CACHE_DIR is set but cwd is not a git repo", () => {
+    // The bun-install scenario: bun's postinstall step runs the script in a node_modules
+    // checkout that has no .git of its own. Make sure the script no-ops cleanly instead
+    // of failing the install.
+    const dir = mkdtempSync(path.join(tmpdir(), "bun-install-"));
+    const res = runInstall(dir, { BUN_INSTALL_CACHE_DIR: "/tmp/bun-cache" });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.toString().trim()).toBe("");
+  });
+
   test("end-to-end: install + commit without -s yields a signed-off commit", () => {
-    const repo = setupRepo();
-    stageHookOnly(repo); // copy the hook file in
+    const repo = setupRepo({ prefix: "install" });
+    stageHookOnly(repo);
     git(repo, ["config", "--unset", "core.hooksPath"]); // undo the manual wire-up; let the installer set it
     expect(runInstall(repo).exitCode).toBe(0);
     expect(git(repo, ["config", "--local", "--get", "core.hooksPath"])).toBe(".githooks");

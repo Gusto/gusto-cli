@@ -31,7 +31,7 @@
     "lint:fix": "eslint src tests --fix",
     "format": "prettier --write src tests",
     "format:check": "prettier --check src tests",
-    "postinstall": "[ -f scripts/install-hooks.sh ] && sh scripts/install-hooks.sh || true"
+    "postinstall": "[ ! -f scripts/install-hooks.sh ] || sh scripts/install-hooks.sh"
   },
   "dependencies": {
     "commander": "^15.0.0",
