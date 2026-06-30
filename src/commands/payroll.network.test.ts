@@ -240,8 +240,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("reports skipped (no-input) employees in the result data", async () => {
-    // ee-1's bonus row has no job_uuid, so the handler infers it via /employees/ee-1/jobs.
-    // ee-2 is skipped entirely (no inputs) and never reaches the /jobs lookup or the PUT body.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1" }] };
       if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
@@ -251,7 +249,6 @@ describe("payrollUpdateHandler", () => {
     const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
     expect(d.uuid).toBe("pay-1");
     expect(d.skipped_employees).toEqual([{ employee_uuid: "ee-2", line: 3 }]);
-    // ee-2 must not have been sent in the body.
     const put = s.calls.find((c) => c.method === "PUT");
     expect((put?.body as { employee_compensations: { employee_uuid: string }[] }).employee_compensations).toHaveLength(
       1,
@@ -268,8 +265,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("infers job_uuid for a single-job employee whose CSV omitted it (GET /jobs, then PUT)", async () => {
-    // 1st call: GET /v1/employees/ee-1/jobs returning one job.
-    // 2nd call: PUT the update with the injected job_uuid.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1", title: "Engineer" }] };
       if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
@@ -312,13 +307,10 @@ describe("payrollUpdateHandler", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(result.error.blocked_on?.[0]?.field).toContain("ee-multi");
-    // Critical: no PUT happened - the ambiguous request never reaches the API.
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 
   test("skips the /jobs lookup when every CSV row already has job_uuid", async () => {
-    // Same CSV as the happy path (job_uuid included) - we expect only the PUT, no /jobs GET, since
-    // there's nothing to infer.
     const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
     await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
 
@@ -327,9 +319,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("dry-run with missing job_uuid skips the inference fetch and previews the CSV as-built", async () => {
-    // Dry-run is meant to work without auth and without round-trips. Show the CSV-shape body even
-    // though it would 422 if actually sent - the user is verifying the CSV, not previewing the
-    // server contract.
     const s = stub(() => ({ status: 500 }));
     const csv = "employee_uuid,regular_hours\nee-1,40";
     const d = data(
@@ -344,8 +333,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("a /jobs lookup failure surfaces with the employee uuid in the error and no PUT happens", async () => {
-    // If the inference GET fails the user needs to see which employee tripped it so they can fix
-    // the CSV or unblock the lookup. The PUT must not fire on partial information.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 404, body: { error: "not found" } };
       return { status: 404 };
@@ -360,9 +347,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("with multiple employees in the CSV, one failing /jobs lookup names that employee and no PUT happens", async () => {
-    // Three employees inferred in parallel; ee-2's lookup fails. The handler must surface ee-2 by
-    // uuid (not ee-1 or ee-3, and not a bare API error), and the PUT must not run with the
-    // partially-resolved bodies.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1" }] };
       if (u.includes("/employees/ee-2/jobs")) return { status: 404, body: { error: "missing" } };
@@ -381,9 +365,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("a non-array /jobs body degrades to zero known jobs and lets the PUT surface the server error", async () => {
-    // Defensive guard: an unexpected shape from /jobs (object, null, missing field, etc.) shouldn't
-    // crash. The employee falls through with zero known jobs - no inference, no fabricated block -
-    // and the PUT runs so the server returns its own validation message.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: { not: "an array" } };
       return { status: 200, body: { uuid: "pay-1" } };

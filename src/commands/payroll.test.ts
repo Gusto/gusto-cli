@@ -670,8 +670,6 @@ describe("employeesNeedingJobUuidInference", () => {
   });
 
   test("deduplicates the same employee_uuid across multiple multi-job rows", () => {
-    // Two rows for the same employee, each missing job_uuid - the lookup needs to fire once, not
-    // twice, so the returned list deduplicates.
     expect(
       employeesNeedingJobUuidInference({
         employee_compensations: [
@@ -714,7 +712,6 @@ describe("inferMissingJobUuids", () => {
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.field).toContain("ee-multi");
     expect(blocked[0]?.reason).toContain("2 jobs");
-    // The entry is left as-is (no guess): the server's PUT never happens because the caller bails on blocked.
     expect(body.employee_compensations[0]?.hourly_compensations?.[0]?.job_uuid).toBeUndefined();
   });
 

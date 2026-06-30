@@ -495,17 +495,10 @@ function mergeRowsByEmployee(rows: ParsedPayrollUpdateRow[], blocked: BlockedOn[
   }));
 }
 
-/** Shape of `GET /v1/employees/{uuid}/jobs`: only the field the inference uses is typed. */
 interface JobsListEntry {
   uuid?: string;
 }
 
-/** Look up the set of job uuids for each employee that needs inference, one GET per employee in
- * parallel. Returns a `CommandResult<Map>` so it composes with the rest of the handler chain. On
- * any per-employee failure the wrapping error includes the offending employee_uuid (the underlying
- * `fetchResource` failure carries the API status/category but not which employee triggered it). A
- * non-array success body is treated as "no jobs" - inference then skips that employee and lets the
- * server's PUT surface whatever the real issue is. */
 async function fetchEmployeeJobs(
   globals: GlobalFlags,
   opts: { tokenStdin?: boolean },
@@ -524,8 +517,6 @@ async function fetchEmployeeJobs(
   const byEmployee = new Map<string, string[]>();
   for (const { employeeUuid, resp } of responses) {
     if (!resp.ok) {
-      // Surface which employee the lookup failed for so the agent (or a human) doesn't have to
-      // re-derive it from a bare 404/500. Preserve the original error envelope/exit code.
       return {
         ok: false,
         exitCode: resp.exitCode,
@@ -541,10 +532,6 @@ async function fetchEmployeeJobs(
   return { ok: true, data: byEmployee };
 }
 
-/** Unique employee uuids whose body rows are missing `job_uuid` on at least one entry. Empty when
- * every entry already has one (the multi-job-aware case) - the handler uses that to skip the
- * lookups entirely. Returning the list itself (instead of a bare yes/no) means the handler scans
- * the body once and uses the result both for the gate and for the GET fan-out. */
 export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): string[] {
   const out = new Set<string>();
   for (const ec of body.employee_compensations) {
@@ -567,18 +554,12 @@ function* iterCompensations(
   for (const f of ec.fixed_compensations ?? []) yield { entry: f, kind: "fixed_compensations" };
 }
 
-/** Inject `job_uuid` into every hourly/fixed entry that lacks one, using a pre-built
- * employee -> job_uuids map (sourced by the handler from `/v1/employees/{uuid}/jobs`). A
- * single-job employee gets that one job filled in (matches the docs' "job_uuid is optional for
- * single-job employees" promise); a multi-job employee blocks because the CSV is genuinely
- * ambiguous - the agent has to say which job the hours land on. Mutates the body in place and
- * returns the blocked_on list, mirroring the parse-level helpers above. */
+/** Mutates the body in place: injects the sole job_uuid for single-job employees, returns a
+ * blocked_on entry for multi-job employees whose row is genuinely ambiguous. */
 export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
   const blocked: BlockedOn[] = [];
   for (const ec of body.employee_compensations) {
     const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
-    // Employee not in the lookup at all - let the server's PUT surface the same error it already
-    // produces for an unknown employee (don't fabricate a different one here).
     if (!employeeJobs) continue;
     for (const { entry, kind } of iterCompensations(ec)) {
       if (entry.job_uuid) continue;
@@ -592,7 +573,6 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
           reason: `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`,
         });
       }
-      // 0 jobs: skip; let the server surface the underlying issue.
     }
   }
   return blocked;
@@ -895,18 +875,8 @@ export function payrollUpdateHandler(
     const built = buildPayrollUpdateFromCsv(text);
     if (!built.ok) return validationFailure(built.message, built.blocked);
 
-    // Fill in `job_uuid` for single-job employees whose CSV row omitted it - the API docs (and
-    // --help / --example / the payroll-prep skill) describe job_uuid as optional in that case, but
-    // the server 422s on a missing job_uuid instead of inferring it. Skip the lookup when every
-    // entry already has a job_uuid (the common multi-job case) and skip in --dry-run (the user is
-    // previewing CSV shape without hitting the network). For multi-job employees the inference
-    // can't disambiguate, so it produces a blocked_on instead of guessing.
-    //
-    // We look up each employee's jobs via `/v1/employees/{uuid}/jobs` (one GET per employee that
-    // needs inference - usually exactly the same employees the agent just `payroll prepare`d). The
-    // bare `GET /v1/companies/{uuid}/payrolls/{uuid}` returns an empty employee_compensations
-    // array on a non-calculated draft (see `payroll show`'s help comment), so we can't read job
-    // assignments off the payroll resource.
+    // Server requires job_uuid even though docs/help say it's optional for single-job employees;
+    // we infer it from /v1/employees/{uuid}/jobs (the prepared payroll's empty until calculated).
     const employeesNeedingInference = opts.dryRun ? [] : employeesNeedingJobUuidInference(built.body);
     if (employeesNeedingInference.length > 0) {
       const jobs = await fetchEmployeeJobs(globals, opts, employeesNeedingInference);
