@@ -15,6 +15,16 @@ curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli/main/install.sh | s
 
 Pulls the notarized binary for the user's OS/arch from the latest GitHub Release, verifies SHA256, installs to `~/.gusto/bin/gusto`, and updates `PATH`. If the current shell doesn't see `gusto` yet, source the rc file or `export PATH="$HOME/.gusto/bin:$PATH"`. Then `gusto --help` to verify.
 
+## Windows
+
+The `gusto` binary ships for macOS and Linux only. On Windows, run it inside WSL2 - the linux-x64 binary works there unchanged. Do all gusto work (and ideally this whole agent session) from the WSL2 shell, not PowerShell or CMD.
+
+1. From an admin PowerShell: `wsl --install`, then reboot. That gets you WSL2 and Ubuntu.
+2. Open the Ubuntu shell and run the install command above from there.
+3. Run `gusto` from inside WSL2. If you're driving from Windows native instead, prefix calls with `wsl` (e.g. `wsl gusto employee list`) - but a WSL2 shell is simpler.
+
+During `auth login` (see below), WSL2 usually can't open a browser, so the CLI prints the sign-in URL - open it in your Windows browser. The `127.0.0.1` callback reaches the CLI through WSL2's localhost forwarding, so login still completes.
+
 ## Conventions
 
 - **`--agent` / `--json`** emits a stable JSON envelope: `{ "ok": true, "data": {...} }` or `{ "ok": false, "error": {...} }`. Auto-on when stdout is piped.
