@@ -239,6 +239,13 @@ interface PayrollPrepareOpts {
   example?: boolean;
 }
 
+interface PayrollCalculateOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  example?: boolean;
+}
+
 // --- payroll update (CSV -> employee_compensations) -------------------------------------------
 //
 // `payroll update` writes per-cycle inputs onto a draft payroll via PUT
@@ -662,7 +669,7 @@ Examples:
 
   cmd
     .command("prepare [payroll_uuid]")
-    .description("Prepare a draft payroll: populates its employee compensations so totals can be verified")
+    .description("Prepare a draft payroll: lay in its employee compensations (does not compute dollar totals)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
@@ -671,9 +678,15 @@ Examples:
     .addHelpText(
       "after",
       `
-A draft payroll starts as an empty shell (0 employee_compensations). Preparing it populates
-them so the payroll's hours/compensations can be read back and verified - e.g. to confirm the
-hours a 'timesheet sync' landed. Running payroll requires a prepared draft.
+The draft-payroll lifecycle has three steps:
+  1. prepare   - populate employee_compensations (hours/earnings). Dollar 'totals' stay null here.
+  2. calculate - compute the dollar totals (gross/net/taxes). See 'gusto payroll calculate'.
+  3. show      - read the totals, e.g. 'gusto payroll show <payroll_uuid> --include totals'.
+
+A draft payroll starts as an empty shell (0 employee_compensations). Preparing it populates them
+so the payroll's hours/compensations can be read back and verified - e.g. to confirm the hours a
+'timesheet sync' landed. Totals do NOT appear after prepare; run 'calculate' for those. Running
+payroll requires a prepared (and calculated) draft.
 
 Examples:
   $ gusto payroll prepare 1a2b3c4d-0000-1111-2222-333344445555
@@ -682,6 +695,30 @@ Examples:
     )
     .action((payrollUuid: string | undefined, opts: PayrollPrepareOpts) =>
       runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
+    );
+
+  cmd
+    .command("calculate [payroll_uuid]")
+    .description("Calculate a prepared draft payroll's dollar totals (gross/net/taxes); runs asynchronously")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+The middle step of the draft-payroll lifecycle (prepare -> calculate -> read back). 'prepare' lays
+in hours/earnings; 'calculate' computes the dollar totals (gross/net/taxes). Calculation runs
+asynchronously: the API accepts the request and returns no body, so the totals are not ready the
+instant this returns. Read them back once ready, e.g. 'gusto payroll show <payroll_uuid> --include totals'.
+
+Examples:
+  $ gusto payroll calculate 1a2b3c4d-0000-1111-2222-333344445555
+  $ gusto payroll calculate --example   (print the request shape, no uuid or auth needed)
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollCalculateOpts) =>
+      runCommand("gusto payroll calculate", readGlobalFlags(parent.opts()), payrollCalculateHandler(payrollUuid, opts)),
     );
 
   cmd
@@ -748,13 +785,45 @@ export function payrollPrepareHandler(payrollUuid: string | undefined, opts: Pay
         data: {
           method: "PUT",
           path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/prepare",
-          note: "no request body; response is the populated payroll. Read back employee_compensations to verify.",
+          note: "no request body; response is the populated payroll. Read back employee_compensations to verify. Dollar totals stay null until you run 'gusto payroll calculate'.",
         },
       };
     }
     if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
     // prepare has no request body.
     return putPayrollResource(globals, payrollUuid, "/prepare", undefined, opts);
+  };
+}
+
+/** The message the calculate handler returns in place of the API's empty 202 body, so an agent
+ * learns the calc kicked off (it's async) and how to read the resulting totals back. */
+const CALCULATE_NOTE =
+  "calculation runs asynchronously, so totals are not ready the instant this returns. " +
+  "Read them back once ready, e.g. 'gusto payroll show <payroll_uuid> --include totals'.";
+
+export function payrollCalculateHandler(payrollUuid: string | undefined, opts: PayrollCalculateOpts): CommandHandler {
+  return async ({ globals }) => {
+    // --example publishes the path without auth/company resolution so an agent can learn the command
+    // from `--help` without a real uuid or a live request.
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/calculate",
+          note: `no request body; ${CALCULATE_NOTE}`,
+        },
+      };
+    }
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+    // calculate has no request body and returns 202 with an empty body, which the client maps to
+    // data:null. Replace that bare null with an actionable note (a dry-run/error result passes
+    // through untouched, since those carry their own non-null data).
+    const result = await putPayrollResource(globals, payrollUuid, "/calculate", undefined, opts);
+    if (result.ok && (result.data === null || result.data === undefined)) {
+      return { ok: true, data: { status: "calculating", payroll_uuid: payrollUuid, note: CALCULATE_NOTE } };
+    }
+    return result;
   };
 }
 

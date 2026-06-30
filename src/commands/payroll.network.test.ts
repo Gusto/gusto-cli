@@ -8,7 +8,7 @@ import {
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-import { payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
+import { payrollCalculateHandler, payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -160,6 +160,75 @@ describe("payrollShowHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
+});
+
+describe("payrollCalculateHandler", () => {
+  test("PUTs to the company's calculate endpoint and shapes the empty 202 into an actionable note", async () => {
+    // calculate is async: the API returns 202 with no body, which the client maps to data:null.
+    const s = stub((u) => (u.includes("/payrolls/pay-1/calculate") ? { status: 202 } : { status: 404 }));
+
+    const d = data(await payrollCalculateHandler("pay-1", auth)(ctx));
+    expect(d.status).toBe("calculating");
+    expect(d.payroll_uuid).toBe("pay-1");
+    // The note must tell an agent calc is async and how to read totals back.
+    expect(typeof d.note).toBe("string");
+
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/v1/companies/co-1/payrolls/pay-1/calculate");
+    // calculate has no request body.
+    expect(put?.body).toBeUndefined();
+  });
+
+  test("dry-run describes the PUT and sends nothing", async () => {
+    const s = stub(() => ({ status: 500 })); // any real call would fail the test
+    const d = data(await payrollCalculateHandler("pay-1", { ...auth, dryRun: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/companies/co-1/payrolls/pay-1/calculate");
+    // calculate has no request body, so dry-run must not invent one.
+    expect(d.body).toBeUndefined();
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("percent-encodes the UUID segment so a stray '/' or '?' can't retarget the PUT", async () => {
+    const s = stub(() => ({ status: 404 }));
+    await payrollCalculateHandler("evil?x=1/y", auth)(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy/calculate");
+    expect(put?.url).not.toContain("evil?x=1");
+    expect(put?.url).not.toContain("/y/calculate");
+  });
+
+  test("a 422 (e.g. nothing to calculate) surfaces the upstream body as a failed result", async () => {
+    stub((u) =>
+      u.includes("/calculate")
+        ? { status: 422, body: { errors: [{ category: "invalid_operation", message: "not prepared" }] } }
+        : { status: 404 },
+    );
+    const result = await payrollCalculateHandler("pay-1", auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.details).toMatchObject({ errors: [{ category: "invalid_operation" }] });
+  });
+
+  test("--example publishes the path and async note without a uuid, auth, or any request", async () => {
+    const s = stub(() => ({ status: 500 })); // any real call would fail the test
+    const d = data(await payrollCalculateHandler(undefined, { example: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/calculate");
+    // No body key: calculate sends nothing.
+    expect(d.body).toBeUndefined();
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("missing payroll_uuid blocks before any request", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollCalculateHandler(undefined, auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(blockedFields(result)).toEqual(["payroll_uuid"]);
+    expect(s.calls).toHaveLength(0);
   });
 });
 
