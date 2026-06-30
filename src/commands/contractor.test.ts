@@ -119,6 +119,30 @@ describe("validateContractorAdd (self-onboarding only)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("business-name");
   });
+
+  test("--business-name on an individual is rejected rather than silently dropped", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, businessName: "Acme LLC" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("business-name");
+  });
+
+  test("--first-name/--last-name on a business are rejected rather than silently dropped", () => {
+    const result = validateContractorAdd({
+      type: "business",
+      businessName: "Acme LLC",
+      firstName: "Sam",
+      lastName: "Rivera",
+      email: "billing@acme.example.com",
+      wageType: "fixed",
+      startDate: "2026-07-01",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const fields = result.blocked.map((b) => b.field);
+      expect(fields).toContain("first-name");
+      expect(fields).toContain("last-name");
+    }
+  });
 });
 
 describe("runContractorAdd", () => {

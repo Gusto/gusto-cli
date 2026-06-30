@@ -137,6 +137,10 @@ export function validateContractorAdd(
     const { firstName, lastName } = opts;
     if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
     if (!lastName) blocked.push({ field: "last-name", reason: "required for individual" });
+    // Reject a stray business-name rather than silently dropping it, the same way an hourly-rate
+    // on a fixed wage is rejected above: an individual has no business name, so accepting one
+    // would lose the user's input with no signal.
+    if (opts.businessName) blocked.push({ field: "business-name", reason: "not allowed for --type individual" });
     if (blocked.length > 0 || !firstName || !lastName || !email || !wage || !startDate) {
       return { ok: false, message: "missing or invalid arguments", blocked };
     }
@@ -156,6 +160,10 @@ export function validateContractorAdd(
 
   const { businessName } = opts;
   if (!businessName) blocked.push({ field: "business-name", reason: "required for business" });
+  // Symmetric to the individual branch: a business contractor has no personal name, so reject
+  // stray --first-name/--last-name rather than silently dropping them.
+  if (opts.firstName) blocked.push({ field: "first-name", reason: "not allowed for --type business" });
+  if (opts.lastName) blocked.push({ field: "last-name", reason: "not allowed for --type business" });
   if (blocked.length > 0 || !businessName || !email || !wage || !startDate) {
     return { ok: false, message: "missing or invalid arguments", blocked };
   }
