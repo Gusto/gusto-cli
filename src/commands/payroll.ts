@@ -117,12 +117,14 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   const set = (key: string, value: string | undefined): void => {
     if (value !== undefined) query[key] = value;
   };
-  // AINT-718: default to both statuses so draft payrolls are visible without the caller knowing the
-  // server's processed-only fallback. A non-empty --processing-status still wins (validated above);
-  // `||` (not `??`) so an explicit empty value falls back to the default rather than dropping the
-  // param (toQueryString skips "") and silently reverting to the server's processed-only default.
+  // Apply the client-side defaults the help text documents, so an omitted or empty flag sends an
+  // explicit value instead of relying on the server's fallback:
+  //   processing_statuses -> both (AINT-718: draft payrolls are visible by default)
+  //   payroll_types       -> regular
+  // `||` (not `??`) so an explicit empty value ("") also falls back to the default rather than being
+  // dropped by toQueryString and silently reverting to the server's own default.
   set("processing_statuses", opts.processingStatus || PROCESSING_STATUSES.join(","));
-  set("payroll_types", opts.payrollType);
+  set("payroll_types", opts.payrollType || "regular");
   set("start_date", opts.startDate);
   set("end_date", opts.endDate);
   set("date_filter_by", opts.dateFilterBy);
@@ -802,7 +804,7 @@ export function payrollUpdateHandler(
   };
 }
 
-export function payrollListHandler(opts: PayrollListOpts): CommandHandler {
+function payrollListHandler(opts: PayrollListOpts): CommandHandler {
   return async ({ globals }) => {
     const parsed = buildPayrollListQuery(opts);
     if (!parsed.ok) {

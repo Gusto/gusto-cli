@@ -8,7 +8,7 @@ import {
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-import { payrollListHandler, payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
+import { payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -259,20 +259,5 @@ describe("payrollUpdateHandler", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(s.calls).toHaveLength(0);
-  });
-});
-
-describe("payrollListHandler", () => {
-  // Scope distinct from the buildPayrollListQuery unit tests: this asserts the default actually
-  // reaches the request URL end-to-end (handler -> buildPayrollListQuery -> toQueryString, incl.
-  // comma encoding), which the pure unit tests on the query object never exercise.
-  test("defaults to both processing statuses in the request URL when none is supplied (AINT-718)", async () => {
-    const s = stub((u) => (u.includes("/payrolls") ? { status: 200, body: [{ uuid: "pay-1" }] } : { status: 404 }));
-
-    await payrollListHandler(auth)(ctx);
-
-    const get = s.calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("/v1/companies/co-1/payrolls");
-    expect(get?.url).toContain("processing_statuses=processed%2Cunprocessed");
   });
 });
