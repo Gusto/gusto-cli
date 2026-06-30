@@ -51,7 +51,7 @@ Token resolution order: `--token-stdin` (piped) > `GUSTO_ACCESS_TOKEN` > stored 
 gusto --help
 gusto auth whoami          # confirm the token works
 gusto employee list        # company-scoped read
-gusto employee add personal-details --first-name Jane --last-name Doe --email jane@example.com
+gusto pay-schedule create --frequency biweekly --first-payday 2026-07-03 --anchor-end-of-pay-period 2026-06-26 --dry-run
 gusto skill install cash-forecasting
 ```
 
@@ -67,7 +67,7 @@ Missing required arguments return a structured `blocked_on` envelope (exit 7) so
   "error": {
     "code": "validation",
     "message": "missing required arguments",
-    "blocked_on": [{ "field": "email", "reason": "required" }]
+    "blocked_on": [{ "field": "first-payday", "reason": "required" }]
   }
 }
 ```

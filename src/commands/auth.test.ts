@@ -341,7 +341,7 @@ describe("authWhoamiHandler", () => {
     expect(Array.isArray(missing)).toBe(true);
     // A granted scope is never reported missing; a required-but-ungranted one is.
     expect(missing).not.toContain("companies:read");
-    expect(missing).toContain("employees:write");
+    expect(missing).toContain("payrolls:write");
   });
 
   test("omits missing_scopes entirely when every required scope is granted", async () => {

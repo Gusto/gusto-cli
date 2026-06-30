@@ -63,7 +63,7 @@ function buildProgram(): Command {
   registerApiCommand(program);
   registerFeedbackCommand(program);
 
-  // Cascade exitOverride to every command at every depth (some commands, e.g. `employee add`,
+  // Cascade exitOverride to every command at every depth (some commands, e.g. `auth login`,
   // nest subcommands two levels deep) so commander throws CommanderError instead of calling
   // process.exit() out from under us.
   const cascadeExitOverride = (cmd: Command): void => {

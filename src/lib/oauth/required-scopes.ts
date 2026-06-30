@@ -1,14 +1,16 @@
 /** The minimum OAuth scope set the public-beta CLI surface needs.
  *
  * This file is the canonical reference for what the public-beta OAuth app
- * should grant. The Panda registration for that app is kept in sync with this
+ * should grant. The partner OAuth registration for that app is kept in sync with this
  * list; any command added in a future PR that needs a new scope must update
  * this set in the same change so the audit trail stays accurate.
  *
- * The set is intentionally narrow. Scopes dropped from the original 50+ grant
- * (`payrolls:run`, `company_bank_accounts:write`, `signatories:manage`, etc.)
- * have no in-surface consumer and are listed in `DROPPED_SCOPES` below for
- * audit history.
+ * The set is intentionally narrow. The only writes are the per-cycle payroll
+ * flow (timesheets, payroll, pay schedules, reports); employee and contractor
+ * data stay read-only on this surface. Scopes dropped from the original 50+
+ * grant (`payrolls:run`, `company_bank_accounts:write`, `signatories:manage`,
+ * and the employee/contractor write scopes) have no in-surface consumer and are
+ * listed in `DROPPED_SCOPES` below for audit history.
  *
  * This list enumerates scopes that individual CLI commands exercise. Two
  * categories are deliberately NOT listed and remain granted: baseline auth
@@ -37,15 +39,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "employee_federal_taxes:read", usedBy: ["employee inspect"] },
   { scope: "employee_state_taxes:read", usedBy: ["employee inspect"] },
 
-  // Writes (intentionally narrow); `:manage` is the scope the create endpoints require.
-  { scope: "employees:write", usedBy: ["employee add personal-details"] },
-  { scope: "employees:manage", usedBy: ["employee add personal-details"] },
-  { scope: "contractors:write", usedBy: ["contractor add"] },
-  { scope: "contractors:manage", usedBy: ["contractor add"] },
-  { scope: "jobs:write", usedBy: ["employee add job"] },
-  { scope: "compensations:write", usedBy: ["employee add job"] },
-  { scope: "employee_federal_taxes:write", usedBy: ["employee add federal-tax"] },
-  { scope: "employee_state_taxes:write", usedBy: ["employee add state-tax"] },
+  // Writes: the per-cycle payroll flow only.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
@@ -54,10 +48,10 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
- * Listed here so the Panda registration can be cross-checked against the audit
- * trail and so a future regression that introduces a dependent command shows up
- * in the diff. Not enforced at runtime - the Panda registration is the
- * authoritative grant. */
+ * Listed here so the partner OAuth registration can be cross-checked against
+ * the audit trail and so a future regression that introduces a dependent
+ * command shows up in the diff. Not enforced at runtime - the partner OAuth
+ * registration is the authoritative grant. */
 export const DROPPED_SCOPES: readonly string[] = [
   "payrolls:run",
   "company_bank_accounts:write",
@@ -67,6 +61,14 @@ export const DROPPED_SCOPES: readonly string[] = [
   "companies:write",
   "employee_payment_methods:read",
   "employee_payment_methods:write",
+  "employees:write",
+  "employees:manage",
+  "contractors:write",
+  "contractors:manage",
+  "jobs:write",
+  "compensations:write",
+  "employee_federal_taxes:write",
+  "employee_state_taxes:write",
 ] as const;
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to
