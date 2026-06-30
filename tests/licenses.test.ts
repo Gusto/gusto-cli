@@ -1,12 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
 import { isAllowed, isPackageRoot, licenseOf, licenseText, parseBunVersion } from "../scripts/licenses.ts";
 
 const REPO = resolve(import.meta.dir, "..");
 const SCRIPT = resolve(REPO, "scripts", "licenses.ts");
 
-function runCli(args: string[]): number {
-  return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd: REPO }).exitCode;
+function runCli(args: string[], cwd: string = REPO): number {
+  return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd }).exitCode;
+}
+
+// Build a throwaway project the CLI can scan: workflows for bunVersion(), a root
+// manifest, and installed packages under node_modules.
+function makeProject(deps: Record<string, string> = {}): string {
+  const dir = mkdtempSync(join(tmpdir(), "lic-"));
+  mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(dir, ".github", "workflows", "ci.yml"), "  BUN_VERSION: 1.3.14\n");
+  writeFileSync(join(dir, ".github", "workflows", "release.yml"), "  BUN_VERSION: 1.3.14\n");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixture", dependencies: deps }));
+  return dir;
+}
+
+function addPackage(dir: string, folder: string, manifest: Record<string, unknown>): void {
+  const pdir = join(dir, "node_modules", folder);
+  mkdirSync(pdir, { recursive: true });
+  writeFileSync(join(pdir, "package.json"), JSON.stringify(manifest));
+  writeFileSync(join(pdir, "LICENSE"), `${String(manifest.license ?? "license")} text`);
 }
 
 describe("licenseOf", () => {
@@ -28,6 +49,10 @@ describe("licenseOf", () => {
 
   test("returns UNKNOWN for an empty object license", () => {
     expect(licenseOf({ license: {} })).toBe("UNKNOWN");
+  });
+
+  test("drops licenses[] entries that lack a type", () => {
+    expect(licenseOf({ licenses: [{}, { type: "MIT" }] })).toBe("MIT");
   });
 });
 
@@ -116,5 +141,42 @@ describe("run (CLI dispatch)", () => {
 
   test("an unknown mode exits 2", () => {
     expect(runCli(["bogus"])).toBe(2);
+  });
+});
+
+describe("audit over a fixture tree", () => {
+  test("passes when every installed package is permissive", () => {
+    const dir = makeProject();
+    addPackage(dir, "ok-dep", { name: "ok-dep", version: "1.0.0", license: "MIT" });
+    expect(runCli(["audit"], dir)).toBe(0);
+  });
+
+  test("fails on a copyleft dependency", () => {
+    const dir = makeProject();
+    addPackage(dir, "bad-dep", { name: "bad-dep", version: "1.0.0", license: "GPL-3.0-only" });
+    expect(runCli(["audit"], dir)).toBe(1);
+  });
+
+  test("still flags a package with no name field", () => {
+    const dir = makeProject();
+    // A nameless manifest must not be skipped, or its license escapes the audit.
+    addPackage(dir, "anon", { version: "1.0.0", license: "GPL-3.0-only" });
+    expect(runCli(["audit"], dir)).toBe(1);
+  });
+
+  test("aborts on a corrupt manifest rather than skipping it", () => {
+    const dir = makeProject();
+    mkdirSync(join(dir, "node_modules", "corrupt"), { recursive: true });
+    writeFileSync(join(dir, "node_modules", "corrupt", "package.json"), "{ not json");
+    expect(runCli(["audit"], dir)).not.toBe(0);
+  });
+
+  test("notices round-trips and --check detects drift", () => {
+    const dir = makeProject({ "ok-dep": "1.0.0" });
+    addPackage(dir, "ok-dep", { name: "ok-dep", version: "1.0.0", license: "MIT" });
+    expect(runCli(["notices"], dir)).toBe(0);
+    expect(runCli(["--check"], dir)).toBe(0);
+    writeFileSync(join(dir, "NOTICES"), "stale\n");
+    expect(runCli(["--check"], dir)).toBe(1);
   });
 });

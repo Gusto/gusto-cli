@@ -74,28 +74,47 @@ interface Found {
   dir: string;
 }
 
+// Read a file, failing with the offending path instead of a bare IO error.
+function readText(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (e) {
+    throw new Error(`Failed to read ${path}`, { cause: e });
+  }
+}
+
+function writeText(path: string, content: string): void {
+  try {
+    writeFileSync(path, content);
+  } catch (e) {
+    throw new Error(`Failed to write ${path}`, { cause: e });
+  }
+}
+
 // Parse a package.json, failing with the offending path. A corrupt manifest
 // aborts the audit rather than being skipped: silently dropping a package could
 // let an unvetted license through, which is exactly what this guards against.
 function readManifest(path: string): Pkg {
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as Pkg;
+    return JSON.parse(readText(path)) as Pkg;
   } catch (e) {
     throw new Error(`Failed to parse ${path}`, { cause: e });
   }
 }
 
 function toFound(pkg: Pkg, dir: string): Found {
-  return { id: pkg.name ?? "", version: pkg.version ?? "", license: licenseOf(pkg), dir };
+  return { id: pkg.name ?? dir, version: pkg.version ?? "", license: licenseOf(pkg), dir };
 }
 
 function scanInstalled(): Found[] {
   const found = new Map<string, Found>();
   for (const rel of new Glob("node_modules/**/package.json").scanSync(".")) {
     if (!isPackageRoot(rel)) continue;
-    const pkg = readManifest(rel);
-    if (!pkg.name) continue;
-    found.set(`${pkg.name}@${pkg.version ?? "0"}`, toFound(pkg, dirname(rel)));
+    const dir = dirname(rel);
+    // Key by install directory, which is unique per package. Keying by name (or
+    // dropping nameless packages) would let two packages collide and silently
+    // remove one from the audit - a license could escape that way.
+    found.set(dir, toFound(readManifest(rel), dir));
   }
   return [...found.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -150,7 +169,7 @@ export function licenseText(dir: string): string {
   for (const name of ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "COPYING"]) {
     const p = join(dir, name);
     if (!existsSync(p)) continue;
-    const text = readFileSync(p, "utf8").trim();
+    const text = readText(p).trim();
     // An empty/whitespace-only file would silently produce a blank notice, so
     // keep looking and fail loudly if no candidate has real content.
     if (text) return text;
@@ -174,10 +193,7 @@ export function parseBunVersion(ciYml: string, releaseYml: string): string {
 }
 
 function bunVersion(): string {
-  return parseBunVersion(
-    readFileSync(".github/workflows/ci.yml", "utf8"),
-    readFileSync(".github/workflows/release.yml", "utf8"),
-  );
+  return parseBunVersion(readText(".github/workflows/ci.yml"), readText(".github/workflows/release.yml"));
 }
 
 function renderNotices(): string {
@@ -239,14 +255,14 @@ function renderNotices(): string {
 }
 
 function writeNotices(): number {
-  writeFileSync(NOTICES_PATH, renderNotices());
+  writeText(NOTICES_PATH, renderNotices());
   console.log(`Wrote ${NOTICES_PATH}.`);
   return 0;
 }
 
 function checkNotices(): number {
   const expected = renderNotices();
-  const actual = existsSync(NOTICES_PATH) ? readFileSync(NOTICES_PATH, "utf8") : "";
+  const actual = existsSync(NOTICES_PATH) ? readText(NOTICES_PATH) : "";
   if (actual === expected) {
     console.log("NOTICES is up to date.");
     return 0;
