@@ -117,8 +117,14 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   const set = (key: string, value: string | undefined): void => {
     if (value !== undefined) query[key] = value;
   };
-  set("processing_statuses", opts.processingStatus);
-  set("payroll_types", opts.payrollType);
+  // Apply the client-side defaults the help text documents, so an omitted or empty flag sends an
+  // explicit value instead of relying on the server's fallback:
+  //   processing_statuses -> both (AINT-718: draft payrolls are visible by default)
+  //   payroll_types       -> regular
+  // `||` (not `??`) so an explicit empty value ("") also falls back to the default rather than being
+  // dropped by toQueryString and silently reverting to the server's own default.
+  set("processing_statuses", opts.processingStatus || PROCESSING_STATUSES.join(","));
+  set("payroll_types", opts.payrollType || "regular");
   set("start_date", opts.startDate);
   set("end_date", opts.endDate);
   set("date_filter_by", opts.dateFilterBy);
@@ -603,7 +609,7 @@ export function registerPayrollCommand(parent: Command): void {
     .description("List company payrolls (filter to past and/or future windows)")
     .option(
       "--processing-status <statuses>",
-      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed)`,
+      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed)`,
     )
     .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
     .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
@@ -620,7 +626,7 @@ Examples:
   $ gusto payroll list --processing-status processed --start-date 2026-01-01 --end-date 2026-03-31
   $ gusto payroll list --payroll-type regular,off_cycle --sort-order desc
 
-All filters are optional. Defaults: processed regular payrolls, ascending.
+All filters are optional. Defaults: processed and unprocessed regular payrolls, ascending.
 `,
     )
     .action((opts: PayrollListOpts) =>

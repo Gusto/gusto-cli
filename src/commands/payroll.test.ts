@@ -117,8 +117,41 @@ describe("renderPayrollShow", () => {
 });
 
 describe("buildPayrollListQuery", () => {
-  test("no options yields an empty query", () => {
-    expect(buildPayrollListQuery({})).toEqual({ ok: true, query: {} });
+  test("no options applies the client-side defaults: both statuses and regular payroll type (AINT-718)", () => {
+    expect(buildPayrollListQuery({})).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
+    });
+  });
+
+  test("an explicit --processing-status overrides the default", () => {
+    expect(buildPayrollListQuery({ processingStatus: "processed" })).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed", payroll_types: "regular" },
+    });
+  });
+
+  test("an explicit unprocessed-only filter is preserved", () => {
+    expect(buildPayrollListQuery({ processingStatus: "unprocessed" })).toEqual({
+      ok: true,
+      query: { processing_statuses: "unprocessed", payroll_types: "regular" },
+    });
+  });
+
+  test("an explicit --payroll-type overrides the regular default", () => {
+    expect(buildPayrollListQuery({ payrollType: "off_cycle" })).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "off_cycle" },
+    });
+  });
+
+  test("an empty filter value falls back to its default instead of dropping the param", () => {
+    // "" would otherwise pass validateEnum (no tokens) and be dropped by toQueryString, silently
+    // reverting to the server's own default. `||` keeps the documented client-side defaults.
+    expect(buildPayrollListQuery({ processingStatus: "", payrollType: "" })).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
+    });
   });
 
   test("maps every flag to its API param name", () => {
@@ -145,10 +178,10 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
-  test("omits flags that were not supplied", () => {
+  test("omits unsupplied flags but still applies the processing_statuses and payroll_types defaults", () => {
     expect(buildPayrollListQuery({ startDate: "2026-01-01" })).toEqual({
       ok: true,
-      query: { start_date: "2026-01-01" },
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular", start_date: "2026-01-01" },
     });
   });
 
@@ -177,7 +210,7 @@ describe("buildPayrollListQuery", () => {
   test("accepts a valid ISO date", () => {
     expect(buildPayrollListQuery({ startDate: "2026-07-03" })).toEqual({
       ok: true,
-      query: { start_date: "2026-07-03" },
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular", start_date: "2026-07-03" },
     });
   });
 
@@ -194,7 +227,7 @@ describe("buildPayrollListQuery", () => {
   test("accepts check_date and rejects any other date-filter-by", () => {
     expect(buildPayrollListQuery({ dateFilterBy: "check_date" })).toEqual({
       ok: true,
-      query: { date_filter_by: "check_date" },
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular", date_filter_by: "check_date" },
     });
     const bad = buildPayrollListQuery({ dateFilterBy: "checkdate" });
     expect(bad.ok).toBe(false);
@@ -228,7 +261,7 @@ describe("buildPayrollListQuery", () => {
   test("ignores empty tokens from trailing commas", () => {
     expect(buildPayrollListQuery({ payrollType: "regular," })).toEqual({
       ok: true,
-      query: { payroll_types: "regular," },
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular," },
     });
   });
 });
