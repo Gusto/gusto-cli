@@ -5,7 +5,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
+import { isValidIso8601, isValidIsoDate, parsePositiveNumber, pushRequiredIsoDate } from "../lib/parse.ts";
 import {
   type CommandHandler,
   type CommandResult,
@@ -166,16 +166,8 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
   const blocked: BlockedOn[] = [];
   const { payScheduleUuid, payPeriodStart, payPeriodEnd } = opts;
   if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
-  if (!payPeriodStart) {
-    blocked.push({ field: "pay-period-start", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(payPeriodStart)) {
-    blocked.push({ field: "pay-period-start", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
-  if (!payPeriodEnd) {
-    blocked.push({ field: "pay-period-end", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(payPeriodEnd)) {
-    blocked.push({ field: "pay-period-end", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
+  pushRequiredIsoDate(blocked, "pay-period-start", payPeriodStart);
+  pushRequiredIsoDate(blocked, "pay-period-end", payPeriodEnd);
 
   // Re-check the locals (narrows them to `string`) and catch any format errors above.
   if (!payScheduleUuid || !payPeriodStart || !payPeriodEnd || blocked.length > 0) {
@@ -225,16 +217,8 @@ export type TimesheetListValidation = ValidationResult<{ start_date: string; end
 export function validateTimesheetList(opts: TimesheetListInput): TimesheetListValidation {
   const blocked: BlockedOn[] = [];
   const { startDate, endDate } = opts;
-  if (!startDate) {
-    blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(startDate)) {
-    blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
-  if (!endDate) {
-    blocked.push({ field: "end-date", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(endDate)) {
-    blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
+  pushRequiredIsoDate(blocked, "start-date", startDate);
+  pushRequiredIsoDate(blocked, "end-date", endDate);
   if (startDate && endDate && isValidIsoDate(startDate) && isValidIsoDate(endDate) && endDate < startDate) {
     blocked.push({ field: "end-date", reason: "must be on or after --start-date" });
   }

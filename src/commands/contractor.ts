@@ -6,7 +6,7 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { createdWithoutUuidError, partialFailure, toResult } from "../lib/handle-api-error.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
-import { isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
+import { parsePositiveNumber, pushRequiredIsoDate } from "../lib/parse.ts";
 import { readString } from "../lib/read-string.ts";
 import {
   type CommandHandler,
@@ -103,11 +103,7 @@ export function validateContractorAdd(
   }
 
   const startDate = opts.startDate;
-  if (!startDate) {
-    blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(startDate)) {
-    blocked.push({ field: "start-date", reason: `must be a valid YYYY-MM-DD date, got: ${startDate}` });
-  }
+  pushRequiredIsoDate(blocked, "start-date", startDate);
 
   let wage: ContractorWage | undefined;
   if (wageType === "Hourly") {

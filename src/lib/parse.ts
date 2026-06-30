@@ -1,3 +1,5 @@
+import type { BlockedOn } from "./output.ts";
+
 export type PositiveNumberResult = { ok: true; value: number } | { ok: false; reason: string };
 
 /** Parse a string as a positive, finite number.
@@ -41,6 +43,18 @@ export function isValidIsoDate(value: string): boolean {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return false;
   return parsed.toISOString().slice(0, 10) === value;
+}
+
+/** Push a `blocked_on` entry for a required `YYYY-MM-DD` field that's missing or malformed, leaving
+ * `blocked` untouched when the value is a valid date. Shared by the contractor/timesheet/payroll
+ * validators so the required + format guard reads identically across them. Callers still re-check
+ * the local afterwards where they need it narrowed to `string`. */
+export function pushRequiredIsoDate(blocked: BlockedOn[], field: string, value: string | undefined): void {
+  if (!value) {
+    blocked.push({ field, reason: "required (YYYY-MM-DD)" });
+  } else if (!isValidIsoDate(value)) {
+    blocked.push({ field, reason: "must be a valid date in YYYY-MM-DD format" });
+  }
 }
 
 /** True for an ISO 8601 date or date-time (e.g. `2026-06-01` or

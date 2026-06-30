@@ -1,5 +1,34 @@
 import { describe, expect, test } from "bun:test";
-import { isValidIso8601, isValidIsoDate, parseNonNegativeNumber, parsePositiveNumber } from "./parse.ts";
+import type { BlockedOn } from "./output.ts";
+import {
+  isValidIso8601,
+  isValidIsoDate,
+  parseNonNegativeNumber,
+  parsePositiveNumber,
+  pushRequiredIsoDate,
+} from "./parse.ts";
+
+describe("pushRequiredIsoDate", () => {
+  test("a missing value pushes a required blocker for the field", () => {
+    const blocked: BlockedOn[] = [];
+    pushRequiredIsoDate(blocked, "start-date", undefined);
+    expect(blocked).toEqual([{ field: "start-date", reason: "required (YYYY-MM-DD)" }]);
+  });
+
+  test("a malformed value pushes a format blocker for the field", () => {
+    const blocked: BlockedOn[] = [];
+    pushRequiredIsoDate(blocked, "start-date", "2026-13-45");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.field).toBe("start-date");
+    expect(blocked[0]?.reason).toContain("YYYY-MM-DD");
+  });
+
+  test("a valid YYYY-MM-DD value pushes nothing", () => {
+    const blocked: BlockedOn[] = [];
+    pushRequiredIsoDate(blocked, "start-date", "2026-07-01");
+    expect(blocked).toEqual([]);
+  });
+});
 
 describe("parsePositiveNumber", () => {
   test("accepts a positive integer", () => {
