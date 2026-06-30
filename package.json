@@ -1,6 +1,6 @@
 {
   "name": "gusto-cli",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "Gusto CLI - agent-friendly developer interface for Gusto payroll",
   "license": "Apache-2.0",
