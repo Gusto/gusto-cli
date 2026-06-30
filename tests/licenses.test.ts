@@ -14,6 +14,10 @@ function runCli(args: string[], cwd: string = REPO): number {
   return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd }).exitCode ?? -1;
 }
 
+function runCliStderr(args: string[], cwd: string = REPO): string {
+  return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd }).stderr.toString();
+}
+
 // Build a throwaway project the CLI can scan: workflows for bunVersion(), a root
 // manifest, and installed packages under node_modules.
 function makeProject(deps: Record<string, string> = {}): string {
@@ -206,6 +210,15 @@ describe("audit over a fixture tree", () => {
   test("fails when a declared dependency is not installed", () => {
     const dir = makeProject({ ghost: "1.0.0" });
     expect(runCli(["notices"], dir)).not.toBe(0);
+  });
+
+  test("names the parent when a transitive dependency is missing", () => {
+    const dir = makeProject({ parent: "1.0.0" });
+    // parent is installed but declares an uninstalled transitive dep.
+    addPackage(dir, "parent", { name: "parent", version: "1.0.0", license: "MIT", dependencies: { kid: "1.0.0" } });
+    const err = runCliStderr(["notices"], dir);
+    expect(err).toContain("kid");
+    expect(err).toContain("required by parent");
   });
 
   test("notices round-trips and --check detects drift", () => {

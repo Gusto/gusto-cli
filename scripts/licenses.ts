@@ -149,18 +149,20 @@ function audit(): number {
 function bundledDeps(): Found[] {
   const root = readManifest("package.json");
   const seen = new Map<string, Found>();
-  const queue = Object.keys(root.dependencies ?? {});
+  // Track who required each dep so a missing transitive one names its parent.
+  const enqueue = (deps: Pkg["dependencies"], via: string) => Object.keys(deps ?? {}).map((name) => ({ name, via }));
+  const queue = enqueue(root.dependencies, root.name ?? "package.json");
   while (queue.length) {
-    const name = queue.shift()!;
+    const { name, via } = queue.shift()!;
     if (seen.has(name)) continue;
     const dir = join("node_modules", name);
     const manifest = join(dir, "package.json");
     if (!existsSync(manifest)) {
-      throw new Error(`Bundled dependency not installed: ${name}`);
+      throw new Error(`Bundled dependency not installed: ${name} (required by ${via})`);
     }
     const pkg = readManifest(manifest);
     seen.set(name, toFound(pkg, dir));
-    queue.push(...Object.keys(pkg.dependencies ?? {}));
+    queue.push(...enqueue(pkg.dependencies, name));
   }
   return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
