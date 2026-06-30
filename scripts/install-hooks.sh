@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-if [ -z "${BUN_INSTALL_CACHE_DIR:-}" ] && [ ! -d ".git" ] && [ ! -f ".git" ]; then
+if [ -n "${BUN_INSTALL_CACHE_DIR:-}" ] && [ ! -d ".git" ] && [ ! -f ".git" ]; then
   exit 0
 fi
 

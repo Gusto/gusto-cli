@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
+import pkg from "../package.json" with { type: "json" };
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
@@ -36,7 +37,7 @@ describe("compiled binary", () => {
   test("--version prints the version and exits 0", async () => {
     const result = await run(["--version"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(result.stdout.trim()).toBe(pkg.version);
   });
 
   test("--help lists all top-level commands and exits 0", async () => {

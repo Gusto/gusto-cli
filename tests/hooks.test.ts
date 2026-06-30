@@ -142,6 +142,19 @@ describe("install-hooks.sh", () => {
     expect(res.stdout.toString().trim()).toBe("");
   });
 
+  test("does not hijack a parent repo when installed from a nested dir without its own .git", () => {
+    // Consumer install: bun runs the postinstall inside node_modules/gusto-cli, which has
+    // no .git of its own but sits under the consumer's repo. The script must bail rather
+    // than walk up and rewrite the parent repo's core.hooksPath.
+    const repo = setupRepo({ prefix: "consumer" });
+    const nested = path.join(repo, "node_modules", "gusto-cli");
+    mkdirSync(nested, { recursive: true });
+    const res = runInstall(nested, { BUN_INSTALL_CACHE_DIR: "/tmp/bun-cache" });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.toString().trim()).toBe("");
+    expect(git(repo, ["config", "--local", "--default", "", "--get", "core.hooksPath"])).toBe("");
+  });
+
   test("end-to-end: install + commit without -s yields a signed-off commit", () => {
     const repo = setupRepo({ prefix: "install" });
     stageHookOnly(repo);
