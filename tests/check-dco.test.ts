@@ -1,8 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
-import { git, setupRepo as setupRepoHelper } from "./helpers/git";
+import { cleanupTempDirs, git, setupRepo as setupRepoHelper } from "./helpers/git";
 
 const SCRIPT = path.resolve(import.meta.dir, "..", "scripts", "check-dco.sh");
+
+afterEach(cleanupTempDirs);
 
 function setupRepo(): string {
   return setupRepoHelper({ prefix: "dco" });

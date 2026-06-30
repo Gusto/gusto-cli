@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterEach, describe, expect, test } from "bun:test";
+import { copyFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { git, ISOLATED, setupRepo } from "./helpers/git";
+import { cleanupTempDirs, git, ISOLATED, setupRepo, tempDir } from "./helpers/git";
+
+afterEach(cleanupTempDirs);
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const PREPARE_HOOK = path.join(REPO_ROOT, ".githooks", "prepare-commit-msg");
@@ -127,7 +128,7 @@ describe("install-hooks.sh", () => {
   });
 
   test("exits 0 outside a git work tree without setting anything", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "no-git-"));
+    const dir = tempDir("no-git");
     const res = runInstall(dir);
     expect(res.exitCode).toBe(0);
   });
@@ -136,7 +137,7 @@ describe("install-hooks.sh", () => {
     // The bun-install scenario: bun's postinstall step runs the script in a node_modules
     // checkout that has no .git of its own. Make sure the script no-ops cleanly instead
     // of failing the install.
-    const dir = mkdtempSync(path.join(tmpdir(), "bun-install-"));
+    const dir = tempDir("bun-install");
     const res = runInstall(dir, { BUN_INSTALL_CACHE_DIR: "/tmp/bun-cache" });
     expect(res.exitCode).toBe(0);
     expect(res.stdout.toString().trim()).toBe("");
