@@ -98,10 +98,76 @@ bun run build:all        # macOS arm64 + macOS x86_64 + Linux x86_64
 - Single-line summary, 20-80 chars, imperative mood
 - Reference the related issue when there is one
 - Body explains why if non-obvious; otherwise leave it terse
+- Sign off every commit (see [Developer Certificate of Origin](#developer-certificate-of-origin))
+
+## Developer Certificate of Origin
+
+By contributing you certify the [Developer Certificate of Origin](https://developercertificate.org/) (DCO) for your contribution. In short: you wrote the code, or otherwise have the right to submit it under this project's license.
+
+Certify it by signing off each commit:
+
+```sh
+git commit -s        # appends a Signed-off-by line from your git user.name/user.email
+```
+
+The trailer looks like:
+
+```
+Signed-off-by: Jane Doe <jane@example.com>
+```
+
+Use your real name and an email you can be reached at. CI rejects PRs whose commits aren't signed off. To fix commits you already made:
+
+```sh
+git commit --amend -s            # the most recent commit
+git rebase --signoff origin/main # every commit on your branch
+```
+
+<details>
+<summary>Full DCO text (v1.1)</summary>
+
+```
+Developer Certificate of Origin
+Version 1.1
+
+Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+Developer's Certificate of Origin 1.1
+
+By making a contribution to this project, I certify that:
+
+(a) The contribution was created in whole or in part by me and I
+    have the right to submit it under the open source license
+    indicated in the file; or
+
+(b) The contribution is based upon previous work that, to the best
+    of my knowledge, is covered under an appropriate open source
+    license and I have the right under that license to submit that
+    work with modifications, whether created in whole or in part
+    by me, under the same open source license (unless I am
+    permitted to submit under a different license), as indicated
+    in the file; or
+
+(c) The contribution was provided directly to me by some other
+    person who certified (a), (b) or (c) and I have not modified
+    it.
+
+(d) I understand and agree that this project and the contribution
+    are public and that a record of the contribution (including all
+    personal information I submit with it, including my sign-off) is
+    maintained indefinitely and may be redistributed consistent with
+    this project or the open source license(s) involved.
+```
+
+</details>
 
 ## Pull requests
 
 PRs require:
 - Green CI (typecheck, lint, unit tests, smoke tests, cross-platform build)
+- A DCO sign-off on every commit (see above)
 - Code-owner review (`@Gusto/ai-interfaces`)
 - Updates to tests when behavior changes

@@ -13,6 +13,21 @@ env:
   BUN_VERSION: 1.3.14
 
 jobs:
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on:
+      group: gusto-ubuntu-default
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4, pinned to the SHA on Gusto's org Actions allowlist
+        with:
+          fetch-depth: 0
+      - name: Verify Signed-off-by on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check-dco.sh
+
   check:
     name: Lint + Typecheck + Format + Unit & install tests
     runs-on:
@@ -33,6 +48,7 @@ jobs:
       - run: bun run format:check
       - run: bun run test
       - run: bun run test:install
+      - run: bun run test:dco
       # Smoke runs on GitHub-hosted runners whose IPs aren't on the org allowlist,
       # so actions/checkout 403s there. Hand them the source via artifact instead.
       - name: Package source for smoke matrix

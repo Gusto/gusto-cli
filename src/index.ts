@@ -17,10 +17,10 @@ const VERSION = "0.0.1";
 
 const HELP_FOOTER = `
 Documentation:
-  https://github.com/Gusto/gusto-cli-public
+  https://github.com/Gusto/gusto-cli
 
 Report issues:
-  https://github.com/Gusto/gusto-cli-public/issues
+  https://github.com/Gusto/gusto-cli/issues
 `;
 
 function buildProgram(): Command {
