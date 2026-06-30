@@ -68,4 +68,15 @@ describe("confirmationGate", () => {
       expect(result?.ok).toBe(false);
     }
   });
+
+  test("matches write methods case-insensitively", () => {
+    for (const method of ["post", "put", "patch", "delete"]) {
+      const result = confirmationGate(flags({ agent: true }), method, TARGET, {});
+      expect(result?.ok).toBe(false);
+    }
+  });
+
+  test("--dry-run wins when --confirm is also set (preview never gates)", () => {
+    expect(confirmationGate(flags({ agent: true }), "POST", TARGET, { confirm: true, dryRun: true })).toBeNull();
+  });
 });
