@@ -29,7 +29,9 @@ export interface PayrollListOpts {
   tokenStdin?: boolean;
 }
 
-export type PayrollListQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
+// Shared by buildPayrollListQuery and buildPayrollShowQuery: a validated query on success, or the
+// blocked_on list on a bad flag value. One type so the two read/validate paths can't drift.
+export type PayrollQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
 
 // Closed enums, sourced from zenpayroll Api::V1::PayrollsController (the index
 // endpoint's constants - deliberately NOT the public docs, which are stale: the
@@ -48,9 +50,9 @@ const DATE_FILTER_BY = ["check_date"] as const;
 
 // Sourced from zenpayroll Api::V1::PayrollsController INCLUDE_OPTIONS_SHOW. Differs from the index
 // set above (adds benefits/deductions/payroll_taxes). employee_compensations is intentionally NOT
-// here: comps are part of the default show representation (empty until the draft is prepared), not
-// an include. Unknown tokens are silently dropped server-side, so validating here turns an agent's
-// typo into an actionable blocked_on instead of a misleading empty result.
+// here: comps are part of the default show representation (which only appears once the payroll is
+// calculated), not an include. Unknown tokens are silently dropped server-side, so validating here
+// turns an agent's typo into an actionable blocked_on instead of a misleading empty result.
 const SHOW_INCLUDE_OPTIONS = [
   "benefits",
   "deductions",
@@ -73,7 +75,10 @@ function validateEnum(
   multi: boolean,
 ): BlockedOn | null {
   if (value === undefined) return null;
-  const tokens = (multi ? value.split(",") : [value]).filter((t) => t.length > 0);
+  // Trim each token before the enum check: the server does `str.strip` on these params, so
+  // `"totals, taxes"` (space after the comma) is valid server-side and must validate here too.
+  // Empty tokens (from trailing/double commas) are then dropped.
+  const tokens = (multi ? value.split(",") : [value]).map((t) => t.trim()).filter((t) => t.length > 0);
   const invalid = tokens.filter((t) => !allowed.includes(t));
   if (invalid.length === 0) return null;
   return {
@@ -89,7 +94,7 @@ function validateEnum(
  * are intentionally not duplicated here. The deprecated `processed` /
  * `include_off_cycle` params are omitted in favor of `processing_statuses` /
  * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
-export function buildPayrollListQuery(opts: PayrollListOpts): PayrollListQueryResult {
+export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult {
   const blocked: BlockedOn[] = [];
   if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {
     blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
@@ -128,12 +133,10 @@ export interface PayrollShowOpts {
   tokenStdin?: boolean;
 }
 
-export type PayrollShowQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
-
 /** Validate `payroll show` flags and map onto the show endpoint's query params. Only `include` is
  * supported; a valid value is passed through verbatim (see SHOW_INCLUDE_OPTIONS for the closed
  * enum and why it's validated client-side). */
-export function buildPayrollShowQuery(opts: PayrollShowOpts): PayrollShowQueryResult {
+export function buildPayrollShowQuery(opts: PayrollShowOpts): PayrollQueryResult {
   const entry = validateEnum("include", opts.include, SHOW_INCLUDE_OPTIONS, true);
   if (entry) return { ok: false, blocked: [entry] };
   const query: QueryParams = {};
@@ -156,23 +159,41 @@ interface PayrollShowComp {
 }
 interface PayrollShowResponse {
   uuid?: string;
-  processing_status?: string;
+  processed?: boolean;
+  calculated_at?: string | null;
   check_date?: string;
   pay_period?: { start_date?: string; end_date?: string };
   totals?: PayrollTotals;
   employee_compensations?: PayrollShowComp[];
 }
 
+/** Human-readable status from the two state fields the API actually returns (there is no
+ * `processing_status` field on the payroll). `processed` wins; otherwise `calculated_at` marks a
+ * calculated-but-unprocessed draft; otherwise it's an unprocessed draft. */
+function payrollStatus(p: PayrollShowResponse): string | null {
+  if (p.processed === true) return "processed";
+  if (p.calculated_at) return "calculated";
+  if (p.processed === false) return "unprocessed";
+  return null;
+}
+
+/** Coerce an untrusted scalar to a table cell: null/undefined stay blank, anything else is
+ * stringified. Guards the renderer against a non-string value (e.g. a numeric gross_pay) that would
+ * otherwise throw when `table` calls `.padEnd` on it. */
+function cell(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
 /** Render `payroll show` as human key-value blocks plus a compensation table. The API body is
  * typed but not runtime-validated, so each section guards its own shape: a missing totals block is
- * dropped, and a non-array employee_compensations falls back to the prepare hint rather than
- * crashing the table render. */
+ * dropped, non-object compensation entries are filtered out, scalar values are coerced via `cell`,
+ * and a non-array employee_compensations falls back to the prepare hint rather than crashing. */
 export function renderPayrollShow(data: unknown): string {
   const p = (isRecord(data) ? data : {}) as PayrollShowResponse;
   const period = isRecord(p.pay_period) ? p.pay_period : undefined;
   const overview = kvLines([
     ["Payroll", p.uuid ?? null],
-    ["Status", p.processing_status ?? null],
+    ["Status", payrollStatus(p)],
     ["Check date", p.check_date ?? null],
     ["Pay period", period?.start_date && period?.end_date ? `${period.start_date} to ${period.end_date}` : null],
   ]);
@@ -190,14 +211,16 @@ export function renderPayrollShow(data: unknown): string {
     : "";
   const totalsSection = totals ? `Totals\n${totals}` : "";
 
-  const comps = Array.isArray(p.employee_compensations) ? p.employee_compensations : [];
+  const comps = Array.isArray(p.employee_compensations)
+    ? p.employee_compensations.filter((c): c is PayrollShowComp => isRecord(c))
+    : [];
   const compTable = table(
     ["Employee", "Gross", "Net"],
-    comps.map((c) => [c?.employee_uuid, c?.gross_pay, c?.net_pay]),
+    comps.map((c) => [cell(c.employee_uuid), cell(c.gross_pay), cell(c.net_pay)]),
   );
   const compSection = compTable
     ? `Employee compensations\n${compTable}`
-    : "No compensations yet; run `payroll prepare` to populate this draft.";
+    : "No employee compensations yet; they appear once the payroll has been calculated.";
 
   return [overview, totalsSection, compSection].filter((section) => section !== "").join("\n\n");
 }
@@ -615,9 +638,10 @@ All filters are optional. Defaults: processed regular payrolls, ascending.
       `
 Reads are company-scoped: the command resolves the company and reads
 /v1/companies/{company}/payrolls/{uuid} (the bare /v1/payrolls/{uuid} path is not available).
-employee_compensations come back by default but are empty until the draft is prepared - run
-'payroll prepare' first (which is why employee_compensations is not an --include value).
-totals and taxes are null unless you request them with --include.
+employee_compensations and totals only appear once the payroll has been calculated; an
+uncalculated draft returns neither, even with --include (and even after 'payroll prepare', which
+populates inputs but does not calculate). This is why employee_compensations is not an --include value.
+totals and taxes are returned only when you request them with --include.
 
 Examples:
   $ gusto payroll show 1a2b3c4d-0000-1111-2222-333344445555 --include totals
@@ -797,13 +821,7 @@ export function payrollShowHandler(payrollUuid: string | undefined, opts: Payrol
   return async ({ globals }) => {
     if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
     const parsed = buildPayrollShowQuery(opts);
-    if (!parsed.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: { code: "validation", message: "invalid arguments", blocked_on: parsed.blocked },
-      };
-    }
+    if (!parsed.ok) return validationFailure("invalid arguments", parsed.blocked);
     // Encode the uuid as a single path segment: a raw `/`, `?` or `#` from agent/tool output would
     // otherwise retarget the GET (the client resolves paths via `new URL`).
     const result = await fetchCompanyResource(
