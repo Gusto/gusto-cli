@@ -2,7 +2,7 @@
 
 Agent-friendly developer interface for Gusto payroll. From `curl | sh` to running per-cycle payroll prep in a single chat session with an agent.
 
-> **Status: v0.0.1.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) is live, along with per-cycle payroll prep: `gusto timesheet`, `gusto payroll`, `gusto pay-schedule`, and the `gusto employee` / `gusto contractor` commands.
+> **Status: v0.0.2.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) is live, along with per-cycle payroll prep: `gusto timesheet`, `gusto payroll`, `gusto pay-schedule`, and the `gusto employee` / `gusto contractor` commands.
 
 > **Driving this with an agent?** Point it at [`AGENTS.md`](AGENTS.md) (raw: <https://raw.githubusercontent.com/Gusto/gusto-cli/main/AGENTS.md>) - it covers install, `auth login`, and the conventions. `gusto --help` / `gusto <command> --help` is the authoritative command surface.
 
@@ -51,7 +51,7 @@ Token resolution order: `--token-stdin` (piped) > `GUSTO_ACCESS_TOKEN` > stored 
 gusto --help
 gusto auth whoami          # confirm the token works
 gusto employee list        # company-scoped read
-gusto employee add personal-details --first-name Jane --last-name Doe --email jane@example.com
+gusto pay-schedule create --frequency biweekly --first-payday 2026-07-03 --anchor-end-of-pay-period 2026-06-26 --dry-run
 gusto skill install cash-forecasting
 ```
 
@@ -67,7 +67,7 @@ Missing required arguments return a structured `blocked_on` envelope (exit 7) so
   "error": {
     "code": "validation",
     "message": "missing required arguments",
-    "blocked_on": [{ "field": "email", "reason": "required" }]
+    "blocked_on": [{ "field": "first-payday", "reason": "required" }]
   }
 }
 ```
@@ -90,7 +90,7 @@ Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `
 
 ## Bundled skills
 
-The CLI ships bundled skills - `cash-forecasting` (projects upcoming payroll cash needs) and `timesheet-sync` (drives the per-cycle timesheet input flow). Install one into a project's agent workspace:
+The CLI ships bundled skills - `cash-forecasting` (projects upcoming payroll cash needs), `timesheet-sync` (drives the per-cycle timesheet input flow), and `payroll-prep` (maps an owner's per-cycle inputs onto a draft payroll for review). Install one into a project's agent workspace:
 
 ```sh
 gusto skill list

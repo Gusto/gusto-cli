@@ -104,7 +104,7 @@ bun run build:all        # macOS arm64 + macOS x86_64 + Linux x86_64
 
 By contributing you certify the [Developer Certificate of Origin](https://developercertificate.org/) (DCO) for your contribution. In short: you wrote the code, or otherwise have the right to submit it under this project's license.
 
-Certify it by signing off each commit:
+Certify it by signing off each commit. `bun install` wires up a `prepare-commit-msg` hook that auto-appends the trailer from your git `user.name` / `user.email`, so plain `git commit` is enough once you've installed deps. If you skipped the install or want to be explicit:
 
 ```sh
 git commit -s        # appends a Signed-off-by line from your git user.name/user.email
@@ -121,6 +121,12 @@ Use your real name and an email you can be reached at. CI rejects PRs whose comm
 ```sh
 git commit --amend -s            # the most recent commit
 git rebase --signoff origin/main # every commit on your branch
+```
+
+The hook lives in [`.githooks/prepare-commit-msg`](.githooks/prepare-commit-msg) and is wired in by [`scripts/install-hooks.sh`](scripts/install-hooks.sh), which `postinstall` runs after `bun install`. If you cloned with `--ignore-scripts` or want to set it up by hand:
+
+```sh
+sh scripts/install-hooks.sh
 ```
 
 <details>

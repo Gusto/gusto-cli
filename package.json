@@ -24,7 +24,8 @@
     "test:smoke": "bun run build && bun test tests/smoke.test.ts",
     "test:install": "bun test tests/install.test.ts",
     "test:dco": "bun test tests/check-dco.test.ts",
-    "test:all": "bun run test && bun run test:install && bun run test:dco && bun run test:smoke",
+    "test:hooks": "bun test tests/hooks.test.ts",
+    "test:all": "bun run test && bun run test:install && bun run test:dco && bun run test:hooks && bun run test:smoke",
     "license:audit": "bun run scripts/licenses.ts audit",
     "license:notices": "bun run scripts/licenses.ts notices",
     "license:check": "bun run scripts/licenses.ts --check",
@@ -32,7 +33,8 @@
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
     "format": "prettier --write src tests",
-    "format:check": "prettier --check src tests"
+    "format:check": "prettier --check src tests",
+    "postinstall": "[ ! -f scripts/install-hooks.sh ] || sh scripts/install-hooks.sh"
   },
   "dependencies": {
     "commander": "^15.0.0",

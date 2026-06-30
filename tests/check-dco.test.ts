@@ -1,29 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
+import { cleanupTempDirs, git, setupRepo as setupRepoHelper } from "./helpers/git";
 
 const SCRIPT = path.resolve(import.meta.dir, "..", "scripts", "check-dco.sh");
 
-// Isolate git from the host's global/system config (signing hooks, templates).
-const ISOLATED = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
-
-function git(cwd: string, args: string[], extraEnv: Record<string, string> = {}): string {
-  const res = Bun.spawnSync(["git", ...args], {
-    cwd,
-    env: { PATH: process.env.PATH ?? "", ...ISOLATED, ...extraEnv },
-  });
-  if (res.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr.toString()}`);
-  return res.stdout.toString().trim();
-}
+afterEach(cleanupTempDirs);
 
 function setupRepo(): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "dco-"));
-  git(dir, ["init", "-q", "-b", "main"]);
-  git(dir, ["config", "user.name", "Jane Doe"]);
-  git(dir, ["config", "user.email", "jane@example.com"]);
-  git(dir, ["config", "commit.gpgsign", "false"]);
-  return dir;
+  return setupRepoHelper({ prefix: "dco" });
 }
 
 interface CommitOpts {
