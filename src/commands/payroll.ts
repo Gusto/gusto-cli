@@ -548,12 +548,23 @@ async function fetchEmployeeJobs(
 export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): string[] {
   const out = new Set<string>();
   for (const ec of body.employee_compensations) {
-    const missing =
-      (ec.hourly_compensations ?? []).some((h) => !h.job_uuid) ||
-      (ec.fixed_compensations ?? []).some((f) => !f.job_uuid);
-    if (missing) out.add(ec.employee_uuid);
+    for (const { entry } of iterCompensations(ec)) {
+      if (!entry.job_uuid) {
+        out.add(ec.employee_uuid);
+        break;
+      }
+    }
   }
   return [...out];
+}
+
+type CompensationKind = "hourly_compensations" | "fixed_compensations";
+
+function* iterCompensations(
+  ec: EmployeeCompensationUpdate,
+): Generator<{ entry: { job_uuid?: string }; kind: CompensationKind }> {
+  for (const h of ec.hourly_compensations ?? []) yield { entry: h, kind: "hourly_compensations" };
+  for (const f of ec.fixed_compensations ?? []) yield { entry: f, kind: "fixed_compensations" };
 }
 
 /** Inject `job_uuid` into every hourly/fixed entry that lacks one, using a pre-built
@@ -569,11 +580,11 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
     // Employee not in the lookup at all - let the server's PUT surface the same error it already
     // produces for an unknown employee (don't fabricate a different one here).
     if (!employeeJobs) continue;
-    const inject = (entry: { job_uuid?: string }, kind: string): void => {
-      if (entry.job_uuid) return;
+    for (const { entry, kind } of iterCompensations(ec)) {
+      if (entry.job_uuid) continue;
       if (employeeJobs.length === 1) {
         entry.job_uuid = employeeJobs[0];
-        return;
+        continue;
       }
       if (employeeJobs.length > 1) {
         blocked.push({
@@ -582,9 +593,7 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
         });
       }
       // 0 jobs: skip; let the server surface the underlying issue.
-    };
-    for (const h of ec.hourly_compensations ?? []) inject(h, "hourly_compensations");
-    for (const f of ec.fixed_compensations ?? []) inject(f, "fixed_compensations");
+    }
   }
   return blocked;
 }
@@ -902,7 +911,7 @@ export function payrollUpdateHandler(
     if (employeesNeedingInference.length > 0) {
       const jobs = await fetchEmployeeJobs(globals, opts, employeesNeedingInference);
       if (!jobs.ok) return jobs;
-      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data ?? new Map());
+      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data);
       if (inferenceBlocked.length > 0) {
         return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
       }

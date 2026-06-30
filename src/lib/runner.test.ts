@@ -176,7 +176,7 @@ describe("runCommand", () => {
   test("--fields discovery falls back when there are no top-level fields (handler returns no data)", async () => {
     const result = await runWithExitCapture(
       "test",
-      async () => ({ ok: true }),
+      async () => ({ ok: true, data: undefined }),
       { ...flags, fields: { mode: "discover" } },
       runReadCommand,
     );
@@ -269,7 +269,7 @@ describe("runCommand", () => {
     await runWithExitCapture("gusto company provision", async (ctx) => {
       captured.command = ctx.command;
       captured.globals = ctx.globals;
-      return { ok: true };
+      return { ok: true, data: undefined };
     });
     expect(captured.command).toBe("gusto company provision");
     expect(captured.globals?.agent).toBe(true);
