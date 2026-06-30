@@ -902,10 +902,7 @@ export function payrollUpdateHandler(
     if (employeesNeedingInference.length > 0) {
       const jobs = await fetchEmployeeJobs(globals, opts, employeesNeedingInference);
       if (!jobs.ok) return jobs;
-      // `data` is non-null on a CommandResult<Map> with ok:true from fetchEmployeeJobs (the helper
-      // always populates it on success); the optional type on CommandResult.data is for generic
-      // handlers that don't carry a payload.
-      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data!);
+      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data ?? new Map());
       if (inferenceBlocked.length > 0) {
         return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
       }
