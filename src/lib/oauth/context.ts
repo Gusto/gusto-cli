@@ -4,7 +4,7 @@ import type { Environment, GlobalFlags } from "../global-flags.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
 
 export function resolveEnv(globals: GlobalFlags): Environment {
-  return globals.env === "production" ? "production" : "sandbox";
+  return globals.env === "sandbox" ? "sandbox" : "production";
 }
 
 export function oauthHttp(globals: GlobalFlags): OAuthHttpOptions {

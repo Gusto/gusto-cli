@@ -28,7 +28,7 @@ function resolveHttpsBaseUrl(
     if (parsed.protocol === "http:" && isTruthy(source.GUSTO_ALLOW_HTTP)) return override;
     throw new Error(`${envVarName} must be https:// (set GUSTO_ALLOW_HTTP=1 to allow http for local testing)`);
   }
-  return env === "production" ? defaults.production : defaults.sandbox;
+  return env === "sandbox" ? defaults.sandbox : defaults.production;
 }
 
 export function resolveBaseUrl(env: Environment | undefined, source: EnvSource = process.env as EnvSource): string {

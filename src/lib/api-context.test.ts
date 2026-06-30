@@ -78,7 +78,7 @@ describe("resolveApiContext", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.ctx.hasCompany).toBe(false);
     expect(result.ctx.client).toBeInstanceOf(ApiClient);
-    expect(result.ctx.baseUrl).toBe("https://api.gusto-demo.com");
+    expect(result.ctx.baseUrl).toBe("https://api.gusto.com");
   });
 
   test("token present but company missing returns a validation failure", async () => {
@@ -116,7 +116,7 @@ describe("resolveApiContext", () => {
 describe("resolveAuthToken - explicit token precedence (stdin > env > session)", () => {
   test("--token-stdin wins over env and a stored session", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const store = memoryStore({ production: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const resolved = await resolveAuthToken(flags, {
       store,
       http: mockHttp({ status: 200 }),
@@ -143,7 +143,7 @@ describe("resolveAuthToken - explicit token precedence (stdin > env > session)",
   });
 
   test("the stored session is used only when no explicit token is supplied", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const store = memoryStore({ production: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const resolved = await resolveAuthToken(flags, {
       store,
       http: mockHttp({ status: 200 }),
@@ -160,7 +160,7 @@ describe("resolveAuthToken - explicit token precedence (stdin > env > session)",
     // as the session's identity. Assert the env value is the resolved token even
     // though a valid session is present.
     process.env.GUSTO_ACCESS_TOKEN = "bad-explicit-tok";
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const store = memoryStore({ production: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const resolved = await resolveAuthToken(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error("unreachable");
@@ -173,7 +173,7 @@ describe("resolveAuthToken - explicit token precedence (stdin > env > session)",
     // silent-identity-drift hazard as a bad env token. Even with env + session set,
     // we must not silently run as one of them.
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const store = memoryStore({ production: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const resolved = await resolveAuthToken(flags, {
       tokenStdin: true,
       readStdin: () => Promise.resolve(null),
@@ -211,7 +211,9 @@ describe("resolveAuthToken - explicit token precedence (stdin > env > session)",
 describe("resolveApiContext - company fallback honors the resolved token source", () => {
   test("an env token never borrows the session's company", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
+    const store = memoryStore({
+      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+    });
     const result = await resolveApiContext(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -222,7 +224,7 @@ describe("resolveApiContext - company fallback honors the resolved token source"
 
 describe("resolveApiContext - stored session fallback", () => {
   test("falls back to the stored session token when no env/stdin", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
+    const store = memoryStore({ production: { accessToken: "sess-tok", expiresAt: 10_000_000 } });
     const result = await resolveApiContext(flags, {
       requireCompany: false,
       store,
@@ -255,7 +257,9 @@ describe("resolveApiContext - stored session fallback", () => {
   });
 
   test("falls back to the stored companyUuid when no --company-uuid/env", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
+    const store = memoryStore({
+      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+    });
     const result = await resolveApiContext(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
@@ -263,7 +267,9 @@ describe("resolveApiContext - stored session fallback", () => {
   });
 
   test("--company-uuid wins over the stored companyUuid", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" } });
+    const store = memoryStore({
+      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+    });
     const result = await resolveApiContext(flags, {
       companyOverride: "co-flag",
       store,
