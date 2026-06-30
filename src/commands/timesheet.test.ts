@@ -281,6 +281,43 @@ describe("timesheetCreateHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("validation");
   });
+
+  const validCreate = {
+    ...auth,
+    employeeUuid: "emp-1",
+    jobUuid: "job-1",
+    start: "2026-06-01T09:00:00Z",
+    timeZone: "America/New_York",
+    regular: "8",
+  };
+
+  test("an agent-mode create without --confirm is blocked and sends nothing", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 500 }));
+    try {
+      const result = await timesheetCreateHandler(validCreate)(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("confirmation_required");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("--confirm lets the create POST the time sheet", async () => {
+    const { calls, restore } = stubGlobalFetch((u) =>
+      u.includes("/time_tracking/time_sheets") ? { status: 201, body: { uuid: "ts-1" } } : { status: 404 },
+    );
+    try {
+      const result = await timesheetCreateHandler({ ...validCreate, confirm: true })(ctx);
+      expect(result.ok).toBe(true);
+      const post = calls.find((c) => c.method === "POST");
+      expect(post?.url).toContain("/v1/companies/co-1/time_tracking/time_sheets");
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe("timesheetSyncHandler", () => {

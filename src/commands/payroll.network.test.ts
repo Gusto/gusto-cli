@@ -13,6 +13,10 @@ import { payrollPrepareHandler, payrollUpdateHandler } from "./payroll.ts";
 let restore: () => void = () => {};
 afterEach(() => restore());
 
+// An approved write: TEST_CONTEXT is agent mode, so a real send needs --confirm to clear the
+// human-in-the-loop gate. Send-path tests use this; gate behavior has its own tests below.
+const approved = { ...auth, confirm: true };
+
 /** Stub fetch with a router and expose the recorded calls so a test can assert which
  * request was (or wasn't) sent. */
 function stub(router: (u: string) => MockResponse) {
@@ -30,7 +34,7 @@ describe("payrollPrepareHandler", () => {
     };
     const s = stub((u) => (u.includes("/payrolls/pay-1/prepare") ? { status: 200, body: prepared } : { status: 404 }));
 
-    const d = data(await payrollPrepareHandler("pay-1", auth)(ctx));
+    const d = data(await payrollPrepareHandler("pay-1", approved)(ctx));
     expect(d.uuid).toBe("pay-1");
     // The whole point of prepare: compensations are read back for verification.
     expect((d.employee_compensations as { employee_uuid: string }[])[0]?.employee_uuid).toBe("ee-1");
@@ -53,7 +57,7 @@ describe("payrollPrepareHandler", () => {
     // An injection-y UUID (e.g. from agent/tool output) must stay one path segment: without
     // encoding, `?` would drop `/prepare` and hit the payroll-update endpoint instead.
     const s = stub(() => ({ status: 404 }));
-    await payrollPrepareHandler("evil?x=1/y", auth)(ctx);
+    await payrollPrepareHandler("evil?x=1/y", approved)(ctx);
     const put = s.calls.find((c) => c.method === "PUT");
     expect(put?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy/prepare");
     // The dangerous shapes must NOT appear unescaped.
@@ -67,7 +71,7 @@ describe("payrollPrepareHandler", () => {
         ? { status: 422, body: { errors: [{ category: "invalid_operation", message: "no employees" }] } }
         : { status: 404 },
     );
-    const result = await payrollPrepareHandler("pay-1", auth)(ctx);
+    const result = await payrollPrepareHandler("pay-1", approved)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
@@ -92,6 +96,16 @@ describe("payrollPrepareHandler", () => {
     expect(blockedFields(result)).toEqual(["payroll_uuid"]);
     expect(s.calls).toHaveLength(0);
   });
+
+  test("an agent-mode prepare without --confirm is blocked and sends nothing", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollPrepareHandler("pay-1", auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
+  });
 });
 
 /** A readFile stub that always returns the same CSV text, ignoring the path. */
@@ -103,7 +117,7 @@ describe("payrollUpdateHandler", () => {
   test("PUTs the parsed compensations to the company's payroll-update endpoint", async () => {
     const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
 
-    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx));
+    const d = data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(CSV))(ctx));
     expect(d.uuid).toBe("pay-1");
 
     const put = s.calls.find((c) => c.method === "PUT");
@@ -127,7 +141,7 @@ describe("payrollUpdateHandler", () => {
         ? { status: 422, body: { errors: [{ category: "invalid_attribute_value", message: "stale version" }] } }
         : { status: 404 },
     );
-    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
+    const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(CSV))(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
@@ -147,7 +161,7 @@ describe("payrollUpdateHandler", () => {
 
   test("percent-encodes the UUID so a stray '/' or '?' can't retarget the PUT", async () => {
     const s = stub(() => ({ status: 404 }));
-    await payrollUpdateHandler("evil?x=1/y", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
+    await payrollUpdateHandler("evil?x=1/y", { ...approved, input: "in.csv" }, readingCsv(CSV))(ctx);
     const put = s.calls.find((c) => c.method === "PUT");
     expect(put?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy");
     expect(put?.url).not.toContain("evil?x=1");
@@ -187,7 +201,7 @@ describe("payrollUpdateHandler", () => {
   test("reports skipped (no-input) employees in the result data", async () => {
     const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
     const csv = "employee_uuid,bonus\nee-1,250\nee-2,";
-    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
+    const d = data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx));
     expect(d.uuid).toBe("pay-1");
     expect(d.skipped_employees).toEqual([{ employee_uuid: "ee-2", line: 3 }]);
     // ee-2 must not have been sent in the body.

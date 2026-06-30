@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { fetchCompanyResource, putCompanyResource } from "../lib/api-context.ts";
-import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { CsvError, parseCsv } from "../lib/csv.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -102,6 +102,7 @@ interface PayrollPrepareOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -465,6 +466,7 @@ interface PayrollUpdateOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -506,6 +508,7 @@ All filters are optional. Defaults: processed regular payrolls, ascending.
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",
@@ -532,6 +535,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",
@@ -566,12 +570,13 @@ function putPayrollResource(
   payrollUuid: string,
   suffix: string,
   body: unknown,
-  opts: { tokenStdin?: boolean; companyUuid?: string; dryRun?: boolean },
+  opts: { tokenStdin?: boolean; companyUuid?: string; dryRun?: boolean; confirm?: boolean },
 ): Promise<CommandResult> {
   return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}${suffix}`, body, {
     tokenStdin: opts.tokenStdin,
     companyUuid: opts.companyUuid,
     dryRun: opts.dryRun,
+    confirm: opts.confirm,
   });
 }
 

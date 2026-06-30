@@ -1,7 +1,8 @@
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
 import { resolveApiContext } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { confirmationGate } from "../lib/confirm.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -24,6 +25,7 @@ interface ApiRequestOpts {
   data?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   companyUuid?: string;
   autoVersion?: boolean;
 }
@@ -39,6 +41,7 @@ export function registerApiCommand(parent: Command): void {
     .option("--auto-version", "PUT/PATCH only: GET the resource and inject its current version")
     .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
+    .option(...CONFIRM_OPT)
     .addHelpText(
       "after",
       `
@@ -74,6 +77,11 @@ export function apiRequestHandler(
         error: { code: "unsupported_method", message: `unsupported HTTP method: ${rawMethod}` },
       };
     }
+
+    // Human-in-the-loop: a write through the raw escape hatch is gated in agent mode just like the
+    // typed write commands. Reads, --dry-run, and interactive runs pass through (see confirmationGate).
+    const gate = confirmationGate(globals, method, path, { confirm: opts.confirm, dryRun: opts.dryRun });
+    if (gate) return gate;
 
     let body: unknown;
     if (opts.data !== undefined) {

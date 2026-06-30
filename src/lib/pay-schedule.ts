@@ -38,6 +38,7 @@ export interface PayScheduleCreateOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -174,6 +175,7 @@ export function payScheduleCreateHandler(opts: PayScheduleCreateOpts): CommandHa
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
+      confirm: opts.confirm,
     });
   };
 }

@@ -59,6 +59,8 @@ The commands above are examples. `gusto --help` lists every top-level command an
 
 `gusto <any-create-command> --dry-run` builds the request body from your args and prints it without sending. Useful for agent introspection and for previewing the request shape before committing.
 
+When a command is driven by an agent (piped stdout, `--agent`, or `--json`), a write is blocked with a `confirmation_required` envelope (exit 8) until it's re-run with `--confirm`. This keeps a human in the loop: surface the action, get approval, then add `--confirm`. `--dry-run` previews without it, and interactive (TTY) runs aren't gated. The CLI only drafts payroll - it has no run/submit command, so it can't move money even with `--confirm`.
+
 Missing required arguments return a structured `blocked_on` envelope (exit 7) so agents can retry with the missing fields, e.g.:
 
 ```json

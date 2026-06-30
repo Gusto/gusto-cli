@@ -4,6 +4,7 @@ import {
   createCompanyResource,
   fetchCompanyResource,
   fetchResource,
+  putCompanyResource,
   resolveApiContext,
   resolveAuthToken,
   withCompanyContext,
@@ -320,11 +321,38 @@ describe("createCompanyResource", () => {
   });
 
   test("non-dry-run without auth returns the context failure unchanged", async () => {
-    const result = await createCompanyResource(flags, "employees", {}, noSession());
+    // confirm:true gets past the agent-mode write gate so this exercises auth passthrough.
+    const result = await createCompanyResource(flags, "employees", {}, { ...noSession(), confirm: true });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Auth);
     expect(result.error.code).toBe("no_access_token");
+  });
+});
+
+describe("company-resource write confirmation gate", () => {
+  test("an agent-mode write without --confirm is blocked before auth/company resolution", async () => {
+    // noSession() supplies no token, so without the gate this would fail with an auth error.
+    // The gate fires first, so the agent learns it must confirm before anything else.
+    const result = await createCompanyResource(flags, "pay_schedules", { frequency: "Monthly" }, noSession());
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+  });
+
+  test("--confirm lets the write proceed past the gate to auth resolution", async () => {
+    const result = await createCompanyResource(flags, "pay_schedules", {}, { ...noSession(), confirm: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+  });
+
+  test("putCompanyResource is gated the same way", async () => {
+    const result = await putCompanyResource(flags, "payrolls/pay-1/prepare", undefined, noSession());
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("confirmation_required");
   });
 });
 

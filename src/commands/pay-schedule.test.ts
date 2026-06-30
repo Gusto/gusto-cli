@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields } from "../lib/test-support.ts";
+import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields, stubGlobalFetch } from "../lib/test-support.ts";
 import { payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 
 describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {
@@ -212,5 +212,39 @@ describe("payScheduleCreateHandler day-of-month validation", () => {
       day1: "32",
     })(ctx);
     expect(blockedFields(result)).toContain("day-1");
+  });
+});
+
+describe("payScheduleCreateHandler write confirmation gate", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const validBiweekly = {
+    ...auth,
+    frequency: "biweekly",
+    firstPayday: "2026-07-03",
+    anchorEndOfPayPeriod: "2026-06-26",
+  };
+
+  test("an agent-mode create without --confirm is blocked and sends nothing", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await payScheduleCreateHandler(validBiweekly)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("--confirm lets the create POST the pay schedule", async () => {
+    const s = stubGlobalFetch((u) =>
+      u.includes("/pay_schedules") ? { status: 201, body: { uuid: "ps-1" } } : { status: 404 },
+    );
+    restore = s.restore;
+    const result = await payScheduleCreateHandler({ ...validBiweekly, confirm: true })(ctx);
+    expect(result.ok).toBe(true);
+    const post = s.calls.find((c) => c.method === "POST");
+    expect(post?.url).toContain("/v1/companies/co-1/pay_schedules");
   });
 });
