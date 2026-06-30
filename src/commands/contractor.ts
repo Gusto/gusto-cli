@@ -330,7 +330,7 @@ export async function runContractorAdd(
 
 /** The two requests `contractor add` makes, for --dry-run and --example. The contractor uuid isn't
  * known until the POST returns, so the invite PUT carries a `{contractor_uuid}` placeholder. */
-export function contractorSelfOnboardSteps(body: ContractorBody): Record<string, unknown>[] {
+function contractorSelfOnboardSteps(body: ContractorBody): Record<string, unknown>[] {
   return [
     { method: "POST", path: "/v1/companies/{company_uuid}/contractors", body },
     {

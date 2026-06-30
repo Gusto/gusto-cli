@@ -96,6 +96,29 @@ describe("validateContractorAdd (self-onboarding only)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("hourly-rate");
   });
+
+  test("an individual missing last-name is rejected (partial identity)", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, lastName: undefined });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("last-name");
+  });
+
+  test("an individual missing first-name is rejected (partial identity)", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, firstName: undefined });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("first-name");
+  });
+
+  test("a business missing --business-name is rejected", () => {
+    const result = validateContractorAdd({
+      type: "business",
+      email: "billing@acme.example.com",
+      wageType: "fixed",
+      startDate: "2026-07-01",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("business-name");
+  });
 });
 
 describe("runContractorAdd", () => {
@@ -127,6 +150,32 @@ describe("runContractorAdd", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(JSON.stringify(result.error)).toContain("ctr-1");
+  });
+
+  test("a failed create surfaces the API error and never attempts the invite", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/companies/co-1/contractors": [422, { error: "invalid" }],
+    });
+    const validation = validateContractorAdd(VALID_INDIVIDUAL);
+    if (!validation.ok) throw new Error("fixture should validate");
+    const result = await runContractorAdd(client, "co-1", validation.body);
+
+    expect(result.ok).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "POST" });
+  });
+
+  test("a create that returns no uuid can't be invited and surfaces a contractor_created_without_uuid error", async () => {
+    const { client, calls } = stubApiClient({
+      "POST /v1/companies/co-1/contractors": [201, { first_name: "Sam" }],
+    });
+    const validation = validateContractorAdd(VALID_INDIVIDUAL);
+    if (!validation.ok) throw new Error("fixture should validate");
+    const result = await runContractorAdd(client, "co-1", validation.body);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("contractor_created_without_uuid");
+    expect(calls).toHaveLength(1);
   });
 });
 
