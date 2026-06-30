@@ -118,8 +118,10 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
     if (value !== undefined) query[key] = value;
   };
   // AINT-718: default to both statuses so draft payrolls are visible without the caller knowing the
-  // server's processed-only fallback. An explicit --processing-status still wins (validated above).
-  set("processing_statuses", opts.processingStatus ?? PROCESSING_STATUSES.join(","));
+  // server's processed-only fallback. A non-empty --processing-status still wins (validated above);
+  // `||` (not `??`) so an explicit empty value falls back to the default rather than dropping the
+  // param (toQueryString skips "") and silently reverting to the server's processed-only default.
+  set("processing_statuses", opts.processingStatus || PROCESSING_STATUSES.join(","));
   set("payroll_types", opts.payrollType);
   set("start_date", opts.startDate);
   set("end_date", opts.endDate);

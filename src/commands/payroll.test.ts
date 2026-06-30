@@ -138,6 +138,15 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
+  test("an empty --processing-status falls back to the default instead of dropping the param", () => {
+    // "" would otherwise pass validateEnum (no tokens) and be dropped by toQueryString, silently
+    // reverting to the server's processed-only default. `||` keeps the both-statuses default.
+    expect(buildPayrollListQuery({ processingStatus: "" })).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed,unprocessed" },
+    });
+  });
+
   test("maps every flag to its API param name", () => {
     const result = buildPayrollListQuery({
       processingStatus: "processed,unprocessed",
