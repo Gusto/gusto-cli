@@ -117,7 +117,9 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   const set = (key: string, value: string | undefined): void => {
     if (value !== undefined) query[key] = value;
   };
-  set("processing_statuses", opts.processingStatus);
+  // AINT-718: default to both statuses so draft payrolls are visible without the caller knowing the
+  // server's processed-only fallback. An explicit --processing-status still wins (validated above).
+  set("processing_statuses", opts.processingStatus ?? PROCESSING_STATUSES.join(","));
   set("payroll_types", opts.payrollType);
   set("start_date", opts.startDate);
   set("end_date", opts.endDate);
@@ -603,7 +605,7 @@ export function registerPayrollCommand(parent: Command): void {
     .description("List company payrolls (filter to past and/or future windows)")
     .option(
       "--processing-status <statuses>",
-      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed)`,
+      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed)`,
     )
     .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
     .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
@@ -620,7 +622,7 @@ Examples:
   $ gusto payroll list --processing-status processed --start-date 2026-01-01 --end-date 2026-03-31
   $ gusto payroll list --payroll-type regular,off_cycle --sort-order desc
 
-All filters are optional. Defaults: processed regular payrolls, ascending.
+All filters are optional. Defaults: processed and unprocessed regular payrolls, ascending.
 `,
     )
     .action((opts: PayrollListOpts) =>
@@ -798,7 +800,7 @@ export function payrollUpdateHandler(
   };
 }
 
-function payrollListHandler(opts: PayrollListOpts): CommandHandler {
+export function payrollListHandler(opts: PayrollListOpts): CommandHandler {
   return async ({ globals }) => {
     const parsed = buildPayrollListQuery(opts);
     if (!parsed.ok) {

@@ -8,7 +8,7 @@ import {
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-import { payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
+import { payrollListHandler, payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -259,5 +259,27 @@ describe("payrollUpdateHandler", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(s.calls).toHaveLength(0);
+  });
+});
+
+describe("payrollListHandler", () => {
+  test("defaults to both processing statuses in the request URL when none is supplied (AINT-718)", async () => {
+    const s = stub((u) => (u.includes("/payrolls") ? { status: 200, body: [{ uuid: "pay-1" }] } : { status: 404 }));
+
+    await payrollListHandler(auth)(ctx);
+
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/v1/companies/co-1/payrolls");
+    expect(get?.url).toContain("processing_statuses=processed%2Cunprocessed");
+  });
+
+  test("an explicit --processing-status is sent verbatim, with no default appended", async () => {
+    const s = stub((u) => (u.includes("/payrolls") ? { status: 200, body: [] } : { status: 404 }));
+
+    await payrollListHandler({ ...auth, processingStatus: "processed" })(ctx);
+
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("processing_statuses=processed");
+    expect(get?.url).not.toContain("unprocessed");
   });
 });
