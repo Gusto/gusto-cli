@@ -45,10 +45,8 @@ export function isValidIsoDate(value: string): boolean {
   return parsed.toISOString().slice(0, 10) === value;
 }
 
-/** Push a `blocked_on` entry for a required `YYYY-MM-DD` field that's missing or malformed, leaving
- * `blocked` untouched when the value is a valid date. Shared by the contractor/timesheet/payroll
- * validators so the required + format guard reads identically across them. Callers still re-check
- * the local afterwards where they need it narrowed to `string`. */
+/** Push a `blocked_on` entry for a required `YYYY-MM-DD` field that's missing or malformed. Doesn't
+ * narrow `value`, so callers still re-check the local where they need it typed as `string`. */
 export function pushRequiredIsoDate(blocked: BlockedOn[], field: string, value: string | undefined): void {
   if (!value) {
     blocked.push({ field, reason: "required (YYYY-MM-DD)" });

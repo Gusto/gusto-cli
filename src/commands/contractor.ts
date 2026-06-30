@@ -20,16 +20,11 @@ import {
 type ContractorType = "individual" | "business";
 type WageType = "Fixed" | "Hourly";
 
-/** Wage fields. The API requires `hourly_rate` iff `wage_type === "Hourly"`, so model it as a
- * discriminated union — the compiler then rejects invalid states like a Fixed wage carrying an
- * `hourly_rate`, or an Hourly wage with none. */
 type ContractorWage = { wage_type: "Fixed" } | { wage_type: "Hourly"; hourly_rate: string };
 
-/** Fields the Gusto API requires on every contractor regardless of type. The CLI surface is
- * self-onboarding-only: `contractor add` always emails the contractor a self-onboarding invite,
- * so `self_onboarding` is fixed true and `email` (where the invite is sent) is always required.
- * The admin-driven path that takes the contractor's own SSN/EIN/bank through the agent is
- * intentionally not exposed (AINT-707). */
+/** The surface is self-onboarding-only: `self_onboarding` is fixed true and `email` is always
+ * required - the admin-driven path that would take a contractor's SSN/EIN/bank through the agent
+ * is deliberately not exposed. */
 type ContractorCommon = {
   start_date: string;
   self_onboarding: true;
@@ -69,12 +64,6 @@ interface ContractorShowOpts {
   tokenStdin?: boolean;
 }
 
-/** Validate contractor-add args and, on success, return the fully-populated request body.
- * `--type` drives which identity fields are required (individual: first/last name; business:
- * business-name). `--wage-type` and `--start-date` are required for every contractor,
- * `--hourly-rate` is required when wage-type is hourly, and `--email` is always required (it's
- * where the self-onboarding invite is sent). Returning the body lets the compiler prove it's
- * complete. */
 export function validateContractorAdd(
   opts: Pick<
     ContractorAddOpts,
@@ -121,15 +110,12 @@ export function validateContractorAdd(
     }
   } else if (wageType === "Fixed") {
     if (opts.hourlyRate) {
-      // Reject rather than silently drop: a fixed-wage contractor has no hourly rate, so
-      // accepting --hourly-rate would lose the user's input with no signal.
       blocked.push({ field: "hourly-rate", reason: "not allowed when --wage-type is fixed" });
     } else {
       wage = { wage_type: "Fixed" };
     }
   }
 
-  // Email is always required: it's where the API sends the self-onboarding invite.
   const { email } = opts;
   if (!email) blocked.push({ field: "email", reason: "required (where the self-onboarding invite is sent)" });
 
@@ -137,9 +123,6 @@ export function validateContractorAdd(
     const { firstName, lastName } = opts;
     if (!firstName) blocked.push({ field: "first-name", reason: "required for individual" });
     if (!lastName) blocked.push({ field: "last-name", reason: "required for individual" });
-    // Reject a stray business-name rather than silently dropping it, the same way an hourly-rate
-    // on a fixed wage is rejected above: an individual has no business name, so accepting one
-    // would lose the user's input with no signal.
     if (opts.businessName) blocked.push({ field: "business-name", reason: "not allowed for --type individual" });
     if (blocked.length > 0 || !firstName || !lastName || !email || !wage || !startDate) {
       return { ok: false, message: "missing or invalid arguments", blocked };
@@ -160,8 +143,6 @@ export function validateContractorAdd(
 
   const { businessName } = opts;
   if (!businessName) blocked.push({ field: "business-name", reason: "required for business" });
-  // Symmetric to the individual branch: a business contractor has no personal name, so reject
-  // stray --first-name/--last-name rather than silently dropping them.
   if (opts.firstName) blocked.push({ field: "first-name", reason: "not allowed for --type business" });
   if (opts.lastName) blocked.push({ field: "last-name", reason: "not allowed for --type business" });
   if (blocked.length > 0 || !businessName || !email || !wage || !startDate) {
@@ -274,9 +255,6 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
     const body = validation.body;
 
-    // Self-onboarding is two calls: creating the contractor with self_onboarding:true only
-    // registers them at status self_onboarding_not_invited - the invite email is sent by a
-    // separate PUT to onboarding_status. Doing only the POST left them uninvited (AINT-656).
     if (opts.dryRun) {
       return { ok: true, data: { steps: contractorSelfOnboardSteps(body) } };
     }
@@ -286,16 +264,11 @@ function contractorAddHandler(opts: ContractorAddOpts): CommandHandler {
   };
 }
 
-/** The onboarding_status that sends the self-onboarding invite, moving a contractor from
- * `self_onboarding_not_invited` to invited. Verified against the Gusto API's contractor
- * onboarding_status enum ("Invite a contractor to self-onboard"). */
 const SELF_ONBOARDING_INVITE_STATUS = "self_onboarding_invited";
 
-/** Create the contractor, then send the self-onboarding invite. Creating a contractor with
- * self_onboarding:true only registers them at status self_onboarding_not_invited; the invite
- * email is a separate PUT to /v1/contractors/{uuid}/onboarding_status (AINT-656). A failed invite
- * after a successful create surfaces the created contractor (+uuid) so a retry can resend the
- * invite via that PUT rather than POSTing a duplicate contractor. */
+/** Two calls: the POST only registers the contractor as not-yet-invited; the invite is a separate
+ * PUT to onboarding_status. If the invite fails after the create, surface the created contractor
+ * and its uuid so a retry resends the invite rather than POSTing a duplicate. */
 export async function runContractorAdd(
   client: ApiClient,
   companyUuid: string,
@@ -306,7 +279,6 @@ export async function runContractorAdd(
     const res = await client.post(`/v1/companies/${companyUuid}/contractors`, body);
     contractor = res.body;
   } catch (err) {
-    // Nothing was created; surface the API error as-is.
     return toResult(err);
   }
 
@@ -336,8 +308,8 @@ export async function runContractorAdd(
   }
 }
 
-/** The two requests `contractor add` makes, for --dry-run and --example. The contractor uuid isn't
- * known until the POST returns, so the invite PUT carries a `{contractor_uuid}` placeholder. */
+/** Steps for --dry-run/--example. The uuid isn't known until the POST returns, so the invite PUT
+ * carries a `{contractor_uuid}` placeholder. */
 function contractorSelfOnboardSteps(body: ContractorBody): Record<string, unknown>[] {
   return [
     { method: "POST", path: "/v1/companies/{company_uuid}/contractors", body },
