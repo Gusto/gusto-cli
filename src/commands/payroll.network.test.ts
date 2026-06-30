@@ -240,7 +240,13 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("reports skipped (no-input) employees in the result data", async () => {
-    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
+    // ee-1's bonus row has no job_uuid, so the handler infers it via /employees/ee-1/jobs.
+    // ee-2 is skipped entirely (no inputs) and never reaches the /jobs lookup or the PUT body.
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1" }] };
+      if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
+      return { status: 404 };
+    });
     const csv = "employee_uuid,bonus\nee-1,250\nee-2,";
     const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
     expect(d.uuid).toBe("pay-1");
@@ -258,6 +264,82 @@ describe("payrollUpdateHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("infers job_uuid for a single-job employee whose CSV omitted it (GET /jobs, then PUT)", async () => {
+    // 1st call: GET /v1/employees/ee-1/jobs returning one job.
+    // 2nd call: PUT the update with the injected job_uuid.
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1", title: "Engineer" }] };
+      if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
+      return { status: 404 };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
+    expect(d.uuid).toBe("pay-1");
+
+    const get = s.calls.find((c) => c.method === "GET");
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(get?.url).toContain("/v1/employees/ee-1/jobs");
+    expect(put?.body).toEqual({
+      employee_compensations: [
+        {
+          employee_uuid: "ee-1",
+          hourly_compensations: [{ name: "Regular Hours", hours: 40, job_uuid: "job-1" }],
+        },
+      ],
+    });
+  });
+
+  test("blocks (no PUT) when a multi-job employee's CSV omits job_uuid", async () => {
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-multi/jobs"))
+        return {
+          status: 200,
+          body: [
+            { uuid: "job-a", title: "Day" },
+            { uuid: "job-b", title: "Night" },
+          ],
+        };
+      return { status: 404 };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-multi,40";
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(result.error.blocked_on?.[0]?.field).toContain("ee-multi");
+    // Critical: no PUT happened - the ambiguous request never reaches the API.
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  test("skips the /jobs lookup when every CSV row already has job_uuid", async () => {
+    // Same CSV as the happy path (job_uuid included) - we expect only the PUT, no /jobs GET, since
+    // there's nothing to infer.
+    const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
+    await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(CSV))(ctx);
+
+    expect(s.calls.filter((c) => c.method === "GET")).toHaveLength(0);
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+  });
+
+  test("dry-run with missing job_uuid skips the inference fetch and previews the CSV as-built", async () => {
+    // Dry-run is meant to work without auth and without round-trips. Show the CSV-shape body even
+    // though it would 422 if actually sent - the user is verifying the CSV, not previewing the
+    // server contract.
+    const s = stub(() => ({ status: 500 }));
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const d = data(
+      await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(csv))(ctx),
+    );
+    expect(d.method).toBe("PUT");
+    expect(
+      (d.body as { employee_compensations: { hourly_compensations: { job_uuid?: string }[] }[] })
+        .employee_compensations[0]?.hourly_compensations[0]?.job_uuid,
+    ).toBeUndefined();
     expect(s.calls).toHaveLength(0);
   });
 });
