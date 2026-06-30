@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { isAllowed, isPackageRoot, licenseOf, licenseText, parseBunVersion } from "../scripts/licenses.ts";
+import { isAllowed, isPackageRoot, licenseOf, licenseText, parseBunVersion } from "./licenses.ts";
 
-const REPO = resolve(import.meta.dir, "..");
+const REPO = resolve(import.meta.dir, "..", "..");
 const SCRIPT = resolve(REPO, "scripts", "licenses.ts");
 
 function runCli(args: string[], cwd: string = REPO): number {
