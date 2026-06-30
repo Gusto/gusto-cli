@@ -25,7 +25,7 @@ const ALLOWED = new Set(
 const NOTICES_PATH = "NOTICES";
 const BUN_LICENSE_URL = (version: string) => `https://github.com/oven-sh/bun/blob/bun-v${version}/LICENSE.md`;
 
-interface Pkg {
+export interface Pkg {
   name?: string;
   version?: string;
   license?: string | { type?: string };
@@ -33,7 +33,7 @@ interface Pkg {
   dependencies?: Record<string, string>;
 }
 
-function licenseOf(pkg: Pkg): string {
+export function licenseOf(pkg: Pkg): string {
   if (typeof pkg.license === "string") return pkg.license;
   if (pkg.license && typeof pkg.license === "object" && pkg.license.type) {
     return pkg.license.type;
@@ -47,7 +47,7 @@ function licenseOf(pkg: Pkg): string {
 
 // Evaluate an SPDX expression against the allowlist. Handles flat OR/AND and
 // parentheses: an OR passes if any operand passes, an AND only if all do.
-function isAllowed(expr: string): boolean {
+export function isAllowed(expr: string): boolean {
   const cleaned = expr.replace(/[()]/g, " ").trim();
   if (!cleaned || /^(unknown|unlicensed|see\s+license)/i.test(cleaned)) {
     return false;
@@ -59,7 +59,7 @@ function isAllowed(expr: string): boolean {
 
 // True only for a package's own manifest: an immediate child of node_modules
 // (or node_modules/@scope). Excludes sub-manifests like dist/package.json.
-function isPackageRoot(rel: string): boolean {
+export function isPackageRoot(rel: string): boolean {
   const seg = rel.split("/");
   const parent = seg[seg.length - 3];
   if (parent === "node_modules") return true;
@@ -143,9 +143,13 @@ function bundledDeps(): Found[] {
 function licenseText(dir: string): string {
   for (const name of ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "COPYING"]) {
     const p = join(dir, name);
-    if (existsSync(p)) return readFileSync(p, "utf8").trim();
+    if (!existsSync(p)) continue;
+    const text = readFileSync(p, "utf8").trim();
+    // An empty/whitespace-only file would silently produce a blank notice, so
+    // keep looking and fail loudly if no candidate has real content.
+    if (text) return text;
   }
-  throw new Error(`No license file found in ${dir}`);
+  throw new Error(`No non-empty license file found in ${dir}`);
 }
 
 function bunVersion(): string {
@@ -236,12 +240,19 @@ function run(mode: string): number {
       return audit();
     case "notices":
       return writeNotices();
-    case "--check":
-      return audit() || checkNotices();
+    case "--check": {
+      // Run both so a failing audit doesn't hide NOTICES drift (and vice versa).
+      const audited = audit();
+      const noticed = checkNotices();
+      return audited || noticed;
+    }
     default:
       console.error(`Unknown mode: ${mode}. Use audit | notices | --check.`);
       return 2;
   }
 }
 
-process.exit(run(process.argv[2] ?? "audit"));
+// Only run the CLI when executed directly, so tests can import the helpers.
+if (import.meta.main) {
+  process.exit(run(process.argv[2] ?? "audit"));
+}
