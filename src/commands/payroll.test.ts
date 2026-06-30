@@ -3,8 +3,8 @@ import {
   buildPayrollListQuery,
   buildPayrollShowQuery,
   buildPayrollUpdateFromCsv,
+  employeesNeedingJobUuidInference,
   inferMissingJobUuids,
-  needsJobUuidInference,
   type PayrollUpdateBody,
   renderPayrollShow,
 } from "./payroll.ts";
@@ -626,10 +626,10 @@ describe("buildPayrollUpdateFromCsv", () => {
   });
 });
 
-describe("needsJobUuidInference", () => {
-  test("returns false when every entry already has a job_uuid", () => {
+describe("employeesNeedingJobUuidInference", () => {
+  test("returns an empty list when every entry already has a job_uuid", () => {
     expect(
-      needsJobUuidInference({
+      employeesNeedingJobUuidInference({
         employee_compensations: [
           {
             employee_uuid: "ee-1",
@@ -638,35 +638,48 @@ describe("needsJobUuidInference", () => {
           },
         ],
       }),
-    ).toBe(false);
+    ).toEqual([]);
   });
 
-  test("returns true when an hourly entry is missing job_uuid", () => {
+  test("includes the employee when an hourly entry is missing job_uuid", () => {
     expect(
-      needsJobUuidInference({
+      employeesNeedingJobUuidInference({
         employee_compensations: [
           { employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 80 }] },
         ],
       }),
-    ).toBe(true);
+    ).toEqual(["ee-1"]);
   });
 
-  test("returns true when a fixed entry is missing job_uuid", () => {
+  test("includes the employee when a fixed entry is missing job_uuid", () => {
     expect(
-      needsJobUuidInference({
+      employeesNeedingJobUuidInference({
         employee_compensations: [{ employee_uuid: "ee-1", fixed_compensations: [{ name: "Bonus", amount: 250 }] }],
       }),
-    ).toBe(true);
+    ).toEqual(["ee-1"]);
   });
 
-  test("returns false when there are no comp entries to check", () => {
+  test("returns an empty list when there are no comp entries to check", () => {
     expect(
-      needsJobUuidInference({
+      employeesNeedingJobUuidInference({
         employee_compensations: [
           { employee_uuid: "ee-1", reimbursements: [{ amount: 50, description: "Reimbursement" }] },
         ],
       }),
-    ).toBe(false);
+    ).toEqual([]);
+  });
+
+  test("deduplicates the same employee_uuid across multiple multi-job rows", () => {
+    // Two rows for the same employee, each missing job_uuid - the lookup needs to fire once, not
+    // twice, so the returned list deduplicates.
+    expect(
+      employeesNeedingJobUuidInference({
+        employee_compensations: [
+          { employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 30 }] },
+          { employee_uuid: "ee-1", hourly_compensations: [{ name: "Overtime", hours: 5 }] },
+        ],
+      }),
+    ).toEqual(["ee-1"]);
   });
 });
 

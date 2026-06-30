@@ -342,4 +342,39 @@ describe("payrollUpdateHandler", () => {
     ).toBeUndefined();
     expect(s.calls).toHaveLength(0);
   });
+
+  test("a /jobs lookup failure surfaces with the employee uuid in the error and no PUT happens", async () => {
+    // If the inference GET fails the user needs to see which employee tripped it so they can fix
+    // the CSV or unblock the lookup. The PUT must not fire on partial information.
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 404, body: { error: "not found" } };
+      return { status: 404 };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.message).toContain("ee-1");
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  test("a non-array /jobs body degrades to zero known jobs and lets the PUT surface the server error", async () => {
+    // Defensive guard: an unexpected shape from /jobs (object, null, missing field, etc.) shouldn't
+    // crash. The employee falls through with zero known jobs - no inference, no fabricated block -
+    // and the PUT runs so the server returns its own validation message.
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: { not: "an array" } };
+      return { status: 200, body: { uuid: "pay-1" } };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(true);
+
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({
+      employee_compensations: [{ employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] }],
+    });
+  });
 });

@@ -500,39 +500,60 @@ interface JobsListEntry {
   uuid?: string;
 }
 
-/** Look up the set of job uuids for each employee that needs inference, one GET per employee.
- * Returns either a populated map (success) or the first non-OK `CommandResult` so the handler can
- * propagate the API/auth error verbatim. Employees with no jobs come back as an empty list -
- * inference skips them and lets the server's PUT surface its own error. */
+/** Look up the set of job uuids for each employee that needs inference, one GET per employee in
+ * parallel. Returns a `CommandResult<Map>` so it composes with the rest of the handler chain. On
+ * any per-employee failure the wrapping error includes the offending employee_uuid (the underlying
+ * `fetchResource` failure carries the API status/category but not which employee triggered it). A
+ * non-array success body is treated as "no jobs" - inference then skips that employee and lets the
+ * server's PUT surface whatever the real issue is. */
 async function fetchEmployeeJobs(
   globals: GlobalFlags,
   opts: { tokenStdin?: boolean },
   employeeUuids: readonly string[],
-): Promise<{ ok: true; byEmployee: Map<string, string[]> } | { ok: false; result: CommandResult }> {
+): Promise<CommandResult<Map<string, string[]>>> {
+  const responses = await Promise.all(
+    employeeUuids.map(async (employeeUuid) => {
+      const resp = await fetchResource<JobsListEntry[]>(
+        globals,
+        { tokenStdin: opts.tokenStdin },
+        () => `/v1/employees/${encodeURIComponent(employeeUuid)}/jobs`,
+      );
+      return { employeeUuid, resp };
+    }),
+  );
   const byEmployee = new Map<string, string[]>();
-  for (const employeeUuid of employeeUuids) {
-    const resp = await fetchResource<JobsListEntry[]>(
-      globals,
-      { tokenStdin: opts.tokenStdin },
-      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/jobs`,
-    );
-    if (!resp.ok) return { ok: false, result: resp };
+  for (const { employeeUuid, resp } of responses) {
+    if (!resp.ok) {
+      // Surface which employee the lookup failed for so the agent (or a human) doesn't have to
+      // re-derive it from a bare 404/500. Preserve the original error envelope/exit code.
+      return {
+        ok: false,
+        exitCode: resp.exitCode,
+        error: {
+          ...resp.error,
+          message: `looking up jobs for employee ${employeeUuid}: ${resp.error.message}`,
+        },
+      };
+    }
     const jobs = Array.isArray(resp.data) ? resp.data.map((j) => j.uuid).filter((u): u is string => !!u) : [];
     byEmployee.set(employeeUuid, jobs);
   }
-  return { ok: true, byEmployee };
+  return { ok: true, data: byEmployee };
 }
 
-/** True if the body contains any hourly/fixed compensation entry without a job_uuid. Used to decide
- * whether the handler needs to fetch the prepared payroll for job-uuid inference - if every entry
- * already carries a job_uuid (most multi-job-aware callers and the canonical `--example`), the GET
- * is skipped and the PUT goes through unchanged. */
-export function needsJobUuidInference(body: PayrollUpdateBody): boolean {
+/** Unique employee uuids whose body rows are missing `job_uuid` on at least one entry. Empty when
+ * every entry already has one (the multi-job-aware case) - the handler uses that to skip the
+ * lookups entirely. Returning the list itself (instead of a bare yes/no) means the handler scans
+ * the body once and uses the result both for the gate and for the GET fan-out. */
+export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): string[] {
+  const out = new Set<string>();
   for (const ec of body.employee_compensations) {
-    if ((ec.hourly_compensations ?? []).some((h) => !h.job_uuid)) return true;
-    if ((ec.fixed_compensations ?? []).some((f) => !f.job_uuid)) return true;
+    const missing =
+      (ec.hourly_compensations ?? []).some((h) => !h.job_uuid) ||
+      (ec.fixed_compensations ?? []).some((f) => !f.job_uuid);
+    if (missing) out.add(ec.employee_uuid);
   }
-  return false;
+  return [...out];
 }
 
 /** Inject `job_uuid` into every hourly/fixed entry that lacks one, using a pre-built
@@ -877,21 +898,14 @@ export function payrollUpdateHandler(
     // bare `GET /v1/companies/{uuid}/payrolls/{uuid}` returns an empty employee_compensations
     // array on a non-calculated draft (see `payroll show`'s help comment), so we can't read job
     // assignments off the payroll resource.
-    if (!opts.dryRun && needsJobUuidInference(built.body)) {
-      const employees = [
-        ...new Set(
-          built.body.employee_compensations
-            .filter(
-              (ec) =>
-                (ec.hourly_compensations ?? []).some((h) => !h.job_uuid) ||
-                (ec.fixed_compensations ?? []).some((f) => !f.job_uuid),
-            )
-            .map((ec) => ec.employee_uuid),
-        ),
-      ];
-      const jobs = await fetchEmployeeJobs(globals, opts, employees);
-      if (!jobs.ok) return jobs.result;
-      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.byEmployee);
+    const employeesNeedingInference = opts.dryRun ? [] : employeesNeedingJobUuidInference(built.body);
+    if (employeesNeedingInference.length > 0) {
+      const jobs = await fetchEmployeeJobs(globals, opts, employeesNeedingInference);
+      if (!jobs.ok) return jobs;
+      // `data` is non-null on a CommandResult<Map> with ok:true from fetchEmployeeJobs (the helper
+      // always populates it on success); the optional type on CommandResult.data is for generic
+      // handlers that don't carry a payload.
+      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data!);
       if (inferenceBlocked.length > 0) {
         return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
       }
