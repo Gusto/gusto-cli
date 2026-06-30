@@ -43,6 +43,12 @@ describe("confirmationGate", () => {
     expect(confirmationGate(flags({ agent: true }), "GET", "/v1/companies/x/employees", {})).toBeNull();
   });
 
+  test("gates a write under --json (an agent-mode alias) the same as --agent", () => {
+    const result = confirmationGate(flags({ json: true }), "POST", TARGET, {}, true);
+    expect(result?.ok).toBe(false);
+    if (result?.ok === false) expect(result.error.code).toBe("confirmation_required");
+  });
+
   test("does not gate in human mode - the operator at the TTY is the loop", () => {
     expect(confirmationGate(flags({ human: true }), "POST", TARGET, {})).toBeNull();
   });
