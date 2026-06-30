@@ -308,6 +308,41 @@ describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
   });
 });
 
+describe("authLoginHandler - environment passed to login", () => {
+  const skipSkills = async () => undefined;
+  const tokenInfo = {
+    resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+    resource: { type: "Company" as const, uuid: "co-1" },
+  };
+  // Capture the env the handler hands to `login`, then run the handler with the
+  // given --env flag. `undefined` is the no-flag case this PR's default flip turns on.
+  const envFor = async (env: GlobalFlags["env"]): Promise<string> => {
+    let seen: string | undefined;
+    const captureLogin = (e: string) => {
+      seen = e;
+      return Promise.resolve(tokenInfo);
+    };
+    const { sinks } = captureSinks();
+    await authLoginHandler(
+      {},
+      { login: captureLogin, installSkills: skipSkills },
+    )({
+      ...ctx,
+      globals: { ...TEST_GLOBALS, env },
+      sinks,
+    });
+    if (seen === undefined) throw new Error("login was not called");
+    return seen;
+  };
+
+  test("defaults to production when no --env is passed", async () => {
+    expect(await envFor(undefined)).toBe("production");
+  });
+  test("passes sandbox through when --env sandbox is explicit", async () => {
+    expect(await envFor("sandbox")).toBe("sandbox");
+  });
+});
+
 describe("authWhoamiHandler", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());
