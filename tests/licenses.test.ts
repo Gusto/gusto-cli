@@ -9,7 +9,9 @@ const REPO = resolve(import.meta.dir, "..");
 const SCRIPT = resolve(REPO, "scripts", "licenses.ts");
 
 function runCli(args: string[], cwd: string = REPO): number {
-  return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd }).exitCode;
+  // exitCode is null when the process is killed by a signal; treat that as a
+  // failure code so it never coincides with an expected 0/1/2.
+  return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd }).exitCode ?? -1;
 }
 
 // Build a throwaway project the CLI can scan: workflows for bunVersion(), a root
@@ -49,6 +51,10 @@ describe("licenseOf", () => {
 
   test("returns UNKNOWN for an empty object license", () => {
     expect(licenseOf({ license: {} })).toBe("UNKNOWN");
+  });
+
+  test("returns UNKNOWN for an empty licenses[] array", () => {
+    expect(licenseOf({ licenses: [] })).toBe("UNKNOWN");
   });
 
   test("drops licenses[] entries that lack a type", () => {
@@ -154,6 +160,10 @@ describe("run (CLI dispatch)", () => {
 
   test("an unknown mode exits 2", () => {
     expect(runCli(["bogus"])).toBe(2);
+  });
+
+  test("defaults to audit when no mode is given", () => {
+    expect(runCli([])).toBe(0);
   });
 });
 
