@@ -1,5 +1,120 @@
 import { describe, expect, test } from "bun:test";
-import { buildPayrollListQuery, buildPayrollUpdateFromCsv } from "./payroll.ts";
+import {
+  buildPayrollListQuery,
+  buildPayrollShowQuery,
+  buildPayrollUpdateFromCsv,
+  renderPayrollShow,
+} from "./payroll.ts";
+
+describe("buildPayrollShowQuery", () => {
+  test("no include yields an empty query", () => {
+    expect(buildPayrollShowQuery({})).toEqual({ ok: true, query: {} });
+  });
+
+  test("passes a valid include through verbatim", () => {
+    expect(buildPayrollShowQuery({ include: "totals,taxes" })).toEqual({
+      ok: true,
+      query: { include: "totals,taxes" },
+    });
+  });
+
+  test("accepts whitespace-padded tokens (the server strips them)", () => {
+    const result = buildPayrollShowQuery({ include: "totals, taxes" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects an unknown include token with a blocked_on entry", () => {
+    const result = buildPayrollShowQuery({ include: "totals,bogus" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked[0]?.field).toBe("include");
+    expect(result.blocked[0]?.reason).toContain("'bogus'");
+  });
+
+  test("rejects employee_compensations (not a valid show include)", () => {
+    const result = buildPayrollShowQuery({ include: "employee_compensations" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked[0]?.reason).toContain("employee_compensations");
+  });
+});
+
+describe("renderPayrollShow", () => {
+  test("renders overview, totals, and a compensation table", () => {
+    const out = renderPayrollShow({
+      uuid: "pay-1",
+      processed: true,
+      check_date: "2026-07-15",
+      pay_period: { start_date: "2026-07-01", end_date: "2026-07-15" },
+      totals: { gross_pay: "1600.00", net_pay: "1200.00", employer_taxes: "150.00" },
+      employee_compensations: [{ employee_uuid: "ee-1", gross_pay: "1600.00", net_pay: "1200.00" }],
+    });
+    expect(out).toContain("pay-1");
+    expect(out).toContain("processed");
+    expect(out).toContain("2026-07-01 to 2026-07-15");
+    expect(out).toContain("Gross pay");
+    expect(out).toContain("1600.00");
+    expect(out).toContain("ee-1");
+  });
+
+  test("derives status from processed/calculated_at (no processing_status field exists)", () => {
+    // Give each a comp so the empty-state hint (which mentions "calculated") can't pollute the
+    // status assertion.
+    const comp = [{ employee_uuid: "ee-1" }];
+    expect(renderPayrollShow({ uuid: "pay-1", processed: false, employee_compensations: comp })).toMatch(
+      /Status\s+unprocessed/,
+    );
+    expect(
+      renderPayrollShow({
+        uuid: "pay-1",
+        processed: false,
+        calculated_at: "2026-07-01T00:00:00Z",
+        employee_compensations: comp,
+      }),
+    ).toMatch(/Status\s+calculated/);
+    expect(renderPayrollShow({ uuid: "pay-1", processed: true, employee_compensations: comp })).toMatch(
+      /Status\s+processed/,
+    );
+  });
+
+  test("omits the totals block when totals are absent", () => {
+    const out = renderPayrollShow({ uuid: "pay-1", employee_compensations: [{ employee_uuid: "ee-1" }] });
+    expect(out).not.toContain("Totals");
+    expect(out).toContain("ee-1");
+  });
+
+  test("omits the pay period line when only one date is present", () => {
+    const out = renderPayrollShow({ uuid: "pay-1", pay_period: { start_date: "2026-07-01" } });
+    expect(out).not.toContain("Pay period");
+    expect(out).toContain("pay-1");
+  });
+
+  test("filters out non-object compensation entries without crashing", () => {
+    const out = renderPayrollShow({ uuid: "pay-1", employee_compensations: [null, "nope"] });
+    expect(out).toContain("has been calculated");
+    expect(out).toContain("pay-1");
+  });
+
+  test("coerces non-string scalar compensation values instead of crashing", () => {
+    const out = renderPayrollShow({
+      uuid: "pay-1",
+      employee_compensations: [{ employee_uuid: "ee-1", gross_pay: 1600, net_pay: null }],
+    });
+    expect(out).toContain("ee-1");
+    expect(out).toContain("1600");
+  });
+
+  test("shows a not-yet-calculated hint when there are no compensations", () => {
+    const out = renderPayrollShow({ uuid: "pay-1", processed: false, employee_compensations: [] });
+    expect(out).toContain("has been calculated");
+  });
+
+  test("tolerates a malformed (non-array) compensations body", () => {
+    const out = renderPayrollShow({ uuid: "pay-1", employee_compensations: "nope" });
+    expect(out).toContain("has been calculated");
+    expect(out).toContain("pay-1");
+  });
+});
 
 describe("buildPayrollListQuery", () => {
   test("no options yields an empty query", () => {
