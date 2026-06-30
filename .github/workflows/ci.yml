@@ -52,7 +52,7 @@ jobs:
       # Smoke runs on GitHub-hosted runners whose IPs aren't on the org allowlist,
       # so actions/checkout 403s there. Hand them the source via artifact instead.
       - name: Package source for smoke matrix
-        run: git archive --format=tar.gz -o cli-source.tar.gz HEAD src tests package.json bun.lock
+        run: git archive --format=tar.gz -o cli-source.tar.gz HEAD src tests scripts package.json bun.lock
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli-source
