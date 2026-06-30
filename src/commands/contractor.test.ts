@@ -48,6 +48,54 @@ describe("validateContractorAdd (self-onboarding only)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("wage-type");
   });
+
+  test("a missing or invalid --type is rejected up front", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, type: undefined });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("type");
+  });
+
+  test("an unrecognized --wage-type value is rejected", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, wageType: "salary" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("wage-type");
+  });
+
+  test("a missing --start-date is rejected", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, startDate: undefined });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("start-date");
+  });
+
+  test("an impossible --start-date is rejected", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, startDate: "2026-13-45" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("start-date");
+  });
+
+  test("hourly wage requires --hourly-rate", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, wageType: "hourly" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("hourly-rate");
+  });
+
+  test("an invalid --hourly-rate is rejected", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, wageType: "hourly", hourlyRate: "-5" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("hourly-rate");
+  });
+
+  test("a valid hourly wage carries the rate, normalized to a plain decimal", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, wageType: "hourly", hourlyRate: "1e3" });
+    if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    expect(result.body).toMatchObject({ wage_type: "Hourly", hourly_rate: "1000" });
+  });
+
+  test("--hourly-rate on a fixed wage is rejected rather than silently dropped", () => {
+    const result = validateContractorAdd({ ...VALID_INDIVIDUAL, wageType: "fixed", hourlyRate: "75" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.blocked.map((b) => b.field)).toContain("hourly-rate");
+  });
 });
 
 describe("runContractorAdd", () => {
