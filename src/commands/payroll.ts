@@ -547,7 +547,7 @@ async function fetchEmployeeJobs(
 export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): string[] {
   const out = new Set<string>();
   for (const ec of body.employee_compensations) {
-    for (const { entry } of iterCompensations(ec)) {
+    for (const entry of iterCompensations(ec)) {
       if (!entry.job_uuid) {
         out.add(ec.employee_uuid);
         break;
@@ -557,35 +557,30 @@ export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): strin
   return [...out];
 }
 
-type CompensationKind = "hourly_compensations" | "fixed_compensations";
-
-function* iterCompensations(
-  ec: EmployeeCompensationUpdate,
-): Generator<{ entry: { job_uuid?: string }; kind: CompensationKind }> {
-  for (const h of ec.hourly_compensations ?? []) yield { entry: h, kind: "hourly_compensations" };
-  for (const f of ec.fixed_compensations ?? []) yield { entry: f, kind: "fixed_compensations" };
+function* iterCompensations(ec: EmployeeCompensationUpdate): Generator<{ job_uuid?: string }> {
+  for (const h of ec.hourly_compensations ?? []) yield h;
+  for (const f of ec.fixed_compensations ?? []) yield f;
 }
 
 /** Mutates the body in place: injects the sole job_uuid for single-job employees, returns one
  * blocked_on entry per multi-job employee whose row is genuinely ambiguous. */
 export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
   const blocked: BlockedOn[] = [];
-  const alreadyBlocked = new Set<string>();
   for (const ec of body.employee_compensations) {
     const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
     if (!employeeJobs) continue;
-    for (const { entry } of iterCompensations(ec)) {
+    for (const entry of iterCompensations(ec)) {
       if (entry.job_uuid) continue;
       if (employeeJobs.length === 1) {
         entry.job_uuid = employeeJobs[0];
         continue;
       }
-      if (employeeJobs.length > 1 && !alreadyBlocked.has(ec.employee_uuid)) {
+      if (employeeJobs.length > 1) {
         blocked.push({
           field: `employee_compensations[${ec.employee_uuid}].job_uuid`,
           reason: `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`,
         });
-        alreadyBlocked.add(ec.employee_uuid);
+        break;
       }
     }
   }
