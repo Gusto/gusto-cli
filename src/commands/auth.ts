@@ -215,10 +215,24 @@ export function authLoginHandler(
   };
 }
 
-function authLogoutHandler(): CommandHandler {
-  return async ({ globals }) => {
+export function authLogoutHandler(deps: { store?: TokenStore } = {}): CommandHandler {
+  return async ({ globals, sinks }) => {
     try {
-      const data = await performLogout(resolveStore(), defaultEnv(globals.env));
+      const store = deps.store ?? resolveStore();
+      const env = defaultEnv(globals.env);
+      const data = await performLogout(store, env);
+      // The default flip means `gusto auth logout` (no --env) now targets production.
+      // A session left under the other env would sit on disk while the user thinks
+      // they're logged out - point them at it rather than leave it silently.
+      if (!data.cleared) {
+        const other: Environment = env === "production" ? "sandbox" : "production";
+        const stranded = await store.load(other);
+        if (stranded?.accessToken) {
+          sinks.stderr.write(
+            `warning: no ${env} session to clear, but a ${other} session is still stored. Run \`gusto auth logout --env ${other}\` to remove it.\n`,
+          );
+        }
+      }
       return { ok: true, data };
     } catch (err) {
       return toResult(err);
