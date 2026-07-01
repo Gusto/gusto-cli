@@ -820,7 +820,7 @@ export function payrollCalculateHandler(payrollUuid: string | undefined, opts: P
     // data:null. Replace that bare null with an actionable note (a dry-run/error result passes
     // through untouched, since those carry their own non-null data).
     const result = await putPayrollResource(globals, payrollUuid, "/calculate", undefined, opts);
-    if (result.ok && (result.data === null || result.data === undefined)) {
+    if (result.ok && result.data == null) {
       return { ok: true, data: { status: "calculating", payroll_uuid: payrollUuid, note: CALCULATE_NOTE } };
     }
     return result;
