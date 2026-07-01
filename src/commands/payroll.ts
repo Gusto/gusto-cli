@@ -569,13 +569,14 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
   for (const ec of body.employee_compensations) {
     const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
     if (!employeeJobs) continue;
+    const [soleJob, ...rest] = employeeJobs;
     for (const entry of iterCompensations(ec)) {
       if (entry.job_uuid) continue;
-      if (employeeJobs.length === 1) {
-        entry.job_uuid = employeeJobs[0];
+      if (soleJob && rest.length === 0) {
+        entry.job_uuid = soleJob;
         continue;
       }
-      if (employeeJobs.length > 1) {
+      if (rest.length > 0) {
         blocked.push({
           field: `employee_compensations[${ec.employee_uuid}].job_uuid`,
           reason: `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`,
