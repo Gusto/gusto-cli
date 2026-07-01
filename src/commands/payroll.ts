@@ -712,11 +712,6 @@ in hours/earnings; 'calculate' computes the dollar totals (gross/net/taxes). Cal
 asynchronously: the API accepts the request and returns no body, so the totals are not ready the
 instant this returns. Read them back once ready, e.g. 'gusto payroll show <payroll_uuid> --include totals'.
 
-Scope: calculate needs an OAuth scope that the default 'gusto auth login' grant does not include;
-it has to be enabled on your OAuth app first (Gusto enables it manually). If a run fails with
-'insufficient_scope', the error names the missing scope - once it is enabled, re-run
-'gusto auth login' to pick it up ('gusto auth whoami' shows what your token currently has).
-
 Examples:
   $ gusto payroll calculate 1a2b3c4d-0000-1111-2222-333344445555
   $ gusto payroll calculate --example   (print the request shape, no uuid or auth needed)

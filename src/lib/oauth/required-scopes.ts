@@ -6,10 +6,10 @@
  * this set in the same change so the audit trail stays accurate.
  *
  * The set is intentionally narrow. The only writes are the per-cycle payroll
- * flow (timesheets, payroll, pay schedules, reports); employee and contractor
- * data stay read-only on this surface. Scopes dropped from the original 50+
- * grant (`payrolls:run`, `company_bank_accounts:write`, `signatories:manage`,
- * and the employee/contractor write scopes) have no in-surface consumer and are
+ * flow (timesheets, payroll prepare/calculate, pay schedules, reports); employee
+ * and contractor data stay read-only on this surface. Scopes dropped from the
+ * original 50+ grant (`company_bank_accounts:write`, `signatories:manage`, and
+ * the employee/contractor write scopes) have no in-surface consumer and are
  * listed in `DROPPED_SCOPES` below for audit history.
  *
  * This list enumerates scopes that individual CLI commands exercise. Two
@@ -43,9 +43,9 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
+  { scope: "payrolls:run", usedBy: ["payroll calculate"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
-  // `payroll calculate` needs a payroll scope granted manually in Panda (not the default grant), so it is intentionally omitted here; see AINT-720.
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
@@ -54,7 +54,6 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
  * command shows up in the diff. Not enforced at runtime - the partner OAuth
  * registration is the authoritative grant. */
 export const DROPPED_SCOPES: readonly string[] = [
-  "payrolls:run",
   "company_bank_accounts:write",
   "signatories:manage",
   "company_signatories:write",
