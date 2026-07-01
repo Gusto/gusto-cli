@@ -13,6 +13,7 @@ Drives the `gusto` CLI to take the per-cycle inputs an owner assembles by hand -
 - The company is **payroll-ready** - it has a pay schedule, at least one fully set-up employee, and is approved to run payroll. There's no CLI readiness check; an unready company rejects writes with `422 invalid_operation`. Company-level setup (taxes, bank, forms, approval) happens in the Gusto dashboard.
 - There is an **open (unprocessed) draft payroll** for the pay period you're prepping. The CLI prepares an existing draft; it doesn't create payrolls.
 - The user has the **actual inputs** for the period ready as a file - typically a CSV (or a spreadsheet/POS export) of real hours and dollar amounts they've already assembled. Never fabricate them; they flow straight into a real (draft) payroll.
+- **Calculating the dollar totals (step 8) needs an extra OAuth scope** that the default `gusto auth login` grant may not include - it is enabled per app (manually, by Gusto). If it isn't granted, `gusto payroll calculate` returns `insufficient_scope` and this skill falls back to an hours-only review (step 8). To get dollar totals, have that scope enabled, then re-run `gusto auth login`. Everything up to and including the write (steps 1-7) works without it.
 
 ## Discovering commands
 

@@ -45,6 +45,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
+  // `payroll calculate` needs a payroll scope granted manually in Panda (not the default grant), so it is intentionally omitted here; see AINT-720.
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
