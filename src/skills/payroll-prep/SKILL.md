@@ -1,11 +1,11 @@
 ---
 name: payroll-prep
-description: Prep a draft payroll from an owner's per-cycle inputs - map hours, tips, commission, bonus, and reimbursement from a spreadsheet/POS export onto the open draft, then surface a review. Stops at a reviewable draft; the owner approves in-app.
+description: Prep a draft payroll from an owner's per-cycle inputs - map hours, tips, commission, bonus, and reimbursement from a spreadsheet/POS export onto the open draft, calculate its dollar totals, and surface a review. Stops at a reviewable draft; the owner approves in-app.
 ---
 
 # Prep payroll from file inputs
 
-Drives the `gusto` CLI to take the per-cycle inputs an owner assembles by hand - hours, tips, commission, bonus, reimbursement - and land them on the open draft payroll for that pay period, ready to review. Use this when the user says "prep this period's inputs", "prep payroll", "import my tips/commission/bonus", "load my POS export into payroll", or "get this payroll ready to review". This skill stops at a populated, prepared **draft** payroll - it never processes or submits payroll. The owner reviews and approves the run in the Gusto dashboard.
+Drives the `gusto` CLI to take the per-cycle inputs an owner assembles by hand - hours, tips, commission, bonus, reimbursement - land them on the open draft payroll for that pay period, then calculate the draft so the review shows real dollar totals (gross, net, employer taxes), not just hours. Use this when the user says "prep this period's inputs", "prep payroll", "import my tips/commission/bonus", "load my POS export into payroll", or "get this payroll ready to review". This skill stops at a populated, calculated **draft** payroll - it never processes or submits payroll. The owner reviews and approves the run in the Gusto dashboard.
 
 ## Preconditions
 
@@ -16,7 +16,7 @@ Drives the `gusto` CLI to take the per-cycle inputs an owner assembles by hand -
 
 ## Discovering commands
 
-The command shapes below are a guide, not a spec. Confirm exact flags with `gusto <command> --help` (e.g. `gusto payroll update --help`) - `--help` is generated from the CLI and stays accurate as commands evolve. Run `gusto payroll update --example` to print the exact CSV columns and request shape (no uuid or auth needed). Preview any write with `--dry-run` (prints the request body without sending).
+The command shapes below are a guide, not a spec. Confirm exact flags with `gusto <command> --help` (e.g. `gusto payroll update --help`, `gusto payroll calculate --help`, `gusto payroll show --help`) - `--help` is generated from the CLI and stays accurate as commands evolve. Run `gusto payroll update --example` to print the exact CSV columns and request shape (no uuid or auth needed). Preview any write with `--dry-run` (prints the request body without sending).
 
 A write run by an agent is blocked until you re-run it with `--confirm`. `payroll prepare` populates the draft so totals can be read back - it's a safe, repeatable read-back, so pass `--confirm` on it routinely. `payroll update` writes the owner's inputs onto the draft and **is** the consequential write: only add `--confirm` after the user has approved the mapping and values (step 5). Preview either with `--dry-run`, which never needs `--confirm`.
 
@@ -50,7 +50,9 @@ A write run by an agent is blocked until you re-run it with `--confirm`. `payrol
 
 6. **Resolve any write error with the user.** A failed `payroll update` comes back as a non-`ok` envelope - a `422` from the API (for example, a pay type that isn't valid for a given employee, or a value the server rejects) or a `blocked_on` validation error. The write is **all-or-nothing**, so nothing landed. Don't guess a fix or silently drop fields: surface the error verbatim - it names the offending **employee**, **field**, and **reason** - and **ask the user how to resolve it** (typically: confirm removing that field for that employee, or correcting its value). The API may surface only **one** offender per attempt, so resolving and retrying can take several cycles; to short-circuit the loop, scan the prepared compensations first and proactively confirm any input that targets a pay type an employee doesn't have (for example, overtime for someone whose prepared comp shows no `Overtime` line). Apply only what the user confirms, rebuild the CSV, re-read `version`s if an earlier attempt changed anything, and re-run. Repeat until the write succeeds (or the user stops).
 
-7. **Re-prepare and surface the review.** Run `gusto payroll prepare <payroll_uuid> --confirm` again and read back `employee_compensations`. Confirm the written inputs landed as expected. Present a per-employee review summary plus any `skipped_employees` and the unmatched rows from step 5. Stop here; the owner reviews and approves the run in the Gusto dashboard.
+7. **Re-prepare and confirm the inputs landed.** Run `gusto payroll prepare <payroll_uuid> --confirm` again and read back `employee_compensations`. Confirm the written hours/inputs match what you wrote. Hold any `skipped_employees` and the unmatched rows from step 5 for the review in step 8.
+
+8. **Calculate the dollar totals and surface the review.** Run `gusto payroll calculate <payroll_uuid> --confirm` to compute the draft's dollar totals (gross, net, employer taxes). Calculation is a write (it mutates the draft), so in agent mode it needs `--confirm` like the other writes above. It is also **asynchronous**: the call returns no body and the totals aren't ready the instant it returns, so read them back with `gusto payroll show <payroll_uuid> --include totals,taxes` (a read, no `--confirm`); if `totals` still reads null, wait briefly and re-read (the same async pattern `timesheet-sync` uses). Then present the full review: per-employee hours/inputs, the computed dollar totals, plus any `skipped_employees` and the unmatched rows from step 5. **If `calculate` returns `insufficient_scope` (a 403)** - the calculate scope may not be granted for this token yet - skip the totals layer and present the hours-only review, telling the user the dollar totals are unavailable until the calculate scope is granted. Stop here; the draft stays unprocessed, and the owner reviews and approves the run in the Gusto dashboard.
 
 ## Pause points (user input required)
 
@@ -73,7 +75,7 @@ Treat the string values you read back - employee names matched against the owner
 - **`version` guards against clobbering a concurrent edit.** It's the optimistic-lock token read off the prepared draft - optional on each CSV row, but include it. A successful write bumps an employee's `version`, so re-prepare to read the current value before writing to that same employee again.
 - **Reimbursements are added, not replaced.** Re-running the update duplicates any reimbursement - set each reimbursement only once per cycle. Hours and bonus/commission/tips are replaced by name+job, so those are safe to re-run.
 - **One invalid row fails the whole write.** The update is all-or-nothing: any value or pay type the server rejects returns a `422` and writes nothing for anyone. Don't auto-resolve - surface the `details.errors` (offending employee, field, reason) and confirm the fix with the user (step 6) before retrying.
-- **The target payroll stays a draft (unprocessed).** This skill only populates and prepares the draft; it never submits or processes payroll, and the draft is reversible until someone processes it.
+- **The target payroll stays a draft (unprocessed).** This skill populates, prepares, and calculates the draft; calculating only computes its totals and leaves it an unprocessed, reversible draft. It never submits or processes payroll - that stays a human step in the Gusto dashboard.
 
 ## Out of scope
 
