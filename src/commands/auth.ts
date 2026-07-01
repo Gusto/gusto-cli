@@ -221,17 +221,20 @@ export function authLogoutHandler(deps: { store?: TokenStore } = {}): CommandHan
       const store = deps.store ?? resolveStore();
       const env = defaultEnv(globals.env);
       const data = await performLogout(store, env);
-      // The default flip means `gusto auth logout` (no --env) now targets production.
-      // A session left under the other env would sit on disk while the user thinks
-      // they're logged out - point them at it rather than leave it silently.
-      if (!data.cleared) {
+      // The default flip means `gusto auth logout` (no --env) targets production. A
+      // session under the other env stays on disk and the user may think they're fully
+      // logged out - point them at it. Fires even when this env was cleared, so a
+      // stranded session is never left silently. Best-effort: a failed read of the
+      // other env must not fail a logout that already did its job.
+      try {
         const other: Environment = env === "production" ? "sandbox" : "production";
-        const stranded = await store.load(other);
-        if (stranded?.accessToken) {
+        if (await store.load(other)) {
           sinks.stderr.write(
-            `warning: no ${env} session to clear, but a ${other} session is still stored. Run \`gusto auth logout --env ${other}\` to remove it.\n`,
+            `warning: a ${other} session is still stored. Run \`gusto auth logout --env ${other}\` to remove it.\n`,
           );
         }
+      } catch {
+        // the stranded-session hint is best-effort; ignore read failures
       }
       return { ok: true, data };
     } catch (err) {

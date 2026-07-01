@@ -369,6 +369,41 @@ describe("authLogoutHandler - default env and stranded-session hint", () => {
     expect(stderr.buffer).toContain("gusto auth logout --env sandbox");
   });
 
+  test("warns about a stranded production session when --env sandbox is explicit", async () => {
+    const store = memoryStore({ production: { ...session } });
+    const { result, stderr } = await runLogout(store, "sandbox");
+    expect(result.ok && result.data).toEqual({ cleared: false });
+    expect(stderr.buffer).toContain("gusto auth logout --env production");
+  });
+
+  test("still warns about the other env even when this env was cleared", async () => {
+    const store = memoryStore({ production: { ...session }, sandbox: { ...session } });
+    const { result, stderr } = await runLogout(store, undefined);
+    expect(result.ok && result.data).toEqual({ cleared: true });
+    expect(store.data.sandbox).toBeDefined();
+    expect(stderr.buffer).toContain("gusto auth logout --env sandbox");
+  });
+
+  test("warns for any stored session under the other env, even without an access token", async () => {
+    const store = memoryStore({ sandbox: { clientId: "c", clientSecret: "s" } });
+    const { stderr } = await runLogout(store, undefined);
+    expect(stderr.buffer).toContain("gusto auth logout --env sandbox");
+  });
+
+  test("a failed read of the other env doesn't fail the logout", async () => {
+    const store: TokenStore = {
+      load: async (e) => {
+        if (e === "sandbox") throw new Error("corrupt session file");
+        return null;
+      },
+      save: async () => {},
+      clear: async () => {},
+    };
+    const { result, stderr } = await runLogout(store, undefined);
+    expect(result.ok && result.data).toEqual({ cleared: false });
+    expect(stderr.buffer).toBe("");
+  });
+
   test("no hint when nothing is stored under either env", async () => {
     const { result, stderr } = await runLogout(memoryStore(), undefined);
     expect(result.ok && result.data).toEqual({ cleared: false });
