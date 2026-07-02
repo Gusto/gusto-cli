@@ -114,7 +114,11 @@ describe("api request --auto-version", () => {
       { status: 200, body: { updated: true } },
     ]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: '{"ein":"12-3456789"}' })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, {
+        autoVersion: true,
+        confirm: true,
+        data: '{"ein":"12-3456789"}',
+      })(ctx);
       expect(result.ok).toBe(true);
       expect(calls).toHaveLength(2);
       expect(calls[0]?.method).toBe("GET");
@@ -131,7 +135,7 @@ describe("api request --auto-version", () => {
       { status: 200, body: { updated: true } },
     ]);
     try {
-      const result = await apiRequestHandler("PATCH", PATH, { autoVersion: true, data: '{"x":1}' })(ctx);
+      const result = await apiRequestHandler("PATCH", PATH, { autoVersion: true, confirm: true, data: '{"x":1}' })(ctx);
       expect(result.ok).toBe(true);
       expect(calls[0]?.method).toBe("GET");
       expect(calls[1]?.method).toBe("PATCH");
@@ -146,6 +150,7 @@ describe("api request --auto-version", () => {
     try {
       const result = await apiRequestHandler("PUT", PATH, {
         autoVersion: true,
+        confirm: true,
         data: '{"ein":"12-3456789","version":"caller-set"}',
       })(ctx);
       expect(result.ok).toBe(true);
@@ -165,7 +170,11 @@ describe("api request --auto-version", () => {
       { status: 200, body: { updated: true } },
     ]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: '{"ein":"9","version":""}' })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, {
+        autoVersion: true,
+        confirm: true,
+        data: '{"ein":"9","version":""}',
+      })(ctx);
       expect(result.ok).toBe(true);
       expect(calls).toHaveLength(2);
       expect(calls[1]?.method).toBe("PUT");
@@ -181,7 +190,7 @@ describe("api request --auto-version", () => {
       { status: 200, body: { updated: true } },
     ]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true })(ctx);
       expect(result.ok).toBe(true);
       expect(calls[1]?.body).toEqual({ version: "v-current" });
     } finally {
@@ -192,7 +201,7 @@ describe("api request --auto-version", () => {
   test("--auto-version on a non-PUT/PATCH method is a validation error", async () => {
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: {} }]);
     try {
-      const result = await apiRequestHandler("GET", PATH, { autoVersion: true })(ctx);
+      const result = await apiRequestHandler("GET", PATH, { autoVersion: true, confirm: true })(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("auto_version_unsupported");
@@ -206,7 +215,7 @@ describe("api request --auto-version", () => {
   test("when the GET response has no top-level version, it errors without sending the write", async () => {
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: { no_version_here: true } }]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: '{"x":1}' })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true, data: '{"x":1}' })(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("version_unresolved");
@@ -223,7 +232,7 @@ describe("api request --auto-version", () => {
     // (api_client_error envelope), not escape send() and bubble up as internal_error.
     const { calls, restore } = stubGlobalFetch([{ status: 404, body: { error: "not found" } }]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: '{"x":1}' })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true, data: '{"x":1}' })(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("api_client_error");
@@ -237,7 +246,7 @@ describe("api request --auto-version", () => {
   test("--auto-version with a non-object body is rejected (can't inject version)", async () => {
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: {} }]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: "[1,2,3]" })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true, data: "[1,2,3]" })(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("auto_version_requires_object");
@@ -252,7 +261,7 @@ describe("api request --auto-version", () => {
     // (body ?? {}) silently coerced it to {} and the write went out instead of being rejected.
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: {} }]);
     try {
-      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, data: "null" })(ctx);
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true, data: "null" })(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("auto_version_requires_object");
@@ -270,6 +279,7 @@ describe("api request --auto-version", () => {
     try {
       const result = await apiRequestHandler("PUT", "/v1/companies/{company_uuid}/federal_tax_details", {
         autoVersion: true,
+        confirm: true,
         companyUuid: "co-9",
         data: '{"x":1}',
       })(ctx);
@@ -314,6 +324,50 @@ describe("api request --auto-version", () => {
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("auto_version_requires_object");
       expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("api request write confirmation gate", () => {
+  test("an agent-mode write without --confirm is blocked and sends nothing", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 500 }));
+    try {
+      const result = await apiRequestHandler("POST", "/v1/companies/{company_uuid}/employees", {
+        data: '{"first_name":"Jane"}',
+      })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("confirmation_required");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a GET is never gated", async () => {
+    const { restore } = stubGlobalFetch([{ status: 200, body: { ok: true } }]);
+    try {
+      const result = await apiRequestHandler("GET", "/v1/me", {})(ctx);
+      expect(result.ok).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("--confirm lets the write POST", async () => {
+    const { calls, restore } = stubGlobalFetch((u) =>
+      u.includes("/employees") ? { status: 201, body: { uuid: "ee-1" } } : { status: 404 },
+    );
+    try {
+      const result = await apiRequestHandler("POST", "/v1/companies/co-1/employees", {
+        confirm: true,
+        data: '{"first_name":"Jane"}',
+      })(ctx);
+      expect(result.ok).toBe(true);
+      expect(calls.find((c) => c.method === "POST")?.url).toContain("/employees");
     } finally {
       restore();
     }

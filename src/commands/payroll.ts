@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { fetchCompanyResource, fetchResource, putCompanyResource } from "../lib/api-context.ts";
-import { DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { CsvError, parseCsv } from "../lib/csv.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
@@ -235,6 +235,7 @@ interface PayrollPrepareOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -588,6 +589,25 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
   return blocked;
 }
 
+/** Fetches each candidate employee's jobs, mutates `body` in place with inferred single-job
+ * `job_uuid`s, and returns a failure `CommandResult` on the first blocker so the handler can
+ * propagate. Caller is responsible for deciding whether inference should run (skipping in
+ * `--dry-run`, checking `candidates.length > 0` for the branch condition). */
+async function injectInferredJobUuids(
+  globals: GlobalFlags,
+  opts: { tokenStdin?: boolean },
+  body: PayrollUpdateBody,
+  candidates: readonly string[],
+): Promise<CommandResult<void>> {
+  const jobs = await fetchEmployeeJobs(globals, opts, candidates);
+  if (!jobs.ok) return jobs;
+  const inferenceBlocked = inferMissingJobUuids(body, jobs.data);
+  if (inferenceBlocked.length > 0) {
+    return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
+  }
+  return { ok: true, data: undefined };
+}
+
 /** Parse a CSV of per-employee inputs into a payroll-update request body, accumulating every
  * structural, header, and per-row problem into a single blocked_on list (so one run surfaces all
  * the fixes, not just the first). Headers are lowercased so 'Employee_UUID' and 'employee_uuid'
@@ -691,6 +711,7 @@ interface PayrollUpdateOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -757,6 +778,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",
@@ -783,6 +805,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",
@@ -817,12 +840,13 @@ function putPayrollResource(
   payrollUuid: string,
   suffix: string,
   body: unknown,
-  opts: { tokenStdin?: boolean; companyUuid?: string; dryRun?: boolean },
+  opts: { tokenStdin?: boolean; companyUuid?: string; dryRun?: boolean; confirm?: boolean },
 ): Promise<CommandResult> {
   return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}${suffix}`, body, {
     tokenStdin: opts.tokenStdin,
     companyUuid: opts.companyUuid,
     dryRun: opts.dryRun,
+    confirm: opts.confirm,
   });
 }
 
@@ -891,12 +915,8 @@ export function payrollUpdateHandler(
     // we flag those employees on the response instead so the drift is visible to the caller.
     const inferenceCandidates = employeesNeedingJobUuidInference(built.body);
     if (!opts.dryRun && inferenceCandidates.length > 0) {
-      const jobs = await fetchEmployeeJobs(globals, opts, inferenceCandidates);
-      if (!jobs.ok) return jobs;
-      const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data);
-      if (inferenceBlocked.length > 0) {
-        return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
-      }
+      const injected = await injectInferredJobUuids(globals, opts, built.body, inferenceCandidates);
+      if (!injected.ok) return injected;
     }
 
     const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
