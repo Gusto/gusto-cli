@@ -318,9 +318,9 @@ describe("payrollUpdateHandler", () => {
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
   });
 
-  test("dry-run with missing job_uuid skips the inference fetch and previews the CSV as-built", async () => {
+  test("dry-run with missing job_uuid skips the inference fetch and flags the drift in inferred_at_send", async () => {
     const s = stub(() => ({ status: 500 }));
-    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const csv = "employee_uuid,regular_hours\nee-1,40\nee-2,20";
     const d = data(
       await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(csv))(ctx),
     );
@@ -329,7 +329,16 @@ describe("payrollUpdateHandler", () => {
       (d.body as { employee_compensations: { hourly_compensations: { job_uuid?: string }[] }[] })
         .employee_compensations[0]?.hourly_compensations[0]?.job_uuid,
     ).toBeUndefined();
+    expect(d.inferred_at_send).toEqual(["ee-1", "ee-2"]);
     expect(s.calls).toHaveLength(0);
+  });
+
+  test("dry-run omits inferred_at_send when every row already carries a job_uuid", async () => {
+    stub(() => ({ status: 500 }));
+    const d = data(
+      await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(CSV))(ctx),
+    );
+    expect(d.inferred_at_send).toBeUndefined();
   });
 
   test("a /jobs lookup failure surfaces with the employee uuid in the error and no PUT happens", async () => {
@@ -344,6 +353,36 @@ describe("payrollUpdateHandler", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.error.message).toContain("ee-1");
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  test("with multiple employees all needing inference, each /jobs succeeds in parallel and their job_uuids all land on the PUT body", async () => {
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "job-1" }] };
+      if (u.includes("/employees/ee-2/jobs")) return { status: 200, body: [{ uuid: "job-2" }] };
+      if (u.includes("/employees/ee-3/jobs")) return { status: 200, body: [{ uuid: "job-3" }] };
+      if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
+      return { status: 404 };
+    });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40\nee-2,30\nee-3,20";
+    const d = data(await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(csv))(ctx));
+    expect(d.uuid).toBe("pay-1");
+
+    const gets = s.calls.filter((c) => c.method === "GET");
+    expect(gets.map((c) => c.url).sort()).toEqual([
+      expect.stringContaining("/v1/employees/ee-1/jobs"),
+      expect.stringContaining("/v1/employees/ee-2/jobs"),
+      expect.stringContaining("/v1/employees/ee-3/jobs"),
+    ]);
+
+    const put = s.calls.find((c) => c.method === "PUT");
+    const compensations = (
+      put?.body as { employee_compensations: { employee_uuid: string; hourly_compensations: { job_uuid: string }[] }[] }
+    ).employee_compensations;
+    expect(compensations.map((c) => c.employee_uuid).sort()).toEqual(["ee-1", "ee-2", "ee-3"]);
+    expect(compensations.find((c) => c.employee_uuid === "ee-1")?.hourly_compensations[0]?.job_uuid).toBe("job-1");
+    expect(compensations.find((c) => c.employee_uuid === "ee-2")?.hourly_compensations[0]?.job_uuid).toBe("job-2");
+    expect(compensations.find((c) => c.employee_uuid === "ee-3")?.hourly_compensations[0]?.job_uuid).toBe("job-3");
   });
 
   test("with multiple employees in the CSV, one failing /jobs lookup names that employee and no PUT happens", async () => {

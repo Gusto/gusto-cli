@@ -887,9 +887,11 @@ export function payrollUpdateHandler(
 
     // Server requires job_uuid even though docs/help say it's optional for single-job employees;
     // we infer it from /v1/employees/{uuid}/jobs (the prepared payroll's empty until calculated).
-    const employeesNeedingInference = opts.dryRun ? [] : employeesNeedingJobUuidInference(built.body);
-    if (employeesNeedingInference.length > 0) {
-      const jobs = await fetchEmployeeJobs(globals, opts, employeesNeedingInference);
+    // Dry-run skips the network call, so the preview body is missing `job_uuid` a real run injects;
+    // we flag those employees on the response instead so the drift is visible to the caller.
+    const inferenceCandidates = employeesNeedingJobUuidInference(built.body);
+    if (!opts.dryRun && inferenceCandidates.length > 0) {
+      const jobs = await fetchEmployeeJobs(globals, opts, inferenceCandidates);
       if (!jobs.ok) return jobs;
       const inferenceBlocked = inferMissingJobUuids(built.body, jobs.data);
       if (inferenceBlocked.length > 0) {
@@ -899,11 +901,11 @@ export function payrollUpdateHandler(
 
     const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
 
-    // Surface skipped (no-input) employees alongside the response so a blank row in a master sheet
-    // is visible rather than silently dropped. Only attach when there are any and the data is a
-    // plain object to extend (the API payroll on a real run, or the dry-run shape).
-    if (result.ok && built.skipped.length > 0 && isRecord(result.data)) {
-      return { ok: true, data: { ...result.data, skipped_employees: built.skipped } };
+    if (result.ok && isRecord(result.data)) {
+      const extras: Record<string, unknown> = {};
+      if (built.skipped.length > 0) extras.skipped_employees = built.skipped;
+      if (opts.dryRun && inferenceCandidates.length > 0) extras.inferred_at_send = inferenceCandidates;
+      if (Object.keys(extras).length > 0) return { ok: true, data: { ...result.data, ...extras } };
     }
     return result;
   };
