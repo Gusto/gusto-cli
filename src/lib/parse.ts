@@ -49,3 +49,13 @@ export function isValidIso8601(value: string): boolean {
   if (!ISO_8601.test(value)) return false;
   return !Number.isNaN(new Date(value).getTime());
 }
+
+/** Parse a `--timeout <seconds>` flag into milliseconds; ok:false when it isn't a positive, finite
+ * number. Shared by the commands with a poll budget (`ledger show`, `payroll calculate`) so their
+ * timeout parsing can't drift. */
+export function resolveTimeoutMs(raw: string | undefined): { ok: true; ms?: number } | { ok: false } {
+  if (raw === undefined) return { ok: true };
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false };
+  return { ok: true, ms: Math.floor(seconds * 1000) };
+}

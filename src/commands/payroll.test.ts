@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { type ApiClient, PollTimeoutError } from "../lib/api-client.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
+import { stubApiClient } from "../lib/test-support.ts";
 import {
   buildPayrollListQuery,
   buildPayrollShowQuery,
   buildPayrollUpdateFromCsv,
   employeesNeedingJobUuidInference,
+  executePayrollCalculate,
   inferMissingJobUuids,
+  isPayrollCalculated,
+  isPayrollCalculationFailed,
   type PayrollUpdateBody,
   renderPayrollShow,
 } from "./payroll.ts";
@@ -802,5 +808,116 @@ describe("inferMissingJobUuids", () => {
     };
     expect(inferMissingJobUuids(body, new Map())).toEqual([]);
     expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
+  });
+});
+
+describe("executePayrollCalculate", () => {
+  const CO = "co-1";
+  const PAYROLL = "pay-1";
+  const PUT_CALCULATE = `PUT /v1/companies/${CO}/payrolls/${PAYROLL}/calculate`;
+  // The poll GETs the payroll with ?include=totals; stubApiClient routes by pathname, so the query
+  // string is dropped and this is the key it matches.
+  const GET_POLL = `GET /v1/companies/${CO}/payrolls/${PAYROLL}`;
+
+  test("waits for calculate_success and returns the payroll body with totals", async () => {
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [
+        200,
+        { uuid: PAYROLL, processing_request: { status: "calculate_success" }, totals: { company_debit: "1800.00" } },
+      ],
+    });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect((result.data as { totals: { company_debit: string } }).totals.company_debit).toBe("1800.00");
+  });
+
+  test("--no-wait returns the calculating shape without polling", async () => {
+    // Only the PUT is routed: if it polled, stubApiClient would throw "no stub route".
+    const { client } = stubApiClient({ [PUT_CALCULATE]: [202, null] });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, { wait: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.data).toMatchObject({ status: "calculating", payroll_uuid: PAYROLL });
+    expect(typeof (result.data as { note: string }).note).toBe("string");
+  });
+
+  test("a processing_failed status stops the poll and yields calculate_failed with the errors", async () => {
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [
+        200,
+        { processing_request: { status: "processing_failed", errors: [{ message: "negative net pay" }] } },
+      ],
+    });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("calculate_failed");
+    expect(result.exitCode).toBe(ExitCode.ApiServer);
+    expect(result.error.details).toMatchObject({ errors: [{ message: "negative net pay" }] });
+  });
+
+  test("a timeout before any poll attempt yields calculate_timeout with attempts:0", async () => {
+    // timeoutMs:0 => the deadline is already reached on entry, so poll throws before any GET.
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [200, { processing_request: { status: "calculating" } }],
+    });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, { timeoutMs: 0 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("calculate_timeout");
+    expect(result.exitCode).toBe(ExitCode.Timeout);
+    const details = result.error.details as { attempts: number; last?: unknown };
+    expect(details.attempts).toBe(0);
+    expect("last" in details).toBe(false);
+  });
+
+  test("a timeout after one or more attempts carries the attempt count and last polled body", async () => {
+    // Drive the PollTimeoutError -> details mapping directly (attempts>0, lastBody present) without a
+    // real clock: a hand-built poll throws the error the catch block maps. The poll's own attempts/
+    // lastBody population is covered in api-client.test.ts.
+    const lastBody = { processing_request: { status: "calculating" } };
+    const client = {
+      request: async () => ({ body: null }),
+      poll: async () => {
+        throw new PollTimeoutError("timed out", 2, lastBody);
+      },
+    } as unknown as Pick<ApiClient, "request" | "poll">;
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("calculate_timeout");
+    const details = result.error.details as { attempts: number; last?: unknown };
+    expect(details.attempts).toBe(2);
+    expect(details.last).toEqual(lastBody);
+  });
+
+  test("a failed calculate PUT is mapped to an API error result", async () => {
+    const { client } = stubApiClient({ [PUT_CALCULATE]: [422, { errors: [{ message: "not prepared" }] }] });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
+});
+
+describe("payroll calculate poll predicates", () => {
+  test("isPayrollCalculated matches only the calculate_success terminal state", () => {
+    expect(isPayrollCalculated({ processing_request: { status: "calculate_success" } })).toBe(true);
+    expect(isPayrollCalculated({ processing_request: { status: "calculating" } })).toBe(false);
+    expect(isPayrollCalculated({ processing_request: { status: "processing_failed" } })).toBe(false);
+    expect(isPayrollCalculated({ processing_request: null })).toBe(false);
+    expect(isPayrollCalculated({})).toBe(false);
+  });
+
+  test("isPayrollCalculationFailed matches only the processing_failed terminal state", () => {
+    expect(isPayrollCalculationFailed({ processing_request: { status: "processing_failed" } })).toBe(true);
+    expect(isPayrollCalculationFailed({ processing_request: { status: "calculate_success" } })).toBe(false);
+    expect(isPayrollCalculationFailed({ processing_request: { status: "calculating" } })).toBe(false);
+    expect(isPayrollCalculationFailed({ processing_request: null })).toBe(false);
+    expect(isPayrollCalculationFailed({})).toBe(false);
   });
 });
