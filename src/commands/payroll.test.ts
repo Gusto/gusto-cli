@@ -6,9 +6,12 @@ import {
   buildPayrollListQuery,
   buildPayrollShowQuery,
   buildPayrollUpdateFromCsv,
+  employeesNeedingJobUuidInference,
   executePayrollCalculate,
+  inferMissingJobUuids,
   isPayrollCalculated,
   isPayrollCalculationFailed,
+  type PayrollUpdateBody,
   renderPayrollShow,
 } from "./payroll.ts";
 
@@ -626,6 +629,200 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.message).toBe("invalid CSV header");
     // The whole tab-joined line is read as one column, so employee_uuid is "missing".
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
+});
+
+describe("employeesNeedingJobUuidInference", () => {
+  test("returns an empty list when every entry already has a job_uuid", () => {
+    expect(
+      employeesNeedingJobUuidInference({
+        employee_compensations: [
+          {
+            employee_uuid: "ee-1",
+            hourly_compensations: [{ name: "Regular Hours", hours: 80, job_uuid: "job-1" }],
+            fixed_compensations: [{ name: "Bonus", amount: 250, job_uuid: "job-1" }],
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  test("includes the employee when an hourly entry is missing job_uuid", () => {
+    expect(
+      employeesNeedingJobUuidInference({
+        employee_compensations: [
+          { employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 80 }] },
+        ],
+      }),
+    ).toEqual(["ee-1"]);
+  });
+
+  test("includes the employee when a fixed entry is missing job_uuid", () => {
+    expect(
+      employeesNeedingJobUuidInference({
+        employee_compensations: [{ employee_uuid: "ee-1", fixed_compensations: [{ name: "Bonus", amount: 250 }] }],
+      }),
+    ).toEqual(["ee-1"]);
+  });
+
+  test("returns an empty list when there are no comp entries to check", () => {
+    expect(
+      employeesNeedingJobUuidInference({
+        employee_compensations: [
+          { employee_uuid: "ee-1", reimbursements: [{ amount: 50, description: "Reimbursement" }] },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  test("deduplicates the same employee_uuid across multiple multi-job rows", () => {
+    expect(
+      employeesNeedingJobUuidInference({
+        employee_compensations: [
+          { employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 30 }] },
+          { employee_uuid: "ee-1", hourly_compensations: [{ name: "Overtime", hours: 5 }] },
+        ],
+      }),
+    ).toEqual(["ee-1"]);
+  });
+});
+
+describe("inferMissingJobUuids", () => {
+  const jobs = new Map<string, string[]>([
+    ["ee-single", ["job-1"]],
+    ["ee-multi", ["job-a", "job-b"]],
+  ]);
+
+  const firstCompJobUuid = (
+    body: PayrollUpdateBody,
+    kind: "hourly_compensations" | "fixed_compensations",
+    ecIndex = 0,
+  ): string | undefined => {
+    const ec = body.employee_compensations[ecIndex];
+    if (!ec) throw new Error(`no employee_compensations[${ecIndex}]`);
+    const entry = ec[kind]?.[0];
+    if (!entry) throw new Error(`no ${kind}[0] on ec ${ecIndex}`);
+    return entry.job_uuid;
+  };
+
+  test("fills in the single job for an employee with one job in the lookup", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        {
+          employee_uuid: "ee-single",
+          hourly_compensations: [{ name: "Regular Hours", hours: 40 }],
+          fixed_compensations: [{ name: "Bonus", amount: 100 }],
+        },
+      ],
+    };
+    expect(inferMissingJobUuids(body, jobs)).toEqual([]);
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBe("job-1");
+    expect(firstCompJobUuid(body, "fixed_compensations")).toBe("job-1");
+  });
+
+  test("fills only the missing entry when a single-job employee has mixed job_uuid presence", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        {
+          employee_uuid: "ee-single",
+          hourly_compensations: [{ name: "Regular Hours", hours: 40, job_uuid: "explicit-job" }],
+          fixed_compensations: [{ name: "Bonus", amount: 100 }],
+        },
+      ],
+    };
+    expect(inferMissingJobUuids(body, jobs)).toEqual([]);
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBe("explicit-job");
+    expect(firstCompJobUuid(body, "fixed_compensations")).toBe("job-1");
+  });
+
+  test("blocks for a multi-job employee whose CSV row omitted job_uuid", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        { employee_uuid: "ee-multi", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] },
+      ],
+    };
+    const blocked = inferMissingJobUuids(body, jobs);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.field).toContain("ee-multi");
+    expect(blocked[0]?.reason).toContain("2 jobs");
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
+  });
+
+  test("emits a single blocked entry per multi-job employee even with several missing rows", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        {
+          employee_uuid: "ee-multi",
+          hourly_compensations: [
+            { name: "Regular Hours", hours: 40 },
+            { name: "Overtime", hours: 5 },
+          ],
+          fixed_compensations: [{ name: "Bonus", amount: 250 }],
+        },
+      ],
+    };
+    const blocked = inferMissingJobUuids(body, jobs);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.field).toContain("ee-multi");
+  });
+
+  test("leaves entries with an explicit job_uuid untouched, even for multi-job employees", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        {
+          employee_uuid: "ee-multi",
+          hourly_compensations: [{ name: "Regular Hours", hours: 30, job_uuid: "job-a" }],
+        },
+      ],
+    };
+    expect(inferMissingJobUuids(body, jobs)).toEqual([]);
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBe("job-a");
+  });
+
+  test("skips an employee not in the lookup (server will surface the real error)", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        { employee_uuid: "ee-unknown", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] },
+      ],
+    };
+    expect(inferMissingJobUuids(body, jobs)).toEqual([]);
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
+  });
+
+  test("blocks with a clear message when the employee has zero jobs in the lookup", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        { employee_uuid: "ee-jobless", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] },
+      ],
+    };
+    const noJobs = new Map<string, string[]>([["ee-jobless", []]]);
+    const blocked = inferMissingJobUuids(body, noJobs);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.field).toContain("ee-jobless");
+    expect(blocked[0]?.reason).toContain("no jobs assigned");
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
+  });
+
+  test("dedupes multi-job blocks across multiple employee_compensations entries for the same employee", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        { employee_uuid: "ee-multi", hourly_compensations: [{ name: "Regular Hours", hours: 30 }] },
+        { employee_uuid: "ee-multi", fixed_compensations: [{ name: "Bonus", amount: 100 }] },
+      ],
+    };
+    const blocked = inferMissingJobUuids(body, jobs);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.field).toContain("ee-multi");
+  });
+
+  test("an empty lookup is a no-op (lets the server's PUT surface its own error)", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        { employee_uuid: "ee-single", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] },
+      ],
+    };
+    expect(inferMissingJobUuids(body, new Map())).toEqual([]);
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
   });
 });
 

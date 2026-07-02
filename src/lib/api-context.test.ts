@@ -403,7 +403,7 @@ describe("withCompanyContext", () => {
     let ran = false;
     const result = await withCompanyContext(flags, noSession(), async () => {
       ran = true;
-      return { ok: true };
+      return { ok: true, data: undefined };
     });
     expect(ran).toBe(false);
     expect(result.ok).toBe(false);

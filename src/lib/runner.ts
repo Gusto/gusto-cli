@@ -20,7 +20,7 @@ export interface CommandContext {
 export type CommandResult<T = unknown> =
   | {
       ok: true;
-      data?: T;
+      data: T;
       next?: string;
       /** Optional renderer for `--human` output, as a thunk over this result's data. Applied only
        * when stdout is human mode and no `--fields` projection is in play (a projection changes the

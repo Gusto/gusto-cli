@@ -1,9 +1,10 @@
 import type { Command } from "commander";
 import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
-import { fetchCompanyResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { fetchCompanyResource, fetchResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { confirmationGate } from "../lib/confirm.ts";
 import { CsvError, parseCsv } from "../lib/csv.ts";
+import { malformedResponse } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -513,6 +514,113 @@ function mergeRowsByEmployee(rows: ParsedPayrollUpdateRow[], blocked: BlockedOn[
   }));
 }
 
+interface JobsListEntry {
+  uuid?: string;
+}
+
+async function fetchEmployeeJobs(
+  globals: GlobalFlags,
+  opts: { tokenStdin?: boolean },
+  employeeUuids: readonly string[],
+): Promise<CommandResult<Map<string, string[]>>> {
+  const responses = await Promise.all(
+    employeeUuids.map(async (employeeUuid) => {
+      const resp = await fetchResource<JobsListEntry[]>(
+        globals,
+        { tokenStdin: opts.tokenStdin },
+        () => `/v1/employees/${encodeURIComponent(employeeUuid)}/jobs`,
+      );
+      return { employeeUuid, resp };
+    }),
+  );
+  const byEmployee = new Map<string, string[]>();
+  for (const { employeeUuid, resp } of responses) {
+    if (!resp.ok) {
+      return {
+        ok: false,
+        exitCode: resp.exitCode,
+        error: {
+          ...resp.error,
+          message: `looking up jobs for employee ${employeeUuid}: ${resp.error.message}`,
+        },
+      };
+    }
+    if (!Array.isArray(resp.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a non-array body`);
+    }
+    const uuids: string[] = [];
+    for (const j of resp.data) {
+      if (typeof j.uuid !== "string" || j.uuid === "") {
+        return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a job with no uuid`);
+      }
+      uuids.push(j.uuid);
+    }
+    byEmployee.set(employeeUuid, uuids);
+  }
+  return { ok: true, data: byEmployee };
+}
+
+export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): string[] {
+  const out = new Set<string>();
+  for (const ec of body.employee_compensations) {
+    for (const entry of iterCompensations(ec)) {
+      if (!entry.job_uuid) {
+        out.add(ec.employee_uuid);
+        break;
+      }
+    }
+  }
+  return [...out];
+}
+
+function* iterCompensations(ec: EmployeeCompensationUpdate): Generator<{ job_uuid?: string }> {
+  for (const h of ec.hourly_compensations ?? []) yield h;
+  for (const f of ec.fixed_compensations ?? []) yield f;
+}
+
+/** Mutates `body`: injects sole job_uuid for single-job employees, returns one blocked_on per
+ * employee whose row is ambiguous (multi-job) or unresolvable (no jobs). */
+export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  const alreadyBlocked = new Set<string>();
+  for (const ec of body.employee_compensations) {
+    const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
+    if (!employeeJobs) continue;
+    const [soleJob, ...rest] = employeeJobs;
+    for (const entry of iterCompensations(ec)) {
+      if (entry.job_uuid) continue;
+      if (soleJob && rest.length === 0) {
+        entry.job_uuid = soleJob;
+        continue;
+      }
+      if (alreadyBlocked.has(ec.employee_uuid)) break;
+      const reason =
+        employeeJobs.length === 0
+          ? "employee has no jobs assigned; add a job before running payroll for them"
+          : `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`;
+      blocked.push({ field: `employee_compensations[${ec.employee_uuid}].job_uuid`, reason });
+      alreadyBlocked.add(ec.employee_uuid);
+      break;
+    }
+  }
+  return blocked;
+}
+
+async function injectInferredJobUuids(
+  globals: GlobalFlags,
+  opts: { tokenStdin?: boolean },
+  body: PayrollUpdateBody,
+  candidates: readonly string[],
+): Promise<CommandResult<void>> {
+  const jobs = await fetchEmployeeJobs(globals, opts, candidates);
+  if (!jobs.ok) return jobs;
+  const inferenceBlocked = inferMissingJobUuids(body, jobs.data);
+  if (inferenceBlocked.length > 0) {
+    return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
+  }
+  return { ok: true, data: undefined };
+}
+
 /** Parse a CSV of per-employee inputs into a payroll-update request body, accumulating every
  * structural, header, and per-row problem into a single blocked_on list (so one run surfaces all
  * the fixes, not just the first). Headers are lowercased so 'Employee_UUID' and 'employee_uuid'
@@ -996,13 +1104,20 @@ export function payrollUpdateHandler(
     const built = buildPayrollUpdateFromCsv(text);
     if (!built.ok) return validationFailure(built.message, built.blocked);
 
+    // Server 422s on missing job_uuid even though docs mark it optional; we infer client-side.
+    const inferenceCandidates = employeesNeedingJobUuidInference(built.body);
+    if (!opts.dryRun && inferenceCandidates.length > 0) {
+      const injected = await injectInferredJobUuids(globals, opts, built.body, inferenceCandidates);
+      if (!injected.ok) return injected;
+    }
+
     const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
 
-    // Surface skipped (no-input) employees alongside the response so a blank row in a master sheet
-    // is visible rather than silently dropped. Only attach when there are any and the data is a
-    // plain object to extend (the API payroll on a real run, or the dry-run shape).
-    if (result.ok && built.skipped.length > 0 && isRecord(result.data)) {
-      return { ok: true, data: { ...result.data, skipped_employees: built.skipped } };
+    if (result.ok && isRecord(result.data)) {
+      const extras: Record<string, unknown> = {};
+      if (built.skipped.length > 0) extras.skipped_employees = built.skipped;
+      if (opts.dryRun && inferenceCandidates.length > 0) extras.inferred_at_send = inferenceCandidates;
+      if (Object.keys(extras).length > 0) return { ok: true, data: { ...result.data, ...extras } };
     }
     return result;
   };
