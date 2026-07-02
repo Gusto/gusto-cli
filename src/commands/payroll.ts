@@ -9,7 +9,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIsoDate, parseNonNegativeNumber } from "../lib/parse.ts";
+import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import {
   type CommandHandler,
@@ -19,7 +19,6 @@ import {
   runReadCommand,
   validationFailure,
 } from "../lib/runner.ts";
-import { resolveTimeoutMs } from "./ledger.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -849,7 +848,7 @@ export async function executePayrollCalculate(
   // directly and the skill never has to poll (mirrors how 'ledger show' owns its report poll).
   const pollPath = `${base}?include=totals`;
   try {
-    const calculated = await client.poll<{ totals?: unknown }>(pollPath, {
+    const calculated = await client.poll<PayrollShowResponse>(pollPath, {
       until: (body) => body.totals != null,
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     });
@@ -906,18 +905,18 @@ export function payrollCalculateHandler(payrollUuid: string | undefined, opts: P
     if (gate) return gate;
 
     const ctx = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, companyOverride: opts.companyUuid });
-    if (!ctx.ok) {
-      // dry-run still shows the (unresolved) request shape without needing a token/company.
-      if (opts.dryRun) {
-        return { ok: true, data: { method: "PUT", path: resourcePath, note: "dry-run: token/company not required" } };
-      }
-      return ctx.result;
-    }
-
     if (opts.dryRun) {
-      const path = `/v1/companies/${ctx.ctx.companyUuid}/payrolls/${encodeURIComponent(payrollUuid)}/calculate`;
-      return { ok: true, data: { method: "PUT", path } };
+      // Show the resolved company path when we have one, else the unresolved template - dry-run needs
+      // neither a token nor a company, and sends nothing either way.
+      const path = ctx.ok
+        ? `/v1/companies/${ctx.ctx.companyUuid}/payrolls/${encodeURIComponent(payrollUuid)}/calculate`
+        : resourcePath;
+      return {
+        ok: true,
+        data: { method: "PUT", path, ...(ctx.ok ? {} : { note: "dry-run: token/company not required" }) },
+      };
     }
+    if (!ctx.ok) return ctx.result;
 
     return executePayrollCalculate(ctx.ctx.client, ctx.ctx.companyUuid, payrollUuid, {
       wait: opts.wait,

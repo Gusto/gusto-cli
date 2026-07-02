@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { ApiClient } from "../lib/api-client.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import {
   buildPayrollListQuery,
   buildPayrollShowQuery,
   buildPayrollUpdateFromCsv,
+  executePayrollCalculate,
   renderPayrollShow,
 } from "./payroll.ts";
+
+interface MockResponse {
+  status: number;
+  body?: unknown;
+}
 
 describe("buildPayrollShowQuery", () => {
   test("no include yields an empty query", () => {
@@ -620,5 +628,74 @@ describe("buildPayrollUpdateFromCsv", () => {
     expect(result.message).toBe("invalid CSV header");
     // The whole tab-joined line is read as one column, so employee_uuid is "missing".
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee_uuid" }));
+  });
+});
+
+describe("executePayrollCalculate", () => {
+  const CO = "co-1";
+  const PAYROLL = "pay-1";
+
+  /** ApiClient whose fetch routes the calculate PUT and the totals GET to canned responses, so the
+   * PUT-then-poll flow is testable without real waits (mirrors ledger.test.ts's clientWith). */
+  function clientWith(responses: { put?: MockResponse; totals?: MockResponse }): ApiClient {
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = url.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      let r: MockResponse | undefined;
+      if (method === "PUT" && u.includes("/calculate")) r = responses.put;
+      else if (method === "GET" && u.includes("include=totals")) r = responses.totals;
+      if (!r) throw new Error(`unexpected request: ${method} ${u}`);
+      const text = r.body !== undefined ? JSON.stringify(r.body) : "";
+      return new Response(text, { status: r.status, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    return new ApiClient({
+      baseUrl: "https://api.test",
+      token: "t",
+      apiVersion: "2026-02-01",
+      fetchImpl,
+      maxRetries: 0,
+    });
+  }
+
+  test("waits and returns the payroll body once totals land", async () => {
+    const client = clientWith({
+      put: { status: 202 },
+      totals: { status: 200, body: { uuid: PAYROLL, totals: { company_debit: "1800.00" } } },
+    });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect((result.data as { totals: { company_debit: string } }).totals.company_debit).toBe("1800.00");
+  });
+
+  test("--no-wait returns the calculating shape without polling", async () => {
+    // No totals stub: if it polled, the fetch router would throw "unexpected request".
+    const client = clientWith({ put: { status: 202 } });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, { wait: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.data).toMatchObject({ status: "calculating", payroll_uuid: PAYROLL });
+    expect(typeof (result.data as { note: string }).note).toBe("string");
+  });
+
+  test("a timeout before any poll attempt yields calculate_timeout with attempts:0", async () => {
+    // timeoutMs:0 => the deadline is already reached on entry, so poll throws before any GET.
+    const client = clientWith({ put: { status: 202 }, totals: { status: 200, body: { totals: null } } });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, { timeoutMs: 0 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("calculate_timeout");
+    expect(result.exitCode).toBe(ExitCode.Timeout);
+    const details = result.error.details as { attempts: number; last?: unknown };
+    expect(details.attempts).toBe(0);
+    expect("last" in details).toBe(false);
+  });
+
+  test("a failed calculate PUT is mapped to an API error result", async () => {
+    const client = clientWith({ put: { status: 422, body: { errors: [{ message: "not prepared" }] } } });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 });
