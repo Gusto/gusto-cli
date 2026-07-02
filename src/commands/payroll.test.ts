@@ -687,18 +687,15 @@ describe("inferMissingJobUuids", () => {
     ["ee-multi", ["job-a", "job-b"]],
   ]);
 
-  const firstHourlyJobUuid = (body: PayrollUpdateBody, ecIndex = 0): string | undefined => {
+  const firstCompJobUuid = (
+    body: PayrollUpdateBody,
+    kind: "hourly_compensations" | "fixed_compensations",
+    ecIndex = 0,
+  ): string | undefined => {
     const ec = body.employee_compensations[ecIndex];
     if (!ec) throw new Error(`no employee_compensations[${ecIndex}]`);
-    const entry = ec.hourly_compensations?.[0];
-    if (!entry) throw new Error(`no hourly_compensations[0] on ec ${ecIndex}`);
-    return entry.job_uuid;
-  };
-  const firstFixedJobUuid = (body: PayrollUpdateBody, ecIndex = 0): string | undefined => {
-    const ec = body.employee_compensations[ecIndex];
-    if (!ec) throw new Error(`no employee_compensations[${ecIndex}]`);
-    const entry = ec.fixed_compensations?.[0];
-    if (!entry) throw new Error(`no fixed_compensations[0] on ec ${ecIndex}`);
+    const entry = ec[kind]?.[0];
+    if (!entry) throw new Error(`no ${kind}[0] on ec ${ecIndex}`);
     return entry.job_uuid;
   };
 
@@ -713,8 +710,8 @@ describe("inferMissingJobUuids", () => {
       ],
     };
     expect(inferMissingJobUuids(body, jobs)).toEqual([]);
-    expect(firstHourlyJobUuid(body)).toBe("job-1");
-    expect(firstFixedJobUuid(body)).toBe("job-1");
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBe("job-1");
+    expect(firstCompJobUuid(body, "fixed_compensations")).toBe("job-1");
   });
 
   test("blocks for a multi-job employee whose CSV row omitted job_uuid", () => {
@@ -727,7 +724,7 @@ describe("inferMissingJobUuids", () => {
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.field).toContain("ee-multi");
     expect(blocked[0]?.reason).toContain("2 jobs");
-    expect(firstHourlyJobUuid(body)).toBeUndefined();
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
   });
 
   test("emits a single blocked entry per multi-job employee even with several missing rows", () => {
@@ -758,7 +755,7 @@ describe("inferMissingJobUuids", () => {
       ],
     };
     expect(inferMissingJobUuids(body, jobs)).toEqual([]);
-    expect(firstHourlyJobUuid(body)).toBe("job-a");
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBe("job-a");
   });
 
   test("skips an employee not in the lookup (server will surface the real error)", () => {
@@ -768,7 +765,7 @@ describe("inferMissingJobUuids", () => {
       ],
     };
     expect(inferMissingJobUuids(body, jobs)).toEqual([]);
-    expect(firstHourlyJobUuid(body)).toBeUndefined();
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
   });
 
   test("blocks with a clear message when the employee has zero jobs in the lookup", () => {
@@ -782,7 +779,7 @@ describe("inferMissingJobUuids", () => {
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.field).toContain("ee-jobless");
     expect(blocked[0]?.reason).toContain("no jobs assigned");
-    expect(firstHourlyJobUuid(body)).toBeUndefined();
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
   });
 
   test("dedupes multi-job blocks across multiple employee_compensations entries for the same employee", () => {
@@ -804,6 +801,6 @@ describe("inferMissingJobUuids", () => {
       ],
     };
     expect(inferMissingJobUuids(body, new Map())).toEqual([]);
-    expect(firstHourlyJobUuid(body)).toBeUndefined();
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBeUndefined();
   });
 });
