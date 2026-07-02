@@ -432,23 +432,40 @@ describe("payrollUpdateHandler", () => {
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 
-  test("filters out null/undefined/missing uuid fields in the /jobs response", async () => {
+  test("a /jobs entry with a null/missing uuid fails with malformed_response, not a silent drop", async () => {
+    // Silently filtering makes a multi-job employee look single-job and mis-attributes hours to
+    // the surviving job. Fail loudly instead.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs"))
         return { status: 200, body: [{ uuid: "job-1" }, { uuid: null }, { title: "no uuid" }] };
-      if (u.includes("/payrolls/pay-1")) return { status: 200, body: { uuid: "pay-1" } };
       return { status: 404 };
     });
 
     const csv = "employee_uuid,regular_hours\nee-1,40";
-    const d = data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx));
-    expect(d.uuid).toBe("pay-1");
+    const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("malformed_response");
+    expect(result.error.message).toContain("ee-1");
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
 
-    const put = s.calls.find((c) => c.method === "PUT");
-    expect(put?.body).toEqual({
-      employee_compensations: [
-        { employee_uuid: "ee-1", hourly_compensations: [{ name: "Regular Hours", hours: 40, job_uuid: "job-1" }] },
-      ],
+  test("an employee with zero jobs (empty /jobs array) blocks with a clear client-side message", async () => {
+    // Previously fell through silently: the compensation entry kept no job_uuid, the PUT fired,
+    // the server 422'd with a less helpful message. Now we surface a blocked_on before the PUT.
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [] };
+      return { status: 404 };
     });
+
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    const field = result.error.blocked_on?.[0]?.field ?? "";
+    expect(field).toContain("ee-1");
+    expect(result.error.blocked_on?.[0]?.reason).toContain("no jobs assigned");
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 });

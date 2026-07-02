@@ -537,10 +537,23 @@ async function fetchEmployeeJobs(
         },
       };
     }
-    byEmployee.set(
-      employeeUuid,
-      resp.data.map((j) => j.uuid).filter((u): u is string => !!u),
-    );
+    // Every entry must carry a uuid; silently dropping the ones without would make a multi-job
+    // employee look single-job and cause inference to wrongly attribute hours to the surviving job.
+    const uuids: string[] = [];
+    for (const j of resp.data) {
+      if (typeof j.uuid !== "string" || j.uuid === "") {
+        return {
+          ok: false,
+          exitCode: ExitCode.ApiClient,
+          error: {
+            code: "malformed_response",
+            message: `/v1/employees/${employeeUuid}/jobs returned a job with no uuid`,
+          },
+        };
+      }
+      uuids.push(j.uuid);
+    }
+    byEmployee.set(employeeUuid, uuids);
   }
   return { ok: true, data: byEmployee };
 }
@@ -564,9 +577,11 @@ function* iterCompensations(ec: EmployeeCompensationUpdate): Generator<{ job_uui
 }
 
 /** Mutates the body in place: injects the sole job_uuid for single-job employees, returns one
- * blocked_on entry per multi-job employee whose row is genuinely ambiguous. */
+ * blocked_on entry per employee whose row is genuinely ambiguous (multi-job) or unresolvable
+ * (no jobs assigned). Deduplicates per employee_uuid across all `employee_compensations` entries. */
 export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
   const blocked: BlockedOn[] = [];
+  const alreadyBlocked = new Set<string>();
   for (const ec of body.employee_compensations) {
     const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
     if (!employeeJobs) continue;
@@ -577,13 +592,14 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
         entry.job_uuid = soleJob;
         continue;
       }
-      if (rest.length > 0) {
-        blocked.push({
-          field: `employee_compensations[${ec.employee_uuid}].job_uuid`,
-          reason: `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`,
-        });
-        break;
-      }
+      if (alreadyBlocked.has(ec.employee_uuid)) break;
+      const reason =
+        employeeJobs.length === 0
+          ? "employee has no jobs assigned; add a job before running payroll for them"
+          : `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`;
+      blocked.push({ field: `employee_compensations[${ec.employee_uuid}].job_uuid`, reason });
+      alreadyBlocked.add(ec.employee_uuid);
+      break;
     }
   }
   return blocked;
