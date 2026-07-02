@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { type ApiClient, PollTimeoutError } from "../lib/api-client.ts";
+import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
 import { fetchCompanyResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { confirmationGate } from "../lib/confirm.ts";
@@ -174,6 +174,9 @@ interface PayrollShowResponse {
   pay_period?: { start_date?: string; end_date?: string };
   totals?: PayrollTotals;
   employee_compensations?: PayrollShowComp[];
+  /** The async calculate/submit state machine. The calculate poll keys on `status`; the phase is
+   * done when it reaches a terminal state (see the isPayrollCalculated/Failed predicates). */
+  processing_request?: { status?: string; errors?: unknown[] } | null;
 }
 
 /** Human-readable status from the two state fields the API actually returns (there is no
@@ -821,10 +824,25 @@ export interface ExecutePayrollCalculateOpts {
   timeoutMs?: number;
 }
 
+/** True once the payroll's calculate phase has finished successfully (totals are ready). Drives the
+ * poll success predicate. The calculate poll keys on `processing_request.status`, not on the
+ * presence of `totals`: an explicit `totals: null` is ambiguous (not-yet-calculated vs. a calc that
+ * produced none), whereas the status is a definite terminal signal. See docs: payroll-processing-request. */
+export function isPayrollCalculated(body: PayrollShowResponse): boolean {
+  return body.processing_request?.status === "calculate_success";
+}
+
+/** True once the payroll's calculate phase has terminally failed (e.g. negative net pay). Drives the
+ * poll failure predicate so we stop immediately with an error instead of polling out the timeout. */
+export function isPayrollCalculationFailed(body: PayrollShowResponse): boolean {
+  return body.processing_request?.status === "processing_failed";
+}
+
 /** PUT the calculate request, then either return immediately (`wait === false`) or poll the
- * payroll's totals until they materialize (or the timeout elapses) and return the payroll with
- * them. Takes the client directly so the PUT-then-poll flow is unit-testable with a mocked fetch,
- * mirroring executeLedgerShow - the caller owns the async wait so skills never have to poll. */
+ * payroll's processing_request status until the calculate phase finishes (or the timeout elapses)
+ * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
+ * unit-testable with a mocked fetch, mirroring executeLedgerShow - the caller owns the async wait so
+ * skills never have to poll. */
 export async function executePayrollCalculate(
   client: Pick<ApiClient, "request" | "poll">,
   companyUuid: string,
@@ -844,16 +862,30 @@ export async function executePayrollCalculate(
     return { ok: true, data: { status: "calculating", payroll_uuid: payrollUuid, note: CALCULATE_NOTE } };
   }
 
-  // Default: poll the payroll's totals until they land, so the command returns the computed figures
-  // directly and the skill never has to poll (mirrors how 'ledger show' owns its report poll).
+  // Default: poll processing_request until the calculate phase reaches a terminal state, so the
+  // command returns the computed figures directly and the skill never has to poll (mirrors how
+  // 'ledger show' owns its report poll). A failed calc stops the poll early rather than timing out.
   const pollPath = `${base}?include=totals`;
   try {
     const calculated = await client.poll<PayrollShowResponse>(pollPath, {
-      until: (body) => body.totals != null,
+      until: isPayrollCalculated,
+      isFailure: isPayrollCalculationFailed,
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     });
     return { ok: true, data: calculated.body };
   } catch (err) {
+    if (err instanceof PollFailedError) {
+      const body = err.body as PayrollShowResponse | undefined;
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiServer,
+        error: {
+          code: "calculate_failed",
+          message: `payroll ${payrollUuid} calculation failed`,
+          details: { payroll_uuid: payrollUuid, errors: body?.processing_request?.errors ?? null },
+        },
+      };
+    }
     if (err instanceof PollTimeoutError) {
       return {
         ok: false,

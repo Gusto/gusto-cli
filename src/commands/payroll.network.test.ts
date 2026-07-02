@@ -164,41 +164,9 @@ describe("payrollShowHandler", () => {
 });
 
 describe("payrollCalculateHandler", () => {
-  test("waits: PUTs calculate, polls the totals, and returns the payroll with them", async () => {
-    // calculate is async: the PUT returns 202 with no body, then the totals land on a later GET.
-    const s = stub((u) => {
-      if (u.includes("/payrolls/pay-1/calculate")) return { status: 202 };
-      if (u.includes("/payrolls/pay-1?include=totals")) {
-        return { status: 200, body: { uuid: "pay-1", totals: { gross_pay: "1600.00", company_debit: "1800.00" } } };
-      }
-      return { status: 404 };
-    });
-
-    const d = data(await payrollCalculateHandler("pay-1", approved)(ctx));
-    // The command waits and hands back the payroll with its computed totals - no manual polling.
-    expect((d.totals as { company_debit: string }).company_debit).toBe("1800.00");
-
-    const put = s.calls.find((c) => c.method === "PUT");
-    expect(put?.url).toContain("/v1/companies/co-1/payrolls/pay-1/calculate");
-    // calculate has no request body.
-    expect(put?.body).toBeUndefined();
-    // it polled the totals endpoint to get them.
-    expect(s.calls.some((c) => c.method === "GET" && c.url.includes("/payrolls/pay-1?include=totals"))).toBe(true);
-  });
-
-  test("--no-wait: fires the calculation and returns the calculating shape without polling", async () => {
-    // 500 on anything but the PUT: if it polled, this would fail the test.
-    const s = stub((u) => (u.includes("/payrolls/pay-1/calculate") ? { status: 202 } : { status: 500 }));
-
-    const d = data(await payrollCalculateHandler("pay-1", { ...approved, wait: false })(ctx));
-    expect(d.status).toBe("calculating");
-    expect(d.payroll_uuid).toBe("pay-1");
-    // The note must tell an agent how to read totals back once ready.
-    expect(typeof d.note).toBe("string");
-    // No poll GET was made - only the fire-and-forget PUT.
-    expect(s.calls.every((c) => c.method === "PUT")).toBe(true);
-  });
-
+  // The wait/poll and --no-wait behaviors are unit-tested against executePayrollCalculate in
+  // payroll.test.ts; the handler tests here cover only handler-level concerns (gate, dry-run,
+  // validation, encoding).
   test("an agent-mode calculate without --confirm is blocked and sends nothing", async () => {
     const s = stub(() => ({ status: 500 }));
     const result = await payrollCalculateHandler("pay-1", auth)(ctx);
