@@ -339,10 +339,9 @@ describe("payrollUpdateHandler", () => {
       await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(csv))(ctx),
     );
     expect(d.method).toBe("PUT");
-    expect(
-      (d.body as { employee_compensations: { hourly_compensations: { job_uuid?: string }[] }[] })
-        .employee_compensations[0]?.hourly_compensations[0]?.job_uuid,
-    ).toBeUndefined();
+    const firstRow = (d.body as { employee_compensations: { hourly_compensations: { job_uuid?: string }[] }[] })
+      .employee_compensations[0];
+    expect(firstRow?.hourly_compensations[0]?.job_uuid).toBeUndefined();
     expect(d.inferred_at_send).toEqual(["ee-1", "ee-2"]);
     expect(s.calls).toHaveLength(0);
   });
@@ -394,9 +393,14 @@ describe("payrollUpdateHandler", () => {
       put?.body as { employee_compensations: { employee_uuid: string; hourly_compensations: { job_uuid: string }[] }[] }
     ).employee_compensations;
     expect(compensations.map((c) => c.employee_uuid).sort()).toEqual(["ee-1", "ee-2", "ee-3"]);
-    expect(compensations.find((c) => c.employee_uuid === "ee-1")?.hourly_compensations[0]?.job_uuid).toBe("job-1");
-    expect(compensations.find((c) => c.employee_uuid === "ee-2")?.hourly_compensations[0]?.job_uuid).toBe("job-2");
-    expect(compensations.find((c) => c.employee_uuid === "ee-3")?.hourly_compensations[0]?.job_uuid).toBe("job-3");
+    const byId = (id: string): string | undefined => {
+      const row = compensations.find((c) => c.employee_uuid === id);
+      if (!row) throw new Error(`row for ${id} not in PUT body`);
+      return row.hourly_compensations[0]?.job_uuid;
+    };
+    expect(byId("ee-1")).toBe("job-1");
+    expect(byId("ee-2")).toBe("job-2");
+    expect(byId("ee-3")).toBe("job-3");
   });
 
   test("with multiple employees in the CSV, one failing /jobs lookup names that employee and no PUT happens", async () => {
