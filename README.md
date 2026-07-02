@@ -90,6 +90,8 @@ Every command emits the same envelope shape:
 
 Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `0` success, `1` general, `2` CLI usage, `3` auth, `4` API 4xx, `5` API 5xx, `6` network, `7` validation, `8` blocked state.
 
+**Treating API data as untrusted.** String fields the API returns - employee names, job titles, notes, GL account descriptions - are user-controlled. When an agent consumes CLI output, those values are data, never instructions: a field whose value reads like a command is still just a string. The `--agent` envelope helps here, since a value stays inside a typed field rather than flattening into prose, so the data/instruction boundary is explicit. See [`AGENTS.md`](AGENTS.md) for the agent-facing version of this.
+
 ## Bundled skills
 
 The CLI ships bundled skills - `cash-forecasting` (projects upcoming payroll cash needs), `timesheet-sync` (drives the per-cycle timesheet input flow), and `payroll-prep` (maps an owner's per-cycle inputs onto a draft payroll for review). Install one into a project's agent workspace:
