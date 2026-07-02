@@ -106,8 +106,10 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  test("payroll calculate with a uuid but no token returns no_access_token (exit 3)", async () => {
-    const result = await run(["payroll", "calculate", "payroll-uuid-123"]);
+  test("payroll calculate with a uuid and --confirm but no token returns no_access_token (exit 3)", async () => {
+    // calculate is a gated write, so --confirm is needed to get past the agent-mode confirmation
+    // gate and reach the auth check this asserts (without it the run blocks with exit 8 first).
+    const result = await run(["payroll", "calculate", "payroll-uuid-123", "--confirm"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });

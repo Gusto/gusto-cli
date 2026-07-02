@@ -243,6 +243,7 @@ interface PayrollCalculateOpts {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -703,6 +704,7 @@ Examples:
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
     .option(...EXAMPLE_OPT)
     .addHelpText(
       "after",

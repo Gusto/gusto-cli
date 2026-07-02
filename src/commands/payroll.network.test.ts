@@ -168,7 +168,7 @@ describe("payrollCalculateHandler", () => {
     // calculate is async: the API returns 202 with no body, which the client maps to data:null.
     const s = stub((u) => (u.includes("/payrolls/pay-1/calculate") ? { status: 202 } : { status: 404 }));
 
-    const d = data(await payrollCalculateHandler("pay-1", auth)(ctx));
+    const d = data(await payrollCalculateHandler("pay-1", approved)(ctx));
     expect(d.status).toBe("calculating");
     expect(d.payroll_uuid).toBe("pay-1");
     // The note must tell an agent calc is async and how to read totals back.
@@ -178,6 +178,16 @@ describe("payrollCalculateHandler", () => {
     expect(put?.url).toContain("/v1/companies/co-1/payrolls/pay-1/calculate");
     // calculate has no request body.
     expect(put?.body).toBeUndefined();
+  });
+
+  test("an agent-mode calculate without --confirm is blocked and sends nothing", async () => {
+    const s = stub(() => ({ status: 500 }));
+    const result = await payrollCalculateHandler("pay-1", auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
   });
 
   test("dry-run describes the PUT and sends nothing", async () => {
@@ -192,7 +202,7 @@ describe("payrollCalculateHandler", () => {
 
   test("percent-encodes the UUID segment so a stray '/' or '?' can't retarget the PUT", async () => {
     const s = stub(() => ({ status: 404 }));
-    await payrollCalculateHandler("evil?x=1/y", auth)(ctx);
+    await payrollCalculateHandler("evil?x=1/y", approved)(ctx);
     const put = s.calls.find((c) => c.method === "PUT");
     expect(put?.url).toContain("/payrolls/evil%3Fx%3D1%2Fy/calculate");
     expect(put?.url).not.toContain("evil?x=1");
@@ -205,7 +215,7 @@ describe("payrollCalculateHandler", () => {
         ? { status: 422, body: { errors: [{ category: "invalid_operation", message: "not prepared" }] } }
         : { status: 404 },
     );
-    const result = await payrollCalculateHandler("pay-1", auth)(ctx);
+    const result = await payrollCalculateHandler("pay-1", approved)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
