@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ApiClient } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
-import {
-  buildGeneralLedgerBody,
-  executeLedgerShow,
-  isReportFailed,
-  isReportSucceeded,
-  resolveTimeoutMs,
-} from "./ledger.ts";
+import { buildGeneralLedgerBody, executeLedgerShow, isReportFailed, isReportSucceeded } from "./ledger.ts";
 
 interface MockResponse {
   status: number;
@@ -61,24 +55,6 @@ describe("isReportFailed", () => {
     expect(isReportFailed({ status: "pending" })).toBe(false);
     expect(isReportFailed({ status: "succeeded" })).toBe(false);
     expect(isReportFailed({})).toBe(false);
-  });
-});
-
-describe("resolveTimeoutMs", () => {
-  test("undefined is ok with no ms (use the poll default)", () => {
-    expect(resolveTimeoutMs(undefined)).toEqual({ ok: true });
-  });
-
-  test("a positive number of seconds converts to ms", () => {
-    expect(resolveTimeoutMs("60")).toEqual({ ok: true, ms: 60_000 });
-    expect(resolveTimeoutMs("1.5")).toEqual({ ok: true, ms: 1_500 });
-  });
-
-  test("zero, negative, non-numeric, and non-finite are rejected", () => {
-    expect(resolveTimeoutMs("0")).toEqual({ ok: false });
-    expect(resolveTimeoutMs("-1")).toEqual({ ok: false });
-    expect(resolveTimeoutMs("abc")).toEqual({ ok: false });
-    expect(resolveTimeoutMs("Infinity")).toEqual({ ok: false });
   });
 });
 

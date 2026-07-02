@@ -1,12 +1,15 @@
 import type { Command } from "commander";
-import { fetchCompanyResource, putCompanyResource } from "../lib/api-context.ts";
+import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
+import { fetchCompanyResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { confirmationGate } from "../lib/confirm.ts";
 import { CsvError, parseCsv } from "../lib/csv.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
+import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIsoDate, parseNonNegativeNumber } from "../lib/parse.ts";
+import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import {
   type CommandHandler,
@@ -171,6 +174,9 @@ interface PayrollShowResponse {
   pay_period?: { start_date?: string; end_date?: string };
   totals?: PayrollTotals;
   employee_compensations?: PayrollShowComp[];
+  /** The async calculate/submit state machine. The calculate poll keys on `status`; the phase is
+   * done when it reaches a terminal state (see the isPayrollCalculated/Failed predicates). */
+  processing_request?: { status?: string; errors?: unknown[] } | null;
 }
 
 /** Human-readable status from the two state fields the API actually returns (there is no
@@ -237,6 +243,17 @@ interface PayrollPrepareOpts {
   dryRun?: boolean;
   confirm?: boolean;
   example?: boolean;
+}
+
+interface PayrollCalculateOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+  /** Commander negation of `--no-wait`: true by default, false when `--no-wait` is passed. */
+  wait?: boolean;
+  timeout?: string;
 }
 
 // --- payroll update (CSV -> employee_compensations) -------------------------------------------
@@ -662,7 +679,7 @@ Examples:
 
   cmd
     .command("prepare [payroll_uuid]")
-    .description("Prepare a draft payroll: populates its employee compensations so totals can be verified")
+    .description("Prepare a draft payroll: lay in its employee compensations (does not compute dollar totals)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option(...DRY_RUN_OPT)
@@ -671,9 +688,15 @@ Examples:
     .addHelpText(
       "after",
       `
-A draft payroll starts as an empty shell (0 employee_compensations). Preparing it populates
-them so the payroll's hours/compensations can be read back and verified - e.g. to confirm the
-hours a 'timesheet sync' landed. Running payroll requires a prepared draft.
+The draft-payroll lifecycle has three steps:
+  1. prepare   - populate employee_compensations (hours/earnings). Dollar 'totals' stay null here.
+  2. calculate - compute the dollar totals (gross/net/taxes). See 'gusto payroll calculate'.
+  3. show      - read the totals, e.g. 'gusto payroll show <payroll_uuid> --include totals'.
+
+A draft payroll starts as an empty shell (0 employee_compensations). Preparing it populates them
+so the payroll's hours/compensations can be read back and verified - e.g. to confirm the hours a
+'timesheet sync' landed. Totals do NOT appear after prepare; run 'calculate' for those. Running
+payroll requires a prepared (and calculated) draft.
 
 Examples:
   $ gusto payroll prepare 1a2b3c4d-0000-1111-2222-333344445555
@@ -682,6 +705,36 @@ Examples:
     )
     .action((payrollUuid: string | undefined, opts: PayrollPrepareOpts) =>
       runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
+    );
+
+  cmd
+    .command("calculate [payroll_uuid]")
+    .description("Calculate a prepared draft payroll's dollar totals (gross/net/taxes); waits for the result")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option("--no-wait", "Fire the calculation and return immediately instead of polling for the totals")
+    .option("--timeout <seconds>", "Max seconds to poll for the totals when waiting (default 120)")
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+The middle step of the draft-payroll lifecycle (prepare -> calculate -> read back). 'prepare' lays
+in hours/earnings; 'calculate' computes the dollar totals (gross/net/taxes). Calculation runs
+asynchronously on the server, but by default this command polls until the totals land (or --timeout
+elapses) and returns the payroll with its computed totals - no manual polling needed. Use --no-wait
+to fire it and return immediately; then read the totals back yourself, e.g.
+'gusto payroll show <payroll_uuid> --include totals'.
+
+Examples:
+  $ gusto payroll calculate 1a2b3c4d-0000-1111-2222-333344445555 --confirm
+  $ gusto payroll calculate 1a2b3c4d-0000-1111-2222-333344445555 --confirm --no-wait
+  $ gusto payroll calculate --example   (print the request shape, no uuid or auth needed)
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollCalculateOpts) =>
+      runCommand("gusto payroll calculate", readGlobalFlags(parent.opts()), payrollCalculateHandler(payrollUuid, opts)),
     );
 
   cmd
@@ -748,13 +801,159 @@ export function payrollPrepareHandler(payrollUuid: string | undefined, opts: Pay
         data: {
           method: "PUT",
           path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/prepare",
-          note: "no request body; response is the populated payroll. Read back employee_compensations to verify.",
+          note: "no request body; response is the populated payroll. Read back employee_compensations to verify. Dollar totals stay null until you run 'gusto payroll calculate'.",
         },
       };
     }
     if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
     // prepare has no request body.
     return putPayrollResource(globals, payrollUuid, "/prepare", undefined, opts);
+  };
+}
+
+/** The message the calculate handler returns in place of the API's empty 202 body, so an agent
+ * learns the calc kicked off (it's async) and how to read the resulting totals back. */
+const CALCULATE_NOTE =
+  "calculation runs asynchronously, so totals are not ready the instant this returns. " +
+  "Read them back once ready, e.g. 'gusto payroll show <payroll_uuid> --include totals'.";
+
+export interface ExecutePayrollCalculateOpts {
+  /** false => fire the calculation and return immediately instead of polling for the totals. */
+  wait?: boolean;
+  /** Poll budget in ms; omitted => ApiClient.poll default (120s). */
+  timeoutMs?: number;
+}
+
+/** True once the payroll's calculate phase has finished successfully (totals are ready). Drives the
+ * poll success predicate. The calculate poll keys on `processing_request.status`, not on the
+ * presence of `totals`: an explicit `totals: null` is ambiguous (not-yet-calculated vs. a calc that
+ * produced none), whereas the status is a definite terminal signal. See docs: payroll-processing-request. */
+export function isPayrollCalculated(body: PayrollShowResponse): boolean {
+  return body.processing_request?.status === "calculate_success";
+}
+
+/** True once the payroll's calculate phase has terminally failed (e.g. negative net pay). Drives the
+ * poll failure predicate so we stop immediately with an error instead of polling out the timeout. */
+export function isPayrollCalculationFailed(body: PayrollShowResponse): boolean {
+  return body.processing_request?.status === "processing_failed";
+}
+
+/** PUT the calculate request, then either return immediately (`wait === false`) or poll the
+ * payroll's processing_request status until the calculate phase finishes (or the timeout elapses)
+ * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
+ * unit-testable with a mocked fetch, mirroring executeLedgerShow - the caller owns the async wait so
+ * skills never have to poll. */
+export async function executePayrollCalculate(
+  client: Pick<ApiClient, "request" | "poll">,
+  companyUuid: string,
+  payrollUuid: string,
+  opts: ExecutePayrollCalculateOpts,
+): Promise<CommandResult> {
+  const base = `/v1/companies/${encodeURIComponent(companyUuid)}/payrolls/${encodeURIComponent(payrollUuid)}`;
+  // calculate has no request body and returns 202 with an empty body (no totals yet).
+  try {
+    await client.request("PUT", `${base}/calculate`, undefined);
+  } catch (err) {
+    return toResult(err);
+  }
+
+  // --no-wait: hand back the fire-and-forget shape so an agent can poll the totals itself later.
+  if (opts.wait === false) {
+    return { ok: true, data: { status: "calculating", payroll_uuid: payrollUuid, note: CALCULATE_NOTE } };
+  }
+
+  // Default: poll processing_request until the calculate phase reaches a terminal state, so the
+  // command returns the computed figures directly and the skill never has to poll (mirrors how
+  // 'ledger show' owns its report poll). A failed calc stops the poll early rather than timing out.
+  const pollPath = `${base}?include=totals`;
+  try {
+    const calculated = await client.poll<PayrollShowResponse>(pollPath, {
+      until: isPayrollCalculated,
+      isFailure: isPayrollCalculationFailed,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+    return { ok: true, data: calculated.body };
+  } catch (err) {
+    if (err instanceof PollFailedError) {
+      const body = err.body as PayrollShowResponse | undefined;
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiServer,
+        error: {
+          code: "calculate_failed",
+          message: `payroll ${payrollUuid} calculation failed`,
+          details: { payroll_uuid: payrollUuid, errors: body?.processing_request?.errors ?? null },
+        },
+      };
+    }
+    if (err instanceof PollTimeoutError) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Timeout,
+        error: {
+          code: "calculate_timeout",
+          message: `payroll ${payrollUuid} did not finish calculating before the timeout; read the totals back with 'gusto payroll show ${payrollUuid} --include totals'`,
+          details: {
+            payroll_uuid: payrollUuid,
+            attempts: err.attempts,
+            // Omit when no GET completed (e.g. budget already spent) rather than emit last: undefined.
+            ...(err.lastBody !== undefined ? { last: err.lastBody } : {}),
+          },
+        },
+      };
+    }
+    return toResult(err);
+  }
+}
+
+export function payrollCalculateHandler(payrollUuid: string | undefined, opts: PayrollCalculateOpts): CommandHandler {
+  return async ({ globals }) => {
+    // --example publishes the path without auth/company resolution so an agent can learn the command
+    // from `--help` without a real uuid or a live request.
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/calculate",
+          note: `no request body; ${CALCULATE_NOTE}`,
+        },
+      };
+    }
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+
+    const timeout = resolveTimeoutMs(opts.timeout);
+    if (!timeout.ok) {
+      return validationFailure("invalid arguments", [
+        { field: "timeout", reason: "must be a positive number of seconds" },
+      ]);
+    }
+
+    // Human-in-the-loop: calculate mutates the draft, so in agent mode it needs --confirm. Gate before
+    // resolving auth/company (an agent learns it must confirm without needing a valid token first);
+    // --dry-run and human/TTY mode pass through. Mirrors companyResourceRequest's ordering.
+    const resourcePath = `/v1/companies/{company_uuid}/payrolls/${encodeURIComponent(payrollUuid)}/calculate`;
+    const gate = confirmationGate(globals, "PUT", resourcePath, { confirm: opts.confirm, dryRun: opts.dryRun });
+    if (gate) return gate;
+
+    const ctx = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, companyOverride: opts.companyUuid });
+    if (opts.dryRun) {
+      // Show the resolved company path when we have one, else the unresolved template - dry-run needs
+      // neither a token nor a company, and sends nothing either way.
+      const path = ctx.ok
+        ? `/v1/companies/${ctx.ctx.companyUuid}/payrolls/${encodeURIComponent(payrollUuid)}/calculate`
+        : resourcePath;
+      return {
+        ok: true,
+        data: { method: "PUT", path, ...(ctx.ok ? {} : { note: "dry-run: token/company not required" }) },
+      };
+    }
+    if (!ctx.ok) return ctx.result;
+
+    return executePayrollCalculate(ctx.ctx.client, ctx.ctx.companyUuid, payrollUuid, {
+      wait: opts.wait,
+      ...(timeout.ms !== undefined ? { timeoutMs: timeout.ms } : {}),
+    });
   };
 }
 

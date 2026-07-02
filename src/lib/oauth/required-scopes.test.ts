@@ -20,9 +20,10 @@ describe("REQUIRED_SCOPES", () => {
     }
   });
 
-  test("payrolls:run is dropped, not required (money movement is out of scope for V1 beta)", () => {
-    expect(DROPPED_SCOPES).toContain("payrolls:run");
-    expect(REQUIRED_SCOPES.map((r) => r.scope)).not.toContain("payrolls:run");
+  test("payrolls:run is required for payroll calculate (granted to the CLI partner app)", () => {
+    expect(DROPPED_SCOPES).not.toContain("payrolls:run");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:run");
+    expect(entry?.usedBy).toContain("payroll calculate");
   });
 });
 
@@ -41,7 +42,7 @@ describe("findMissingScopes", () => {
   });
 
   test("ignores granted scopes outside the required set (extra scopes are not flagged here)", () => {
-    const granted = [...REQUIRED_SCOPES.map((r) => r.scope), "payrolls:run", "something_else:write"];
+    const granted = [...REQUIRED_SCOPES.map((r) => r.scope), "company_bank_accounts:write", "something_else:write"];
     expect(findMissingScopes(granted)).toEqual([]);
   });
 });

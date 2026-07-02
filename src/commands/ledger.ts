@@ -5,6 +5,7 @@ import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
+import { resolveTimeoutMs } from "../lib/parse.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
 
 export interface GeneralLedgerOpts {
@@ -74,14 +75,6 @@ yourself (e.g. via 'gusto api request GET /v1/reports/<uuid>').
     .action((payrollUuid: string, opts: LedgerShowOpts) =>
       runCommand("gusto ledger show", readGlobalFlags(parent.opts()), ledgerShowHandler(payrollUuid, opts)),
     );
-}
-
-/** Parse `--timeout <seconds>` into milliseconds; ok:false when it isn't a positive, finite number. */
-export function resolveTimeoutMs(raw: string | undefined): { ok: true; ms?: number } | { ok: false } {
-  if (raw === undefined) return { ok: true };
-  const seconds = Number(raw);
-  if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false };
-  return { ok: true, ms: Math.floor(seconds * 1000) };
 }
 
 export interface ExecuteLedgerShowOpts extends GeneralLedgerOpts {

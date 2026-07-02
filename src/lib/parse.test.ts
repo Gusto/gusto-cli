@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { isValidIso8601, isValidIsoDate, parseNonNegativeNumber, parsePositiveNumber } from "./parse.ts";
+import {
+  isValidIso8601,
+  isValidIsoDate,
+  parseNonNegativeNumber,
+  parsePositiveNumber,
+  resolveTimeoutMs,
+} from "./parse.ts";
 
 describe("parsePositiveNumber", () => {
   test("accepts a positive integer", () => {
@@ -110,5 +116,23 @@ describe("isValidIso8601", () => {
 
   test("rejects junk", () => {
     expect(isValidIso8601("not-a-date")).toBe(false);
+  });
+});
+
+describe("resolveTimeoutMs", () => {
+  test("undefined is ok with no ms (use the poll default)", () => {
+    expect(resolveTimeoutMs(undefined)).toEqual({ ok: true });
+  });
+
+  test("a positive number of seconds converts to ms", () => {
+    expect(resolveTimeoutMs("60")).toEqual({ ok: true, ms: 60_000 });
+    expect(resolveTimeoutMs("1.5")).toEqual({ ok: true, ms: 1_500 });
+  });
+
+  test("zero, negative, non-numeric, and non-finite are rejected", () => {
+    expect(resolveTimeoutMs("0")).toEqual({ ok: false });
+    expect(resolveTimeoutMs("-1")).toEqual({ ok: false });
+    expect(resolveTimeoutMs("abc")).toEqual({ ok: false });
+    expect(resolveTimeoutMs("Infinity")).toEqual({ ok: false });
   });
 });
