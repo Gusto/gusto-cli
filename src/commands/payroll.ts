@@ -537,8 +537,6 @@ async function fetchEmployeeJobs(
         },
       };
     }
-    // Every entry must carry a uuid; silently dropping the ones without would make a multi-job
-    // employee look single-job and cause inference to wrongly attribute hours to the surviving job.
     const uuids: string[] = [];
     for (const j of resp.data) {
       if (typeof j.uuid !== "string" || j.uuid === "") {
@@ -576,9 +574,8 @@ function* iterCompensations(ec: EmployeeCompensationUpdate): Generator<{ job_uui
   for (const f of ec.fixed_compensations ?? []) yield f;
 }
 
-/** Mutates the body in place: injects the sole job_uuid for single-job employees, returns one
- * blocked_on entry per employee whose row is genuinely ambiguous (multi-job) or unresolvable
- * (no jobs assigned). Deduplicates per employee_uuid across all `employee_compensations` entries. */
+/** Mutates `body`: injects sole job_uuid for single-job employees, returns one blocked_on per
+ * employee whose row is ambiguous (multi-job) or unresolvable (no jobs). */
 export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
   const blocked: BlockedOn[] = [];
   const alreadyBlocked = new Set<string>();
@@ -605,10 +602,6 @@ export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Ma
   return blocked;
 }
 
-/** Fetches each candidate employee's jobs, mutates `body` in place with inferred single-job
- * `job_uuid`s, and returns a failure `CommandResult` on the first blocker so the handler can
- * propagate. Caller is responsible for deciding whether inference should run (skipping in
- * `--dry-run`, checking `candidates.length > 0` for the branch condition). */
 async function injectInferredJobUuids(
   globals: GlobalFlags,
   opts: { tokenStdin?: boolean },
@@ -925,10 +918,7 @@ export function payrollUpdateHandler(
     const built = buildPayrollUpdateFromCsv(text);
     if (!built.ok) return validationFailure(built.message, built.blocked);
 
-    // Server requires job_uuid even though docs/help say it's optional for single-job employees;
-    // we infer it from /v1/employees/{uuid}/jobs (the prepared payroll's empty until calculated).
-    // Dry-run skips the network call, so the preview body is missing `job_uuid` a real run injects;
-    // we flag those employees on the response instead so the drift is visible to the caller.
+    // Server 422s on missing job_uuid even though docs mark it optional; we infer client-side.
     const inferenceCandidates = employeesNeedingJobUuidInference(built.body);
     if (!opts.dryRun && inferenceCandidates.length > 0) {
       const injected = await injectInferredJobUuids(globals, opts, built.body, inferenceCandidates);

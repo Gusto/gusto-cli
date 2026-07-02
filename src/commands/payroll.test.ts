@@ -757,8 +757,6 @@ describe("inferMissingJobUuids", () => {
   });
 
   test("blocks with a clear message when the employee has zero jobs in the lookup", () => {
-    // Previously fell through silently and let the server 422 with a cryptic message. Now we
-    // surface the state client-side so the operator knows they need to assign a job.
     const body: PayrollUpdateBody = {
       employee_compensations: [
         { employee_uuid: "ee-jobless", hourly_compensations: [{ name: "Regular Hours", hours: 40 }] },
@@ -773,9 +771,6 @@ describe("inferMissingJobUuids", () => {
   });
 
   test("dedupes multi-job blocks across multiple employee_compensations entries for the same employee", () => {
-    // Nothing in the API contract prevents an employee_compensations array from listing the same
-    // employee twice; the earlier per-`ec` `break` handled within-object dedup but not across
-    // objects. Assert we still get exactly one blocked_on entry.
     const body: PayrollUpdateBody = {
       employee_compensations: [
         { employee_uuid: "ee-multi", hourly_compensations: [{ name: "Regular Hours", hours: 30 }] },

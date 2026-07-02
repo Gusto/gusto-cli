@@ -433,8 +433,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("a /jobs entry with a null/missing uuid fails with malformed_response, not a silent drop", async () => {
-    // Silently filtering makes a multi-job employee look single-job and mis-attributes hours to
-    // the surviving job. Fail loudly instead.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs"))
         return { status: 200, body: [{ uuid: "job-1" }, { uuid: null }, { title: "no uuid" }] };
@@ -451,8 +449,6 @@ describe("payrollUpdateHandler", () => {
   });
 
   test("an employee with zero jobs (empty /jobs array) blocks with a clear client-side message", async () => {
-    // Previously fell through silently: the compensation entry kept no job_uuid, the PUT fired,
-    // the server 422'd with a less helpful message. Now we surface a blocked_on before the PUT.
     const s = stub((u) => {
       if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [] };
       return { status: 404 };
@@ -462,8 +458,6 @@ describe("payrollUpdateHandler", () => {
     const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    // Validation exit code proves the block came from inferMissingJobUuids, not a fetch failure
-    // (which would surface as ApiClient). Reason-string content is covered by the unit tests.
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(result.error.blocked_on?.[0]?.field).toContain("ee-1");
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
