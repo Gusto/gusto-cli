@@ -462,10 +462,23 @@ describe("payrollUpdateHandler", () => {
     const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
+    // Validation exit code proves the block came from inferMissingJobUuids, not a fetch failure
+    // (which would surface as ApiClient). Reason-string content is covered by the unit tests.
     expect(result.exitCode).toBe(ExitCode.Validation);
-    const field = result.error.blocked_on?.[0]?.field ?? "";
-    expect(field).toContain("ee-1");
-    expect(result.error.blocked_on?.[0]?.reason).toContain("no jobs assigned");
+    expect(result.error.blocked_on?.[0]?.field).toContain("ee-1");
+    expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  test("an empty-string uuid in the /jobs response also fails with malformed_response", async () => {
+    const s = stub((u) => {
+      if (u.includes("/employees/ee-1/jobs")) return { status: 200, body: [{ uuid: "" }] };
+      return { status: 404 };
+    });
+    const csv = "employee_uuid,regular_hours\nee-1,40";
+    const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("malformed_response");
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 });
