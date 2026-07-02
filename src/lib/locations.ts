@@ -1,5 +1,5 @@
 import type { ApiClient } from "./api-client.ts";
-import { ExitCode } from "./exit-codes.ts";
+import { malformedResponse } from "./errors.ts";
 import type { CommandResult } from "./runner.ts";
 
 export interface LocationRec {
@@ -20,14 +20,7 @@ export async function fetchCompanyLocations(
 ): Promise<CommandResult<LocationRec[]>> {
   const res = await client.get<LocationRec[]>(`/v1/companies/${companyUuid}/locations`);
   if (!Array.isArray(res.body)) {
-    return {
-      ok: false,
-      exitCode: ExitCode.ApiClient,
-      error: {
-        code: "malformed_response",
-        message: `/v1/companies/${companyUuid}/locations returned a non-array body`,
-      },
-    };
+    return malformedResponse(`/v1/companies/${companyUuid}/locations returned a non-array body`);
   }
   return { ok: true, data: res.body };
 }

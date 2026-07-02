@@ -720,6 +720,21 @@ describe("inferMissingJobUuids", () => {
     expect(firstCompJobUuid(body, "fixed_compensations")).toBe("job-1");
   });
 
+  test("fills only the missing entry when a single-job employee has mixed job_uuid presence", () => {
+    const body: PayrollUpdateBody = {
+      employee_compensations: [
+        {
+          employee_uuid: "ee-single",
+          hourly_compensations: [{ name: "Regular Hours", hours: 40, job_uuid: "explicit-job" }],
+          fixed_compensations: [{ name: "Bonus", amount: 100 }],
+        },
+      ],
+    };
+    expect(inferMissingJobUuids(body, jobs)).toEqual([]);
+    expect(firstCompJobUuid(body, "hourly_compensations")).toBe("explicit-job");
+    expect(firstCompJobUuid(body, "fixed_compensations")).toBe("job-1");
+  });
+
   test("blocks for a multi-job employee whose CSV row omitted job_uuid", () => {
     const body: PayrollUpdateBody = {
       employee_compensations: [

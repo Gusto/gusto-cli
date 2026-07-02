@@ -4,6 +4,7 @@ import { fetchCompanyResource, fetchResource, putCompanyResource, resolveApiCont
 import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { confirmationGate } from "../lib/confirm.ts";
 import { CsvError, parseCsv } from "../lib/csv.ts";
+import { malformedResponse } from "../lib/errors.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
@@ -545,26 +546,12 @@ async function fetchEmployeeJobs(
       };
     }
     if (!Array.isArray(resp.data)) {
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiClient,
-        error: {
-          code: "malformed_response",
-          message: `/v1/employees/${employeeUuid}/jobs returned a non-array body`,
-        },
-      };
+      return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a non-array body`);
     }
     const uuids: string[] = [];
     for (const j of resp.data) {
       if (typeof j.uuid !== "string" || j.uuid === "") {
-        return {
-          ok: false,
-          exitCode: ExitCode.ApiClient,
-          error: {
-            code: "malformed_response",
-            message: `/v1/employees/${employeeUuid}/jobs returned a job with no uuid`,
-          },
-        };
+        return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a job with no uuid`);
       }
       uuids.push(j.uuid);
     }
