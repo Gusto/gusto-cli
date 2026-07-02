@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { ApiClient, PollTimeoutError } from "../lib/api-client.ts";
+import { type ApiClient, PollTimeoutError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
+import { stubApiClient } from "../lib/test-support.ts";
 import {
   buildPayrollListQuery,
   buildPayrollShowQuery,
@@ -10,11 +11,6 @@ import {
   isPayrollCalculationFailed,
   renderPayrollShow,
 } from "./payroll.ts";
-
-interface MockResponse {
-  status: number;
-  body?: unknown;
-}
 
 describe("buildPayrollShowQuery", () => {
   test("no include yields an empty query", () => {
@@ -636,40 +632,18 @@ describe("buildPayrollUpdateFromCsv", () => {
 describe("executePayrollCalculate", () => {
   const CO = "co-1";
   const PAYROLL = "pay-1";
-
-  /** ApiClient whose fetch routes the calculate PUT and the totals GET to canned responses, so the
-   * PUT-then-poll flow is testable without real waits (mirrors ledger.test.ts's clientWith). */
-  function clientWith(responses: { put?: MockResponse; totals?: MockResponse }): ApiClient {
-    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-      const u = url.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-      let r: MockResponse | undefined;
-      if (method === "PUT" && u.includes("/calculate")) r = responses.put;
-      else if (method === "GET" && u.includes("include=totals")) r = responses.totals;
-      if (!r) throw new Error(`unexpected request: ${method} ${u}`);
-      const text = r.body !== undefined ? JSON.stringify(r.body) : "";
-      return new Response(text, { status: r.status, headers: { "content-type": "application/json" } });
-    }) as unknown as typeof fetch;
-    return new ApiClient({
-      baseUrl: "https://api.test",
-      token: "t",
-      apiVersion: "2026-02-01",
-      fetchImpl,
-      maxRetries: 0,
-    });
-  }
+  const PUT_CALCULATE = `PUT /v1/companies/${CO}/payrolls/${PAYROLL}/calculate`;
+  // The poll GETs the payroll with ?include=totals; stubApiClient routes by pathname, so the query
+  // string is dropped and this is the key it matches.
+  const GET_POLL = `GET /v1/companies/${CO}/payrolls/${PAYROLL}`;
 
   test("waits for calculate_success and returns the payroll body with totals", async () => {
-    const client = clientWith({
-      put: { status: 202 },
-      totals: {
-        status: 200,
-        body: {
-          uuid: PAYROLL,
-          processing_request: { status: "calculate_success" },
-          totals: { company_debit: "1800.00" },
-        },
-      },
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [
+        200,
+        { uuid: PAYROLL, processing_request: { status: "calculate_success" }, totals: { company_debit: "1800.00" } },
+      ],
     });
     const result = await executePayrollCalculate(client, CO, PAYROLL, {});
     expect(result.ok).toBe(true);
@@ -678,8 +652,8 @@ describe("executePayrollCalculate", () => {
   });
 
   test("--no-wait returns the calculating shape without polling", async () => {
-    // No totals stub: if it polled, the fetch router would throw "unexpected request".
-    const client = clientWith({ put: { status: 202 } });
+    // Only the PUT is routed: if it polled, stubApiClient would throw "no stub route".
+    const { client } = stubApiClient({ [PUT_CALCULATE]: [202, null] });
     const result = await executePayrollCalculate(client, CO, PAYROLL, { wait: false });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected success");
@@ -688,12 +662,12 @@ describe("executePayrollCalculate", () => {
   });
 
   test("a processing_failed status stops the poll and yields calculate_failed with the errors", async () => {
-    const client = clientWith({
-      put: { status: 202 },
-      totals: {
-        status: 200,
-        body: { processing_request: { status: "processing_failed", errors: [{ message: "negative net pay" }] } },
-      },
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [
+        200,
+        { processing_request: { status: "processing_failed", errors: [{ message: "negative net pay" }] } },
+      ],
     });
     const result = await executePayrollCalculate(client, CO, PAYROLL, {});
     expect(result.ok).toBe(false);
@@ -705,9 +679,9 @@ describe("executePayrollCalculate", () => {
 
   test("a timeout before any poll attempt yields calculate_timeout with attempts:0", async () => {
     // timeoutMs:0 => the deadline is already reached on entry, so poll throws before any GET.
-    const client = clientWith({
-      put: { status: 202 },
-      totals: { status: 200, body: { processing_request: { status: "calculating" } } },
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [200, { processing_request: { status: "calculating" } }],
     });
     const result = await executePayrollCalculate(client, CO, PAYROLL, { timeoutMs: 0 });
     expect(result.ok).toBe(false);
@@ -740,7 +714,7 @@ describe("executePayrollCalculate", () => {
   });
 
   test("a failed calculate PUT is mapped to an API error result", async () => {
-    const client = clientWith({ put: { status: 422, body: { errors: [{ message: "not prepared" }] } } });
+    const { client } = stubApiClient({ [PUT_CALCULATE]: [422, { errors: [{ message: "not prepared" }] }] });
     const result = await executePayrollCalculate(client, CO, PAYROLL, {});
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
