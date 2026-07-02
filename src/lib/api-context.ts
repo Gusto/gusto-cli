@@ -1,4 +1,5 @@
 import { ApiClient } from "./api-client.ts";
+import { confirmationGate } from "./confirm.ts";
 import { getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
@@ -165,6 +166,9 @@ export interface CompanyResourceOpts {
   readStdin?: StdinReader;
   companyUuid?: string;
   dryRun?: boolean;
+  /** `--confirm`: the operator approved this write, so the agent-mode confirmation gate lets it
+   * through. Ignored for reads and dry-runs. */
+  confirm?: boolean;
   store?: TokenStore;
   http?: OAuthHttpOptions;
   now?: () => number;
@@ -184,6 +188,15 @@ async function companyResourceRequest(
   includeBody: boolean,
   opts: CompanyResourceOpts,
 ): Promise<CommandResult> {
+  // Human-in-the-loop: in agent mode a write needs an explicit --confirm. Gate before resolving
+  // auth/company so an agent learns it must confirm without first needing a valid token. --dry-run
+  // and human/TTY mode pass through (see confirmationGate).
+  const gate = confirmationGate(globals, method, `/v1/companies/{company_uuid}/${resource}`, {
+    confirm: opts.confirm,
+    dryRun: opts.dryRun,
+  });
+  if (gate) return gate;
+
   const ctx = await resolveApiContext(globals, {
     tokenStdin: opts.tokenStdin,
     readStdin: opts.readStdin,
