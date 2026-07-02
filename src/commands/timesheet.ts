@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
@@ -197,6 +197,7 @@ interface TimesheetCreateOpts extends TimesheetCreateInput {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -204,6 +205,7 @@ interface TimesheetSyncOpts extends TimesheetSyncInput {
   companyUuid?: string;
   tokenStdin?: boolean;
   dryRun?: boolean;
+  confirm?: boolean;
   example?: boolean;
 }
 
@@ -264,6 +266,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
+    .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetCreateOpts) =>
       runCommand("gusto timesheet create", readGlobalFlags(parent.opts()), timesheetCreateHandler(opts)),
@@ -278,6 +281,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
+    .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetSyncOpts) =>
       runCommand("gusto timesheet sync", readGlobalFlags(parent.opts()), timesheetSyncHandler(opts)),
@@ -334,6 +338,7 @@ export function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandle
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
+      confirm: opts.confirm,
     });
   };
 }
@@ -364,6 +369,7 @@ export function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
       tokenStdin: opts.tokenStdin,
       companyUuid: opts.companyUuid,
       dryRun: opts.dryRun,
+      confirm: opts.confirm,
     });
     return clarifyEmptyTimesheetSync(result);
   };

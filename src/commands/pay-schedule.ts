@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { fetchCompanyResource } from "../lib/api-context.ts";
-import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
@@ -19,6 +19,7 @@ export function registerPayScheduleCommand(parent: Command): void {
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
+    .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: PayScheduleCreateOpts) =>
       runCommand("gusto pay-schedule create", readGlobalFlags(parent.opts()), payScheduleCreateHandler(opts)),
