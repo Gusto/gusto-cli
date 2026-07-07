@@ -1,10 +1,10 @@
 import { ApiClient } from "./api-client.ts";
 import { confirmationGate } from "./confirm.ts";
-import { getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
+import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
-import { oauthHttp, resolveEnv } from "./oauth/context.ts";
+import { oauthHttp } from "./oauth/context.ts";
 import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
 import { getValidUserToken } from "./oauth/session.ts";
 import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
@@ -144,7 +144,7 @@ async function sessionToken(globals: GlobalFlags, opts: AuthOpts): Promise<strin
   const store = opts.store ?? resolveStore();
   const http = opts.http ?? oauthHttp(globals);
   try {
-    return await getValidUserToken(store, resolveEnv(globals), http, opts.now);
+    return await getValidUserToken(store, defaultEnv(globals.env), http, opts.now);
   } catch (err) {
     // A failed token refresh means re-login - report "no token". Anything else
     // (unreadable/corrupt session file, etc.) is a real error; let it surface.
@@ -157,7 +157,7 @@ async function sessionToken(globals: GlobalFlags, opts: AuthOpts): Promise<strin
  * company-scoped login token. */
 async function sessionCompanyUuid(globals: GlobalFlags, opts: ApiContextOpts): Promise<string | null> {
   const store = opts.store ?? resolveStore();
-  const session = await store.load(resolveEnv(globals));
+  const session = await store.load(defaultEnv(globals.env));
   return session?.companyUuid ?? null;
 }
 

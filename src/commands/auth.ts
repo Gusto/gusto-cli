@@ -3,10 +3,10 @@ import { createInterface } from "node:readline/promises";
 import { type StdinReader, type TokenSource, fetchAtPath, resolveApiContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { type ConfigPaths, readConfig, type SkillsAutoInstall, writeConfig } from "../lib/config.ts";
-import { getAccessToken } from "../lib/env.ts";
+import { defaultEnv, getAccessToken } from "../lib/env.ts";
 import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
-import { oauthHttp, resolveEnv } from "../lib/oauth/context.ts";
+import { oauthHttp } from "../lib/oauth/context.ts";
 import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
 import { findMissingScopes } from "../lib/oauth/required-scopes.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
@@ -188,7 +188,7 @@ export function authLoginHandler(
     }
     let data: LoginData;
     try {
-      const info = await doLogin(resolveEnv(globals), {
+      const info = await doLogin(defaultEnv(globals.env), {
         store: resolveStore(),
         http: oauthHttp(globals),
         noBrowser: opts.noBrowser,
@@ -215,10 +215,27 @@ export function authLoginHandler(
   };
 }
 
-function authLogoutHandler(): CommandHandler {
-  return async ({ globals }) => {
+export function authLogoutHandler(deps: { store?: TokenStore } = {}): CommandHandler {
+  return async ({ globals, sinks }) => {
     try {
-      const data = await performLogout(resolveStore(), resolveEnv(globals));
+      const store = deps.store ?? resolveStore();
+      const env = defaultEnv(globals.env);
+      const data = await performLogout(store, env);
+      // The default flip means `gusto auth logout` (no --env) targets production. A
+      // session under the other env stays on disk and the user may think they're fully
+      // logged out - point them at it. Fires even when this env was cleared, so a
+      // stranded session is never left silently. Best-effort: a failed read of the
+      // other env must not fail a logout that already did its job.
+      try {
+        const other: Environment = env === "production" ? "sandbox" : "production";
+        if (await store.load(other)) {
+          sinks.stderr.write(
+            `warning: a ${other} session is still stored. Run \`gusto auth logout --env ${other}\` to remove it.\n`,
+          );
+        }
+      } catch {
+        // the stranded-session hint is best-effort; ignore read failures
+      }
       return { ok: true, data };
     } catch (err) {
       return toResult(err);

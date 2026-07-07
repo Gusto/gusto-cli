@@ -3,14 +3,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type ConfigPaths, readConfig, writeConfig } from "../lib/config.ts";
-import type { GlobalFlags } from "../lib/global-flags.ts";
+import type { Environment, GlobalFlags } from "../lib/global-flags.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
+import type { TokenStore } from "../lib/oauth/token-store.ts";
 import { REQUIRED_SCOPES } from "../lib/oauth/required-scopes.ts";
 import type { SkillsDir } from "../lib/skills.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import {
   CREDENTIAL_SOURCE_LABEL,
   authLoginHandler,
+  authLogoutHandler,
   authWhoamiHandler,
   buildSignInUrlEmitter,
   loginResultData,
@@ -305,6 +307,107 @@ describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
     const result = await authLoginHandler({}, { login: fakeLogin, installSkills: skipSkills })({ ...ctx, sinks });
     expect(result.ok).toBe(true);
     expect(stderr.buffer).not.toContain("GUSTO_ACCESS_TOKEN");
+  });
+});
+
+describe("authLoginHandler - environment passed to login", () => {
+  const skipSkills = async () => undefined;
+  const tokenInfo = {
+    resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+    resource: { type: "Company" as const, uuid: "co-1" },
+  };
+  // Capture the env the handler hands to `login`, then run the handler with the
+  // given --env flag. `undefined` is the no-flag case this PR's default flip turns on.
+  const envFor = async (env: GlobalFlags["env"]): Promise<Environment> => {
+    let seen: Environment | undefined;
+    const captureLogin = (e: Environment) => {
+      seen = e;
+      return Promise.resolve(tokenInfo);
+    };
+    const { sinks } = captureSinks();
+    await authLoginHandler(
+      {},
+      { login: captureLogin, installSkills: skipSkills },
+    )({
+      ...ctx,
+      globals: { ...TEST_GLOBALS, env },
+      sinks,
+    });
+    if (seen === undefined) throw new Error("login was not called");
+    return seen;
+  };
+
+  test("defaults to production when no --env is passed", async () => {
+    expect(await envFor(undefined)).toBe("production");
+  });
+  test("passes sandbox through when --env sandbox is explicit", async () => {
+    expect(await envFor("sandbox")).toBe("sandbox");
+  });
+});
+
+describe("authLogoutHandler - default env and stranded-session hint", () => {
+  const session = { clientId: "c", clientSecret: "s", accessToken: "at" };
+  const runLogout = async (store: TokenStore, env: GlobalFlags["env"]) => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLogoutHandler({ store })({ ...ctx, globals: { ...TEST_GLOBALS, env }, sinks });
+    return { result, stderr };
+  };
+
+  test("no --env clears the production session by default", async () => {
+    const store = memoryStore({ production: { ...session } });
+    const { result, stderr } = await runLogout(store, undefined);
+    expect(result.ok && result.data).toEqual({ cleared: true });
+    expect(store.data.production).toBeUndefined();
+    expect(stderr.buffer).toBe("");
+  });
+
+  test("warns when a sandbox session is stranded after a default (production) logout", async () => {
+    const store = memoryStore({ sandbox: { ...session } });
+    const { result, stderr } = await runLogout(store, undefined);
+    expect(result.ok && result.data).toEqual({ cleared: false });
+    expect(store.data.sandbox).toBeDefined();
+    expect(stderr.buffer).toContain("gusto auth logout --env sandbox");
+  });
+
+  test("warns about a stranded production session when --env sandbox is explicit", async () => {
+    const store = memoryStore({ production: { ...session } });
+    const { result, stderr } = await runLogout(store, "sandbox");
+    expect(result.ok && result.data).toEqual({ cleared: false });
+    expect(stderr.buffer).toContain("gusto auth logout --env production");
+  });
+
+  test("still warns about the other env even when this env was cleared", async () => {
+    const store = memoryStore({ production: { ...session }, sandbox: { ...session } });
+    const { result, stderr } = await runLogout(store, undefined);
+    expect(result.ok && result.data).toEqual({ cleared: true });
+    expect(store.data.sandbox).toBeDefined();
+    expect(stderr.buffer).toContain("gusto auth logout --env sandbox");
+  });
+
+  test("warns for any stored session under the other env, even without an access token", async () => {
+    const store = memoryStore({ sandbox: { clientId: "c", clientSecret: "s" } });
+    const { stderr } = await runLogout(store, undefined);
+    expect(stderr.buffer).toContain("gusto auth logout --env sandbox");
+  });
+
+  test("a failed read of the other env doesn't fail the logout", async () => {
+    const store: TokenStore = {
+      load: async (e) => {
+        if (e === "sandbox") throw new Error("corrupt session file");
+        return null;
+      },
+      save: async () => {},
+      clear: async () => {},
+    };
+    const { result, stderr } = await runLogout(store, undefined);
+    expect(result.ok && result.data).toEqual({ cleared: false });
+    expect(stderr.buffer).toBe("");
+  });
+
+  test("no hint when nothing is stored under either env", async () => {
+    const { result, stderr } = await runLogout(memoryStore(), undefined);
+    expect(result.ok && result.data).toEqual({ cleared: false });
+    expect(stderr.buffer).toBe("");
   });
 });
 

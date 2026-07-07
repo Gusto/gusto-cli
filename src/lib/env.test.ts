@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_API_VERSION,
+  defaultEnv,
   getAccessToken,
   getCompanyUuid,
   resolveApiVersion,
@@ -8,9 +9,21 @@ import {
   resolveMcpBaseUrl,
 } from "./env.ts";
 
+describe("defaultEnv", () => {
+  test("returns sandbox only for an explicit sandbox env", () => {
+    expect(defaultEnv("sandbox")).toBe("sandbox");
+  });
+  test("returns production for an explicit production env", () => {
+    expect(defaultEnv("production")).toBe("production");
+  });
+  test("defaults to production when env is undefined", () => {
+    expect(defaultEnv(undefined)).toBe("production");
+  });
+});
+
 describe("resolveBaseUrl", () => {
-  test("defaults to sandbox when env is undefined and no override", () => {
-    expect(resolveBaseUrl(undefined, {})).toBe("https://api.gusto-demo.com");
+  test("defaults to production when env is undefined and no override", () => {
+    expect(resolveBaseUrl(undefined, {})).toBe("https://api.gusto.com");
   });
   test("returns sandbox URL for sandbox env", () => {
     expect(resolveBaseUrl("sandbox", {})).toBe("https://api.gusto-demo.com");
@@ -64,8 +77,8 @@ describe("resolveBaseUrl", () => {
 });
 
 describe("resolveMcpBaseUrl", () => {
-  test("defaults to sandbox MCP when env is undefined and no override", () => {
-    expect(resolveMcpBaseUrl(undefined, {})).toBe("https://mcp.api.gusto-demo.com");
+  test("defaults to production MCP when env is undefined and no override", () => {
+    expect(resolveMcpBaseUrl(undefined, {})).toBe("https://mcp.api.gusto.com");
   });
   test("returns sandbox MCP URL for sandbox env", () => {
     expect(resolveMcpBaseUrl("sandbox", {})).toBe("https://mcp.api.gusto-demo.com");

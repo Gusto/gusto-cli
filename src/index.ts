@@ -35,7 +35,7 @@ function buildProgram(): Command {
     .addOption(new Option("--human", "Emit human-readable output (default when stdout is a TTY)"))
     .addOption(new Option("--json", "Alias for --agent with JSON pinned"))
     .addOption(
-      new Option("--env <env>", "Override environment for this invocation")
+      new Option("--env <env>", "Override environment for this invocation (default: production)")
         .choices(["sandbox", "production"])
         .env("GUSTO_ENVIRONMENT"),
     )

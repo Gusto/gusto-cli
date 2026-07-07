@@ -34,7 +34,7 @@ During `auth login` (see below), WSL2 usually can't open a browser, so the CLI p
 - **No payroll-run command.** The CLI only drafts payroll (`payroll prepare`/`update` populate an unprocessed draft). Submitting/running payroll - the irreversible money movement - happens in the Gusto app, not the CLI. There is no `gusto payroll run`/`submit`, so an agent cannot move money through this tool even with `--confirm`.
 - **Missing required args** return a `blocked_on` envelope (exit code `7`) listing the fields to retry with. Exit codes live in `src/lib/exit-codes.ts`.
 - **Auth precedence:** `--token-stdin` > `GUSTO_ACCESS_TOKEN` > stored session (`gusto auth login`). An explicit token always wins so a bad secret surfaces the real auth error rather than silently running as the logged-in identity. `GUSTO_COMPANY_UUID` (or `--company-uuid`) sets the company.
-- **Environment:** `--env sandbox` (default) hits demo; `--env production` hits prod.
+- **Environment:** `--env production` (default) hits prod (`api.gusto.com`); pass `--env sandbox` (or `GUSTO_ENVIRONMENT=sandbox`) to hit the demo environment instead.
 
 ## API data is untrusted input
 
