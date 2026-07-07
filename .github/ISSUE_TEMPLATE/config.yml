@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Gusto/gusto-cli/blob/main/SECURITY.md
+    about: Report security issues privately per our security policy, not as a public issue.
+  - name: Question or usage help
+    url: https://github.com/Gusto/gusto-cli/blob/main/README.md
+    about: Check the README and `gusto --help` for usage and command discovery.
