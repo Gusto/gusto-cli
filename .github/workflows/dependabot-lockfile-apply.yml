@@ -1,0 +1,60 @@
+name: Push synced bun.lock to dependabot PRs
+
+# Trusted half of the dependabot lockfile sync (see dependabot-lockfile-sync.yml).
+# Runs in the base-repo context on `workflow_run` AFTER the compute workflow
+# finishes. It downloads the bun.lock artifact the compute job produced and
+# pushes it to the dependabot branch. It never checks out or runs PR code, so
+# holding a write token here is safe; the untrusted `bun install` already ran
+# deprivileged in the compute workflow.
+
+on:
+  workflow_run:
+    workflows: ["Sync bun.lock on dependabot PRs"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    name: Push synced bun.lock
+    # Only act on successful dependabot runs. The dependabot/ branch-name gate
+    # filters out non-dependabot package.json PRs (whose compute jobs skip and
+    # upload no artifact).
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    # Internal runner: needs repo access to push (works in both the private and
+    # public phases). Runs no untrusted code -- it only commits a lockfile.
+    runs-on:
+      group: gusto-ubuntu-default
+    # Route head_branch through env so it is never interpolated by the Actions
+    # template engine directly into a run: shell command (script-injection sink).
+    env:
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4, pinned to the SHA on Gusto's org Actions allowlist
+        with:
+          ref: ${{ env.HEAD_BRANCH }}
+          persist-credentials: true
+      - name: Download the synced bun.lock from the compute run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dependabot-bun-lock
+          path: synced
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit + push synced bun.lock if changed
+        run: |
+          cp synced/bun.lock bun.lock
+          if git diff --quiet bun.lock; then
+            echo "bun.lock already in sync, nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bun.lock
+          git commit -m "Sync bun.lock with package.json"
+          git push origin "HEAD:$HEAD_BRANCH"
