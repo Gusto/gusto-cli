@@ -126,7 +126,7 @@ describe("renderPayrollShow", () => {
 });
 
 describe("buildPayrollListQuery", () => {
-  test("no options applies the client-side defaults: both statuses and regular payroll type (AINT-718)", () => {
+  test("no options applies the client-side defaults: both statuses and regular payroll type", () => {
     expect(buildPayrollListQuery({})).toEqual({
       ok: true,
       query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },

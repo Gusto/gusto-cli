@@ -20,7 +20,7 @@ interface JsonRpcSuccess {
   result: object;
 }
 
-// Mirrors Api::V1::Mcp::BaseController::JsonRpcErrorCodes.
+// Mirrors the JSON-RPC error codes returned by the Gusto MCP endpoint.
 const RPC_TOOL_NOT_FOUND = -32601;
 const RPC_INVALID_PARAMS = -32602;
 const RPC_INTERNAL = -32603;
