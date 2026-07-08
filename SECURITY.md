@@ -6,7 +6,7 @@ If you find a security issue in the Gusto CLI, please do not open a public issue
 
 In scope:
 - The CLI binary and bundled skills
-- The install script at `raw.githubusercontent.com/Gusto/gusto-cli/main/install.sh` (until `cli.gusto.com` is set up)
+- The install script at `cli.gusto.com/install.sh`
 - The OAuth flows the CLI participates in (DCR, PKCE)
 
 Out of scope:
