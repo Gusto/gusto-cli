@@ -37,10 +37,10 @@ export interface PayrollListOpts {
 // blocked_on list on a bad flag value. One type so the two read/validate paths can't drift.
 export type PayrollQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
 
-// Closed enums, sourced from zenpayroll Api::V1::PayrollsController (the index
-// endpoint's constants - deliberately NOT the public docs, which are stale: the
-// docs omit `external` and list the SHOW-only `benefits`/`deductions` for
-// `include`). The API silently returns an empty array for unknown enum values
+// Closed enums for the payroll index endpoint. These deliberately track the
+// API's actual accepted values rather than the published docs, which are stale:
+// the docs omit `external` and list the SHOW-only `benefits`/`deductions` for
+// `include`. The API silently returns an empty array for unknown enum values
 // instead of erroring, so validating client-side turns an agent's typo into an
 // actionable blocked_on instead of a misleading empty result.
 const PROCESSING_STATUSES = ["processed", "unprocessed"] as const;
@@ -52,7 +52,7 @@ const SORT_ORDERS = ["asc", "desc"] as const;
 // here gives the same fast exit-7 blocked_on feedback as the other enums.
 const DATE_FILTER_BY = ["check_date"] as const;
 
-// Sourced from zenpayroll Api::V1::PayrollsController INCLUDE_OPTIONS_SHOW. Differs from the index
+// Accepted `include` values for the payroll show endpoint. Differs from the index
 // set above (adds benefits/deductions/payroll_taxes). employee_compensations is intentionally NOT
 // here: comps are part of the default show representation (which only appears once the payroll is
 // calculated), not an include. Unknown tokens are silently dropped server-side, so validating here
@@ -123,7 +123,7 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   };
   // Apply the client-side defaults the help text documents, so an omitted or empty flag sends an
   // explicit value instead of relying on the server's fallback:
-  //   processing_statuses -> both (AINT-718: draft payrolls are visible by default)
+  //   processing_statuses -> both (so draft payrolls are visible by default)
   //   payroll_types       -> regular
   // `||` (not `??`) so an explicit empty value ("") also falls back to the default rather than being
   // dropped by toQueryString and silently reverting to the server's own default.
