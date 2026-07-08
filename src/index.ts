@@ -1,0 +1,111 @@
+import { Command, CommanderError, Option } from "commander";
+import { registerApiCommand } from "./commands/api.ts";
+import { registerAuthCommand } from "./commands/auth.ts";
+import { registerCompanyCommand } from "./commands/company.ts";
+import { registerConfigCommand } from "./commands/config.ts";
+import { registerContractorCommand } from "./commands/contractor.ts";
+import { registerEmployeeCommand } from "./commands/employee.ts";
+import { registerFeedbackCommand } from "./commands/feedback.ts";
+import { registerLedgerCommand } from "./commands/ledger.ts";
+import { registerPayScheduleCommand } from "./commands/pay-schedule.ts";
+import { registerPayrollCommand } from "./commands/payroll.ts";
+import { registerSkillCommand } from "./commands/skill.ts";
+import { registerTimesheetCommand } from "./commands/timesheet.ts";
+import { ExitCode } from "./lib/exit-codes.ts";
+import pkg from "../package.json" with { type: "json" };
+
+const VERSION: string = pkg.version;
+
+const HELP_FOOTER = `
+Documentation:
+  https://github.com/Gusto/gusto-cli
+
+Report issues:
+  https://github.com/Gusto/gusto-cli/issues
+`;
+
+function buildProgram(): Command {
+  const program = new Command();
+
+  program
+    .name("gusto")
+    .description("Gusto CLI - agent-friendly developer interface for Gusto payroll")
+    .version(VERSION, "-v, --version", "Print version and exit")
+    .addOption(new Option("--agent", "Emit stable JSON to stdout (auto-on when stdout is piped)"))
+    .addOption(new Option("--human", "Emit human-readable output (default when stdout is a TTY)"))
+    .addOption(new Option("--json", "Alias for --agent with JSON pinned"))
+    .addOption(
+      new Option("--env <env>", "Override environment for this invocation (default: production)")
+        .choices(["sandbox", "production"])
+        .env("GUSTO_ENVIRONMENT"),
+    )
+    .addOption(new Option("--verbose", "Print request IDs and intermediate state to stderr"))
+    .addOption(
+      new Option(
+        "--fields [list]",
+        "Filter successful output to these comma-separated top-level keys; pass with no value on a read command to list its available fields",
+      ),
+    )
+    .showHelpAfterError("(run `gusto --help` for usage)")
+    .addHelpText("after", HELP_FOOTER)
+    .exitOverride();
+
+  registerCompanyCommand(program);
+  registerEmployeeCommand(program);
+  registerContractorCommand(program);
+  registerPayScheduleCommand(program);
+  registerPayrollCommand(program);
+  registerLedgerCommand(program);
+  registerTimesheetCommand(program);
+  registerAuthCommand(program);
+  registerSkillCommand(program);
+  registerConfigCommand(program);
+  registerApiCommand(program);
+  registerFeedbackCommand(program);
+
+  // Cascade exitOverride to every command at every depth (some commands, e.g. `auth login`,
+  // nest subcommands two levels deep) so commander throws CommanderError instead of calling
+  // process.exit() out from under us.
+  const cascadeExitOverride = (cmd: Command): void => {
+    cmd.exitOverride();
+    for (const sub of cmd.commands) cascadeExitOverride(sub);
+  };
+  for (const cmd of program.commands) cascadeExitOverride(cmd);
+
+  return program;
+}
+
+function installSignalHandlers(): void {
+  const onSignal = (): never => process.exit(ExitCode.General);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+}
+
+function exitCodeForCommanderError(err: CommanderError): number {
+  switch (err.code) {
+    case "commander.helpDisplayed":
+    case "commander.help":
+    case "commander.version":
+      return ExitCode.Success;
+    default:
+      return ExitCode.CliUsage;
+  }
+}
+
+async function main(argv: string[]): Promise<void> {
+  installSignalHandlers();
+  const program = buildProgram();
+
+  try {
+    await program.parseAsync(argv);
+  } catch (err) {
+    if (err instanceof CommanderError) {
+      process.exit(exitCodeForCommanderError(err));
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`gusto: ${message}\n`);
+    process.exit(ExitCode.General);
+  }
+}
+
+await main(process.argv);

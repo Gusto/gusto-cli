@@ -1,0 +1,603 @@
+import { describe, expect, test } from "bun:test";
+import { ExitCode } from "../lib/exit-codes.ts";
+import type { CommandResult } from "../lib/runner.ts";
+import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  clarifyEmptyTimesheetSync,
+  timesheetCreateHandler,
+  timesheetListHandler,
+  timesheetShowHandler,
+  timesheetSyncHandler,
+  validateTimesheetCreate,
+  validateTimesheetList,
+  validateTimesheetSync,
+} from "./timesheet.ts";
+
+describe("validateTimesheetCreate", () => {
+  const base = {
+    employeeUuid: "emp-1",
+    jobUuid: "job-1",
+    start: "2026-06-01T09:00:00Z",
+    timeZone: "America/New_York",
+    regular: "8",
+  };
+
+  test("employee + job + regular hours + start + time-zone returns the populated body", () => {
+    const result = validateTimesheetCreate(base);
+    expect(result).toEqual({
+      ok: true,
+      body: {
+        entity_uuid: "emp-1",
+        entity_type: "Employee",
+        time_zone: "America/New_York",
+        shift_started_at: "2026-06-01T09:00:00Z",
+        job_uuid: "job-1",
+        entries: [{ hours_worked: 8, pay_classification: "Regular" }],
+      },
+    });
+  });
+
+  test("an employee without --job-uuid is blocked (job is required for employees)", () => {
+    const result = validateTimesheetCreate({
+      employeeUuid: "emp-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "job-uuid" }));
+  });
+
+  test("all three hour types map to the exact pay_classification enum strings", () => {
+    const result = validateTimesheetCreate({
+      ...base,
+      regular: "8",
+      overtime: "2",
+      doubleOvertime: "1.5",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.body.entries).toEqual([
+      { hours_worked: 8, pay_classification: "Regular" },
+      { hours_worked: 2, pay_classification: "Overtime" },
+      { hours_worked: 1.5, pay_classification: "Double overtime" },
+    ]);
+  });
+
+  test("includes shift_ended_at and job_uuid when provided", () => {
+    const result = validateTimesheetCreate({
+      ...base,
+      end: "2026-06-01T17:00:00Z",
+      jobUuid: "job-9",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.body.shift_ended_at).toBe("2026-06-01T17:00:00Z");
+    if (result.body.entity_type !== "Employee") throw new Error("expected employee body");
+    expect(result.body.job_uuid).toBe("job-9");
+  });
+
+  test("--contractor-uuid sets entity_type Contractor and does NOT require a job", () => {
+    const result = validateTimesheetCreate({
+      contractorUuid: "ctr-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.body.entity_uuid).toBe("ctr-1");
+    expect(result.body.entity_type).toBe("Contractor");
+    expect(result.body).not.toHaveProperty("job_uuid");
+  });
+
+  test("a contractor with --job-uuid is rejected (contractors don't take a job)", () => {
+    const result = validateTimesheetCreate({
+      contractorUuid: "ctr-1",
+      jobUuid: "job-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "job-uuid" }));
+  });
+
+  test("missing both entity uuids blocks on entity", () => {
+    const result = validateTimesheetCreate({
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee-uuid" }));
+  });
+
+  test("passing both employee and contractor uuid is rejected as ambiguous", () => {
+    const result = validateTimesheetCreate({
+      employeeUuid: "emp-1",
+      contractorUuid: "ctr-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "employee-uuid" }));
+  });
+
+  test("missing --time-zone blocks on time-zone", () => {
+    const result = validateTimesheetCreate({
+      employeeUuid: "emp-1",
+      start: "2026-06-01T09:00:00Z",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "time-zone" }));
+  });
+
+  test("missing --start blocks on start", () => {
+    const result = validateTimesheetCreate({
+      employeeUuid: "emp-1",
+      timeZone: "America/New_York",
+      regular: "8",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start" }));
+  });
+
+  test("no hour flags at all blocks on hours", () => {
+    const result = validateTimesheetCreate({
+      employeeUuid: "emp-1",
+      start: "2026-06-01T09:00:00Z",
+      timeZone: "America/New_York",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "hours" }));
+  });
+
+  test("a non-numeric hour value is rejected with the specific field, not the generic hours block", () => {
+    const result = validateTimesheetCreate({ ...base, regular: "eight" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "regular" }));
+    expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "hours" }));
+  });
+
+  test("a negative hour value is rejected with the specific field, not the generic hours block", () => {
+    const result = validateTimesheetCreate({ ...base, overtime: "-2" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "overtime" }));
+    expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "hours" }));
+  });
+
+  test("a malformed --start timestamp is blocked", () => {
+    const result = validateTimesheetCreate({ ...base, start: "not-a-date" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start" }));
+  });
+
+  test("a malformed --end timestamp is blocked", () => {
+    const result = validateTimesheetCreate({ ...base, end: "06/05/2026" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end" }));
+  });
+});
+
+describe("validateTimesheetSync", () => {
+  const base = {
+    payScheduleUuid: "ps-1",
+    payPeriodStart: "2026-06-01",
+    payPeriodEnd: "2026-06-15",
+  };
+
+  test("pay-schedule + period dates returns the populated body, kind is always regular", () => {
+    const result = validateTimesheetSync(base);
+    expect(result).toEqual({
+      ok: true,
+      body: {
+        kind: "regular",
+        pay_schedule_uuid: "ps-1",
+        pay_period_start_date: "2026-06-01",
+        pay_period_end_date: "2026-06-15",
+      },
+    });
+  });
+
+  test("missing --pay-schedule-uuid blocks on pay-schedule-uuid", () => {
+    const result = validateTimesheetSync({
+      payPeriodStart: "2026-06-01",
+      payPeriodEnd: "2026-06-15",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-schedule-uuid" }));
+  });
+
+  test("missing period dates block on both", () => {
+    const result = validateTimesheetSync({ payScheduleUuid: "ps-1" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
+  });
+
+  test("a malformed --pay-period-start date is blocked", () => {
+    const result = validateTimesheetSync({ ...base, payPeriodStart: "06/01/2026" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
+  });
+
+  test("a malformed --pay-period-end date is blocked", () => {
+    const result = validateTimesheetSync({ ...base, payPeriodEnd: "not-a-date" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
+  });
+});
+
+describe("timesheetCreateHandler", () => {
+  test("--example returns the canonical request shape without auth", async () => {
+    const data = okData(await timesheetCreateHandler({ example: true })(ctx));
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/companies/{company_uuid}/time_tracking/time_sheets");
+    expect(data.body).toMatchObject({ entity_type: "Employee", job_uuid: expect.any(String) });
+  });
+
+  test("--dry-run builds the POST body from the flags", async () => {
+    const data = okData(
+      await timesheetCreateHandler({
+        ...auth,
+        employeeUuid: "emp-1",
+        jobUuid: "job-1",
+        start: "2026-06-01T09:00:00Z",
+        timeZone: "America/New_York",
+        regular: "8",
+        dryRun: true,
+      })(ctx),
+    );
+    expect(data.method).toBe("POST");
+    expect(data.body).toMatchObject({
+      entity_uuid: "emp-1",
+      entity_type: "Employee",
+      job_uuid: "job-1",
+      entries: [{ hours_worked: 8, pay_classification: "Regular" }],
+    });
+  });
+
+  test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
+    const result = await timesheetCreateHandler({})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("validation");
+  });
+
+  const validCreate = {
+    ...auth,
+    employeeUuid: "emp-1",
+    jobUuid: "job-1",
+    start: "2026-06-01T09:00:00Z",
+    timeZone: "America/New_York",
+    regular: "8",
+  };
+
+  test("an agent-mode create without --confirm is blocked and sends nothing", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 500 }));
+    try {
+      const result = await timesheetCreateHandler(validCreate)(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("confirmation_required");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("--confirm lets the create POST the time sheet", async () => {
+    const { calls, restore } = stubGlobalFetch((u) =>
+      u.includes("/time_tracking/time_sheets") ? { status: 201, body: { uuid: "ts-1" } } : { status: 404 },
+    );
+    try {
+      const result = await timesheetCreateHandler({ ...validCreate, confirm: true })(ctx);
+      expect(result.ok).toBe(true);
+      const post = calls.find((c) => c.method === "POST");
+      expect(post?.url).toContain("/v1/companies/co-1/time_tracking/time_sheets");
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("timesheetSyncHandler", () => {
+  test("--example returns the canonical payroll-sync shape", async () => {
+    const data = okData(await timesheetSyncHandler({ example: true })(ctx));
+    expect(data.method).toBe("POST");
+    expect(data.path).toBe("/v1/companies/{company_uuid}/time_tracking/payroll_syncs");
+    expect(data.body).toMatchObject({ kind: "regular" });
+  });
+
+  test("--dry-run builds the POST body from the flags", async () => {
+    const data = okData(
+      await timesheetSyncHandler({
+        ...auth,
+        payScheduleUuid: "ps-1",
+        payPeriodStart: "2026-06-01",
+        payPeriodEnd: "2026-06-15",
+        dryRun: true,
+      })(ctx),
+    );
+    expect(data.method).toBe("POST");
+    expect(data.body).toMatchObject({
+      kind: "regular",
+      pay_schedule_uuid: "ps-1",
+      pay_period_start_date: "2026-06-01",
+      pay_period_end_date: "2026-06-15",
+    });
+  });
+
+  test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
+    const result = await timesheetSyncHandler({})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("validation");
+  });
+
+  const validSync = {
+    ...auth,
+    payScheduleUuid: "ps-1",
+    payPeriodStart: "2026-06-01",
+    payPeriodEnd: "2026-06-15",
+  };
+
+  test("an agent-mode sync without --confirm is blocked and sends nothing", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 500 }));
+    try {
+      const result = await timesheetSyncHandler(validSync)(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("confirmation_required");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("--confirm lets the sync POST the payroll sync", async () => {
+    const { calls, restore } = stubGlobalFetch((u) =>
+      u.includes("/time_tracking/payroll_syncs") ? { status: 201, body: { status: "pending" } } : { status: 404 },
+    );
+    try {
+      const result = await timesheetSyncHandler({ ...validSync, confirm: true })(ctx);
+      expect(result.ok).toBe(true);
+      const post = calls.find((c) => c.method === "POST");
+      expect(post?.url).toContain("/v1/companies/co-1/time_tracking/payroll_syncs");
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("validateTimesheetList", () => {
+  test("start + end returns the populated body in API field names", () => {
+    expect(validateTimesheetList({ startDate: "2026-06-01", endDate: "2026-06-15" })).toEqual({
+      ok: true,
+      body: { start_date: "2026-06-01", end_date: "2026-06-15" },
+    });
+  });
+
+  test("missing --start-date and --end-date block on both", () => {
+    const result = validateTimesheetList({});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
+  });
+
+  test("malformed --start-date is blocked", () => {
+    const result = validateTimesheetList({ startDate: "06/01/2026", endDate: "2026-06-15" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+  });
+
+  test("malformed --end-date is blocked", () => {
+    const result = validateTimesheetList({ startDate: "2026-06-01", endDate: "not-a-date" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
+  });
+
+  test("--end-date before --start-date is rejected client-side", () => {
+    const result = validateTimesheetList({ startDate: "2026-06-15", endDate: "2026-06-01" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual(
+      expect.objectContaining({ field: "end-date", reason: expect.stringContaining("--start-date") }),
+    );
+  });
+});
+
+describe("timesheetShowHandler", () => {
+  test("GETs /v1/time_tracking/time_sheets/<uuid> and returns the body", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: { uuid: "ts-1", status: "approved", entity_type: "Employee" },
+    }));
+    try {
+      const data = okData(await timesheetShowHandler("ts-1", {})(ctx));
+      expect(data).toMatchObject({ uuid: "ts-1", status: "approved" });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("GET");
+      expect(calls[0]?.url).toContain("/v1/time_tracking/time_sheets/ts-1");
+    } finally {
+      restore();
+    }
+  });
+
+  test("404 from the API surfaces as a CommandResult failure (not a throw)", async () => {
+    const { restore } = stubGlobalFetch(() => ({ status: 404, body: { errors: ["not found"] } }));
+    try {
+      const result = await timesheetShowHandler("missing", {})(ctx);
+      expect(result.ok).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("timesheetListHandler", () => {
+  test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    try {
+      const result = await timesheetListHandler({})(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("validation");
+      expect(calls).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("posts a JSON-RPC 2.0 tools/call envelope to the MCP endpoint", async () => {
+    const innerPayload = { source: "third_party", timesheets: [{ id: "TimeSheet:abc" }] };
+    const { calls, restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(innerPayload) }] } },
+    }));
+    try {
+      const data = okData(await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx));
+      expect(data).toEqual(innerPayload);
+      expect(calls).toHaveLength(1);
+      const call = calls[0];
+      expect(call?.method).toBe("POST");
+      expect(call?.url).toContain("mcp.api.gusto-demo.com");
+      expect(call?.body).toMatchObject({
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: "list_time_records", arguments: { start_date: "2026-06-01", end_date: "2026-06-15" } },
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  test("tool-not-found (missing scope) maps to mcp_tool_not_found / Auth exit", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32601, message: "Method not found", data: { details: "Tool not found: list_time_records" } },
+      },
+    }));
+    try {
+      const result = await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("mcp_tool_not_found");
+    } finally {
+      restore();
+    }
+  });
+
+  test("JSON-RPC -32602 invalid params maps to mcp_invalid_params", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32602, message: "Missing required parameters", data: { details: "end_date" } },
+      },
+    }));
+    try {
+      const result = await timesheetListHandler({ startDate: "2026-06-01", endDate: "2026-06-15" })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("mcp_invalid_params");
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("clarifyEmptyTimesheetSync", () => {
+  const notConfigured422: CommandResult = {
+    ok: false,
+    exitCode: ExitCode.ApiClient,
+    error: {
+      code: "api_client_error",
+      message: "POST .../time_tracking/payroll_syncs -> 422",
+      details: {
+        errors: [
+          {
+            error_key: "base",
+            category: "invalid_operation",
+            message: "Time Api integration is not enabled or hasn't been configured.",
+          },
+        ],
+      },
+      request_id: "abc123",
+    },
+  };
+
+  test("remaps the empty-company 422 to a Blocked no_time_sheets precondition", () => {
+    const result = clarifyEmptyTimesheetSync(notConfigured422);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("no_time_sheets");
+    expect(result.error.message).toContain("gusto timesheet create");
+  });
+
+  test("preserves the original details and request_id for support/debugging", () => {
+    const result = clarifyEmptyTimesheetSync(notConfigured422);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.request_id).toBe("abc123");
+    expect(result.error.details).toEqual(notConfigured422.ok ? undefined : notConfigured422.error.details);
+  });
+
+  test("leaves an unrelated api_client_error untouched", () => {
+    const other: CommandResult = {
+      ok: false,
+      exitCode: ExitCode.ApiClient,
+      error: {
+        code: "api_client_error",
+        message: "422",
+        details: { errors: [{ category: "invalid_request", message: "something else entirely" }] },
+      },
+    };
+    expect(clarifyEmptyTimesheetSync(other)).toBe(other);
+  });
+
+  test("leaves a non-client error (e.g. auth) untouched even if the text matches", () => {
+    const authErr: CommandResult = {
+      ok: false,
+      exitCode: ExitCode.Auth,
+      error: {
+        code: "no_access_token",
+        details: { errors: [{ category: "invalid_operation", message: "not enabled or hasn't been configured" }] },
+        message: "no access token",
+      },
+    };
+    expect(clarifyEmptyTimesheetSync(authErr)).toBe(authErr);
+  });
+
+  test("passes successful results straight through", () => {
+    const ok: CommandResult = { ok: true, data: { status: "pending" } };
+    expect(clarifyEmptyTimesheetSync(ok)).toBe(ok);
+  });
+});

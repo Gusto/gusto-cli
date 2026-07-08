@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.bun-build
+*.log
+.DS_Store
+.env
+.env.local
+
+# Local Claude Code agent state (worktrees, settings) - never commit
+.claude/

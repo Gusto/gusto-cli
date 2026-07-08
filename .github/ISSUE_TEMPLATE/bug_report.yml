@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a problem with the Gusto CLI
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please do not include access tokens, company UUIDs, or other secrets.
+        For security vulnerabilities, do not open an issue. See SECURITY.md instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, and what happened instead?
+      placeholder: |
+        Command: gusto payroll show ...
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: CLI version
+      description: Output of `gusto --version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x64)
+        - Windows (WSL2)
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Output mode
+      description: Were you running in agent/JSON mode or human mode?
+      options:
+        - human (default TTY)
+        - agent or --json
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps so we can reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Relevant CLI output. Redact tokens and other secrets first.
+      render: shell
+    validations:
+      required: false

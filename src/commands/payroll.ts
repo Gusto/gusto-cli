@@ -1,0 +1,1161 @@
+import type { Command } from "commander";
+import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
+import { fetchCompanyResource, fetchResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
+import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { confirmationGate } from "../lib/confirm.ts";
+import { CsvError, parseCsv } from "../lib/csv.ts";
+import { malformedResponse } from "../lib/errors.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
+import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
+import { toResult } from "../lib/handle-api-error.ts";
+import { kvLines, table } from "../lib/human.ts";
+import type { BlockedOn } from "../lib/output.ts";
+import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs } from "../lib/parse.ts";
+import { type QueryParams, toQueryString } from "../lib/query.ts";
+import {
+  type CommandHandler,
+  type CommandResult,
+  missingArgs,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
+
+export interface PayrollListOpts {
+  processingStatus?: string;
+  payrollType?: string;
+  startDate?: string;
+  endDate?: string;
+  dateFilterBy?: string;
+  include?: string;
+  sortOrder?: string;
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+// Shared by buildPayrollListQuery and buildPayrollShowQuery: a validated query on success, or the
+// blocked_on list on a bad flag value. One type so the two read/validate paths can't drift.
+export type PayrollQueryResult = { ok: true; query: QueryParams } | { ok: false; blocked: BlockedOn[] };
+
+// Closed enums for the payroll index endpoint. These deliberately track the
+// API's actual accepted values rather than the published docs, which are stale:
+// the docs omit `external` and list the SHOW-only `benefits`/`deductions` for
+// `include`. The API silently returns an empty array for unknown enum values
+// instead of erroring, so validating client-side turns an agent's typo into an
+// actionable blocked_on instead of a misleading empty result.
+const PROCESSING_STATUSES = ["processed", "unprocessed"] as const;
+const PAYROLL_TYPES = ["regular", "off_cycle", "external"] as const;
+const INCLUDE_OPTIONS = ["taxes", "payroll_status_meta", "totals", "risk_blockers", "reversals"] as const;
+const SORT_ORDERS = ["asc", "desc"] as const;
+// `check_date` is the only explicit value (omitting the flag defaults to pay
+// period). The server already rejects unknown values with a 422, but validating
+// here gives the same fast exit-7 blocked_on feedback as the other enums.
+const DATE_FILTER_BY = ["check_date"] as const;
+
+// Accepted `include` values for the payroll show endpoint. Differs from the index
+// set above (adds benefits/deductions/payroll_taxes). employee_compensations is intentionally NOT
+// here: comps are part of the default show representation (which only appears once the payroll is
+// calculated), not an include. Unknown tokens are silently dropped server-side, so validating here
+// turns an agent's typo into an actionable blocked_on instead of a misleading empty result.
+const SHOW_INCLUDE_OPTIONS = [
+  "benefits",
+  "deductions",
+  "taxes",
+  "payroll_status_meta",
+  "totals",
+  "risk_blockers",
+  "reversals",
+  "payroll_taxes",
+] as const;
+
+/** Validate a flag value against a closed enum, returning a `blocked_on` entry
+ * for any unrecognized token (or null if all are valid). `multi` splits the
+ * value on commas for the comma-separated multi-value params; empty tokens
+ * (from trailing/double commas) are ignored. */
+function validateEnum(
+  field: string,
+  value: string | undefined,
+  allowed: readonly string[],
+  multi: boolean,
+): BlockedOn | null {
+  if (value === undefined) return null;
+  // Trim each token before the enum check: the server does `str.strip` on these params, so
+  // `"totals, taxes"` (space after the comma) is valid server-side and must validate here too.
+  // Empty tokens (from trailing/double commas) are then dropped.
+  const tokens = (multi ? value.split(",") : [value]).map((t) => t.trim()).filter((t) => t.length > 0);
+  const invalid = tokens.filter((t) => !allowed.includes(t));
+  if (invalid.length === 0) return null;
+  return {
+    field,
+    reason: `invalid value(s) ${invalid.map((t) => `'${t}'`).join(", ")}; allowed: ${allowed.join(", ")}`,
+  };
+}
+
+/** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
+ * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The
+ * range rules (end_date at most 3 months out; start/end at most 1 year apart)
+ * are enforced server-side and surfaced through the API error envelope, so they
+ * are intentionally not duplicated here. The deprecated `processed` /
+ * `include_off_cycle` params are omitted in favor of `processing_statuses` /
+ * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
+export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult {
+  const blocked: BlockedOn[] = [];
+  if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {
+    blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  if (opts.endDate !== undefined && !isValidIsoDate(opts.endDate)) {
+    blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  for (const entry of [
+    validateEnum("processing-status", opts.processingStatus, PROCESSING_STATUSES, true),
+    validateEnum("payroll-type", opts.payrollType, PAYROLL_TYPES, true),
+    validateEnum("include", opts.include, INCLUDE_OPTIONS, true),
+    validateEnum("sort-order", opts.sortOrder, SORT_ORDERS, false),
+    validateEnum("date-filter-by", opts.dateFilterBy, DATE_FILTER_BY, false),
+  ]) {
+    if (entry) blocked.push(entry);
+  }
+  if (blocked.length > 0) return { ok: false, blocked };
+
+  const query: QueryParams = {};
+  const set = (key: string, value: string | undefined): void => {
+    if (value !== undefined) query[key] = value;
+  };
+  // Apply the client-side defaults the help text documents, so an omitted or empty flag sends an
+  // explicit value instead of relying on the server's fallback:
+  //   processing_statuses -> both (so draft payrolls are visible by default)
+  //   payroll_types       -> regular
+  // `||` (not `??`) so an explicit empty value ("") also falls back to the default rather than being
+  // dropped by toQueryString and silently reverting to the server's own default.
+  set("processing_statuses", opts.processingStatus || PROCESSING_STATUSES.join(","));
+  set("payroll_types", opts.payrollType || "regular");
+  set("start_date", opts.startDate);
+  set("end_date", opts.endDate);
+  set("date_filter_by", opts.dateFilterBy);
+  set("include", opts.include);
+  set("sort_order", opts.sortOrder);
+  return { ok: true, query };
+}
+
+export interface PayrollShowOpts {
+  include?: string;
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+/** Validate `payroll show` flags and map onto the show endpoint's query params. Only `include` is
+ * supported; a valid value is passed through verbatim (see SHOW_INCLUDE_OPTIONS for the closed
+ * enum and why it's validated client-side). */
+export function buildPayrollShowQuery(opts: PayrollShowOpts): PayrollQueryResult {
+  const entry = validateEnum("include", opts.include, SHOW_INCLUDE_OPTIONS, true);
+  if (entry) return { ok: false, blocked: [entry] };
+  const query: QueryParams = {};
+  if (opts.include !== undefined) query.include = opts.include;
+  return { ok: true, query };
+}
+
+interface PayrollTotals {
+  gross_pay?: string;
+  net_pay?: string;
+  employer_taxes?: string;
+  employee_taxes?: string;
+  reimbursements?: string;
+  company_debit?: string;
+}
+interface PayrollShowComp {
+  employee_uuid?: string;
+  gross_pay?: string;
+  net_pay?: string;
+}
+interface PayrollShowResponse {
+  uuid?: string;
+  processed?: boolean;
+  calculated_at?: string | null;
+  check_date?: string;
+  pay_period?: { start_date?: string; end_date?: string };
+  totals?: PayrollTotals;
+  employee_compensations?: PayrollShowComp[];
+  /** The async calculate/submit state machine. The calculate poll keys on `status`; the phase is
+   * done when it reaches a terminal state (see the isPayrollCalculated/Failed predicates). */
+  processing_request?: { status?: string; errors?: unknown[] } | null;
+}
+
+/** Human-readable status from the two state fields the API actually returns (there is no
+ * `processing_status` field on the payroll). `processed` wins; otherwise `calculated_at` marks a
+ * calculated-but-unprocessed draft; otherwise it's an unprocessed draft. */
+function payrollStatus(p: PayrollShowResponse): string | null {
+  if (p.processed === true) return "processed";
+  if (p.calculated_at) return "calculated";
+  if (p.processed === false) return "unprocessed";
+  return null;
+}
+
+/** Coerce an untrusted scalar to a table cell: null/undefined stay blank, anything else is
+ * stringified. Guards the renderer against a non-string value (e.g. a numeric gross_pay) that would
+ * otherwise throw when `table` calls `.padEnd` on it. */
+function cell(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+/** Render `payroll show` as human key-value blocks plus a compensation table. The API body is
+ * typed but not runtime-validated, so each section guards its own shape: a missing totals block is
+ * dropped, non-object compensation entries are filtered out, scalar values are coerced via `cell`,
+ * and a non-array employee_compensations falls back to the prepare hint rather than crashing. */
+export function renderPayrollShow(data: unknown): string {
+  const p = (isRecord(data) ? data : {}) as PayrollShowResponse;
+  const period = isRecord(p.pay_period) ? p.pay_period : undefined;
+  const overview = kvLines([
+    ["Payroll", p.uuid ?? null],
+    ["Status", payrollStatus(p)],
+    ["Check date", p.check_date ?? null],
+    ["Pay period", period?.start_date && period?.end_date ? `${period.start_date} to ${period.end_date}` : null],
+  ]);
+
+  const t = isRecord(p.totals) ? (p.totals as PayrollTotals) : undefined;
+  const totals = t
+    ? kvLines([
+        ["Gross pay", t.gross_pay ?? null],
+        ["Net pay", t.net_pay ?? null],
+        ["Employer taxes", t.employer_taxes ?? null],
+        ["Employee taxes", t.employee_taxes ?? null],
+        ["Reimbursements", t.reimbursements ?? null],
+        ["Company debit", t.company_debit ?? null],
+      ])
+    : "";
+  const totalsSection = totals ? `Totals\n${totals}` : "";
+
+  const comps = Array.isArray(p.employee_compensations)
+    ? p.employee_compensations.filter((c): c is PayrollShowComp => isRecord(c))
+    : [];
+  const compTable = table(
+    ["Employee", "Gross", "Net"],
+    comps.map((c) => [cell(c.employee_uuid), cell(c.gross_pay), cell(c.net_pay)]),
+  );
+  const compSection = compTable
+    ? `Employee compensations\n${compTable}`
+    : "No employee compensations yet; they appear once the payroll has been calculated.";
+
+  return [overview, totalsSection, compSection].filter((section) => section !== "").join("\n\n");
+}
+
+interface PayrollPrepareOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+}
+
+interface PayrollCalculateOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+  /** Commander negation of `--no-wait`: true by default, false when `--no-wait` is passed. */
+  wait?: boolean;
+  timeout?: string;
+}
+
+// --- payroll update (CSV -> employee_compensations) -------------------------------------------
+//
+// `payroll update` writes per-cycle inputs onto a draft payroll via PUT
+// /v1/companies/{uuid}/payrolls/{uuid}. The wire body is `{ employee_compensations: [...] }`
+// (unwrapped - the API wraps it in `payroll` server-side). Each compensation is matched to an
+// existing payroll line by its API `name`, so the column -> name map below uses the exact strings
+// the Embedded API expects: 'Regular Hours' (ApiConstants::V1.regular_hours_compensation_name), the
+// default 'Overtime' / 'Double overtime' pay-type names, and the 'Bonus' / 'Commission' /
+// 'Paycheck Tips' / 'Cash Tips' earning-type names.
+
+interface HourlyCompensationInput {
+  name: string;
+  hours: number;
+  job_uuid?: string;
+}
+
+interface FixedCompensationInput {
+  name: string;
+  amount: number;
+  job_uuid?: string;
+}
+
+interface ReimbursementInput {
+  amount: number;
+  description: string;
+}
+
+interface EmployeeCompensationUpdate {
+  employee_uuid: string;
+  version?: string;
+  hourly_compensations?: HourlyCompensationInput[];
+  fixed_compensations?: FixedCompensationInput[];
+  reimbursements?: ReimbursementInput[];
+}
+
+export interface PayrollUpdateBody {
+  employee_compensations: EmployeeCompensationUpdate[];
+}
+
+/** An employee whose row(s) carried no input values and so was left out of the update (the API
+ * leaves untouched anyone not in the body). Reported back so a blank row in a master sheet is
+ * visible, not silently dropped. */
+export interface SkippedEmployee {
+  employee_uuid: string;
+  line: number;
+}
+
+/** Success carries the request body plus any employees skipped for having no inputs; failure keeps
+ * the generic message + blocked_on shape so `validationFailure` can consume it directly. */
+export type PayrollUpdateValidation =
+  | { ok: true; body: PayrollUpdateBody; skipped: SkippedEmployee[] }
+  | { ok: false; message: string; blocked: BlockedOn[] };
+
+// Each hourly column maps to the API compensation `name` the PUT matches against. 'Regular Hours',
+// 'Overtime', and 'Double overtime' are Gusto's seeded default pay-type names, matched by name.
+const HOURLY_COLUMNS = [
+  { column: "regular_hours", name: "Regular Hours" },
+  { column: "overtime_hours", name: "Overtime" },
+  { column: "double_overtime_hours", name: "Double overtime" },
+] as const;
+const FIXED_COLUMNS = [
+  { column: "bonus", name: "Bonus" },
+  { column: "commission", name: "Commission" },
+  { column: "paycheck_tips", name: "Paycheck Tips" },
+  { column: "cash_tips", name: "Cash Tips" },
+] as const;
+const REIMBURSEMENT_COLUMN = "reimbursement";
+const SCALAR_COLUMNS = ["employee_uuid", "version", "job_uuid"] as const;
+const INPUT_COLUMNS = [
+  ...HOURLY_COLUMNS.map((c) => c.column),
+  ...FIXED_COLUMNS.map((c) => c.column),
+  REIMBURSEMENT_COLUMN,
+];
+const ALLOWED_COLUMNS = new Set<string>([...SCALAR_COLUMNS, ...INPUT_COLUMNS]);
+const ALLOWED_COLUMNS_LIST = [...ALLOWED_COLUMNS].join(", ");
+
+/** Header-level validation: every column must be known, `employee_uuid` must be present, and at
+ * least one input column must exist. Unknown columns are treated as errors (not ignored) because a
+ * typo'd header would otherwise silently drop an entire input - the same fail-loud stance the rest
+ * of the CLI takes on bad enum tokens. */
+function validatePayrollUpdateHeaders(headers: string[]): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  const seen = new Set<string>();
+  for (const h of headers) {
+    if (seen.has(h)) blocked.push({ field: h, reason: `duplicate column "${h}"` });
+    seen.add(h);
+    if (!ALLOWED_COLUMNS.has(h)) {
+      blocked.push({ field: h, reason: `unknown column "${h}"; allowed: ${ALLOWED_COLUMNS_LIST}` });
+    }
+  }
+  if (!seen.has("employee_uuid")) blocked.push({ field: "employee_uuid", reason: "required column is missing" });
+  if (!INPUT_COLUMNS.some((c) => seen.has(c))) {
+    blocked.push({ field: "input", reason: `provide at least one input column: ${INPUT_COLUMNS.join(", ")}` });
+  }
+  return blocked;
+}
+
+/** One CSV data row's raw contribution: a single employee, optionally scoped to one job. Rows are
+ * merged per employee afterwards (see mergeRowsByEmployee), so an employee with multiple jobs is
+ * expressed as multiple rows (one per job) that fold into a single compensation. */
+interface ParsedPayrollUpdateRow {
+  line: number;
+  employeeUuid: string;
+  version?: string;
+  jobUuid?: string;
+  hourly: HourlyCompensationInput[];
+  fixed: FixedCompensationInput[];
+  reimbursements: ReimbursementInput[];
+}
+
+/** Parse each named numeric column from the row: skip blanks, push a `blocked_on` for a bad value,
+ * and `build` an entry from each valid one. Shared by the hourly and fixed-comp columns so the two
+ * can't drift. */
+function parseNumericColumns<T>(
+  columns: readonly { column: string; name: string }[],
+  get: (column: string) => string,
+  line: number,
+  blocked: BlockedOn[],
+  build: (name: string, value: number) => T,
+): T[] {
+  const out: T[] = [];
+  for (const { column, name } of columns) {
+    const raw = get(column);
+    if (raw === "") continue;
+    const parsed = parseNonNegativeNumber(raw);
+    if (!parsed.ok) blocked.push({ field: `row ${line}: ${column}`, reason: parsed.reason });
+    else out.push(build(name, parsed.value));
+  }
+  return out;
+}
+
+/** Parse one CSV row. Per-cell problems (bad numbers, too many cells) go on `blocked`; a row that
+ * names an employee but carries no inputs goes on `skipped` instead of failing the import (a blank
+ * row in a master sheet is expected). A blank cell is omitted (the API leaves omitted inputs
+ * untouched); an explicit `0` is sent (overrides to zero). Returns null when the row yields no
+ * usable contribution (whether errored or skipped). */
+function parsePayrollUpdateRow(
+  colIndex: Map<string, number>,
+  headerCount: number,
+  cells: string[],
+  line: number,
+  blocked: BlockedOn[],
+  skipped: SkippedEmployee[],
+): ParsedPayrollUpdateRow | null {
+  if (cells.length > headerCount) {
+    blocked.push({ field: `row ${line}`, reason: `has ${cells.length} cells but the header has ${headerCount}` });
+    return null;
+  }
+  const get = (column: string): string => {
+    const i = colIndex.get(column);
+    return i !== undefined ? (cells[i] ?? "").trim() : "";
+  };
+
+  const employeeUuid = get("employee_uuid");
+  if (!employeeUuid) {
+    blocked.push({ field: `row ${line}: employee_uuid`, reason: "required" });
+    return null;
+  }
+
+  const jobUuid = get("job_uuid");
+  const job = jobUuid ? { job_uuid: jobUuid } : {};
+  const errorsBefore = blocked.length;
+
+  const hourly = parseNumericColumns(HOURLY_COLUMNS, get, line, blocked, (name, hours) => ({ name, hours, ...job }));
+  const fixed = parseNumericColumns(FIXED_COLUMNS, get, line, blocked, (name, amount) => ({ name, amount, ...job }));
+
+  const reimbursements: ReimbursementInput[] = [];
+  const reimbRaw = get(REIMBURSEMENT_COLUMN);
+  if (reimbRaw !== "") {
+    const parsed = parseNonNegativeNumber(reimbRaw);
+    if (!parsed.ok) blocked.push({ field: `row ${line}: ${REIMBURSEMENT_COLUMN}`, reason: parsed.reason });
+    else reimbursements.push({ amount: parsed.value, description: "Reimbursement" });
+  }
+
+  // A row with no inputs is skipped (reported), not failed - unless a per-cell error already
+  // explains why it produced nothing, in which case it stays an error.
+  if (hourly.length === 0 && fixed.length === 0 && reimbursements.length === 0) {
+    if (blocked.length === errorsBefore) skipped.push({ employee_uuid: employeeUuid, line });
+    return null;
+  }
+
+  const version = get("version");
+  return {
+    line,
+    employeeUuid,
+    ...(version ? { version } : {}),
+    ...(jobUuid ? { jobUuid } : {}),
+    hourly,
+    fixed,
+    reimbursements,
+  };
+}
+
+interface EmployeeGroup {
+  employeeUuid: string;
+  version?: string;
+  versionLine?: number;
+  hourly: HourlyCompensationInput[];
+  fixed: FixedCompensationInput[];
+  reimbursements: ReimbursementInput[];
+  /** job_uuid ("" when a row omits it) -> the first line that used it, for duplicate detection. */
+  jobLines: Map<string, number>;
+}
+
+/** Fold parsed rows into one employee_compensation per employee. Repeating an employee_uuid across
+ * rows is how a multi-job employee splits hours over jobs, so it's allowed - but the same
+ * (employee_uuid, job_uuid) pair twice is a genuine duplicate, and two different `version` values
+ * for one employee can't be reconciled; both become blocked_on errors. */
+function mergeRowsByEmployee(rows: ParsedPayrollUpdateRow[], blocked: BlockedOn[]): EmployeeCompensationUpdate[] {
+  const groups = new Map<string, EmployeeGroup>();
+
+  for (const row of rows) {
+    let group = groups.get(row.employeeUuid);
+    if (!group) {
+      group = { employeeUuid: row.employeeUuid, hourly: [], fixed: [], reimbursements: [], jobLines: new Map() };
+      groups.set(row.employeeUuid, group);
+    }
+
+    const jobKey = row.jobUuid ?? "";
+    const firstLine = group.jobLines.get(jobKey);
+    if (firstLine !== undefined) {
+      const what = row.jobUuid ? "employee_uuid + job_uuid" : "employee_uuid (no job_uuid)";
+      blocked.push({
+        field: `row ${row.line}: employee_uuid`,
+        reason: `duplicate ${what} (already on row ${firstLine}); use one row per employee-job`,
+      });
+      continue;
+    }
+    group.jobLines.set(jobKey, row.line);
+
+    if (row.version) {
+      if (group.version !== undefined && group.version !== row.version) {
+        blocked.push({
+          field: `row ${row.line}: version`,
+          reason: `conflicting version for this employee (row ${group.versionLine} has a different value)`,
+        });
+        continue;
+      }
+      group.version = row.version;
+      group.versionLine ??= row.line;
+    }
+
+    group.hourly.push(...row.hourly);
+    group.fixed.push(...row.fixed);
+    group.reimbursements.push(...row.reimbursements);
+  }
+
+  // Map preserves insertion order, so employees come out in first-seen order.
+  return [...groups.values()].map((g) => ({
+    employee_uuid: g.employeeUuid,
+    ...(g.version ? { version: g.version } : {}),
+    ...(g.hourly.length ? { hourly_compensations: g.hourly } : {}),
+    ...(g.fixed.length ? { fixed_compensations: g.fixed } : {}),
+    ...(g.reimbursements.length ? { reimbursements: g.reimbursements } : {}),
+  }));
+}
+
+interface JobsListEntry {
+  uuid?: string;
+}
+
+async function fetchEmployeeJobs(
+  globals: GlobalFlags,
+  opts: { tokenStdin?: boolean },
+  employeeUuids: readonly string[],
+): Promise<CommandResult<Map<string, string[]>>> {
+  const responses = await Promise.all(
+    employeeUuids.map(async (employeeUuid) => {
+      const resp = await fetchResource<JobsListEntry[]>(
+        globals,
+        { tokenStdin: opts.tokenStdin },
+        () => `/v1/employees/${encodeURIComponent(employeeUuid)}/jobs`,
+      );
+      return { employeeUuid, resp };
+    }),
+  );
+  const byEmployee = new Map<string, string[]>();
+  for (const { employeeUuid, resp } of responses) {
+    if (!resp.ok) {
+      return {
+        ok: false,
+        exitCode: resp.exitCode,
+        error: {
+          ...resp.error,
+          message: `looking up jobs for employee ${employeeUuid}: ${resp.error.message}`,
+        },
+      };
+    }
+    if (!Array.isArray(resp.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a non-array body`);
+    }
+    const uuids: string[] = [];
+    for (const j of resp.data) {
+      if (typeof j.uuid !== "string" || j.uuid === "") {
+        return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a job with no uuid`);
+      }
+      uuids.push(j.uuid);
+    }
+    byEmployee.set(employeeUuid, uuids);
+  }
+  return { ok: true, data: byEmployee };
+}
+
+export function employeesNeedingJobUuidInference(body: PayrollUpdateBody): string[] {
+  const out = new Set<string>();
+  for (const ec of body.employee_compensations) {
+    for (const entry of iterCompensations(ec)) {
+      if (!entry.job_uuid) {
+        out.add(ec.employee_uuid);
+        break;
+      }
+    }
+  }
+  return [...out];
+}
+
+function* iterCompensations(ec: EmployeeCompensationUpdate): Generator<{ job_uuid?: string }> {
+  for (const h of ec.hourly_compensations ?? []) yield h;
+  for (const f of ec.fixed_compensations ?? []) yield f;
+}
+
+/** Mutates `body`: injects sole job_uuid for single-job employees, returns one blocked_on per
+ * employee whose row is ambiguous (multi-job) or unresolvable (no jobs). */
+export function inferMissingJobUuids(body: PayrollUpdateBody, jobsByEmployee: Map<string, string[]>): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  const alreadyBlocked = new Set<string>();
+  for (const ec of body.employee_compensations) {
+    const employeeJobs = jobsByEmployee.get(ec.employee_uuid);
+    if (!employeeJobs) continue;
+    const [soleJob, ...rest] = employeeJobs;
+    for (const entry of iterCompensations(ec)) {
+      if (entry.job_uuid) continue;
+      if (soleJob && rest.length === 0) {
+        entry.job_uuid = soleJob;
+        continue;
+      }
+      if (alreadyBlocked.has(ec.employee_uuid)) break;
+      const reason =
+        employeeJobs.length === 0
+          ? "employee has no jobs assigned; add a job before running payroll for them"
+          : `employee has ${employeeJobs.length} jobs; specify job_uuid in the CSV`;
+      blocked.push({ field: `employee_compensations[${ec.employee_uuid}].job_uuid`, reason });
+      alreadyBlocked.add(ec.employee_uuid);
+      break;
+    }
+  }
+  return blocked;
+}
+
+async function injectInferredJobUuids(
+  globals: GlobalFlags,
+  opts: { tokenStdin?: boolean },
+  body: PayrollUpdateBody,
+  candidates: readonly string[],
+): Promise<CommandResult<void>> {
+  const jobs = await fetchEmployeeJobs(globals, opts, candidates);
+  if (!jobs.ok) return jobs;
+  const inferenceBlocked = inferMissingJobUuids(body, jobs.data);
+  if (inferenceBlocked.length > 0) {
+    return validationFailure("ambiguous job_uuid for multi-job employees", inferenceBlocked);
+  }
+  return { ok: true, data: undefined };
+}
+
+/** Parse a CSV of per-employee inputs into a payroll-update request body, accumulating every
+ * structural, header, and per-row problem into a single blocked_on list (so one run surfaces all
+ * the fixes, not just the first). Headers are lowercased so 'Employee_UUID' and 'employee_uuid'
+ * both work. See HOURLY_COLUMNS/FIXED_COLUMNS for the column -> API-name map. */
+export function buildPayrollUpdateFromCsv(text: string): PayrollUpdateValidation {
+  let rows: string[][];
+  try {
+    rows = parseCsv(text);
+  } catch (err) {
+    const reason = err instanceof CsvError ? err.message : String(err);
+    return { ok: false, message: "could not parse CSV", blocked: [{ field: "input", reason }] };
+  }
+
+  // Keep each row's 1-based file line before dropping blank rows, so `row N` in errors and the
+  // skipped line numbers point at the real line even when blank lines precede a row.
+  const nonBlank = rows.map((cells, i) => ({ cells, line: i + 1 })).filter((r) => r.cells.some((c) => c.trim() !== ""));
+  if (nonBlank.length === 0) {
+    return { ok: false, message: "empty CSV", blocked: [{ field: "input", reason: "the file has no rows" }] };
+  }
+
+  const headers = nonBlank[0].cells.map((h) => h.trim().toLowerCase());
+  const headerBlocked = validatePayrollUpdateHeaders(headers);
+  if (headerBlocked.length > 0) return { ok: false, message: "invalid CSV header", blocked: headerBlocked };
+
+  // Resolve column positions once (headers are duplicate-free past validation) so per-cell lookups
+  // are O(1) instead of a linear scan per access.
+  const colIndex = new Map(headers.map((h, i) => [h, i] as const));
+  const blocked: BlockedOn[] = [];
+  const skippedRows: SkippedEmployee[] = [];
+  const parsed: ParsedPayrollUpdateRow[] = [];
+  for (const { cells, line } of nonBlank.slice(1)) {
+    const row = parsePayrollUpdateRow(colIndex, headers.length, cells, line, blocked, skippedRows);
+    if (row) parsed.push(row);
+  }
+  const employee_compensations = mergeRowsByEmployee(parsed, blocked);
+
+  if (blocked.length > 0) return { ok: false, message: "invalid or incomplete CSV rows", blocked };
+
+  // Report only employees with NO usable data anywhere - a blank row for someone who has data on
+  // another row (e.g. their second job) is just padding, not a skip. One pass, deduping by uuid.
+  const included = new Set(employee_compensations.map((c) => c.employee_uuid));
+  const seen = new Set<string>();
+  const skipped = skippedRows.filter((s) => {
+    if (included.has(s.employee_uuid) || seen.has(s.employee_uuid)) return false;
+    seen.add(s.employee_uuid);
+    return true;
+  });
+
+  if (employee_compensations.length === 0) {
+    const reason = skipped.length
+      ? `every row had no input values (${skipped.length} employee(s) skipped)`
+      : "no data rows after the header";
+    return { ok: false, message: "nothing to update", blocked: [{ field: "input", reason }] };
+  }
+  return { ok: true, body: { employee_compensations }, skipped };
+}
+
+/** The canonical request/CSV shape published by `--example` - learnable without a uuid or auth.
+ * Shows the multi-job pattern: the same employee on two rows (one per job) merges into a single
+ * compensation. A job can carry more than one hourly entry - jobA here has both regular and
+ * overtime hours. */
+function payrollUpdateExample(): Record<string, unknown> {
+  const jobA = "1f2e3d4c-0000-1111-2222-333344445555";
+  const jobB = "2a3b4c5d-0000-1111-2222-333344445555";
+  const employee = "9b8c7d6e-0000-1111-2222-333344445555";
+  return {
+    method: "PUT",
+    path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}",
+    csv_columns: {
+      required: ["employee_uuid"],
+      optional: ["version", "job_uuid", ...INPUT_COLUMNS],
+    },
+    csv_example: [
+      "employee_uuid,version,job_uuid,regular_hours,overtime_hours,bonus,cash_tips",
+      `${employee},a1b2c3,${jobA},30,5,250,40`,
+      `${employee},a1b2c3,${jobB},25,,,`,
+    ].join("\n"),
+    body: {
+      employee_compensations: [
+        {
+          employee_uuid: employee,
+          version: "a1b2c3",
+          hourly_compensations: [
+            { name: "Regular Hours", hours: 30, job_uuid: jobA },
+            { name: "Overtime", hours: 5, job_uuid: jobA },
+            { name: "Regular Hours", hours: 25, job_uuid: jobB },
+          ],
+          fixed_compensations: [
+            { name: "Bonus", amount: 250, job_uuid: jobA },
+            { name: "Cash Tips", amount: 40, job_uuid: jobA },
+          ],
+        },
+      ],
+    },
+    note: "One CSV row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (rows merge into one compensation). Blank cells are left untouched; a 0 overrides to zero. A row with no input values is skipped and listed under `skipped_employees`, not failed. Hours (regular/overtime/double-overtime) and fixed comp (bonus/commission/tips) are replaced by name+job, but reimbursements are added on each run (not replaced), so set a reimbursement only once per cycle to avoid duplicates. overtime_hours/double_overtime_hours map to the default 'Overtime'/'Double overtime' pay types. Each employee's `version` comes from the prepared payroll (run `payroll prepare`, then read back each employee compensation's version). After updating, run `payroll prepare` to produce a reviewable draft.",
+  };
+}
+
+interface PayrollUpdateOpts {
+  input?: string;
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+}
+
+export function registerPayrollCommand(parent: Command): void {
+  const cmd = parent.command("payroll").description("Inspect and prepare payrolls");
+
+  cmd
+    .command("list")
+    .description("List company payrolls (filter to past and/or future windows)")
+    .option(
+      "--processing-status <statuses>",
+      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed)`,
+    )
+    .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
+    .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
+    .option("--end-date <date>", "Only payrolls up to this date (YYYY-MM-DD; at most 3 months in the future)")
+    .option("--date-filter-by <field>", "Date to filter by: check_date (defaults to pay period)")
+    .option("--include <attrs>", `Include extra attributes: ${INCLUDE_OPTIONS.join(", ")} - comma-separate`)
+    .option("--sort-order <order>", `${SORT_ORDERS.join(", ")} (default asc)`)
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto payroll list --processing-status processed --start-date 2026-01-01 --end-date 2026-03-31
+  $ gusto payroll list --payroll-type regular,off_cycle --sort-order desc
+
+All filters are optional. Defaults: processed and unprocessed regular payrolls, ascending.
+`,
+    )
+    .action((opts: PayrollListOpts) =>
+      runCommand("gusto payroll list", readGlobalFlags(parent.opts()), payrollListHandler(opts)),
+    );
+
+  cmd
+    .command("show [payroll_uuid]")
+    .description("Show one payroll (company-scoped); totals and taxes are opt-in via --include")
+    .option("--include <attrs>", `Include extra attributes: ${SHOW_INCLUDE_OPTIONS.join(", ")} - comma-separate`)
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Reads are company-scoped: the command resolves the company and reads
+/v1/companies/{company}/payrolls/{uuid} (the bare /v1/payrolls/{uuid} path is not available).
+employee_compensations and totals only appear once the payroll has been calculated; an
+uncalculated draft returns neither, even with --include (and even after 'payroll prepare', which
+populates inputs but does not calculate). This is why employee_compensations is not an --include value.
+totals and taxes are returned only when you request them with --include.
+
+Examples:
+  $ gusto payroll show 1a2b3c4d-0000-1111-2222-333344445555 --include totals
+  $ gusto payroll show 1a2b3c4d-0000-1111-2222-333344445555 --include totals,taxes
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollShowOpts) =>
+      runReadCommand("gusto payroll show", readGlobalFlags(parent.opts()), payrollShowHandler(payrollUuid, opts)),
+    );
+
+  cmd
+    .command("prepare [payroll_uuid]")
+    .description("Prepare a draft payroll: lay in its employee compensations (does not compute dollar totals)")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+The draft-payroll lifecycle has three steps:
+  1. prepare   - populate employee_compensations (hours/earnings). Dollar 'totals' stay null here.
+  2. calculate - compute the dollar totals (gross/net/taxes). See 'gusto payroll calculate'.
+  3. show      - read the totals, e.g. 'gusto payroll show <payroll_uuid> --include totals'.
+
+A draft payroll starts as an empty shell (0 employee_compensations). Preparing it populates them
+so the payroll's hours/compensations can be read back and verified - e.g. to confirm the hours a
+'timesheet sync' landed. Totals do NOT appear after prepare; run 'calculate' for those. Running
+payroll requires a prepared (and calculated) draft.
+
+Examples:
+  $ gusto payroll prepare 1a2b3c4d-0000-1111-2222-333344445555
+  $ gusto payroll prepare --example   (print the request/response shape, no uuid or auth needed)
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollPrepareOpts) =>
+      runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
+    );
+
+  cmd
+    .command("calculate [payroll_uuid]")
+    .description("Calculate a prepared draft payroll's dollar totals (gross/net/taxes); waits for the result")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option("--no-wait", "Fire the calculation and return immediately instead of polling for the totals")
+    .option("--timeout <seconds>", "Max seconds to poll for the totals when waiting (default 120)")
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+The middle step of the draft-payroll lifecycle (prepare -> calculate -> read back). 'prepare' lays
+in hours/earnings; 'calculate' computes the dollar totals (gross/net/taxes). Calculation runs
+asynchronously on the server, but by default this command polls until the totals land (or --timeout
+elapses) and returns the payroll with its computed totals - no manual polling needed. Use --no-wait
+to fire it and return immediately; then read the totals back yourself, e.g.
+'gusto payroll show <payroll_uuid> --include totals'.
+
+Examples:
+  $ gusto payroll calculate 1a2b3c4d-0000-1111-2222-333344445555 --confirm
+  $ gusto payroll calculate 1a2b3c4d-0000-1111-2222-333344445555 --confirm --no-wait
+  $ gusto payroll calculate --example   (print the request shape, no uuid or auth needed)
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollCalculateOpts) =>
+      runCommand("gusto payroll calculate", readGlobalFlags(parent.opts()), payrollCalculateHandler(payrollUuid, opts)),
+    );
+
+  cmd
+    .command("update [payroll_uuid]")
+    .description(
+      "Write per-employee inputs (tips, commission, bonus, reimbursement, regular hours) from a CSV onto a draft",
+    )
+    .option("--input <file>", "Path to a CSV of per-employee inputs (run --example to see the columns)")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Updates an unprocessed (draft) payroll from a CSV. Columns (case-insensitive):
+  employee_uuid (required), version, job_uuid,
+  regular_hours, overtime_hours, double_overtime_hours,
+  bonus, commission, paycheck_tips, cash_tips, reimbursement
+
+One row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (the
+rows merge into one compensation). Blank cells are left untouched; an explicit 0 overrides to zero.
+Each row's 'version' is the optimistic-lock token from the prepared payroll. overtime_hours/double_overtime_hours use the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a reviewable draft.
+
+Examples:
+  $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
+  $ gusto payroll update 1a2b... --input inputs.csv --dry-run
+  $ gusto payroll update --example   (print the CSV columns and request shape, no uuid or auth)
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollUpdateOpts) =>
+      runCommand("gusto payroll update", readGlobalFlags(parent.opts()), payrollUpdateHandler(payrollUuid, opts)),
+    );
+}
+
+/** PUT to a payroll path with the UUID encoded as a single segment and the standard
+ * token/company/dry-run options pulled from `opts`. Shared by prepare and update so the encoding
+ * guard and option wiring can't drift. `suffix` is appended after the uuid (e.g. "/prepare").
+ * Encoding matters: a raw `/`, `?` or `#` in a uuid from agent/tool output would otherwise retarget
+ * the PUT (the client resolves paths via `new URL`), e.g. `x?e=1` dropping `/prepare`. */
+function putPayrollResource(
+  globals: GlobalFlags,
+  payrollUuid: string,
+  suffix: string,
+  body: unknown,
+  opts: { tokenStdin?: boolean; companyUuid?: string; dryRun?: boolean; confirm?: boolean },
+): Promise<CommandResult> {
+  return putCompanyResource(globals, `payrolls/${encodeURIComponent(payrollUuid)}${suffix}`, body, {
+    tokenStdin: opts.tokenStdin,
+    companyUuid: opts.companyUuid,
+    dryRun: opts.dryRun,
+    confirm: opts.confirm,
+  });
+}
+
+export function payrollPrepareHandler(payrollUuid: string | undefined, opts: PayrollPrepareOpts): CommandHandler {
+  return async ({ globals }) => {
+    // --example publishes the path and canonical response shape without auth/company resolution, so
+    // an agent can learn the command from `--help` without a real uuid or a live request.
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/prepare",
+          note: "no request body; response is the populated payroll. Read back employee_compensations to verify. Dollar totals stay null until you run 'gusto payroll calculate'.",
+        },
+      };
+    }
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+    // prepare has no request body.
+    return putPayrollResource(globals, payrollUuid, "/prepare", undefined, opts);
+  };
+}
+
+/** The message the calculate handler returns in place of the API's empty 202 body, so an agent
+ * learns the calc kicked off (it's async) and how to read the resulting totals back. */
+const CALCULATE_NOTE =
+  "calculation runs asynchronously, so totals are not ready the instant this returns. " +
+  "Read them back once ready, e.g. 'gusto payroll show <payroll_uuid> --include totals'.";
+
+export interface ExecutePayrollCalculateOpts {
+  /** false => fire the calculation and return immediately instead of polling for the totals. */
+  wait?: boolean;
+  /** Poll budget in ms; omitted => ApiClient.poll default (120s). */
+  timeoutMs?: number;
+}
+
+/** True once the payroll's calculate phase has finished successfully (totals are ready). Drives the
+ * poll success predicate. The calculate poll keys on `processing_request.status`, not on the
+ * presence of `totals`: an explicit `totals: null` is ambiguous (not-yet-calculated vs. a calc that
+ * produced none), whereas the status is a definite terminal signal. See docs: payroll-processing-request. */
+export function isPayrollCalculated(body: PayrollShowResponse): boolean {
+  return body.processing_request?.status === "calculate_success";
+}
+
+/** True once the payroll's calculate phase has terminally failed (e.g. negative net pay). Drives the
+ * poll failure predicate so we stop immediately with an error instead of polling out the timeout. */
+export function isPayrollCalculationFailed(body: PayrollShowResponse): boolean {
+  return body.processing_request?.status === "processing_failed";
+}
+
+/** PUT the calculate request, then either return immediately (`wait === false`) or poll the
+ * payroll's processing_request status until the calculate phase finishes (or the timeout elapses)
+ * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
+ * unit-testable with a mocked fetch, mirroring executeLedgerShow - the caller owns the async wait so
+ * skills never have to poll. */
+export async function executePayrollCalculate(
+  client: Pick<ApiClient, "request" | "poll">,
+  companyUuid: string,
+  payrollUuid: string,
+  opts: ExecutePayrollCalculateOpts,
+): Promise<CommandResult> {
+  const base = `/v1/companies/${encodeURIComponent(companyUuid)}/payrolls/${encodeURIComponent(payrollUuid)}`;
+  // calculate has no request body and returns 202 with an empty body (no totals yet).
+  try {
+    await client.request("PUT", `${base}/calculate`, undefined);
+  } catch (err) {
+    return toResult(err);
+  }
+
+  // --no-wait: hand back the fire-and-forget shape so an agent can poll the totals itself later.
+  if (opts.wait === false) {
+    return { ok: true, data: { status: "calculating", payroll_uuid: payrollUuid, note: CALCULATE_NOTE } };
+  }
+
+  // Default: poll processing_request until the calculate phase reaches a terminal state, so the
+  // command returns the computed figures directly and the skill never has to poll (mirrors how
+  // 'ledger show' owns its report poll). A failed calc stops the poll early rather than timing out.
+  const pollPath = `${base}?include=totals`;
+  try {
+    const calculated = await client.poll<PayrollShowResponse>(pollPath, {
+      until: isPayrollCalculated,
+      isFailure: isPayrollCalculationFailed,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+    return { ok: true, data: calculated.body };
+  } catch (err) {
+    if (err instanceof PollFailedError) {
+      const body = err.body as PayrollShowResponse | undefined;
+      return {
+        ok: false,
+        exitCode: ExitCode.ApiServer,
+        error: {
+          code: "calculate_failed",
+          message: `payroll ${payrollUuid} calculation failed`,
+          details: { payroll_uuid: payrollUuid, errors: body?.processing_request?.errors ?? null },
+        },
+      };
+    }
+    if (err instanceof PollTimeoutError) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Timeout,
+        error: {
+          code: "calculate_timeout",
+          message: `payroll ${payrollUuid} did not finish calculating before the timeout; read the totals back with 'gusto payroll show ${payrollUuid} --include totals'`,
+          details: {
+            payroll_uuid: payrollUuid,
+            attempts: err.attempts,
+            // Omit when no GET completed (e.g. budget already spent) rather than emit last: undefined.
+            ...(err.lastBody !== undefined ? { last: err.lastBody } : {}),
+          },
+        },
+      };
+    }
+    return toResult(err);
+  }
+}
+
+export function payrollCalculateHandler(payrollUuid: string | undefined, opts: PayrollCalculateOpts): CommandHandler {
+  return async ({ globals }) => {
+    // --example publishes the path without auth/company resolution so an agent can learn the command
+    // from `--help` without a real uuid or a live request.
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/companies/{company_uuid}/payrolls/{payroll_uuid}/calculate",
+          note: `no request body; ${CALCULATE_NOTE}`,
+        },
+      };
+    }
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+
+    const timeout = resolveTimeoutMs(opts.timeout);
+    if (!timeout.ok) {
+      return validationFailure("invalid arguments", [
+        { field: "timeout", reason: "must be a positive number of seconds" },
+      ]);
+    }
+
+    // Human-in-the-loop: calculate mutates the draft, so in agent mode it needs --confirm. Gate before
+    // resolving auth/company (an agent learns it must confirm without needing a valid token first);
+    // --dry-run and human/TTY mode pass through. Mirrors companyResourceRequest's ordering.
+    const resourcePath = `/v1/companies/{company_uuid}/payrolls/${encodeURIComponent(payrollUuid)}/calculate`;
+    const gate = confirmationGate(globals, "PUT", resourcePath, { confirm: opts.confirm, dryRun: opts.dryRun });
+    if (gate) return gate;
+
+    const ctx = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, companyOverride: opts.companyUuid });
+    if (opts.dryRun) {
+      // Show the resolved company path when we have one, else the unresolved template - dry-run needs
+      // neither a token nor a company, and sends nothing either way.
+      const path = ctx.ok
+        ? `/v1/companies/${ctx.ctx.companyUuid}/payrolls/${encodeURIComponent(payrollUuid)}/calculate`
+        : resourcePath;
+      return {
+        ok: true,
+        data: { method: "PUT", path, ...(ctx.ok ? {} : { note: "dry-run: token/company not required" }) },
+      };
+    }
+    if (!ctx.ok) return ctx.result;
+
+    return executePayrollCalculate(ctx.ctx.client, ctx.ctx.companyUuid, payrollUuid, {
+      wait: opts.wait,
+      ...(timeout.ms !== undefined ? { timeoutMs: timeout.ms } : {}),
+    });
+  };
+}
+
+/** True for a plain object (not null, not an array). Narrows `unknown` so the skipped_employees
+ * merge can spread the API/dry-run data without a cast - an array would spread by numeric index. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `readFile` is injected so tests can drive the handler without touching the filesystem; it
+ * defaults to Bun's native file read (the same seam company provision uses). */
+export function payrollUpdateHandler(
+  payrollUuid: string | undefined,
+  opts: PayrollUpdateOpts,
+  readFile: (path: string) => Promise<string> = (p) => Bun.file(p).text(),
+): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) return { ok: true, data: payrollUpdateExample() };
+
+    if (!payrollUuid || !opts.input) {
+      const blocked: BlockedOn[] = [];
+      if (!payrollUuid) blocked.push({ field: "payroll_uuid", reason: "required" });
+      if (!opts.input)
+        blocked.push({ field: "input", reason: "provide --input <file.csv> (or --example for the shape)" });
+      return missingArgs(blocked);
+    }
+
+    let text: string;
+    try {
+      text = await readFile(opts.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "invalid_input", message: `cannot read --input file ${opts.input}: ${message}` },
+      };
+    }
+
+    const built = buildPayrollUpdateFromCsv(text);
+    if (!built.ok) return validationFailure(built.message, built.blocked);
+
+    // Server 422s on missing job_uuid even though docs mark it optional; we infer client-side.
+    const inferenceCandidates = employeesNeedingJobUuidInference(built.body);
+    if (!opts.dryRun && inferenceCandidates.length > 0) {
+      const injected = await injectInferredJobUuids(globals, opts, built.body, inferenceCandidates);
+      if (!injected.ok) return injected;
+    }
+
+    const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
+
+    if (result.ok && isRecord(result.data)) {
+      const extras: Record<string, unknown> = {};
+      if (built.skipped.length > 0) extras.skipped_employees = built.skipped;
+      if (opts.dryRun && inferenceCandidates.length > 0) extras.inferred_at_send = inferenceCandidates;
+      if (Object.keys(extras).length > 0) return { ok: true, data: { ...result.data, ...extras } };
+    }
+    return result;
+  };
+}
+
+function payrollListHandler(opts: PayrollListOpts): CommandHandler {
+  return async ({ globals }) => {
+    const parsed = buildPayrollListQuery(opts);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: { code: "validation", message: "invalid arguments", blocked_on: parsed.blocked },
+      };
+    }
+
+    return fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls${toQueryString(parsed.query)}`,
+    );
+  };
+}
+
+export function payrollShowHandler(payrollUuid: string | undefined, opts: PayrollShowOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+    const parsed = buildPayrollShowQuery(opts);
+    if (!parsed.ok) return validationFailure("invalid arguments", parsed.blocked);
+    // Encode the uuid as a single path segment: a raw `/`, `?` or `#` from agent/tool output would
+    // otherwise retarget the GET (the client resolves paths via `new URL`).
+    const result = await fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) =>
+        `/v1/companies/${ctx.companyUuid}/payrolls/${encodeURIComponent(payrollUuid)}${toQueryString(parsed.query)}`,
+    );
+    if (!result.ok) return result;
+    return { ...result, human: () => renderPayrollShow(result.data) };
+  };
+}
