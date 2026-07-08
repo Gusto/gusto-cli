@@ -10,7 +10,7 @@ gusto <command> --help    # flags and usage for any subcommand
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Gusto/gusto-cli/main/install.sh | sh
+curl -fsSL https://cli.gusto.com/install.sh | sh
 ```
 
 Pulls the notarized binary for the user's OS/arch from the latest GitHub Release, verifies SHA256, installs to `~/.gusto/bin/gusto`, and updates `PATH`. If the current shell doesn't see `gusto` yet, source the rc file or `export PATH="$HOME/.gusto/bin:$PATH"`. Then `gusto --help` to verify.
