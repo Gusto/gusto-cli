@@ -41,7 +41,7 @@ echo "$TOKEN" | gusto employee list --token-stdin --company-uuid <uuid>
 
 Token resolution order: `--token-stdin` (piped) > `GUSTO_ACCESS_TOKEN` > stored login session (`gusto auth login`). An explicit token always wins so a typo'd secret surfaces the real auth error instead of silently running as the logged-in identity.
 
-`--env sandbox` (default) hits `https://api.gusto-demo.com`. `--env production` hits `https://api.gusto.com`. `GUSTO_API_BASE_URL` overrides both for testing.
+`--env production` (default) hits `https://api.gusto.com`. `--env sandbox` hits `https://api.gusto-demo.com`. `GUSTO_API_BASE_URL` overrides both for testing.
 
 ## Quickstart
 
