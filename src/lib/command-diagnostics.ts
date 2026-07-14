@@ -9,9 +9,12 @@ export const API_HATCH_HINT = "for a read without a first-class command yet, use
  * args). Restores the general help guidance commander used to print after such errors. */
 export const USAGE_HELP_HINT = "run `gusto --help` for usage";
 
-/** Largest edit distance we'll still treat as a plausible typo when suggesting a command. Keeps
- * "compant"->"company" (1) and "shwo"->"show" (2) but rejects "blork"->"show" (4). */
-const SUGGESTION_MAX_DISTANCE = 3;
+/** A suggestion must be closer than this fraction of the longer string's length. Scaling to length
+ * (rather than a flat distance) stops short command names from swallowing any typo: `levenshtein
+ * ("xyz", "api")` is 3, which a flat cutoff of 3 would wrongly accept. At 0.6 it keeps the real
+ * catches ("compant"->"company" 1/7, "shwo"->"show" 2/4) and rejects "xyz"->"api" (3/3) and
+ * "blork"->"show" (4/5). */
+const SUGGESTION_MAX_DISTANCE_RATIO = 0.6;
 
 /** Levenshtein edit distance (insert/delete/substitute, each cost 1) via the standard single-row
  * dynamic program. Used to rank command suggestions. */
@@ -33,8 +36,9 @@ export function levenshtein(a: string, b: string): number {
   return prev[b.length];
 }
 
-/** The candidate closest to `input` by edit distance, or undefined when the best match is further
- * than SUGGESTION_MAX_DISTANCE. Ties resolve to the first candidate in `candidates` order. */
+/** The candidate closest to `input` by edit distance, or undefined when even the best match is too
+ * far to be a plausible typo (see SUGGESTION_MAX_DISTANCE_RATIO). Ties resolve to the first candidate
+ * in `candidates` order. */
 export function nearestCommand(input: string, candidates: readonly string[]): string | undefined {
   let best: string | undefined;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -45,7 +49,9 @@ export function nearestCommand(input: string, candidates: readonly string[]): st
       bestDistance = distance;
     }
   }
-  return bestDistance <= SUGGESTION_MAX_DISTANCE ? best : undefined;
+  if (best === undefined) return undefined;
+  const maxLen = Math.max(input.length, best.length);
+  return bestDistance < maxLen * SUGGESTION_MAX_DISTANCE_RATIO ? best : undefined;
 }
 
 /** Visible subcommand names of `command`, excluding the implicit `help` command. */
@@ -58,13 +64,15 @@ function matchesCommand(command: Command, token: string): boolean {
   return command.name() === token || command.aliases().includes(token);
 }
 
-/** True when `token` is an option (defined on `command` or the root `program`) that takes a required
- * value in the separate-token form (e.g. `--env <env>`), so the walk must also skip the value that
- * follows it - otherwise that value gets mistaken for a subcommand. Options with an attached value
- * (`--env=sandbox`) are a single token and don't reach here. */
-function optionConsumesNextToken(command: Command, root: Command, token: string): boolean {
+/** True when `token` names an option (on `command` or the root `program`) that takes a value in the
+ * separate-token form - required (`--env <env>`) or optional (`--fields [list]`). Commander consumes
+ * the following bare token as the value in both cases (verified: `--fields somekey bogus` reads
+ * `somekey` as the value), so the walk must skip it or that value gets mistaken for a subcommand. The
+ * call site handles the two forms commander does NOT consume: an attached `--env=x` (one token) and a
+ * following option-like token (`--fields --json`). */
+function optionTakesValue(command: Command, root: Command, token: string): boolean {
   const opt = [...command.options, ...root.options].find((o) => o.short === token || o.long === token);
-  return opt?.required === true;
+  return opt?.required === true || opt?.optional === true;
 }
 
 export interface UnknownCommandDiagnosis {
@@ -89,7 +97,17 @@ export function diagnoseUnknownCommand(program: Command, args: readonly string[]
   for (let i = 0; i < args.length; i++) {
     const token = args[i];
     if (token.startsWith("-")) {
-      if (!token.includes("=") && optionConsumesNextToken(current, program, token)) i++;
+      const next = args[i + 1];
+      // Skip an option's separate value so it isn't read as a subcommand. Commander only consumes a
+      // following token that is not itself option-like; an attached `=value` is already one token.
+      if (
+        !token.includes("=") &&
+        next !== undefined &&
+        !next.startsWith("-") &&
+        optionTakesValue(current, program, token)
+      ) {
+        i++;
+      }
       continue;
     }
     const sub = current.commands.find((c) => matchesCommand(c, token));
@@ -107,9 +125,18 @@ export function diagnoseUnknownCommand(program: Command, args: readonly string[]
   return undefined;
 }
 
+/** The closed set of `error.code` values a commander usage error maps to. */
+export type UsageErrorCode =
+  | "unknown_command"
+  | "unknown_option"
+  | "excess_arguments"
+  | "missing_argument"
+  | "invalid_argument"
+  | "cli_usage";
+
 /** Map a commander error code (e.g. `commander.unknownOption`) to the snake_case `error.code` used
  * in the agent envelope. Unrecognized codes collapse to the generic `cli_usage`. */
-export function usageErrorCode(commanderCode: string | undefined): string {
+export function usageErrorCode(commanderCode: string | undefined): UsageErrorCode {
   switch (commanderCode) {
     case "commander.unknownCommand":
       return "unknown_command";

@@ -57,6 +57,12 @@ describe("nearestCommand", () => {
     expect(nearestCommand("blork", ["show", "locations"])).toBeUndefined();
   });
 
+  test("a random typo does not match a short command name", () => {
+    // levenshtein("xyz","api") is 3; a flat cutoff of 3 would wrongly suggest it. The length-scaled
+    // threshold rejects it while still catching real typos of longer names.
+    expect(nearestCommand("xyz", ["api", "auth", "company"])).toBeUndefined();
+  });
+
   test("an exact match wins", () => {
     expect(nearestCommand("get", ["show", "list", "get"])).toBe("get");
   });
@@ -128,6 +134,23 @@ describe("diagnoseUnknownCommand", () => {
     const program = buildTestProgram();
     program.option("--env <env>", "environment");
     const d = diagnoseUnknownCommand(program, ["--env=sandbox", "bogus"]);
+    expect(d?.token).toBe("bogus");
+  });
+
+  test("the value of an optional-value option is not mistaken for the unknown command", () => {
+    const program = buildTestProgram();
+    program.option("--fields [list]", "fields");
+    // commander reads `somekey` as `--fields`'s value, so the real unknown command is `bogus`.
+    const d = diagnoseUnknownCommand(program, ["--fields", "somekey", "bogus"]);
+    expect(d?.token).toBe("bogus");
+    expect(d?.parent).toBe("gusto");
+  });
+
+  test("a value-option followed by an option flag does not over-skip the next token", () => {
+    const program = buildTestProgram();
+    program.option("--env <env>", "environment");
+    // `--env` has no value here (the next token is a flag), so `bogus` must still be diagnosed.
+    const d = diagnoseUnknownCommand(program, ["--env", "--json", "bogus"]);
     expect(d?.token).toBe("bogus");
   });
 });

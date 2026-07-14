@@ -100,6 +100,14 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  test("pay-schedule get (second alias for show) dispatches the show handler instead of erroring", async () => {
+    // pay-schedule is the only command stacking two aliases (`list` and `get`) on one subcommand;
+    // exercise `get` too so a regression where one alias shadows the other would be caught.
+    const result = await run(["pay-schedule", "get"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("company get (alias for show) dispatches the show handler instead of erroring", async () => {
     // Agents reach for `company get` first; the alias means they hit the show
     // handler (exit 3 no_access_token without a token) rather than commander's
