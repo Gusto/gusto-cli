@@ -109,6 +109,20 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  // The `get` alias is wired onto every read entity's `show`, so an agent's near-universal `get`
+  // guess dispatches the show handler (exit 3 without a token) instead of commander's unknown-command
+  // (exit 2) that would stop it. company + pay-schedule are covered above; the rest here.
+  test.each([
+    ["employee", ["employee", "get", "employee-uuid-123"]],
+    ["contractor", ["contractor", "get", "contractor-uuid-123"]],
+    ["payroll", ["payroll", "get", "payroll-uuid-123"]],
+    ["ledger", ["ledger", "get", "payroll-uuid-123"]],
+  ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll list without a token returns no_access_token (exit 3)", async () => {
     const result = await run(["payroll", "list"]);
     expect(result.exitCode).toBe(3);
@@ -133,6 +147,45 @@ describe("auth required commands without a token", () => {
     const result = await run(["ledger", "show", "payroll-uuid-123", "--no-wait"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+});
+
+describe("usage errors are self-correcting envelopes in agent mode", () => {
+  test("an unknown subcommand returns a parseable unknown_command envelope (exit 2)", async () => {
+    // `payroll blockers` has no first-class command; instead of commander's bare stderr line, an
+    // agent gets a {ok:false} envelope on stdout listing the valid subcommands and the api-hatch
+    // fallback, so it can self-correct rather than dead-end.
+    const result = await run(["payroll", "blockers"]);
+    expect(result.exitCode).toBe(2);
+    const env = JSON.parse(result.stdout.trim());
+    expect(env.ok).toBe(false);
+    expect(env.error.code).toBe("unknown_command");
+    expect(env.error.valid_commands).toContain("show");
+    expect(env.error.hint).toContain("gusto api request GET");
+  });
+
+  test("a typo'd top-level command suggests the nearest match", async () => {
+    const result = await run(["compant"]);
+    expect(result.exitCode).toBe(2);
+    const env = JSON.parse(result.stdout.trim());
+    expect(env.error.code).toBe("unknown_command");
+    expect(env.error.did_you_mean).toBe("company");
+  });
+
+  test("an unknown option is a structured unknown_option envelope pointing at --help, not the hatch", async () => {
+    const result = await run(["company", "show", "--nope"]);
+    expect(result.exitCode).toBe(2);
+    const env = JSON.parse(result.stdout.trim());
+    expect(env.error.code).toBe("unknown_option");
+    expect(env.error.valid_commands).toBeUndefined();
+    expect(env.error.hint).toBe("run `gusto --help` for usage");
+  });
+
+  test("a command group with no subcommand still prints help (exit 0), not an envelope", async () => {
+    const result = await run(["company"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("");
+    expect(result.stderr).toContain("Commands:");
   });
 });
 

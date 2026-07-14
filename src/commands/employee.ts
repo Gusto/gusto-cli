@@ -23,6 +23,8 @@ export function registerEmployeeCommand(parent: Command): void {
 
   cmd
     .command("show <employee_uuid>")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
     .description("Read employee record")
     .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>

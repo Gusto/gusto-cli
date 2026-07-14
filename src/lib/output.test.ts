@@ -93,6 +93,46 @@ describe("emit", () => {
     expect(stderr.buffer).toBe("error: missing fields\nblocked on:\n  - ein: required\n");
   });
 
+  test("agent mode surfaces did_you_mean, available commands, and hint on stderr", () => {
+    const { sinks, stdout, stderr } = captureSinks();
+    const error = {
+      code: "unknown_command",
+      message: "unknown command 'shwo' for 'gusto payroll'",
+      valid_commands: ["list", "show"],
+      did_you_mean: "show",
+      hint: "for a read without a first-class command yet, use: gusto api request GET <path>",
+    };
+    emit({ mode: "agent", color: false, verbose: false }, { ok: false, error }, sinks);
+    expect(stdout.buffer).toBe(`${JSON.stringify({ ok: false, error })}\n`);
+    expect(stderr.buffer).toBe(
+      "error: unknown command 'shwo' for 'gusto payroll'\n" +
+        "did you mean: show?\n" +
+        "available commands: list, show\n" +
+        "hint: for a read without a first-class command yet, use: gusto api request GET <path>\n",
+    );
+  });
+
+  test("human mode renders did_you_mean, available commands, and hint to stderr", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "human", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "unknown_command",
+          message: "unknown command 'blork' for 'gusto company'",
+          valid_commands: ["show", "locations"],
+          hint: "for a read without a first-class command yet, use: gusto api request GET <path>",
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toContain("error: unknown command 'blork' for 'gusto company'");
+    expect(stderr.buffer).not.toContain("did you mean");
+    expect(stderr.buffer).toContain("available commands: show, locations");
+    expect(stderr.buffer).toContain("hint: for a read without a first-class command yet");
+  });
+
   test("human mode writes structured data as pretty JSON to stdout", () => {
     const { sinks, stdout } = captureSinks();
     emit({ mode: "human", color: false, verbose: false }, { ok: true, data: { id: "x" } }, sinks);
