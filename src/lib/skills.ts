@@ -56,7 +56,7 @@ export function getSkill(name: string): Skill | null {
   return SKILLS[name] ?? null;
 }
 
-export type SkillsDirKind = "claude" | "cursor" | "windsurf";
+export type SkillsDirKind = "claude" | "cursor" | "codex" | "cline" | "windsurf";
 
 export interface SkillsDir {
   path: string;
@@ -64,18 +64,71 @@ export interface SkillsDir {
   scope: "local" | "global";
 }
 
-const DIR_KINDS: ReadonlyArray<{ dir: string; kind: SkillsDirKind }> = [
-  { dir: ".claude/skills", kind: "claude" },
-  { dir: ".cursor/skills", kind: "cursor" },
-  { dir: ".windsurf/skills", kind: "windsurf" },
+/** One entry per agent tool we know how to install skills for. Single source of truth so the
+ * auto-install fan-out, the walk-up for explicit `gusto skill install`, the `--target` override,
+ * and the "no tool detected" warning all stay in agreement. All five tools read the same
+ * `SKILL.md` format; only Claude recognizes the `user-invocable` frontmatter line. */
+interface ToolTarget {
+  kind: SkillsDirKind;
+  /** Path segments under the home dir for the machine-global skills dir (auto-install target). */
+  globalDir: string[];
+  /** Directory (relative to a repo dir) matched when walking up from cwd for explicit install. */
+  projectDir: string;
+  /** Path segments under the home dir whose existence signals the tool is installed on this box. */
+  homeMarker: string[];
+  /** Claude-only: augment the installed SKILL.md frontmatter with `user-invocable: true`. */
+  injectUserInvocable: boolean;
+}
+
+const TOOLS: readonly ToolTarget[] = [
+  {
+    kind: "claude",
+    globalDir: [".claude", "skills"],
+    projectDir: ".claude/skills",
+    homeMarker: [".claude"],
+    injectUserInvocable: true,
+  },
+  {
+    kind: "cursor",
+    globalDir: [".cursor", "skills"],
+    projectDir: ".cursor/skills",
+    homeMarker: [".cursor"],
+    injectUserInvocable: false,
+  },
+  {
+    kind: "codex",
+    globalDir: [".codex", "skills"],
+    projectDir: ".agents/skills",
+    homeMarker: [".codex"],
+    injectUserInvocable: false,
+  },
+  {
+    kind: "cline",
+    globalDir: [".cline", "skills"],
+    projectDir: ".cline/skills",
+    homeMarker: [".cline"],
+    injectUserInvocable: false,
+  },
+  {
+    kind: "windsurf",
+    globalDir: [".codeium", "windsurf", "skills"],
+    projectDir: ".windsurf/skills",
+    homeMarker: [".codeium"],
+    injectUserInvocable: false,
+  },
 ];
+
+const TOOL_BY_KIND = Object.fromEntries(TOOLS.map((t) => [t.kind, t])) as Record<SkillsDirKind, ToolTarget>;
+
+/** The tool kinds a `--target` / GUSTO_SKILLS_TARGET value may name. */
+export const SKILL_TARGET_KINDS: readonly SkillsDirKind[] = TOOLS.map((t) => t.kind);
 
 export function findSkillsDir(startDir: string = process.cwd(), home: string = homedir()): SkillsDir {
   let cur = path.resolve(startDir);
   while (true) {
-    for (const { dir, kind } of DIR_KINDS) {
-      const candidate = path.join(cur, dir);
-      if (existsSync(candidate)) return { path: candidate, kind, scope: "local" };
+    for (const tool of TOOLS) {
+      const candidate = path.join(cur, tool.projectDir);
+      if (existsSync(candidate)) return { path: candidate, kind: tool.kind, scope: "local" };
     }
     const parent = path.dirname(cur);
     if (parent === cur) break;
@@ -84,12 +137,57 @@ export function findSkillsDir(startDir: string = process.cwd(), home: string = h
   return globalClaudeSkillsDir(home);
 }
 
-/** Always-global Claude skills target. Used by `auth login` auto-install where the goal is
- * "any agent on this machine sees the skill" - independent of where the user happens to be
- * `cd`'d when they sign in. `findSkillsDir`'s walk-up-from-cwd is still the right shape for
- * explicit `gusto skill install`, where the user may scope to a repo on purpose. */
+/** The machine-global skills dir for one tool. */
+export function globalSkillsDir(kind: SkillsDirKind, home: string = homedir()): SkillsDir {
+  return { path: path.join(home, ...TOOL_BY_KIND[kind].globalDir), kind, scope: "global" };
+}
+
+/** Always-global Claude skills target, kept as the explicit-install fallback (a human who runs
+ * `gusto skill install` outside any project dir still gets a sensible default). */
 export function globalClaudeSkillsDir(home: string = homedir()): SkillsDir {
-  return { path: path.join(home, ".claude", "skills"), kind: "claude", scope: "global" };
+  return globalSkillsDir("claude", home);
+}
+
+/** Global skills dirs for every supported tool detected on this machine, keyed on the tool's home
+ * dir existing (not its skills subdir, so a freshly installed tool still gets ours). Empty when no
+ * supported tool is present. This is the login auto-install fan-out: "any agent on this machine
+ * sees the skill", independent of where the user was `cd`'d at sign-in. */
+export function autoInstallTargets(home: string = homedir()): SkillsDir[] {
+  return TOOLS.filter((t) => existsSync(path.join(home, ...t.homeMarker))).map((t) => globalSkillsDir(t.kind, home));
+}
+
+export type TargetResolution = { ok: true; dirs: SkillsDir[] } | { ok: false; invalid: string[] };
+
+/** Parse a `--target` / GUSTO_SKILLS_TARGET spec (comma-separated tool kinds, or the literal `all`)
+ * into global skills dirs. Unlike `autoInstallTargets`, an explicit target bypasses presence
+ * detection and installs exactly where the user asks, creating the dir as needed. Returns the
+ * unrecognized tokens on failure so the caller can surface a structured retry. */
+export function resolveSkillTargets(spec: string, home: string = homedir()): TargetResolution {
+  const tokens = spec
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return { ok: false, invalid: [spec] };
+  if (tokens.includes("all")) {
+    return { ok: true, dirs: SKILL_TARGET_KINDS.map((k) => globalSkillsDir(k, home)) };
+  }
+  const invalid = tokens.filter((t) => !(t in TOOL_BY_KIND));
+  if (invalid.length > 0) return { ok: false, invalid };
+  const seen = new Set<SkillsDirKind>();
+  const dirs: SkillsDir[] = [];
+  for (const token of tokens as SkillsDirKind[]) {
+    if (seen.has(token)) continue;
+    seen.add(token);
+    dirs.push(globalSkillsDir(token, home));
+  }
+  return { ok: true, dirs };
+}
+
+/** Tool kinds and their home-marker paths in tilde form, for the "no supported tool detected"
+ * warning. Built from the same registry `autoInstallTargets` probes, so the message cannot drift
+ * from what detection actually checks. */
+export function supportedToolHomeLabels(): { kind: SkillsDirKind; label: string }[] {
+  return TOOLS.map((t) => ({ kind: t.kind, label: path.join("~", ...t.homeMarker) }));
 }
 
 export type SkillStatus = "not_installed" | "installed" | "stale";
@@ -105,7 +203,7 @@ export interface InstallResult {
 }
 
 function expectedContent(skill: Skill, kind: SkillsDirKind): string {
-  return kind === "claude" ? injectUserInvocable(skill.content) : skill.content;
+  return TOOL_BY_KIND[kind].injectUserInvocable ? injectUserInvocable(skill.content) : skill.content;
 }
 
 function installedPath(dir: SkillsDir, name: string): string {
@@ -180,6 +278,7 @@ export type AutoInstallAction = "installed" | "already_up_to_date" | "skipped_us
 export interface AutoInstallResult {
   skill: string;
   installedAt: string;
+  kind: SkillsDirKind;
   action: AutoInstallAction;
 }
 
@@ -199,13 +298,13 @@ export async function installBundledSkills(dir: SkillsDir = globalClaudeSkillsDi
     switch (status) {
       case "not_installed":
         await writeSkillFile(dir, targetFile, expectedContent(skill, dir.kind));
-        out.push({ skill: skill.name, installedAt: targetFile, action: "installed" });
+        out.push({ skill: skill.name, installedAt: targetFile, kind: dir.kind, action: "installed" });
         break;
       case "stale":
-        out.push({ skill: skill.name, installedAt: targetFile, action: "skipped_user_edited" });
+        out.push({ skill: skill.name, installedAt: targetFile, kind: dir.kind, action: "skipped_user_edited" });
         break;
       case "installed":
-        out.push({ skill: skill.name, installedAt: targetFile, action: "already_up_to_date" });
+        out.push({ skill: skill.name, installedAt: targetFile, kind: dir.kind, action: "already_up_to_date" });
         break;
       default: {
         // Compile-time exhaustiveness guard: adding a new SkillStatus variant without
@@ -214,6 +313,17 @@ export async function installBundledSkills(dir: SkillsDir = globalClaudeSkillsDi
         throw new Error(`unhandled SkillStatus: ${String(_exhaustive)}`);
       }
     }
+  }
+  return out;
+}
+
+/** Install every bundled skill into each of the given dirs and flatten the results. This is the
+ * login auto-install fan-out: a machine running two agent tools gets skills in both. Each dir is
+ * installed conservatively (see `installBundledSkills`); a symlink escape in any dir throws. */
+export async function installBundledSkillsInto(dirs: SkillsDir[]): Promise<AutoInstallResult[]> {
+  const out: AutoInstallResult[] = [];
+  for (const dir of dirs) {
+    out.push(...(await installBundledSkills(dir)));
   }
   return out;
 }

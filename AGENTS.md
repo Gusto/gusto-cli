@@ -53,3 +53,5 @@ The OAuth callback hits `127.0.0.1`, so the user signs in on the same host as th
 ## Bundled skills
 
 `gusto skill list` shows what's available; `gusto skill install <name>` installs one into the project's agent workspace. `gusto auth login` offers to auto-install bundled skills on first sign-in. `cash-forecasting` projects upcoming payroll cash needs, `timesheet-sync` drives the per-cycle timesheet input flow, and `payroll-prep` maps an owner's per-cycle inputs (hours, tips, commission, bonus, reimbursement) onto a draft payroll for review.
+
+The login auto-install is tool-agnostic: it detects every supported agent tool on the machine (Claude Code, Cursor, Codex, Cline, Windsurf, keyed on each one's home dir) and installs into each tool's own global skills directory, so skills load in whichever tool drives the CLI. Force specific tools with `--target <claude,cursor,codex,cline,windsurf|all>` or `GUSTO_SKILLS_TARGET` (this overrides detection and a persisted `never` for that run); when no supported tool is detected the CLI installs nothing and reports where it looked. Discover flags with `gusto auth login --help`, not this file.

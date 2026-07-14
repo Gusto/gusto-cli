@@ -99,7 +99,19 @@ gusto skill list
 gusto skill install cash-forecasting
 ```
 
-The install command walks up the cwd looking for `.claude/skills`, `.cursor/skills`, or `.windsurf/skills`. Falls back to `~/.claude/skills`. For `.claude` targets, the SKILL.md frontmatter gets `user-invocable: true` so the skill appears as a slash command in Claude Code.
+The install command walks up the cwd looking for a project skills directory: `.claude/skills`, `.cursor/skills`, `.agents/skills` (Codex), `.cline/skills`, or `.windsurf/skills`. Falls back to `~/.claude/skills`. For `.claude` targets, the SKILL.md frontmatter gets `user-invocable: true` so the skill appears as a slash command in Claude Code.
+
+On `gusto auth login`, the bundled skills auto-install into every supported agent tool detected on the machine, so they load in whichever tool you drive the CLI from:
+
+| Tool | Global skills directory |
+| --- | --- |
+| Claude Code | `~/.claude/skills` |
+| Cursor | `~/.cursor/skills` |
+| Codex | `~/.codex/skills` |
+| Cline | `~/.cline/skills` |
+| Windsurf | `~/.codeium/windsurf/skills` |
+
+Detection keys on each tool's home directory (`~/.claude`, `~/.cursor`, `~/.codex`, `~/.cline`, `~/.codeium`). To install into specific tools instead of auto-detecting, pass `--target` (comma-separated `claude,cursor,codex,cline,windsurf`, or `all`) or set `GUSTO_SKILLS_TARGET`; `--target` wins over the env var, and either one overrides detection and a persisted `never` for that run. If no supported tool is found, nothing is installed and the CLI prints where it looked. Skip the install for one run with `--no-skills`, or opt out permanently with `gusto config set skills_auto_install never`.
 
 ## Development
 

@@ -3,13 +3,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  autoInstallTargets,
   findSkillsDir,
   getSkill,
   getSkillStatus,
+  globalSkillsDir,
   injectUserInvocable,
   installBundledSkills,
+  installBundledSkillsInto,
   installSkill,
   listSkills,
+  resolveSkillTargets,
+  supportedToolHomeLabels,
 } from "./skills.ts";
 
 let scratch: string;
@@ -245,5 +250,147 @@ describe("installBundledSkills", () => {
     const results = await installBundledSkills(dir);
     expect(results.find((r) => r.skill === "cash-forecasting")?.action).toBe("skipped_user_edited");
     expect(readFileSync(target, "utf8")).toBe(userEdit);
+  });
+
+  test("tags each result with the tool kind it installed into", async () => {
+    const dir = { path: path.join(scratch, ".cursor", "skills"), kind: "cursor" as const, scope: "global" as const };
+    const results = await installBundledSkills(dir);
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) expect(r.kind).toBe("cursor");
+  });
+});
+
+describe("globalSkillsDir", () => {
+  test("maps each supported tool kind to its native global skills dir", () => {
+    const home = "/home/u";
+    expect(globalSkillsDir("claude", home).path).toBe(path.join(home, ".claude", "skills"));
+    expect(globalSkillsDir("cursor", home).path).toBe(path.join(home, ".cursor", "skills"));
+    expect(globalSkillsDir("codex", home).path).toBe(path.join(home, ".codex", "skills"));
+    expect(globalSkillsDir("cline", home).path).toBe(path.join(home, ".cline", "skills"));
+    expect(globalSkillsDir("windsurf", home).path).toBe(path.join(home, ".codeium", "windsurf", "skills"));
+  });
+
+  test("carries the kind and global scope", () => {
+    const dir = globalSkillsDir("codex", "/home/u");
+    expect(dir.kind).toBe("codex");
+    expect(dir.scope).toBe("global");
+  });
+});
+
+describe("autoInstallTargets", () => {
+  // Presence is keyed on the tool's home directory existing, not its skills subdir,
+  // so a freshly installed tool that hasn't created a skills dir yet still gets ours.
+  const mark = (home: string, ...dirs: string[]) => {
+    for (const d of dirs) mkdirSync(path.join(home, d), { recursive: true });
+  };
+
+  test("returns nothing when no supported tool is present", () => {
+    expect(autoInstallTargets(scratch)).toEqual([]);
+  });
+
+  test("returns only the present tool's global dir", () => {
+    mark(scratch, ".cursor");
+    const targets = autoInstallTargets(scratch);
+    expect(targets.map((d) => d.kind)).toEqual(["cursor"]);
+    expect(targets[0].path).toBe(path.join(scratch, ".cursor", "skills"));
+  });
+
+  test("fans out to every present tool", () => {
+    mark(scratch, ".claude", ".codex", ".codeium");
+    const kinds = autoInstallTargets(scratch)
+      .map((d) => d.kind)
+      .sort();
+    expect(kinds).toEqual(["claude", "codex", "windsurf"]);
+  });
+});
+
+describe("resolveSkillTargets", () => {
+  test("resolves a single kind to its global dir", () => {
+    const res = resolveSkillTargets("cursor", "/home/u");
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.dirs.map((d) => d.kind)).toEqual(["cursor"]);
+    expect(res.dirs[0].path).toBe(path.join("/home/u", ".cursor", "skills"));
+  });
+
+  test("resolves a comma list, trims, and dedups", () => {
+    const res = resolveSkillTargets(" claude , cursor , claude ", "/home/u");
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.dirs.map((d) => d.kind)).toEqual(["claude", "cursor"]);
+  });
+
+  test("'all' expands to every supported tool", () => {
+    const res = resolveSkillTargets("all", "/home/u");
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    expect(res.dirs.map((d) => d.kind).sort()).toEqual(["claude", "cline", "codex", "cursor", "windsurf"]);
+  });
+
+  test("reports unknown kinds and does not resolve", () => {
+    const res = resolveSkillTargets("cursor,emacs,vim", "/home/u");
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.invalid).toEqual(["emacs", "vim"]);
+  });
+
+  test("an empty spec is invalid", () => {
+    const res = resolveSkillTargets("   ", "/home/u");
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("supportedToolHomeLabels", () => {
+  test("lists every supported tool with a tilde home-marker label, from the same registry detection uses", () => {
+    const labels = supportedToolHomeLabels();
+    expect(labels.map((l) => l.kind).sort()).toEqual(["claude", "cline", "codex", "cursor", "windsurf"]);
+    const byKind = Object.fromEntries(labels.map((l) => [l.kind, l.label]));
+    expect(byKind.claude).toBe("~/.claude");
+    expect(byKind.windsurf).toBe("~/.codeium");
+  });
+});
+
+describe("installBundledSkillsInto", () => {
+  test("fans out every bundled skill into each given dir", async () => {
+    const dirs = [
+      { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "global" as const },
+      { path: path.join(scratch, ".cursor", "skills"), kind: "cursor" as const, scope: "global" as const },
+    ];
+    const results = await installBundledSkillsInto(dirs);
+    expect(results.length).toBe(listSkills().length * 2);
+    expect(results.filter((r) => r.kind === "claude").length).toBe(listSkills().length);
+    expect(results.filter((r) => r.kind === "cursor").length).toBe(listSkills().length);
+    for (const r of results) expect(existsSync(r.installedAt)).toBe(true);
+  });
+
+  test("injects user-invocable only into the claude copy, not the cursor copy", async () => {
+    const dirs = [
+      { path: path.join(scratch, ".claude", "skills"), kind: "claude" as const, scope: "global" as const },
+      { path: path.join(scratch, ".cursor", "skills"), kind: "cursor" as const, scope: "global" as const },
+    ];
+    await installBundledSkillsInto(dirs);
+    const claudeCopy = readFileSync(path.join(scratch, ".claude", "skills", "cash-forecasting", "SKILL.md"), "utf8");
+    const cursorCopy = readFileSync(path.join(scratch, ".cursor", "skills", "cash-forecasting", "SKILL.md"), "utf8");
+    expect(claudeCopy).toContain("user-invocable: true");
+    expect(cursorCopy).not.toContain("user-invocable: true");
+  });
+
+  test("returns an empty array when given no dirs", async () => {
+    expect(await installBundledSkillsInto([])).toEqual([]);
+  });
+});
+
+describe("findSkillsDir - added tool kinds", () => {
+  test("recognizes Codex project skills at .agents/skills", () => {
+    mkdirSync(path.join(scratch, ".agents", "skills"), { recursive: true });
+    const result = findSkillsDir(scratch, "/no/home");
+    expect(result.kind).toBe("codex");
+    expect(result.scope).toBe("local");
+  });
+
+  test("recognizes Cline project skills at .cline/skills", () => {
+    mkdirSync(path.join(scratch, ".cline", "skills"), { recursive: true });
+    const result = findSkillsDir(scratch, "/no/home");
+    expect(result.kind).toBe("cline");
   });
 });
