@@ -117,13 +117,19 @@ export function usageErrorCode(commanderCode: string | undefined): string {
       return "unknown_option";
     case "commander.excessArguments":
       return "excess_arguments";
-    case "commander.missingArgument":
-      return "missing_argument";
     case "commander.invalidArgument":
       return "invalid_argument";
     default:
       return "cli_usage";
   }
+}
+
+/** Extract the argument name(s) from commander's "missing required argument 'x'" message into a
+ * blocked_on list. Commander reports one missing arg at a time; the fallback keeps a usable entry if
+ * the message wording ever changes. */
+function missingArgumentBlockedOn(message: string): BlockedOn[] {
+  const names = [...message.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  return (names.length > 0 ? names : ["argument"]).map((field) => ({ field, reason: "required" }));
 }
 
 /** Commander prefixes its messages with "error: "; drop it so the envelope message reads cleanly. */
@@ -153,6 +159,12 @@ export function usageErrorEnvelope(
         hint: API_HATCH_HINT,
       };
     }
+  }
+  // A missing required positional is the documented blocked_on/exit-7 case (CLAUDE.md), so mirror the
+  // handler-level `missingArgs` shape exactly (code "validation" + blocked_on) rather than reporting a
+  // commander-specific usage error - agents get one consistent contract for "you left out a field".
+  if (commanderCode === "commander.missingArgument") {
+    return { code: "validation", message: "missing required arguments", blocked_on: missingArgumentBlockedOn(message) };
   }
   return { code: usageErrorCode(commanderCode), message: stripErrorPrefix(message), hint: USAGE_HELP_HINT };
 }

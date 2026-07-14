@@ -137,7 +137,6 @@ describe("usageErrorCode", () => {
     expect(usageErrorCode("commander.unknownCommand")).toBe("unknown_command");
     expect(usageErrorCode("commander.unknownOption")).toBe("unknown_option");
     expect(usageErrorCode("commander.excessArguments")).toBe("excess_arguments");
-    expect(usageErrorCode("commander.missingArgument")).toBe("missing_argument");
     expect(usageErrorCode("commander.invalidArgument")).toBe("invalid_argument");
   });
 
@@ -168,6 +167,19 @@ describe("usageErrorEnvelope", () => {
     expect(env.code).toBe("unknown_command");
     expect(env.valid_commands).toEqual(["show", "locations"]);
     expect(env.did_you_mean).toBeUndefined();
+  });
+
+  test("a missing required argument becomes the documented blocked_on/validation envelope", () => {
+    const env = usageErrorEnvelope(
+      "commander.missingArgument",
+      "error: missing required argument 'contractor_uuid'",
+      buildTestProgram(),
+      ["contractor", "show"],
+    );
+    expect(env.code).toBe("validation");
+    expect(env.message).toBe("missing required arguments");
+    expect(env.blocked_on).toEqual([{ field: "contractor_uuid", reason: "required" }]);
+    expect(env.hint).toBeUndefined();
   });
 
   test("other usage errors keep their message (prefix stripped), omit the hatch hint, and point at --help", () => {

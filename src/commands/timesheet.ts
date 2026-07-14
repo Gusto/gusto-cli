@@ -289,6 +289,8 @@ export function registerTimesheetCommand(parent: Command): void {
 
   cmd
     .command("show <time_sheet_uuid>")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
     .description("Read a single time sheet")
     .option(...TOKEN_STDIN_OPT)
     .action((timeSheetUuid: string, opts: TimesheetShowOpts) =>

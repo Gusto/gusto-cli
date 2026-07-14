@@ -93,6 +93,10 @@ function exitCodeForCommanderError(err: CommanderError): number {
     case "commander.help":
     case "commander.version":
       return ExitCode.Success;
+    // A missing required positional is a validation failure, not a generic usage error: CLAUDE.md
+    // documents it as the exit-7 blocked_on case, matching the handler-level `missingArgs` path.
+    case "commander.missingArgument":
+      return ExitCode.Validation;
     default:
       return ExitCode.CliUsage;
   }

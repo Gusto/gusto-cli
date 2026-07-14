@@ -117,6 +117,7 @@ describe("auth required commands without a token", () => {
     ["contractor", ["contractor", "get", "contractor-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
+    ["timesheet", ["timesheet", "get", "time-sheet-uuid-123"]],
   ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
@@ -179,6 +180,17 @@ describe("usage errors are self-correcting envelopes in agent mode", () => {
     expect(env.error.code).toBe("unknown_option");
     expect(env.error.valid_commands).toBeUndefined();
     expect(env.error.hint).toBe("run `gusto --help` for usage");
+  });
+
+  test("a missing required argument returns the documented blocked_on envelope (exit 7)", async () => {
+    // CLAUDE.md: missing required args return a blocked_on envelope (exit 7). commander raises these
+    // for required positionals (e.g. `contractor show <contractor_uuid>`) before the handler runs, so
+    // route them through the same validation shape the handlers use rather than a bare exit-2 line.
+    const result = await run(["contractor", "show"]);
+    expect(result.exitCode).toBe(7);
+    const env = JSON.parse(result.stdout.trim());
+    expect(env.error.code).toBe("validation");
+    expect(env.error.blocked_on).toEqual([{ field: "contractor_uuid", reason: "required" }]);
   });
 
   test("a command group with no subcommand still prints help (exit 0), not an envelope", async () => {
