@@ -411,7 +411,7 @@ export class ApiClient {
 export function stderrRequestObserver(stderr: NodeJS.WritableStream): RequestObserver {
   return (e) => {
     const rid = e.requestId ? ` request_id=${dedupeRequestId(e.requestId)}` : "";
-    stderr.write(`> ${e.method} ${e.path} ${e.status} (${e.durationMs}ms)${rid}\n`);
+    stderr.write(`> ${e.method} ${e.path} ${e.status} (${e.durationMs}ms)${rid}\n`); // noboost
   };
 }
 
