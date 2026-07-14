@@ -1,6 +1,5 @@
-import { ApiClient } from "./api-client.ts";
-import { type AuthOpts, resolveAuthToken } from "./api-context.ts";
-import { resolveApiVersion, resolveMcpBaseUrl } from "./env.ts";
+import { type AuthOpts, buildApiClient, resolveAuthToken } from "./api-context.ts";
+import { resolveMcpBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
@@ -38,10 +37,9 @@ export async function callMcpTool(
   const resolved = await resolveAuthToken(globals, opts);
   if (!resolved.ok) return resolved.result;
 
-  const client = new ApiClient({
+  const client = buildApiClient(globals, {
     baseUrl: resolveMcpBaseUrl(globals.env),
     token: resolved.token,
-    apiVersion: resolveApiVersion(),
   });
 
   const body = {

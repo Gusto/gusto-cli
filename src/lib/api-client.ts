@@ -109,7 +109,22 @@ export interface ApiClientOptions {
   maxRetries?: number;
   /** Sleep duration (ms) before retry attempt `n` (zero-indexed). Override in tests to skip waits. */
   retrySleepMs?: (attempt: number) => number;
+  /** Optional per-request observer; called once per attempt on success and failure. When set,
+   * powers `--verbose` stderr logging. */
+  observer?: RequestObserver;
 }
+
+/** One HTTP attempt as seen by the client. `status` is `0` for a pre-response network fault
+ * (no bytes came back), so a fault reads distinctly from a "server returned 0" impossibility. */
+export interface RequestEvent {
+  method: string;
+  path: string;
+  status: number;
+  requestId?: string;
+  durationMs: number;
+}
+
+export type RequestObserver = (event: RequestEvent) => void;
 
 export interface ApiResponse<T = unknown> {
   status: number;
@@ -131,6 +146,7 @@ export class ApiClient {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly retrySleepMs: (attempt: number) => number;
+  private readonly observer?: RequestObserver;
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
@@ -141,6 +157,7 @@ export class ApiClient {
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
     // Exponential backoff: 1s, 2s, 4s, 8s. Tests override to skip waits.
     this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
+    this.observer = opts.observer;
   }
 
   get<T = unknown>(path: string, opts?: RequestOptions): Promise<ApiResponse<T>> {
@@ -339,10 +356,12 @@ export class ApiClient {
       init = { ...init, body: JSON.stringify(body) };
     }
 
+    const start = performance.now();
     let response: Response;
     try {
       response = await this.fetchImpl(url, init);
     } catch (err) {
+      this.emit(method, path, 0, undefined, start);
       const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
         throw new NetworkError(`request timed out after ${timeoutMs}ms calling ${method} ${url}`, true);
@@ -359,6 +378,8 @@ export class ApiClient {
       responseHeaders[key.toLowerCase()] = value;
     });
 
+    this.emit(method, path, response.status, requestId, start);
+
     if (response.ok) {
       return { status: response.status, body: parsed as T, requestId, headers: responseHeaders };
     }
@@ -366,6 +387,44 @@ export class ApiClient {
     const exitCode = response.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient;
     throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`, requestId);
   }
+
+  private emit(method: string, path: string, status: number, requestId: string | undefined, start: number): void {
+    if (this.observer === undefined) return;
+    try {
+      this.observer({
+        method,
+        path,
+        status,
+        requestId,
+        durationMs: Math.max(0, Math.round(performance.now() - start)),
+      });
+    } catch {
+      // A --verbose flag must never break the command. Realistic failure mode: `stderr.write`
+      // throws EPIPE when the user pipes stderr to a consumer that closes early
+      // (`gusto ... --verbose 2>&1 | head`). Swallow and continue.
+    }
+  }
+}
+
+/** Default `--verbose` formatter: one line per attempt to `stderr`. `> ` prefix keeps it visually
+ * distinct from `error:` on stderr. */
+export function stderrRequestObserver(stderr: NodeJS.WritableStream): RequestObserver {
+  return (e) => {
+    const rid = e.requestId ? ` request_id=${dedupeRequestId(e.requestId)}` : "";
+    stderr.write(`> ${e.method} ${e.path} ${e.status} (${e.durationMs}ms)${rid}\n`);
+  };
+}
+
+/** Collapse a comma-joined `x-request-id` down to its distinct values. Gusto's proxy chain stamps
+ * the header twice on some responses, and `Headers.get()` joins duplicates with a comma - the raw
+ * string `abc,abc` renders as two IDs to a reader. Split, trim, unique, rejoin so identical repeats
+ * become one ID and genuinely distinct proxy hops still show as a comma-joined list. */
+function dedupeRequestId(value: string): string {
+  const parts = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return Array.from(new Set(parts)).join(",");
 }
 
 function safeParseJson(text: string): unknown {
