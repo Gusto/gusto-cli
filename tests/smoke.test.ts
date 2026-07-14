@@ -100,6 +100,15 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  test("company get (alias for show) dispatches the show handler instead of erroring", async () => {
+    // Agents reach for `company get` first; the alias means they hit the show
+    // handler (exit 3 no_access_token without a token) rather than commander's
+    // "unknown command 'get'" (exit 2) that would stop them.
+    const result = await run(["company", "get"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll list without a token returns no_access_token (exit 3)", async () => {
     const result = await run(["payroll", "list"]);
     expect(result.exitCode).toBe(3);

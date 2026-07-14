@@ -17,7 +17,11 @@ export function registerCompanyCommand(parent: Command): void {
   const cmd = parent.command("company").description("Inspect a company");
 
   withContextOptions(
-    cmd.command("show").description("Company overview: record, payment config, and pay schedule"),
+    cmd
+      .command("show")
+      // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+      .alias("get")
+      .description("Company overview: record, payment config, and pay schedule"),
   ).action((opts: CompanyShowOpts) =>
     runReadCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
   );
