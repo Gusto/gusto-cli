@@ -1,24 +1,27 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type ConfigPaths, readConfig, writeConfig } from "../lib/config.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import type { Environment, GlobalFlags } from "../lib/global-flags.ts";
 import { memoryStore } from "../lib/oauth/test-support.ts";
 import type { TokenStore } from "../lib/oauth/token-store.ts";
 import { REQUIRED_SCOPES } from "../lib/oauth/required-scopes.ts";
-import type { SkillsDir } from "../lib/skills.ts";
 import { TEST_CONTEXT as ctx, TEST_GLOBALS, captureSinks, stubGlobalFetch } from "../lib/test-support.ts";
 import {
   CREDENTIAL_SOURCE_LABEL,
+  type SkillInstallDeps,
   authLoginHandler,
   authLogoutHandler,
   authWhoamiHandler,
   buildSignInUrlEmitter,
   loginResultData,
   maybeInstallSkillsAfterLogin,
+  noToolDetectedWarning,
   parseAutoInstallAnswer,
   performLogout,
+  skillsInstallPromptText,
 } from "./auth.ts";
 
 // whoami's token resolution (explicit token first: --token-stdin > env > session)
@@ -131,12 +134,14 @@ describe("maybeInstallSkillsAfterLogin", () => {
   const agent: GlobalFlags = { ...TEST_GLOBALS, agent: true, human: false, json: true };
   let scratch: string;
   let configPaths: ConfigPaths;
-  let skillsDir: SkillsDir;
+  let home: string;
 
   beforeEach(() => {
     scratch = mkdtempSync(path.join(tmpdir(), "gusto-cli-auth-skills-"));
     configPaths = { dir: path.join(scratch, "config"), file: path.join(scratch, "config", "config.toml") };
-    skillsDir = { path: path.join(scratch, "skills"), kind: "claude", scope: "global" };
+    home = path.join(scratch, "home");
+    // A detectable Claude install so the auto-detect fan-out has a target to install into.
+    mkdirSync(path.join(home, ".claude"), { recursive: true });
   });
 
   afterEach(() => {
@@ -146,7 +151,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
   test("skips entirely when persisted preference is 'never'", async () => {
     await writeConfig({ skills_auto_install: "never" }, configPaths);
     const { sinks } = captureSinks();
-    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, skillsDir });
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, home });
     expect(result).toBeUndefined();
   });
 
@@ -155,7 +160,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const { sinks } = captureSinks();
     const result = await maybeInstallSkillsAfterLogin(human, sinks, {
       configPaths,
-      skillsDir,
+      home,
       prompt: async () => {
         throw new Error("prompt should not be called when preference is persisted");
       },
@@ -168,7 +173,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const { sinks } = captureSinks();
     const result = await maybeInstallSkillsAfterLogin(human, sinks, {
       configPaths,
-      skillsDir,
+      home,
       stdinIsTty: true,
       prompt: async () => "always",
     });
@@ -180,7 +185,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const { sinks } = captureSinks();
     const result = await maybeInstallSkillsAfterLogin(human, sinks, {
       configPaths,
-      skillsDir,
+      home,
       stdinIsTty: true,
       prompt: async () => "never",
     });
@@ -192,7 +197,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const { sinks } = captureSinks();
     const result = await maybeInstallSkillsAfterLogin(agent, sinks, {
       configPaths,
-      skillsDir,
+      home,
       stdinIsTty: true,
       prompt: async () => {
         throw new Error("prompt should not be called in agent mode");
@@ -211,7 +216,7 @@ describe("maybeInstallSkillsAfterLogin", () => {
     const { sinks } = captureSinks();
     const result = await maybeInstallSkillsAfterLogin(human, sinks, {
       configPaths,
-      skillsDir,
+      home,
       stdinIsTty: false,
       prompt: async () => {
         throw new Error("prompt should not be called when stdin is not a TTY");
@@ -220,6 +225,296 @@ describe("maybeInstallSkillsAfterLogin", () => {
     expect(result).toBeDefined();
     expect(result!.length).toBeGreaterThan(0);
     expect((await readConfig(configPaths)).skills_auto_install).toBeUndefined();
+  });
+
+  test("fans out into every detected tool's global dir", async () => {
+    mkdirSync(path.join(home, ".cursor"), { recursive: true });
+    await writeConfig({ skills_auto_install: "always" }, configPaths);
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, home });
+    expect(result).toBeDefined();
+    const kinds = new Set(result!.map((r) => r.kind));
+    expect(kinds.has("claude")).toBe(true);
+    expect(kinds.has("cursor")).toBe(true);
+  });
+
+  test("no supported tool detected: installs nothing and warns where it looked", async () => {
+    const emptyHome = path.join(scratch, "empty-home");
+    mkdirSync(emptyHome, { recursive: true });
+    await writeConfig({ skills_auto_install: "always" }, configPaths);
+    const { sinks, stderr } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, home: emptyHome });
+    expect(result).toEqual([]);
+    expect(stderr.buffer).toContain("no supported agent tool");
+    expect(stderr.buffer).toContain("--target");
+    expect(stderr.buffer).toContain("~/.claude");
+  });
+
+  test("'never' is honored over the no-detect warning (no nagging when the user opted out)", async () => {
+    const emptyHome = path.join(scratch, "empty-home-2");
+    mkdirSync(emptyHome, { recursive: true });
+    await writeConfig({ skills_auto_install: "never" }, configPaths);
+    const { sinks, stderr } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, home: emptyHome });
+    expect(result).toBeUndefined();
+    expect(stderr.buffer).toBe("");
+  });
+
+  test("an explicit --target flag (force) installs regardless of a persisted 'never', no prompt", async () => {
+    await writeConfig({ skills_auto_install: "never" }, configPaths);
+    const dirs = [
+      { path: path.join(scratch, "forced", "cursor", "skills"), kind: "cursor" as const, scope: "global" as const },
+    ];
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      dirs,
+      force: true,
+      prompt: async () => {
+        throw new Error("prompt should not be called for an explicit --target");
+      },
+    });
+    expect(result).toBeDefined();
+    expect(result!.every((r) => r.kind === "cursor")).toBe(true);
+  });
+
+  test("an ambient env target (no force) still honors a persisted 'never'", async () => {
+    await writeConfig({ skills_auto_install: "never" }, configPaths);
+    const dirs = [
+      { path: path.join(scratch, "env", "cursor", "skills"), kind: "cursor" as const, scope: "global" as const },
+    ];
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, dirs });
+    expect(result).toBeUndefined();
+  });
+
+  test("an env target (no force) installs into the given dirs when not opted out", async () => {
+    await writeConfig({ skills_auto_install: "always" }, configPaths);
+    const dirs = [
+      { path: path.join(scratch, "env2", "cursor", "skills"), kind: "cursor" as const, scope: "global" as const },
+    ];
+    const { sinks } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { configPaths, dirs });
+    expect(result).toBeDefined();
+    expect(result!.every((r) => r.kind === "cursor")).toBe(true);
+  });
+
+  test("surfaces a per-tool install failure as a warning but still reports the successes", async () => {
+    const okDir = {
+      path: path.join(scratch, "ok", ".claude", "skills"),
+      kind: "claude" as const,
+      scope: "global" as const,
+    };
+    const badRoot = path.join(scratch, "bad", ".cursor", "skills");
+    mkdirSync(badRoot, { recursive: true });
+    const elsewhere = path.join(scratch, "bad-elsewhere");
+    mkdirSync(elsewhere, { recursive: true });
+    symlinkSync(elsewhere, path.join(badRoot, "cash-forecasting"));
+    const badDir = { path: badRoot, kind: "cursor" as const, scope: "global" as const };
+    const { sinks, stderr } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { dirs: [okDir, badDir], force: true });
+    expect(result!.some((r) => r.kind === "claude")).toBe(true);
+    expect(stderr.buffer).toContain("cursor");
+    // The warning names the failed tool but does not claim other tools were "updated" - the
+    // surviving results may be no-ops (already up to date), so that phrasing was inaccurate.
+    expect(stderr.buffer).not.toContain("other tools were still updated");
+  });
+
+  test("a failing skill warns without falsely claiming other tools were updated", async () => {
+    const badRoot = path.join(scratch, "lone", ".cursor", "skills");
+    mkdirSync(badRoot, { recursive: true });
+    const elsewhere = path.join(scratch, "lone-elsewhere");
+    mkdirSync(elsewhere, { recursive: true });
+    symlinkSync(elsewhere, path.join(badRoot, "cash-forecasting"));
+    const badDir = { path: badRoot, kind: "cursor" as const, scope: "global" as const };
+    const { sinks, stderr } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, { dirs: [badDir], force: true });
+    // The escaping skill is reported; the other cursor skills still install (per-skill resilience).
+    expect(result!.some((r) => r.skill === "cash-forecasting")).toBe(false);
+    expect(stderr.buffer).toContain("cursor");
+    expect(stderr.buffer).not.toContain("other tools were still updated");
+  });
+
+  test("emits a threaded env-target warning once consent is established", async () => {
+    await writeConfig({ skills_auto_install: "always" }, configPaths);
+    const { sinks, stderr } = captureSinks();
+    await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      home,
+      warning: "ignoring invalid GUSTO_SKILLS_TARGET",
+    });
+    expect(stderr.buffer).toContain("ignoring invalid GUSTO_SKILLS_TARGET");
+  });
+
+  test("suppresses a threaded warning when the user opted out via 'never'", async () => {
+    await writeConfig({ skills_auto_install: "never" }, configPaths);
+    const { sinks, stderr } = captureSinks();
+    const result = await maybeInstallSkillsAfterLogin(human, sinks, {
+      configPaths,
+      home,
+      warning: "ignoring invalid GUSTO_SKILLS_TARGET",
+    });
+    expect(result).toBeUndefined();
+    expect(stderr.buffer).toBe("");
+  });
+});
+
+describe("skillsInstallPromptText", () => {
+  test("is tool-agnostic and names the detected target dirs", () => {
+    const text = skillsInstallPromptText([
+      { path: "/h/.claude/skills", kind: "claude", scope: "global" },
+      { path: "/h/.cursor/skills", kind: "cursor", scope: "global" },
+    ]);
+    expect(text).not.toContain("for Claude Code");
+    // Not "detected": the dirs may come from an explicit env target, not detection (finding #4).
+    expect(text).not.toContain("detected");
+    expect(text).toContain("/h/.claude/skills");
+    expect(text).toContain("/h/.cursor/skills");
+    expect(text).toContain("[Y/n]");
+  });
+});
+
+describe("noToolDetectedWarning", () => {
+  test("names every supported tool's home marker and points at the escape hatches", () => {
+    const text = noToolDetectedWarning();
+    expect(text.toLowerCase()).toContain("no supported agent tool");
+    expect(text).toContain("~/.claude");
+    expect(text).toContain("~/.codeium");
+    expect(text).toContain("--target");
+    expect(text).toContain("GUSTO_SKILLS_TARGET");
+    // Documents its own off-switch (finding #4) and drops the misleading `skill install --all`
+    // advice that would re-land skills in ~/.claude (finding #6).
+    expect(text).toContain("skills_auto_install never");
+    expect(text).not.toContain("skill install --all");
+  });
+});
+
+describe("authLoginHandler - --target / GUSTO_SKILLS_TARGET override", () => {
+  const tokenInfo = {
+    resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+    resource: { type: "Company" as const, uuid: "co-1" },
+  };
+  const fakeLogin = () => Promise.resolve(tokenInfo);
+
+  test("an unknown --target value returns a Validation envelope and does not log in", async () => {
+    const { sinks } = captureSinks();
+    let loggedIn = false;
+    const result = await authLoginHandler(
+      { target: "cursor,emacs" },
+      {
+        login: () => {
+          loggedIn = true;
+          return Promise.resolve(tokenInfo);
+        },
+        installSkills: async () => undefined,
+      },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(result.error.message).toContain("emacs");
+    expect(loggedIn).toBe(false);
+  });
+
+  const captureDeps = () => {
+    let received: SkillInstallDeps | undefined;
+    const installSkills = async (_g: GlobalFlags, _s: unknown, deps?: SkillInstallDeps) => {
+      received = deps;
+      return [{ skill: "cash-forecasting", installedAt: "/p", kind: "cursor" as const, action: "installed" as const }];
+    };
+    return { get: () => received, installSkills };
+  };
+
+  test("a valid --target flag is resolved to dirs and marked force (overrides opt-out)", async () => {
+    const { sinks } = captureSinks();
+    const cap = captureDeps();
+    const result = await authLoginHandler(
+      { target: "cursor" },
+      { login: fakeLogin, installSkills: cap.installSkills },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(cap.get()?.dirs?.map((d) => d.kind)).toEqual(["cursor"]);
+    expect(cap.get()?.force).toBe(true);
+  });
+
+  describe("GUSTO_SKILLS_TARGET env var", () => {
+    let saved: string | undefined;
+    beforeEach(() => {
+      saved = process.env.GUSTO_SKILLS_TARGET;
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.GUSTO_SKILLS_TARGET;
+      else process.env.GUSTO_SKILLS_TARGET = saved;
+    });
+
+    test("resolves the target but does not force (env is ambient, not a per-run opt-in)", async () => {
+      process.env.GUSTO_SKILLS_TARGET = "codex";
+      const { sinks } = captureSinks();
+      const cap = captureDeps();
+      await authLoginHandler({}, { login: fakeLogin, installSkills: cap.installSkills })({ ...ctx, sinks });
+      expect(cap.get()?.dirs?.map((d) => d.kind)).toEqual(["codex"]);
+      expect(cap.get()?.force).toBeFalsy();
+    });
+
+    test("--target flag beats GUSTO_SKILLS_TARGET", async () => {
+      process.env.GUSTO_SKILLS_TARGET = "codex";
+      const { sinks } = captureSinks();
+      const cap = captureDeps();
+      await authLoginHandler(
+        { target: "cursor" },
+        { login: fakeLogin, installSkills: cap.installSkills },
+      )({
+        ...ctx,
+        sinks,
+      });
+      expect(cap.get()?.dirs?.map((d) => d.kind)).toEqual(["cursor"]);
+      expect(cap.get()?.force).toBe(true);
+    });
+
+    test("an empty --target does not shadow GUSTO_SKILLS_TARGET", async () => {
+      process.env.GUSTO_SKILLS_TARGET = "codex";
+      const { sinks } = captureSinks();
+      const cap = captureDeps();
+      await authLoginHandler(
+        { target: "   " },
+        { login: fakeLogin, installSkills: cap.installSkills },
+      )({
+        ...ctx,
+        sinks,
+      });
+      expect(cap.get()?.dirs?.map((d) => d.kind)).toEqual(["codex"]);
+    });
+
+    test("an invalid ambient env value does NOT block login; it warns and falls back to auto-detect", async () => {
+      process.env.GUSTO_SKILLS_TARGET = "emacs";
+      const { sinks } = captureSinks();
+      const cap = captureDeps();
+      const result = await authLoginHandler(
+        {},
+        { login: fakeLogin, installSkills: cap.installSkills },
+      )({
+        ...ctx,
+        sinks,
+      });
+      expect(result.ok).toBe(true);
+      // The warning is threaded through deps so it can honor `never`; not emitted eagerly here.
+      expect(cap.get()?.warning).toContain("GUSTO_SKILLS_TARGET");
+      expect(cap.get()?.warning).toContain("emacs");
+      expect(cap.get()?.dirs).toBeUndefined();
+    });
+
+    test("an invalid --target flag names --target (not the env var) in the error", async () => {
+      process.env.GUSTO_SKILLS_TARGET = "codex";
+      const { sinks } = captureSinks();
+      const result = await authLoginHandler(
+        { target: "emacs" },
+        { login: fakeLogin, installSkills: async () => undefined },
+      )({ ...ctx, sinks });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toContain("--target");
+      expect(result.error.message).toContain("emacs");
+    });
   });
 });
 
@@ -263,7 +558,12 @@ describe("authLoginHandler - skill-install failure must not negate a successful 
   test("happy path: installSkills's results are attached to the login envelope", async () => {
     const { sinks } = captureSinks();
     const stubInstall = [
-      { skill: "cash-forecasting", installedAt: "/p/cash-forecasting/SKILL.md", action: "installed" as const },
+      {
+        skill: "cash-forecasting",
+        installedAt: "/p/cash-forecasting/SKILL.md",
+        kind: "claude" as const,
+        action: "installed" as const,
+      },
     ];
     const result = await authLoginHandler(
       {},

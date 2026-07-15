@@ -18,7 +18,7 @@ export function registerSkillCommand(parent: Command): void {
 
   cmd
     .command("install [name]")
-    .description("Install a bundled skill (or --all) into .claude / .cursor / .windsurf skills directory")
+    .description("Install a bundled skill (or --all) into a detected agent tool's skills directory")
     .option("--all", "Install every bundled skill")
     .addHelpText(
       "after",
@@ -27,10 +27,11 @@ Examples:
   $ gusto skill install cash-forecasting
   $ gusto skill install --all
 
-The skill is installed into the first of .claude/skills, .cursor/skills,
-or .windsurf/skills found by walking up from the current directory. Falls
-back to ~/.claude/skills. For .claude targets, the SKILL.md frontmatter
-is augmented with user-invocable: true so the skill appears as a slash
+The skill is installed into the first project skills directory found by
+walking up from the current directory: .claude/skills, .cursor/skills,
+.agents/skills (Codex), .cline/skills, or .windsurf/skills. Falls back to
+~/.claude/skills. For .claude targets, the SKILL.md frontmatter is
+augmented with user-invocable: true so the skill appears as a slash
 command in Claude Code.
 `,
     )
