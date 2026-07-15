@@ -121,7 +121,7 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
       .split(",")
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
-    if (tokens.some((t) => t !== "processed")) {
+    if (tokens.length === 0 || tokens.some((t) => t !== "processed")) {
       blocked.push({
         field: "processing-status",
         reason:
@@ -752,7 +752,7 @@ export function registerPayrollCommand(parent: Command): void {
     .description("List company payrolls (filter to past and/or future windows)")
     .option(
       "--processing-status <statuses>",
-      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed)`,
+      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed; narrowed to 'processed' when --date-filter-by is set)`,
     )
     .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
     .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")

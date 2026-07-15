@@ -293,6 +293,13 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
+  test("date-filter-by with a comma-only --processing-status is blocked", () => {
+    const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "," });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "processing-status" }));
+  });
+
   test("rejects an invalid sort-order", () => {
     const result = buildPayrollListQuery({ sortOrder: "sideways" });
     expect(result.ok).toBe(false);
