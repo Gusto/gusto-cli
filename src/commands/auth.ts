@@ -4,6 +4,7 @@ import { type StdinReader, type TokenSource, fetchAtPath, resolveApiContext } fr
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { type ConfigPaths, readConfig, type SkillsAutoInstall, writeConfig } from "../lib/config.ts";
 import { defaultEnv, getAccessToken } from "../lib/env.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp } from "../lib/oauth/context.ts";
@@ -12,7 +13,16 @@ import { findMissingScopes } from "../lib/oauth/required-scopes.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
-import { type AutoInstallResult, type SkillsDir, installBundledSkills, listSkills } from "../lib/skills.ts";
+import {
+  type AutoInstallResult,
+  SKILL_TARGET_KINDS,
+  type SkillsDir,
+  autoInstallTargets,
+  installBundledSkillsInto,
+  listSkills,
+  resolveSkillTargets,
+  supportedToolHomeLabels,
+} from "../lib/skills.ts";
 import { type CommandHandler, runCommand, runReadCommand } from "../lib/runner.ts";
 
 interface AuthOpts {
@@ -24,6 +34,7 @@ interface AuthOpts {
 interface LoginOpts {
   browser?: boolean;
   skills?: boolean;
+  target?: string;
 }
 
 export function registerAuthCommand(parent: Command): void {
@@ -40,11 +51,15 @@ export function registerAuthCommand(parent: Command): void {
       "--no-skills",
       "Skip the bundled-skills install (one-shot). To opt out permanently: `gusto config set skills_auto_install never`.",
     )
+    .option(
+      "--target <tools>",
+      "Install bundled skills into specific agent tools instead of auto-detecting from what is on this machine. Comma-separated list of claude, cursor, codex, cline, windsurf (or `all`). Also settable via GUSTO_SKILLS_TARGET. Overrides detection and a persisted `never` for this run.",
+    )
     .action((opts: LoginOpts) =>
       runCommand(
         "gusto auth login",
         readGlobalFlags(parent.opts()),
-        authLoginHandler({ noBrowser: opts.browser === false, noSkills: opts.skills === false }),
+        authLoginHandler({ noBrowser: opts.browser === false, noSkills: opts.skills === false, target: opts.target }),
       ),
     );
 
@@ -82,41 +97,90 @@ export type SkillInstallChoice = Exclude<SkillsAutoInstall, "ask">;
 
 export interface SkillInstallDeps {
   configPaths?: ConfigPaths;
-  skillsDir?: SkillsDir;
+  // Explicit destination from --target / GUSTO_SKILLS_TARGET; overrides auto-detection.
+  dirs?: SkillsDir[];
+  // Set by the deliberate --target flag: bypass consent and a persisted `never`. Env targets do not.
+  force?: boolean;
+  // Base directory for auto-detecting installed agent tools (tests inject a tmp home).
+  home?: string;
+  // Best-effort warning (e.g. an invalid ambient env target) emitted only once consent is established, so `never` stays silent.
+  warning?: string;
   prompt?: () => Promise<SkillInstallChoice>;
-  /** Override the stdin-TTY check (tests). When omitted, reads `process.stdin.isTTY`. */
+  // Override the stdin-TTY check (tests). When omitted, reads `process.stdin.isTTY`.
   stdinIsTty?: boolean;
 }
 
-/** Decide whether to install bundled skills after a successful login, prompting in TTY mode
- * if the user hasn't answered before and auto-installing in agent/piped mode (an agent
- * driving the CLI can't see a prompt). The persisted
- * answer lives in `~/.config/gusto/config.toml` so subsequent logins are non-interactive. */
+// Install into each dir; a per-tool failure becomes a warning while the other tools' results stand.
+async function fanOutInstall(dirs: SkillsDir[], sinks: StreamSinks): Promise<AutoInstallResult[]> {
+  const { results, errors } = await installBundledSkillsInto(dirs);
+  // Report each failed tool plainly; successes are carried in the returned results / login envelope.
+  for (const e of errors) {
+    sinks.stderr.write(`warning: could not install bundled skills into ${e.kind} (${e.message}).\n`);
+  }
+  return results;
+}
+
+// Install bundled skills after login: a --target flag (force) overrides consent/`never`; env + auto-detect honor them.
 export async function maybeInstallSkillsAfterLogin(
   globals: GlobalFlags,
   sinks: StreamSinks,
   deps: SkillInstallDeps = {},
 ): Promise<AutoInstallResult[] | undefined> {
+  // A deliberate --target flag implies consent and overrides `never` for this run.
+  if (deps.force && deps.dirs !== undefined) return fanOutInstall(deps.dirs, sinks);
+
   const cfg = await readConfig(deps.configPaths);
   let pref: SkillsAutoInstall = cfg.skills_auto_install ?? "ask";
+  // Honored even when an ambient GUSTO_SKILLS_TARGET is set, and before any warning fires.
   if (pref === "never") return undefined;
+
+  // Past the opt-out gate: safe to surface a threaded best-effort warning without nagging opted-out users.
+  if (deps.warning) sinks.stderr.write(`warning: ${deps.warning}\n`);
+
+  // An env target names where to install; otherwise fan out to every detected tool.
+  const dirs = deps.dirs ?? autoInstallTargets(deps.home);
+  if (dirs.length === 0) {
+    // Hardcoding a default here is the original bug; make the no-op legible instead.
+    sinks.stderr.write(noToolDetectedWarning());
+    return [];
+  }
+
   if (pref === "ask") {
-    // Prompt only when *both* sides of the conversation are interactive. Agent mode
-    // (piped stdout) is the obvious case, but stdout-TTY-but-stdin-redirected
-    // (`gusto auth login </dev/null` from a CI runner) would hang on `rl.question`
-    // since EOF stdin neither resolves nor throws. Treat that as implicit consent.
+    // Prompt only when both streams are interactive; agent/piped or EOF-stdin implies consent.
     const stdinTty = deps.stdinIsTty ?? Boolean(process.stdin.isTTY);
     if (resolveOutputMode(globals) === "agent" || !stdinTty) {
-      // Non-interactive: implicit consent. Don't persist - a future human run on the
-      // same machine should still get the prompt.
-      pref = "always";
+      pref = "always"; // implicit consent; do not persist so a later human run still prompts
     } else {
-      pref = await (deps.prompt ?? (() => promptForSkillsAutoInstall(sinks)))();
+      pref = await (deps.prompt ?? (() => promptForSkillsAutoInstall(dirs, sinks)))();
       await writeConfig({ ...cfg, skills_auto_install: pref }, deps.configPaths);
     }
   }
   if (pref === "never") return undefined;
-  return installBundledSkills(deps.skillsDir);
+  return fanOutInstall(dirs, sinks);
+}
+
+// Tool-agnostic `[Y/n]` copy naming the skills and detected target dirs. Pure + exported for tests.
+export function skillsInstallPromptText(dirs: SkillsDir[]): string {
+  const names = listSkills()
+    .map((s) => s.name)
+    .join(", ");
+  const targets = dirs.map((d) => d.path).join(", ");
+  return `Install bundled Gusto skills (${names}) into these agent tools (${targets})? [Y/n] `;
+}
+
+// Warning when no supported tool is found; lists the probed home dirs and its own off-switch.
+export function noToolDetectedWarning(): string {
+  const rows = supportedToolHomeLabels()
+    .map((t) => `  ${t.kind.padEnd(10)} ${t.label}`)
+    .join("\n");
+  return [
+    "warning: signed in, but found no supported agent tool, so no skills were installed.",
+    "Checked for these tools by their home directory:",
+    rows,
+    "Install or launch one and run `gusto auth login` again, or force a target now with --target <tool[,...]> or GUSTO_SKILLS_TARGET.",
+    "To stop seeing this, opt out with `gusto config set skills_auto_install never`.",
+    "",
+  ].join("\n");
 }
 
 /** Map a raw answer to the `[Y/n]` prompt to a persisted preference. Empty / y / yes
@@ -127,15 +191,10 @@ export function parseAutoInstallAnswer(raw: string): SkillInstallChoice {
   return norm === "" || norm === "y" || norm === "yes" ? "always" : "never";
 }
 
-async function promptForSkillsAutoInstall(sinks: StreamSinks): Promise<SkillInstallChoice> {
-  const names = listSkills()
-    .map((s) => s.name)
-    .join(", ");
+async function promptForSkillsAutoInstall(dirs: SkillsDir[], sinks: StreamSinks): Promise<SkillInstallChoice> {
   const rl = createInterface({ input: process.stdin, output: sinks.stderr });
   try {
-    const raw = await rl.question(
-      `Install bundled Gusto skills (${names}) to ~/.claude/skills for Claude Code? [Y/n] `,
-    );
+    const raw = await rl.question(skillsInstallPromptText(dirs));
     return parseAutoInstallAnswer(raw);
   } finally {
     rl.close();
@@ -171,7 +230,7 @@ export interface AuthLoginDeps {
 }
 
 export function authLoginHandler(
-  opts: { noBrowser?: boolean; noSkills?: boolean } = {},
+  opts: { noBrowser?: boolean; noSkills?: boolean; target?: string } = {},
   deps: AuthLoginDeps = {},
 ): CommandHandler {
   const doLogin = deps.login ?? login;
@@ -185,6 +244,39 @@ export function authLoginHandler(
       sinks.stderr.write(
         "warning: GUSTO_ACCESS_TOKEN is set and overrides the stored login. Commands will use that token, not this session. Unset it to use the logged-in identity.\n",
       );
+    }
+    // Resolve target. An explicit --target flag forces and, if invalid, halts before sign-in. An
+    // ambient GUSTO_SKILLS_TARGET must never block login (skills are best-effort): an invalid value
+    // just warns and falls back to auto-detection. A blank --target does not shadow the env var.
+    const validSkillTargets = `Valid: ${SKILL_TARGET_KINDS.join(", ")}, or all.`;
+    let targetDirs: SkillsDir[] | undefined;
+    let targetForced = false;
+    let envTargetWarning: string | undefined;
+    if (!opts.noSkills) {
+      const flag = opts.target && opts.target.trim().length > 0 ? opts.target : undefined;
+      if (flag !== undefined) {
+        const resolved = resolveSkillTargets(flag);
+        if (!resolved.ok) {
+          return {
+            ok: false,
+            exitCode: ExitCode.Validation,
+            error: {
+              code: "invalid_skill_target",
+              message: `Unknown --target value(s): ${resolved.invalid.join(", ")}. ${validSkillTargets}`,
+            },
+          };
+        }
+        targetDirs = resolved.dirs;
+        targetForced = true;
+      } else {
+        const env = process.env.GUSTO_SKILLS_TARGET;
+        if (env && env.trim().length > 0) {
+          const resolved = resolveSkillTargets(env);
+          if (resolved.ok) targetDirs = resolved.dirs;
+          else
+            envTargetWarning = `ignoring invalid GUSTO_SKILLS_TARGET value(s): ${resolved.invalid.join(", ")}. ${validSkillTargets} Falling back to auto-detection.`;
+        }
+      }
     }
     let data: LoginData;
     try {
@@ -203,8 +295,13 @@ export function authLoginHandler(
     // dir mustn't flip a successful login into an error envelope - the user is
     // already signed in and will be confused if we say otherwise.
     if (!opts.noSkills) {
+      const installDeps: SkillInstallDeps = { warning: envTargetWarning };
+      if (targetDirs) {
+        installDeps.dirs = targetDirs;
+        installDeps.force = targetForced;
+      }
       try {
-        const skills = await doInstallSkills(globals, sinks);
+        const skills = await doInstallSkills(globals, sinks, installDeps);
         if (skills) data.skills_installed = skills;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
