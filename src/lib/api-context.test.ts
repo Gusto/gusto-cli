@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ApiClient, ApiError } from "./api-client.ts";
 import {
+  buildApiClient,
   createCompanyResource,
   fetchCompanyResource,
   fetchResource,
@@ -14,6 +15,7 @@ import type { GlobalFlags } from "./global-flags.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import { memoryStore, mockHttp } from "./oauth/test-support.ts";
 import type { TokenStore } from "./oauth/token-store.ts";
+import { stubGlobalFetch } from "./test-support.ts";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
 
@@ -435,5 +437,42 @@ describe("withCompanyContext", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect((result.data as { company: string }).company).toBe("co-1");
+  });
+});
+
+describe("buildApiClient --verbose wiring", () => {
+  async function callAndCaptureStderr(verbose: boolean, requestId = "req-x"): Promise<string[]> {
+    const chunks: string[] = [];
+    const stderr: NodeJS.WritableStream = {
+      write(chunk: unknown) {
+        chunks.push(String(chunk));
+        return true;
+      },
+    } as NodeJS.WritableStream;
+    // ApiClient captures `fetch` at construction, so the global has to be stubbed *before* we
+    // call buildApiClient.
+    const stub = stubGlobalFetch(() => ({
+      status: 200,
+      body: { ok: true },
+      headers: { "x-request-id": requestId },
+    }));
+    try {
+      const client = buildApiClient({ ...flags, verbose }, { baseUrl: "https://api.example.test", token: "t", stderr });
+      await client.get("/v1/me");
+    } finally {
+      stub.restore();
+    }
+    return chunks;
+  }
+
+  test("verbose=true writes one grep-friendly stderr line per request", async () => {
+    const chunks = await callAndCaptureStderr(true, "req-abc");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatch(/^> GET \/v1\/me 200 \(\d+ms\) request_id=req-abc\n$/);
+  });
+
+  test("verbose=false attaches no observer and produces no stderr output", async () => {
+    const chunks = await callAndCaptureStderr(false);
+    expect(chunks).toEqual([]);
   });
 });
