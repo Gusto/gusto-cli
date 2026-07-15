@@ -370,6 +370,10 @@ export class ApiClient {
     }
 
     const requestId = response.headers.get("x-request-id") ?? undefined;
+    // Emit before reading the body so a mid-body connection drop still surfaces the status +
+    // request_id via --verbose - that's one of the main things --verbose is reached for.
+    this.emit(method, path, response.status, requestId, start);
+
     const text = await response.text();
     const parsed: unknown = text.length === 0 ? null : safeParseJson(text);
 
@@ -377,8 +381,6 @@ export class ApiClient {
     response.headers.forEach((value, key) => {
       responseHeaders[key.toLowerCase()] = value;
     });
-
-    this.emit(method, path, response.status, requestId, start);
 
     if (response.ok) {
       return { status: response.status, body: parsed as T, requestId, headers: responseHeaders };
