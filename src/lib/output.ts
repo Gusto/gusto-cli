@@ -22,6 +22,13 @@ export interface EnvelopeError {
   details?: unknown;
   /** Gusto API request_id from the X-Request-Id header, when present. Useful for support tickets. */
   request_id?: string;
+  /** Subcommands available where a usage error occurred (unknown-command errors), so an agent can
+   * retry with a real command instead of dead-ending. */
+  valid_commands?: string[];
+  /** Nearest valid command to what the caller typed, when close enough to suggest. */
+  did_you_mean?: string;
+  /** Recovery pointer, e.g. the `gusto api request` escape hatch for reads without a command yet. */
+  hint?: string;
 }
 
 export type AgentEnvelope<T = unknown> = { ok: true; data?: T; next?: string } | { ok: false; error: EnvelopeError };
@@ -98,6 +105,11 @@ function writeHumanError(err: EnvelopeError, stderr: NodeJS.WritableStream): voi
       stderr.write(`  - ${b.field}: ${b.reason}\n`);
     }
   }
+  if (err.did_you_mean !== undefined) stderr.write(`did you mean: ${err.did_you_mean}?\n`);
+  if (err.valid_commands && err.valid_commands.length > 0) {
+    stderr.write(`available commands: ${err.valid_commands.join(", ")}\n`);
+  }
+  if (err.hint !== undefined) stderr.write(`hint: ${err.hint}\n`);
 }
 
 function formatHuman(data: unknown): string {

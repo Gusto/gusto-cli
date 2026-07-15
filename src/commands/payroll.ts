@@ -781,6 +781,8 @@ All filters are optional. Defaults: processed and unprocessed regular payrolls, 
 
   cmd
     .command("show [payroll_uuid]")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
     .description("Show one payroll (company-scoped); totals and taxes are opt-in via --include")
     .option("--include <attrs>", `Include extra attributes: ${SHOW_INCLUDE_OPTIONS.join(", ")} - comma-separate`)
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")

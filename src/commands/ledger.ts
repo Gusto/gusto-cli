@@ -57,6 +57,8 @@ export function registerLedgerCommand(parent: Command): void {
 
   cmd
     .command("show <payroll_uuid>")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
     .description("Generate and fetch the general ledger report for a processed payroll")
     .option("--aggregation <level>", "Report aggregation level (default: default)")
     .option("--integration-type <type>", "Accounting integration format for the report")

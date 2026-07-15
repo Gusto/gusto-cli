@@ -22,6 +22,8 @@ export function registerContractorCommand(parent: Command): void {
 
   cmd
     .command("show <contractor_uuid>")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
     .description("Read contractor record")
     .option(...TOKEN_STDIN_OPT)
     .action((contractorUuid: string, opts: ContractorShowOpts) =>

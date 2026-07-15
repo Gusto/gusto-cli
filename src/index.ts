@@ -11,7 +11,10 @@ import { registerPayScheduleCommand } from "./commands/pay-schedule.ts";
 import { registerPayrollCommand } from "./commands/payroll.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
+import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
+import type { GlobalFlags } from "./lib/global-flags.ts";
+import { emit, outputOptionsFrom } from "./lib/output.ts";
 import pkg from "../package.json" with { type: "json" };
 
 const VERSION: string = pkg.version;
@@ -46,9 +49,12 @@ function buildProgram(): Command {
         "Filter successful output to these comma-separated top-level keys; pass with no value on a read command to list its available fields",
       ),
     )
-    .showHelpAfterError("(run `gusto --help` for usage)")
     .addHelpText("after", HELP_FOOTER)
-    .exitOverride();
+    .exitOverride()
+    // Silence commander's own raw "error: ..." line for usage errors; main() re-emits them through
+    // the standard {ok:false} envelope instead (JSON on stdout in agent mode). Help output uses a
+    // different channel and is unaffected, so `gusto <group>` with no subcommand still prints help.
+    .configureOutput({ outputError: () => {} });
 
   registerCompanyCommand(program);
   registerEmployeeCommand(program);
@@ -87,9 +93,25 @@ function exitCodeForCommanderError(err: CommanderError): number {
     case "commander.help":
     case "commander.version":
       return ExitCode.Success;
+    // A missing required positional is a validation failure, not a generic usage error: CLAUDE.md
+    // documents it as the exit-7 blocked_on case, matching the handler-level `missingArgs` path.
+    case "commander.missingArgument":
+      return ExitCode.Validation;
     default:
       return ExitCode.CliUsage;
   }
+}
+
+/** Minimal flags for picking the output mode when reporting a usage error. The mode-selecting flags
+ * are global, so a raw-argv scan is reliable even when commander threw before finishing its parse
+ * (an unknown subcommand aborts parsing before a trailing --json is recorded on program.opts()). */
+function usageFlags(argv: string[]): GlobalFlags {
+  return {
+    agent: argv.includes("--agent"),
+    human: argv.includes("--human"),
+    json: argv.includes("--json"),
+    verbose: false,
+  };
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -100,7 +122,17 @@ async function main(argv: string[]): Promise<void> {
     await program.parseAsync(argv);
   } catch (err) {
     if (err instanceof CommanderError) {
-      process.exit(exitCodeForCommanderError(err));
+      const code = exitCodeForCommanderError(err);
+      // help/version aren't errors (commander already wrote the text); just exit. Everything else is
+      // a usage error - re-emit it through the standard envelope so agents get a parseable
+      // {ok:false} on stdout with valid_commands/did_you_mean instead of a bare stderr line.
+      if (code !== ExitCode.Success) {
+        emit(outputOptionsFrom(usageFlags(argv)), {
+          ok: false,
+          error: usageErrorEnvelope(err.code, err.message, program, argv.slice(2)),
+        });
+      }
+      process.exit(code);
     }
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`gusto: ${message}\n`);

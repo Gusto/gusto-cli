@@ -28,8 +28,9 @@ export function registerPayScheduleCommand(parent: Command): void {
   cmd
     .command("show")
     // V1 has a single pay schedule so `show` returns the list, but agents reach for
-    // `list` first - alias it so they don't hit "unknown command" and stop.
+    // `list` (or `get`) first - alias both so they don't hit "unknown command" and stop.
     .alias("list")
+    .alias("get")
     .description("List active pay schedules for the company")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
