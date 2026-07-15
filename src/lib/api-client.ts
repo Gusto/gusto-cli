@@ -370,8 +370,6 @@ export class ApiClient {
     }
 
     const requestId = response.headers.get("x-request-id") ?? undefined;
-    // Emit before reading the body so a mid-body connection drop still surfaces the status +
-    // request_id via --verbose - that's one of the main things --verbose is reached for.
     this.emit(method, path, response.status, requestId, start);
 
     const text = await response.text();
