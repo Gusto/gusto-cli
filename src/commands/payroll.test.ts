@@ -165,7 +165,7 @@ describe("buildPayrollListQuery", () => {
 
   test("maps every flag to its API param name", () => {
     const result = buildPayrollListQuery({
-      processingStatus: "processed,unprocessed",
+      processingStatus: "processed",
       payrollType: "regular,off_cycle",
       startDate: "2026-01-01",
       endDate: "2026-03-01",
@@ -176,7 +176,7 @@ describe("buildPayrollListQuery", () => {
     expect(result).toEqual({
       ok: true,
       query: {
-        processing_statuses: "processed,unprocessed",
+        processing_statuses: "processed",
         payroll_types: "regular,off_cycle",
         start_date: "2026-01-01",
         end_date: "2026-03-01",
@@ -236,12 +236,68 @@ describe("buildPayrollListQuery", () => {
   test("accepts check_date and rejects any other date-filter-by", () => {
     expect(buildPayrollListQuery({ dateFilterBy: "check_date" })).toEqual({
       ok: true,
-      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular", date_filter_by: "check_date" },
+      query: { processing_statuses: "processed", payroll_types: "regular", date_filter_by: "check_date" },
     });
     const bad = buildPayrollListQuery({ dateFilterBy: "checkdate" });
     expect(bad.ok).toBe(false);
     if (bad.ok) throw new Error("expected failure");
     expect(bad.blocked).toContainEqual(expect.objectContaining({ field: "date-filter-by" }));
+  });
+
+  test("date-filter-by narrows processing_statuses default to 'processed' (server rejects the both-default)", () => {
+    const result = buildPayrollListQuery({
+      dateFilterBy: "check_date",
+      startDate: "2026-01-01",
+      endDate: "2026-03-31",
+    });
+    expect(result).toEqual({
+      ok: true,
+      query: {
+        processing_statuses: "processed",
+        payroll_types: "regular",
+        start_date: "2026-01-01",
+        end_date: "2026-03-31",
+        date_filter_by: "check_date",
+      },
+    });
+  });
+
+  test("date-filter-by with an explicit --processing-status processed passes through", () => {
+    const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "processed" });
+    expect(result).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed", payroll_types: "regular", date_filter_by: "check_date" },
+    });
+  });
+
+  test("date-filter-by with --processing-status unprocessed is blocked with a self-correcting hint", () => {
+    const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "unprocessed" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    const entry = result.blocked.find((b) => b.field === "processing-status");
+    expect(entry?.reason).toContain("only valid with --processing-status processed");
+  });
+
+  test("date-filter-by with --processing-status 'processed,unprocessed' is blocked", () => {
+    const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "processed,unprocessed" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "processing-status" }));
+  });
+
+  test("date-filter-by with an empty --processing-status falls back to the 'processed' default", () => {
+    const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "" });
+    expect(result).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed", payroll_types: "regular", date_filter_by: "check_date" },
+    });
+  });
+
+  test("date-filter-by with a comma-only --processing-status is blocked", () => {
+    const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "," });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "processing-status" }));
   });
 
   test("rejects an invalid sort-order", () => {
