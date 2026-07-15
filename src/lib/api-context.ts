@@ -1,4 +1,4 @@
-import { ApiClient } from "./api-client.ts";
+import { ApiClient, stderrRequestObserver } from "./api-client.ts";
 import { confirmationGate } from "./confirm.ts";
 import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
@@ -42,6 +42,26 @@ export interface AuthOpts {
 export interface ApiContextOpts extends AuthOpts {
   requireCompany?: boolean;
   companyOverride?: string;
+}
+
+/** Build an ApiClient with the shared conventions REST commands + MCP tool calls share:
+ * `apiVersion` and (when `--verbose` is on) a stderr request observer. Extracted so those two
+ * surfaces can't drift on which client options they attach. `stderr` is injectable so tests
+ * capture the log stream instead of writing to the real process stderr.
+ *
+ * Not routed through: `oauthApiClient` in `oauth/context.ts` (its own bearer client for
+ * `token_info` during login) - so `auth login --verbose` won't emit the token_info line. Tracked
+ * as a follow-up. */
+export function buildApiClient(
+  globals: GlobalFlags,
+  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream },
+): ApiClient {
+  return new ApiClient({
+    baseUrl: opts.baseUrl,
+    token: opts.token,
+    apiVersion: resolveApiVersion(),
+    observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
+  });
 }
 
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
@@ -111,7 +131,7 @@ export async function resolveApiContext(
   const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
-  const client = new ApiClient({ baseUrl, token, apiVersion: resolveApiVersion() });
+  const client = buildApiClient(globals, { baseUrl, token });
 
   if (opts.requireCompany === false) {
     return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };

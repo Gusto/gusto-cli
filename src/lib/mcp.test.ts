@@ -315,3 +315,32 @@ describe("callMcpTool — HTTP-level failures (via ApiClient → toResult)", () 
     }
   });
 });
+
+describe("callMcpTool — --verbose", () => {
+  test("verbose global logs one stderr line for the JSON-RPC POST with x-request-id", async () => {
+    const written: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown): boolean => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: successEnvelope({ ok: true }),
+      headers: { "x-request-id": "req-mcp" },
+    }));
+    try {
+      const result = await callMcpTool({ ...sandbox, verbose: true }, stdinAuth(), "list_time_records", {
+        start_date: "2026-06-01",
+        end_date: "2026-06-15",
+      });
+      expect(result.ok).toBe(true);
+    } finally {
+      restore();
+      process.stderr.write = originalWrite;
+    }
+    const observerLines = written.filter((s) => s.startsWith("> POST"));
+    expect(observerLines).toHaveLength(1);
+    expect(observerLines[0]).toMatch(/^> POST \/ 200 \(\d+ms\) request_id=req-mcp\n$/);
+  });
+});

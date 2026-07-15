@@ -115,6 +115,20 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   ]) {
     if (entry) blocked.push(entry);
   }
+  // The API rejects date_filter_by unless processing_statuses is exactly "processed".
+  if (opts.dateFilterBy !== undefined && opts.processingStatus) {
+    const tokens = opts.processingStatus
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    if (tokens.length === 0 || tokens.some((t) => t !== "processed")) {
+      blocked.push({
+        field: "processing-status",
+        reason:
+          "--date-filter-by is only valid with --processing-status processed; drop it or set --processing-status processed",
+      });
+    }
+  }
   if (blocked.length > 0) return { ok: false, blocked };
 
   const query: QueryParams = {};
@@ -127,7 +141,9 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   //   payroll_types       -> regular
   // `||` (not `??`) so an explicit empty value ("") also falls back to the default rather than being
   // dropped by toQueryString and silently reverting to the server's own default.
-  set("processing_statuses", opts.processingStatus || PROCESSING_STATUSES.join(","));
+  // When --date-filter-by is set the default narrows to "processed" so the request doesn't 422.
+  const defaultProcessingStatuses = opts.dateFilterBy !== undefined ? "processed" : PROCESSING_STATUSES.join(",");
+  set("processing_statuses", opts.processingStatus || defaultProcessingStatuses);
   set("payroll_types", opts.payrollType || "regular");
   set("start_date", opts.startDate);
   set("end_date", opts.endDate);
@@ -736,12 +752,15 @@ export function registerPayrollCommand(parent: Command): void {
     .description("List company payrolls (filter to past and/or future windows)")
     .option(
       "--processing-status <statuses>",
-      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed)`,
+      `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed; narrowed to 'processed' when --date-filter-by is set)`,
     )
     .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
     .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
     .option("--end-date <date>", "Only payrolls up to this date (YYYY-MM-DD; at most 3 months in the future)")
-    .option("--date-filter-by <field>", "Date to filter by: check_date (defaults to pay period)")
+    .option(
+      "--date-filter-by <field>",
+      "Date to filter by: check_date (defaults to pay period; requires --processing-status processed)",
+    )
     .option("--include <attrs>", `Include extra attributes: ${INCLUDE_OPTIONS.join(", ")} - comma-separate`)
     .option("--sort-order <order>", `${SORT_ORDERS.join(", ")} (default asc)`)
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")

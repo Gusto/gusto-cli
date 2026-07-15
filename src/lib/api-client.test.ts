@@ -6,8 +6,11 @@ import {
   NetworkError,
   PollFailedError,
   PollTimeoutError,
+  type RequestEvent,
+  stderrRequestObserver,
 } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
+import { captureStream } from "./test-support.ts";
 
 interface MockResponse {
   status: number;
@@ -561,5 +564,100 @@ describe("ApiClient response headers", () => {
     const res = await client.get("/v1/things");
     expect(res.headers["x-total-pages"]).toBe("3");
     expect(res.headers["x-page"]).toBe("1");
+  });
+});
+
+describe("ApiClient RequestObserver", () => {
+  test("fires once on 2xx with method, path, status, requestId, and duration", async () => {
+    const events: RequestEvent[] = [];
+    const client = makeClient(
+      mockFetch({}, { status: 200, body: { ok: true }, headers: { "x-request-id": "req-abc" } }),
+      { observer: (e) => events.push(e) },
+    );
+    await client.get("/v1/me");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ method: "GET", path: "/v1/me", status: 200, requestId: "req-abc" });
+    expect(events[0]?.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("fires once on 4xx before ApiError propagates", async () => {
+    const events: RequestEvent[] = [];
+    const client = makeClient(
+      mockFetch({}, { status: 404, body: { error: "not found" }, headers: { "x-request-id": "req-404" } }),
+      { observer: (e) => events.push(e) },
+    );
+    await expect(client.get("/v1/missing")).rejects.toBeInstanceOf(ApiError);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.status).toBe(404);
+    expect(events[0]?.requestId).toBe("req-404");
+  });
+
+  test("fires once per attempt when a 5xx triggers idempotent retry", async () => {
+    const events: RequestEvent[] = [];
+    const seq = sequenceFetch([
+      { status: 503, headers: { "x-request-id": "req-1" } },
+      { status: 200, body: { ok: true }, headers: { "x-request-id": "req-2" } },
+    ]);
+    const client = makeClient(seq.fetch, { maxRetries: 1, observer: (e) => events.push(e) });
+    const res = await client.get("/v1/me");
+    expect(res.status).toBe(200);
+    expect(events.map((e) => `${e.status}/${e.requestId}`)).toEqual(["503/req-1", "200/req-2"]);
+  });
+
+  test("fires once with status=0 and no requestId on pre-response network fault", async () => {
+    const events: RequestEvent[] = [];
+    const failingFetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+    const client = makeClient(failingFetch, { observer: (e) => events.push(e) });
+    await expect(client.get("/v1/me")).rejects.toBeInstanceOf(NetworkError);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.status).toBe(0);
+    expect(events[0]?.requestId).toBeUndefined();
+  });
+
+  test("stderrRequestObserver writes one grep-friendly line per event", () => {
+    const stderr = captureStream();
+    const observer = stderrRequestObserver(stderr.sink);
+    observer({ method: "GET", path: "/v1/me", status: 200, requestId: "req-abc", durationMs: 42 });
+    observer({ method: "POST", path: "/v1/other", status: 0, requestId: undefined, durationMs: 9 });
+    expect(stderr.buffer).toBe("> GET /v1/me 200 (42ms) request_id=req-abc\n> POST /v1/other 0 (9ms)\n");
+  });
+
+  test("stderrRequestObserver collapses a duplicated x-request-id to one value", () => {
+    const stderr = captureStream();
+    stderrRequestObserver(stderr.sink)({
+      method: "GET",
+      path: "/v1/me",
+      status: 200,
+      requestId: "16d67c2b...4704be, 16d67c2b...4704be",
+      durationMs: 12,
+    });
+    expect(stderr.buffer).toBe("> GET /v1/me 200 (12ms) request_id=16d67c2b...4704be\n");
+  });
+
+  test("a throwing observer never breaks the request (e.g. stderr EPIPE)", async () => {
+    let invocations = 0;
+    const client = makeClient(mockFetch({}, { status: 200, body: { ok: true } }), {
+      observer: () => {
+        invocations += 1;
+        throw new Error("stderr write failed (EPIPE)");
+      },
+    });
+    const res = await client.get("/v1/me");
+    expect(res.status).toBe(200);
+    expect(invocations).toBe(1);
+  });
+
+  test("stderrRequestObserver preserves genuinely distinct request IDs", () => {
+    const stderr = captureStream();
+    stderrRequestObserver(stderr.sink)({
+      method: "GET",
+      path: "/v1/me",
+      status: 200,
+      requestId: "edge-abc,origin-def",
+      durationMs: 12,
+    });
+    expect(stderr.buffer).toBe("> GET /v1/me 200 (12ms) request_id=edge-abc,origin-def\n");
   });
 });
