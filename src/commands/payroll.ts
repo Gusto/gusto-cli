@@ -807,6 +807,29 @@ Examples:
     );
 
   cmd
+    .command("blockers")
+    .description("List the company's payroll blockers (issues that must be resolved before payroll can run)")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Company-scoped: reads /v1/companies/{company}/payrolls/blockers and returns the blockers
+array verbatim (identical to 'gusto api request GET /v1/companies/{company}/payrolls/blockers').
+An empty array means the company has no outstanding blockers and can run payroll. This is a
+company-wide readiness check, distinct from the per-payroll 'payroll show --include risk_blockers'.
+Most blockers (bank verification, signatory, tax setup, forms) are cleared in the Gusto app, not the CLI.
+
+Examples:
+  $ gusto payroll blockers
+  $ gusto payroll blockers --company-uuid 1a2b3c4d-0000-1111-2222-333344445555
+`,
+    )
+    .action((opts: PayrollBlockersOpts) =>
+      runReadCommand("gusto payroll blockers", readGlobalFlags(parent.opts()), payrollBlockersHandler(opts)),
+    );
+
+  cmd
     .command("prepare [payroll_uuid]")
     .description("Prepare a draft payroll: lay in its employee compensations (does not compute dollar totals)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
@@ -1159,6 +1182,24 @@ function payrollListHandler(opts: PayrollListOpts): CommandHandler {
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls${toQueryString(parsed.query)}`,
+    );
+  };
+}
+
+export interface PayrollBlockersOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+/** GET the company's payroll blockers. No payroll_uuid and no query params: the endpoint is
+ * company-scoped and returns every outstanding blocker (an empty array means none). The API body is
+ * passed through untouched so output matches the raw `api request GET .../payrolls/blockers`. */
+export function payrollBlockersHandler(opts: PayrollBlockersOpts): CommandHandler {
+  return async ({ globals }) => {
+    return fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls/blockers`,
     );
   };
 }
