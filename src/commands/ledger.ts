@@ -1,12 +1,17 @@
 import type { Command } from "commander";
-import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
+import type { ApiClient } from "../lib/api-client.ts";
 import { resolveApiContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { resolveTimeoutMs } from "../lib/parse.ts";
+import { pollReport, reportPollPath } from "../lib/report-poll.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
+
+// Report status predicates live in report-poll.ts (shared with `gusto report`); re-exported here so
+// existing importers of this module keep resolving them.
+export { isReportFailed, isReportSucceeded } from "../lib/report-poll.ts";
 
 export interface GeneralLedgerOpts {
   aggregation?: string;
@@ -18,10 +23,6 @@ export interface GeneralLedgerBody {
   integration_type: string;
 }
 
-interface ReportStatusBody {
-  status?: string;
-}
-
 /** Build the POST body for `POST /v1/payrolls/{uuid}/reports/general_ledger`,
  * applying the server defaults (`aggregation: "default"`, `integration_type: ""`). */
 export function buildGeneralLedgerBody(opts: GeneralLedgerOpts): GeneralLedgerBody {
@@ -29,20 +30,6 @@ export function buildGeneralLedgerBody(opts: GeneralLedgerOpts): GeneralLedgerBo
     aggregation: opts.aggregation ?? "default",
     integration_type: opts.integrationType ?? "",
   };
-}
-
-/** True once `GET /v1/reports/{uuid}` reports the report finished generating
- * and its download URL is ready. Drives the `poll()` success predicate.
- * Case-insensitive: the API serializes statuses lowercase (`succeeded`), but we
- * match defensively so a casing change on either side can't silently break polling. */
-export function isReportSucceeded(body: ReportStatusBody): boolean {
-  return body.status?.toLowerCase() === "succeeded";
-}
-
-/** True once the report request has terminally failed. Drives the `poll()`
- * failure predicate so we stop polling instead of waiting out the timeout. */
-export function isReportFailed(body: ReportStatusBody): boolean {
-  return body.status?.toLowerCase() === "failed";
 }
 
 interface LedgerShowOpts extends GeneralLedgerOpts {
@@ -120,49 +107,16 @@ export async function executeLedgerShow(
     };
   }
 
-  const pollPath = `/v1/reports/${encodeURIComponent(requestUuid)}`;
   if (opts.wait === false) {
-    return { ok: true, data: { request_uuid: requestUuid, status: "pending", poll_path: pollPath } };
+    return {
+      ok: true,
+      data: { request_uuid: requestUuid, status: "pending", poll_path: reportPollPath(requestUuid) },
+    };
   }
-
-  try {
-    const report = await client.poll<ReportStatusBody>(pollPath, {
-      until: isReportSucceeded,
-      isFailure: isReportFailed,
-      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-    });
-    return { ok: true, data: report.body };
-  } catch (err) {
-    if (err instanceof PollFailedError) {
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiServer,
-        error: {
-          code: "report_failed",
-          message: "general ledger report generation failed",
-          details: { request_uuid: requestUuid, poll_path: pollPath, report: err.body },
-        },
-      };
-    }
-    if (err instanceof PollTimeoutError) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Timeout,
-        error: {
-          code: "report_timeout",
-          message: `general ledger report ${requestUuid} did not finish before the timeout; poll ${pollPath} to retrieve it`,
-          details: {
-            request_uuid: requestUuid,
-            poll_path: pollPath,
-            attempts: err.attempts,
-            // Omit when no GET completed (e.g. budget already spent) rather than emit last_status: undefined.
-            ...(err.lastBody !== undefined ? { last_status: err.lastBody } : {}),
-          },
-        },
-      };
-    }
-    return toResult(err);
-  }
+  return pollReport(client, requestUuid, {
+    label: "general ledger report",
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+  });
 }
 
 function ledgerShowHandler(payrollUuid: string, opts: LedgerShowOpts): CommandHandler {
