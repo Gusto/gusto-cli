@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { fetchAtPath, fetchResource, resolveApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
@@ -44,6 +44,42 @@ export function registerEmployeeCommand(parent: Command): void {
     );
 
   cmd
+    .command("addresses <employee_uuid>")
+    .description("Read an employee's work and home addresses")
+    .option(...TOKEN_STDIN_OPT)
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee addresses",
+        readGlobalFlags(parent.opts()),
+        employeeAddressesHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("work-address <address_uuid>")
+    .description("Read a single work address by UUID")
+    .option(...TOKEN_STDIN_OPT)
+    .action((addressUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee work-address",
+        readGlobalFlags(parent.opts()),
+        workAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("home-address <address_uuid>")
+    .description("Read a single home address by UUID")
+    .option(...TOKEN_STDIN_OPT)
+    .action((addressUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee home-address",
+        readGlobalFlags(parent.opts()),
+        homeAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
     .command("list")
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
@@ -80,6 +116,33 @@ function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): Comm
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
     fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/onboarding_status`);
+}
+
+export function workAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/work_addresses/${addressUuid}`);
+}
+
+export function homeAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/home_addresses/${addressUuid}`);
+}
+
+// Two independent GETs on the employee-scoped (no company) path, combined under
+// stable keys. Either failing fails the whole command; the single-address gets
+// exist for granular access when one side errors.
+export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) => {
+    const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
+    if (!resolved.ok) return resolved.result;
+
+    const work = await fetchAtPath(resolved.ctx.client, `/v1/employees/${employeeUuid}/work_addresses`);
+    if (!work.ok) return work;
+    const home = await fetchAtPath(resolved.ctx.client, `/v1/employees/${employeeUuid}/home_addresses`);
+    if (!home.ok) return home;
+
+    return { ok: true, data: { work_addresses: work.data, home_addresses: home.data } };
+  };
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
