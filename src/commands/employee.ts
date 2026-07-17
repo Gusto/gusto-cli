@@ -44,6 +44,69 @@ export function registerEmployeeCommand(parent: Command): void {
     );
 
   cmd
+    .command("history <employee_uuid>")
+    .description("Read an employee's employment history (termination + rehire dates)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee history <employee_uuid>   # full employment history, incl. termination + rehire dates
+
+One record spanning the employee's tenure. For the standalone termination or rehire
+records, use \`employee terminations\`/\`employee rehire\`.
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee history",
+        readGlobalFlags(parent.opts()),
+        employeeHistoryHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("terminations <employee_uuid>")
+    .description("List an employee's terminations")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee terminations <employee_uuid>   # every termination on record for the employee
+
+Returns a list, but an employee has at most one termination, so it holds zero or
+one record (empty until the employee is terminated).
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee terminations",
+        readGlobalFlags(parent.opts()),
+        employeeTerminationsHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("rehire <employee_uuid>")
+    .description("Read an employee's rehire record")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee rehire <employee_uuid>   # when the employee is scheduled to return to work
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee rehire",
+        readGlobalFlags(parent.opts()),
+        employeeRehireHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
     .command("list")
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
@@ -80,6 +143,21 @@ function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): Comm
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
     fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/onboarding_status`);
+}
+
+export function employeeHistoryHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/employment_history`);
+}
+
+export function employeeTerminationsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/terminations`);
+}
+
+export function employeeRehireHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/rehire`);
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
