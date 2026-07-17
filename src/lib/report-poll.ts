@@ -21,8 +21,6 @@ export function isReportFailed(body: ReportStatusBody): boolean {
   return body.status?.toLowerCase() === "failed";
 }
 
-/** Report retrieval is top-level and keyed only by the request_uuid — never company-scoped
- * (appending the uuid to the company-scoped create path 404s). */
 export function reportPollPath(requestUuid: string): string {
   return `/v1/reports/${encodeURIComponent(requestUuid)}`;
 }
