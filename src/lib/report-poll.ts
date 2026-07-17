@@ -72,6 +72,22 @@ export async function pollReport(
         },
       };
     }
-    return toResult(err);
+    // A non-terminal error mid-poll (token expiry, a 4xx, or a 5xx that outlasts the retry budget)
+    // still leaves a report generating server-side. Preserve the request_uuid + poll_path so the
+    // caller can resume with `gusto report get` instead of losing the in-flight report, matching
+    // the report_failed/report_timeout exits above.
+    const result = toResult(err);
+    if (result.ok) return result;
+    return {
+      ...result,
+      error: {
+        ...result.error,
+        details: {
+          request_uuid: requestUuid,
+          poll_path: pollPath,
+          ...(result.error.details !== undefined ? { response: result.error.details } : {}),
+        },
+      },
+    };
   }
 }
