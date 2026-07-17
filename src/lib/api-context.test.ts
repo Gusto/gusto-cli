@@ -9,6 +9,7 @@ import {
   resolveApiContext,
   resolveAuthToken,
   withCompanyContext,
+  writeResource,
 } from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
@@ -361,6 +362,92 @@ describe("company-resource write confirmation gate", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("confirmation_required");
+  });
+});
+
+describe("writeResource", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("dry-run echoes the (already-resolved) path and body without auth or a network call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await writeResource(
+      flags,
+      "POST",
+      "/v1/employees/emp-1/terminations",
+      { effective_date: "2026-08-01" },
+      { dryRun: true, ...noSession() },
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: { method: "POST", path: "/v1/employees/emp-1/terminations", body: { effective_date: "2026-08-01" } },
+    });
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("a bodyless DELETE dry-run omits the body key", async () => {
+    const result = await writeResource(flags, "DELETE", "/v1/employees/emp-1/terminations", undefined, {
+      dryRun: true,
+      ...noSession(),
+    });
+    expect(result).toEqual({ ok: true, data: { method: "DELETE", path: "/v1/employees/emp-1/terminations" } });
+  });
+
+  test("an agent-mode write without --confirm is blocked before auth resolution", async () => {
+    const result = await writeResource(flags, "POST", "/v1/employees/emp-1/terminations", {}, noSession());
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+  });
+
+  test("--confirm sends the write to the resolved path and returns the response body", async () => {
+    const s = stubGlobalFetch((u) =>
+      u.includes("/v1/employees/emp-1/terminations") ? { status: 201, body: { active: true } } : { status: 404 },
+    );
+    restore = s.restore;
+    const result = await writeResource(
+      flags,
+      "POST",
+      "/v1/employees/emp-1/terminations",
+      { effective_date: "2026-08-01" },
+      { ...stdinAuth(), confirm: true },
+    );
+    expect(result).toEqual({ ok: true, data: { active: true } });
+    const post = s.calls.find((c) => c.method === "POST");
+    expect(post?.url).toContain("/v1/employees/emp-1/terminations");
+    expect(post?.body).toEqual({ effective_date: "2026-08-01" });
+  });
+
+  test("a non-2xx API response maps through toResult to a coded error envelope", async () => {
+    const s = stubGlobalFetch(() => ({ status: 422, body: { errors: [{ message: "already terminated" }] } }));
+    restore = s.restore;
+    const result = await writeResource(
+      flags,
+      "POST",
+      "/v1/employees/emp-1/terminations",
+      { effective_date: "2026-08-01" },
+      { ...stdinAuth(), confirm: true },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
+
+  test("a confirmed bodyless DELETE sends no body and returns the (empty) response", async () => {
+    const s = stubGlobalFetch((u) =>
+      u.includes("/v1/employees/emp-1/terminations") ? { status: 204 } : { status: 404 },
+    );
+    restore = s.restore;
+    const result = await writeResource(flags, "DELETE", "/v1/employees/emp-1/terminations", undefined, {
+      ...stdinAuth(),
+      confirm: true,
+    });
+    expect(result).toEqual({ ok: true, data: null });
+    const del = s.calls.find((c) => c.method === "DELETE");
+    expect(del?.url).toContain("/v1/employees/emp-1/terminations");
+    expect(del?.body).toBeUndefined();
   });
 });
 
