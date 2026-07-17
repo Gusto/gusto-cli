@@ -23,7 +23,7 @@ export function registerJobCommand(parent: Command): void {
 
   cmd
     .command("compensations <job_uuid>")
-    .description("List a job's compensations")
+    .description("Read a job's compensations")
     .option(...TOKEN_STDIN_OPT)
     .action((jobUuid: string, opts: JobReadOpts) =>
       runReadCommand("gusto job compensations", readGlobalFlags(parent.opts()), jobCompensationsHandler(jobUuid, opts)),

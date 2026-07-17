@@ -170,7 +170,7 @@ Examples:
 
   cmd
     .command("jobs <employee_uuid>")
-    .description("List an employee's jobs")
+    .description("Read an employee's jobs")
     .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand("gusto employee jobs", readGlobalFlags(parent.opts()), employeeJobsHandler(employeeUuid, opts)),
