@@ -47,6 +47,17 @@ export function registerEmployeeCommand(parent: Command): void {
     .command("addresses <employee_uuid>")
     .description("Read an employee's work and home addresses")
     .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee addresses <employee_uuid>                      # work + home addresses
+  $ gusto employee addresses <employee_uuid> --fields work_addresses   # just the work list
+
+Returns both address lists under \`work_addresses\` and \`home_addresses\`. Each entry
+carries its own UUID; pass it to \`employee work-address\`/\`home-address\` for a single record.
+`,
+    )
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand(
         "gusto employee addresses",
@@ -59,6 +70,13 @@ export function registerEmployeeCommand(parent: Command): void {
     .command("work-address <address_uuid>")
     .description("Read a single work address by UUID")
     .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee work-address <address_uuid>   # one work address; UUIDs come from \`employee addresses\`
+`,
+    )
     .action((addressUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand(
         "gusto employee work-address",
@@ -71,6 +89,13 @@ export function registerEmployeeCommand(parent: Command): void {
     .command("home-address <address_uuid>")
     .description("Read a single home address by UUID")
     .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee home-address <address_uuid>   # one home address; UUIDs come from \`employee addresses\`
+`,
+    )
     .action((addressUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand(
         "gusto employee home-address",
