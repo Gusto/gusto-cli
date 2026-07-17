@@ -230,6 +230,10 @@ The report is generated asynchronously: this requests it, then polls until it is
 ready (or --timeout elapses) and returns the report URLs. Use --no-wait to get
 the request_uuid back immediately and fetch the result later with
 'gusto report get <uuid>'.
+
+Columns are validated by the Reports API, not the CLI: an unrecognized column is
+named back in the error so you can drop or correct it. See the Reports API
+reference for the full column vocabulary.
 `,
   );
   run.action((opts: ReportRunCliOpts) =>
