@@ -21,10 +21,8 @@ export function isReportFailed(body: ReportStatusBody): boolean {
   return body.status?.toLowerCase() === "failed";
 }
 
-/** The report retrieval path. Report *creation* is scoped (POST to a company or payroll path), but
- * retrieval is always a single top-level path keyed only by the request_uuid. Building it by
- * appending the request_uuid to a company-scoped create path instead hits a route that does not
- * exist (404). */
+/** Report retrieval is top-level and keyed only by the request_uuid — never company-scoped
+ * (appending the uuid to the company-scoped create path 404s). */
 export function reportPollPath(requestUuid: string): string {
   return `/v1/reports/${encodeURIComponent(requestUuid)}`;
 }
