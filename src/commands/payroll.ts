@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
+import { type ApiClient, ApiError, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
 import { fetchCompanyResource, fetchResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { confirmationGate } from "../lib/confirm.ts";
@@ -817,7 +817,10 @@ Examples:
 Company-scoped: reads /v1/companies/{company}/payrolls/blockers and returns the blockers
 array verbatim (identical to 'gusto api request GET /v1/companies/{company}/payrolls/blockers').
 An empty array means the company has no outstanding blockers and can run payroll. This is a
-company-wide readiness check, distinct from the per-payroll 'payroll show --include risk_blockers'.
+company-wide readiness check, distinct from per-payroll risk blockers. For per-payroll blockers,
+use 'gusto payroll list --include risk_blockers': submission blockers appear on unprocessed
+payrolls, credit blockers on processed payrolls (off-cycle payrolls need --payroll-type off_cycle
+and a date window to appear).
 Most blockers (bank verification, signatory, tax setup, forms) are cleared in the Gusto app, not the CLI.
 
 Examples:
@@ -995,6 +998,37 @@ export function isPayrollCalculationFailed(body: PayrollShowResponse): boolean {
  * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
  * unit-testable with a mocked fetch, mirroring executeLedgerShow - the caller owns the async wait so
  * skills never have to poll. */
+/** True when an API error is a 422 whose errors carry the `payroll_blocker` category: the company
+ * has outstanding payroll blockers that stop this write. */
+function isPayrollBlockerError(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 422) return false;
+  const body = err.body;
+  if (typeof body !== "object" || body === null) return false;
+  const errors = (body as { errors?: unknown }).errors;
+  return (
+    Array.isArray(errors) &&
+    errors.some(
+      (e) => typeof e === "object" && e !== null && (e as { category?: unknown }).category === "payroll_blocker",
+    )
+  );
+}
+
+/** Map an error to a result, and when it is a payroll-blocker 422, point the caller at the read
+ * command that lists the company's outstanding blockers so they can see (and clear) them. */
+function resultWithBlockerHint(err: unknown): CommandResult {
+  const result = toResult(err);
+  if (!result.ok && isPayrollBlockerError(err)) {
+    return {
+      ...result,
+      error: {
+        ...result.error,
+        hint: "this company has payroll blockers; run `gusto payroll blockers` to list them",
+      },
+    };
+  }
+  return result;
+}
+
 export async function executePayrollCalculate(
   client: Pick<ApiClient, "request" | "poll">,
   companyUuid: string,
@@ -1006,7 +1040,9 @@ export async function executePayrollCalculate(
   try {
     await client.request("PUT", `${base}/calculate`, undefined);
   } catch (err) {
-    return toResult(err);
+    // A 422 here is usually the company's payroll blockers refusing the calc; surface a pointer
+    // to `gusto payroll blockers` so the caller can list them (mirrors the raw blocker payload).
+    return resultWithBlockerHint(err);
   }
 
   // --no-wait: hand back the fire-and-forget shape so an agent can poll the totals itself later.
