@@ -7,10 +7,13 @@ import {
   employeeJobsHandler,
   employeeListHandler,
   employeeRehireHandler,
+  employeeTerminateCancelHandler,
+  employeeTerminateHandler,
   employeeTerminationsHandler,
   homeAddressHandler,
   workAddressHandler,
 } from "./employee.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import {
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
@@ -289,5 +292,123 @@ describe("employeeJobsHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("malformed_response");
+  });
+});
+
+describe("employeeTerminateHandler", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("--example prints a canned POST payload without calling the API", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const d = okData(await employeeTerminateHandler("emp-1", { ...auth, example: true })(ctx));
+    expect(d.method).toBe("POST");
+    expect(d.path).toBe("/v1/employees/{employee_id}/terminations");
+    expect(d.body).toMatchObject({ run_termination_payroll: false });
+    expect((d.body as Record<string, unknown>).effective_date).toBeDefined();
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("a missing --effective-date is refused pre-flight with a blocked_on list, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeTerminateHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["effective-date"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("dry-run builds the termination body and hits the employee-scoped path", async () => {
+    const result = await employeeTerminateHandler("emp-1", {
+      ...auth,
+      effectiveDate: "2026-08-01",
+      dryRun: true,
+    })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual({
+      method: "POST",
+      path: "/v1/employees/emp-1/terminations",
+      body: { effective_date: "2026-08-01", run_termination_payroll: false },
+    });
+  });
+
+  test("--run-termination-payroll flips the off-cycle flag in the body", async () => {
+    const result = await employeeTerminateHandler("emp-1", {
+      ...auth,
+      effectiveDate: "2026-08-01",
+      runTerminationPayroll: true,
+      dryRun: true,
+    })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as { body: Record<string, unknown> }).body).toMatchObject({
+      run_termination_payroll: true,
+    });
+  });
+
+  test("an agent-mode terminate without --confirm is blocked and sends nothing", async () => {
+    const s = stubGlobalFetch(() => ({ status: 201, body: {} }));
+    restore = s.restore;
+    const result = await employeeTerminateHandler("emp-1", { ...auth, effectiveDate: "2026-08-01" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("--confirm POSTs the termination to the employee endpoint", async () => {
+    const s = stubGlobalFetch((u) =>
+      u.includes("/v1/employees/emp-1/terminations") ? { status: 201, body: { active: true } } : { status: 404 },
+    );
+    restore = s.restore;
+    const result = await employeeTerminateHandler("emp-1", {
+      ...auth,
+      effectiveDate: "2026-08-01",
+      confirm: true,
+    })(ctx);
+    expect(result.ok).toBe(true);
+    const post = s.calls.find((c) => c.method === "POST");
+    expect(post?.url).toContain("/v1/employees/emp-1/terminations");
+    expect(post?.body).toEqual({ effective_date: "2026-08-01", run_termination_payroll: false });
+  });
+});
+
+describe("employeeTerminateCancelHandler", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("dry-run echoes the bodyless DELETE against the employee endpoint", async () => {
+    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, dryRun: true })(ctx);
+    expect(result).toEqual({
+      ok: true,
+      data: { method: "DELETE", path: "/v1/employees/emp-1/terminations" },
+    });
+  });
+
+  test("an agent-mode cancel without --confirm is blocked and sends nothing", async () => {
+    const s = stubGlobalFetch(() => ({ status: 204 }));
+    restore = s.restore;
+    const result = await employeeTerminateCancelHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("--confirm DELETEs the termination and returns the empty response body", async () => {
+    const s = stubGlobalFetch((u) =>
+      u.includes("/v1/employees/emp-1/terminations") ? { status: 204 } : { status: 404 },
+    );
+    restore = s.restore;
+    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    expect(result).toEqual({ ok: true, data: null });
+    const del = s.calls.find((c) => c.method === "DELETE");
+    expect(del?.url).toContain("/v1/employees/emp-1/terminations");
   });
 });
