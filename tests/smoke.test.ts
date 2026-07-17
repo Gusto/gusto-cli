@@ -104,18 +104,24 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  test("pay-schedule list (alias for show) dispatches the show handler instead of erroring", async () => {
-    // Without a token the show handler still exits 3 (no_access_token); the win is
-    // not getting commander's "unknown command 'list'" (exit 2) before we ever reach it.
+  test("pay-schedule list dispatches its handler instead of erroring", async () => {
+    // Without a token the list handler still exits 3 (no_access_token); the win is
+    // reaching the handler at all rather than commander's "unknown command" (exit 2).
     const result = await run(["pay-schedule", "list"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  test("pay-schedule get (second alias for show) dispatches the show handler instead of erroring", async () => {
-    // pay-schedule is the only command stacking two aliases (`list` and `get`) on one subcommand;
-    // exercise `get` too so a regression where one alias shadows the other would be caught.
-    const result = await run(["pay-schedule", "get"]);
+  test("pay-schedule assignments dispatches its handler instead of erroring", async () => {
+    const result = await run(["pay-schedule", "assignments"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("pay-schedule get <uuid> (alias for show) dispatches the show handler instead of erroring", async () => {
+    // `get` aliases `show <uuid>`; pass a uuid so commander doesn't reject on a missing
+    // argument (exit 2) before the handler runs. Without a token the handler exits 3.
+    const result = await run(["pay-schedule", "get", "ps-1"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });

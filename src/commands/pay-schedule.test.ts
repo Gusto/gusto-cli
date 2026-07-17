@@ -1,7 +1,51 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  blockedFields,
+  routeFetch,
+  stubGlobalFetch,
+} from "../lib/test-support.ts";
 import { payScheduleCreateHandler } from "../lib/pay-schedule.ts";
+import { payScheduleAssignmentsHandler, payScheduleListHandler, payScheduleShowHandler } from "./pay-schedule.ts";
+
+describe("pay-schedule read handlers", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("list GETs the company pay_schedules collection", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/pay_schedules", status: 200, body: [{ uuid: "ps-1" }] }]);
+    restore = r;
+    const result = await payScheduleListHandler({ ...auth })(ctx);
+    expect(result.ok).toBe(true);
+    const get = calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/v1/companies/co-1/pay_schedules");
+    expect(get?.url).not.toContain("/assignments");
+  });
+
+  test("assignments GETs the assignments sub-resource", async () => {
+    const { calls, restore: r } = routeFetch([
+      { match: "/pay_schedules/assignments", status: 200, body: { employees: [] } },
+    ]);
+    restore = r;
+    const result = await payScheduleAssignmentsHandler({ ...auth })(ctx);
+    expect(result.ok).toBe(true);
+    const get = calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/v1/companies/co-1/pay_schedules/assignments");
+  });
+
+  test("show GETs a single pay schedule by uuid", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/pay_schedules/ps-9", status: 200, body: { uuid: "ps-9" } }]);
+    restore = r;
+    const result = await payScheduleShowHandler("ps-9", { ...auth })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toMatchObject({ uuid: "ps-9" });
+    const get = calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/v1/companies/co-1/pay_schedules/ps-9");
+  });
+});
 
 describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {
   test("biweekly without --anchor-end-of-pay-period is refused pre-flight", async () => {
