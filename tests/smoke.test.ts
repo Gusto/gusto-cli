@@ -259,6 +259,14 @@ describe("payroll/ledger validate before auth (exit 7)", () => {
     expect(envelope.error.code).toBe("validation");
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "to" }));
   });
+
+  test("report run without --columns blocks on columns (validation/exit 7, not cli_usage)", async () => {
+    const result = await run(["report", "run"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "columns" }));
+  });
 });
 
 describe("dry-run works without auth", () => {

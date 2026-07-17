@@ -130,7 +130,7 @@ function splitList(raw: string): string[] {
 }
 
 interface ReportRunCliOpts {
-  columns: string;
+  columns?: string;
   groupBy?: string;
   from?: string;
   to?: string;
@@ -155,8 +155,12 @@ function reportRunHandler(opts: ReportRunCliOpts): CommandHandler {
     if (opts.to !== undefined && !isValidIsoDate(opts.to)) {
       blocked.push({ field: "to", reason: "must be a date in YYYY-MM-DD form" });
     }
-    const columns = splitList(opts.columns);
-    if (columns.length === 0) blocked.push({ field: "columns", reason: "must list at least one column" });
+    // `--columns` is required, but enforce it here (not via commander's `.requiredOption`) so an
+    // omitted flag returns the documented validation/blocked_on envelope (exit 7) like every other
+    // missing required field, rather than commander's generic cli_usage error (exit 2).
+    const columns = opts.columns ? splitList(opts.columns) : [];
+    if (opts.columns === undefined) blocked.push({ field: "columns", reason: "required" });
+    else if (columns.length === 0) blocked.push({ field: "columns", reason: "must list at least one column" });
     if (blocked.length > 0) return validationFailure("invalid arguments", blocked);
 
     const resolved = await resolveApiContext(globals, {
@@ -207,7 +211,7 @@ export function registerReportCommand(parent: Command): void {
   const run = cmd
     .command("run")
     .description("Generate a custom report and poll for the result")
-    .requiredOption("--columns <list>", "Comma-separated report columns (see the Reports API column vocabulary)")
+    .option("--columns <list>", "Comma-separated report columns, required (see the Reports API column vocabulary)")
     .option("--group-by <list>", `Comma-separated groupings (${GROUP_BY_CHOICES.join(", ")})`)
     .option("--from <date>", "Range start date (YYYY-MM-DD)")
     .option("--to <date>", "Range end date (YYYY-MM-DD)")
