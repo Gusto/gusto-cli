@@ -29,8 +29,8 @@ export interface ReportRunOpts {
   name?: string;
 }
 
-/** The `POST /v1/companies/{company_uuid}/reports` request body. Field names map 1:1 to the
- * Reports API; the CLI does no bespoke report assembly. */
+/** The create-report request body. Field names map 1:1 to the Reports API; the CLI does no
+ * bespoke report assembly. */
 export interface ReportBody {
   columns: string[];
   file_type: string;
@@ -63,8 +63,8 @@ export interface ExecuteReportRunOpts extends ReportRunOpts {
 }
 
 /** Create the report (company-scoped POST) then either return the poll handle (`wait === false`)
- * or poll the top-level `/v1/reports/{request_uuid}` until it completes. Takes the client directly
- * so the create-then-poll flow is unit-testable with a mocked fetch. */
+ * or poll the top-level retrieval path until it completes. Takes the client directly so the
+ * create-then-poll flow is unit-testable with a mocked fetch. */
 export async function executeReportRun(
   client: Pick<ApiClient, "post" | "poll">,
   companyUuid: string,
@@ -228,8 +228,8 @@ export function registerReportCommand(parent: Command): void {
     `
 The report is generated asynchronously: this requests it, then polls until it is
 ready (or --timeout elapses) and returns the report URLs. Use --no-wait to get
-the request_uuid and poll GET /v1/reports/{request_uuid} yourself (e.g. via
-'gusto report get <uuid>').
+the request_uuid back immediately and fetch the result later with
+'gusto report get <uuid>'.
 `,
   );
   run.action((opts: ReportRunCliOpts) =>

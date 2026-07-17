@@ -23,7 +23,7 @@ export interface GeneralLedgerBody {
   integration_type: string;
 }
 
-/** Build the POST body for `POST /v1/payrolls/{uuid}/reports/general_ledger`,
+/** Build the POST body for the general ledger report create request,
  * applying the server defaults (`aggregation: "default"`, `integration_type: ""`). */
 export function buildGeneralLedgerBody(opts: GeneralLedgerOpts): GeneralLedgerBody {
   return {
@@ -57,8 +57,8 @@ export function registerLedgerCommand(parent: Command): void {
       `
 The general ledger report is generated asynchronously: this requests it, then
 polls until it is ready (or --timeout elapses) and returns the report URLs.
-Use --no-wait to get the request_uuid and poll GET /v1/reports/{request_uuid}
-yourself (e.g. via 'gusto api request GET /v1/reports/<uuid>').
+Use --no-wait to get the request_uuid back immediately and fetch the result
+later with 'gusto report get <uuid>'.
 `,
     )
     .action((payrollUuid: string, opts: LedgerShowOpts) =>
