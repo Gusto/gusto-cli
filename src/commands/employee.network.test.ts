@@ -4,6 +4,7 @@ import {
   type EmployeeListSummary,
   employeeAddressesHandler,
   employeeHistoryHandler,
+  employeeJobsHandler,
   employeeListHandler,
   employeeRehireHandler,
   employeeTerminationsHandler,
@@ -259,5 +260,17 @@ describe("single address gets", () => {
     const d = okData(await homeAddressHandler("ha-1", {})(ctx));
     expect(d).toEqual({ uuid: "ha-1", street_1: "2 Elm" });
     expect(fetchStub.calls[0]?.url).toContain("/v1/home_addresses/ha-1");
+  });
+});
+
+describe("employeeJobsHandler", () => {
+  test("hits /v1/employees/{uuid}/jobs and passes the array through", async () => {
+    const body = [{ uuid: "job-1", title: "Engineer" }];
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = fetchStub.restore;
+    const result = await employeeJobsHandler("emp-1", {})(ctx);
+    if (!result.ok) throw new Error("expected ok");
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/jobs");
+    expect(result.data).toEqual(body);
   });
 });
