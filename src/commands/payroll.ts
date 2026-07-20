@@ -747,6 +747,18 @@ interface PayrollUpdateOpts {
 export function registerPayrollCommand(parent: Command): void {
   const cmd = parent.command("payroll").description("Inspect and prepare payrolls");
 
+  // Pay periods live under `pay-schedule`, not here; point an agent that scoped to `payroll`
+  // (a natural first guess, since a period carries its payroll) at the right command.
+  cmd.addHelpText(
+    "after",
+    `
+See also:
+  Pay periods (the date windows payrolls cover) are read via
+  'gusto pay-schedule periods'. Windows for terminated employees whose
+  final payroll has not run are under 'gusto pay-schedule termination-periods'.
+`,
+  );
+
   cmd
     .command("list")
     .description("List company payrolls (filter to past and/or future windows)")
