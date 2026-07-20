@@ -928,6 +928,30 @@ describe("executePayrollCalculate", () => {
     expect(result.error.code).toBe("calculate_failed");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
     expect(result.error.details).toMatchObject({ errors: [{ message: "negative net pay" }] });
+    // A non-blocker async failure carries no blockers hint.
+    expect(result.error.hint).toBeUndefined();
+  });
+
+  test("an async payroll_blocker failure also points the caller at `gusto payroll blockers`", async () => {
+    const { client } = stubApiClient({
+      [PUT_CALCULATE]: [202, null],
+      [GET_POLL]: [
+        200,
+        {
+          processing_request: {
+            status: "processing_failed",
+            errors: [{ category: "payroll_blocker", message: "needs approval" }],
+          },
+        },
+      ],
+    });
+    const result = await executePayrollCalculate(client, CO, PAYROLL, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("calculate_failed");
+    expect(result.error.hint).toContain("gusto payroll blockers");
+    // The raw blocker payload is still passed through untouched under details.
+    expect(result.error.details).toMatchObject({ errors: [{ category: "payroll_blocker" }] });
   });
 
   test("a payroll_blocker 422 points the caller at `gusto payroll blockers` via a hint", async () => {

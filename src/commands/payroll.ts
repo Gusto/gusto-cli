@@ -993,18 +993,12 @@ export function isPayrollCalculationFailed(body: PayrollShowResponse): boolean {
   return body.processing_request?.status === "processing_failed";
 }
 
-/** PUT the calculate request, then either return immediately (`wait === false`) or poll the
- * payroll's processing_request status until the calculate phase finishes (or the timeout elapses)
- * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
- * unit-testable with a mocked fetch, mirroring executeLedgerShow - the caller owns the async wait so
- * skills never have to poll. */
-/** True when an API error is a 422 whose errors carry the `payroll_blocker` category: the company
- * has outstanding payroll blockers that stop this write. */
-function isPayrollBlockerError(err: unknown): boolean {
-  if (!(err instanceof ApiError) || err.status !== 422) return false;
-  const body = err.body;
-  if (typeof body !== "object" || body === null) return false;
-  const errors = (body as { errors?: unknown }).errors;
+const BLOCKER_HINT = "this company has payroll blockers; run `gusto payroll blockers` to list them";
+
+/** True when a Gusto API `errors` array carries the `payroll_blocker` category: the company has
+ * outstanding payroll blockers that stop this write. Works for both the synchronous 422 body and
+ * the async `processing_request.errors` the calculate poll surfaces. */
+function hasPayrollBlockerError(errors: unknown): boolean {
   return (
     Array.isArray(errors) &&
     errors.some(
@@ -1013,22 +1007,28 @@ function isPayrollBlockerError(err: unknown): boolean {
   );
 }
 
-/** Map an error to a result, and when it is a payroll-blocker 422, point the caller at the read
- * command that lists the company's outstanding blockers so they can see (and clear) them. */
-function resultWithBlockerHint(err: unknown): CommandResult {
-  const result = toResult(err);
-  if (!result.ok && isPayrollBlockerError(err)) {
-    return {
-      ...result,
-      error: {
-        ...result.error,
-        hint: "this company has payroll blockers; run `gusto payroll blockers` to list them",
-      },
-    };
+/** The `errors` array from an ApiError's JSON body, or undefined when the error isn't an ApiError
+ * or carries no structured body. */
+function apiErrorBodyErrors(err: unknown): unknown {
+  if (!(err instanceof ApiError) || typeof err.body !== "object" || err.body === null) return undefined;
+  return (err.body as { errors?: unknown }).errors;
+}
+
+/** When a failed result was caused by outstanding payroll blockers, point the caller at the read
+ * command that lists them (so they can see and clear them). No-op for successes and non-blocker
+ * failures, so it is safe to wrap any calculate error path. */
+function attachBlockerHint(result: CommandResult, errors: unknown): CommandResult {
+  if (!result.ok && hasPayrollBlockerError(errors)) {
+    return { ...result, error: { ...result.error, hint: BLOCKER_HINT } };
   }
   return result;
 }
 
+/** PUT the calculate request, then either return immediately (`wait === false`) or poll the
+ * payroll's processing_request status until the calculate phase finishes (or the timeout elapses)
+ * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
+ * unit-testable with a mocked fetch, mirroring executeLedgerShow - the caller owns the async wait so
+ * skills never have to poll. */
 export async function executePayrollCalculate(
   client: Pick<ApiClient, "request" | "poll">,
   companyUuid: string,
@@ -1042,7 +1042,7 @@ export async function executePayrollCalculate(
   } catch (err) {
     // A 422 here is usually the company's payroll blockers refusing the calc; surface a pointer
     // to `gusto payroll blockers` so the caller can list them (mirrors the raw blocker payload).
-    return resultWithBlockerHint(err);
+    return attachBlockerHint(toResult(err), apiErrorBodyErrors(err));
   }
 
   // --no-wait: hand back the fire-and-forget shape so an agent can poll the totals itself later.
@@ -1064,15 +1064,21 @@ export async function executePayrollCalculate(
   } catch (err) {
     if (err instanceof PollFailedError) {
       const body = err.body as PayrollShowResponse | undefined;
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiServer,
-        error: {
-          code: "calculate_failed",
-          message: `payroll ${payrollUuid} calculation failed`,
-          details: { payroll_uuid: payrollUuid, errors: body?.processing_request?.errors ?? null },
+      const errors = body?.processing_request?.errors ?? null;
+      // An async calc failure can carry the same `payroll_blocker` category as the synchronous 422,
+      // so attach the same hint here rather than only on the PUT-catch above.
+      return attachBlockerHint(
+        {
+          ok: false,
+          exitCode: ExitCode.ApiServer,
+          error: {
+            code: "calculate_failed",
+            message: `payroll ${payrollUuid} calculation failed`,
+            details: { payroll_uuid: payrollUuid, errors },
+          },
         },
-      };
+        errors,
+      );
     }
     if (err instanceof PollTimeoutError) {
       return {
