@@ -146,9 +146,21 @@ describe("employee lifecycle reads", () => {
     expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/rehire");
   });
 
-  test("an API error fails the command (history)", async () => {
+  test("terminations returns an empty list for a never-terminated employee", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = fetchStub.restore;
+    const result = await employeeTerminationsHandler("emp-1", {})(ctx);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.data).toEqual([]);
+  });
+
+  test.each([
+    ["history", employeeHistoryHandler],
+    ["terminations", employeeTerminationsHandler],
+    ["rehire", employeeRehireHandler],
+  ])("an API error fails the command (%s)", async (_name, handler) => {
     restore = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } })).restore;
-    const result = await employeeHistoryHandler("emp-1", {})(ctx);
+    const result = await handler("emp-1", {})(ctx);
     expect(result.ok).toBe(false);
   });
 });

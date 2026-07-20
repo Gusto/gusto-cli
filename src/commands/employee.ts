@@ -147,17 +147,29 @@ function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): Co
 
 export function employeeHistoryHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/employment_history`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/employment_history`,
+    );
 }
 
 export function employeeTerminationsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/terminations`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/terminations`,
+    );
 }
 
 export function employeeRehireHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/rehire`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/rehire`,
+    );
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {

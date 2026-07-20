@@ -92,6 +92,18 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  // The three lifecycle reads dispatch their handlers (reaching the auth check, exit 3) rather than
+  // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
+  test.each([
+    ["history", ["employee", "history", "emp-123"]],
+    ["terminations", ["employee", "terminations", "emp-123"]],
+    ["rehire", ["employee", "rehire", "emp-123"]],
+  ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("pay-schedule list (alias for show) dispatches the show handler instead of erroring", async () => {
     // Without a token the show handler still exits 3 (no_access_token); the win is
     // not getting commander's "unknown command 'list'" (exit 2) before we ever reach it.
