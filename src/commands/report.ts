@@ -8,7 +8,13 @@ import { toResult } from "../lib/handle-api-error.ts";
 import { isValidIsoDate, resolveTimeoutMs } from "../lib/parse.ts";
 import { pollReport, reportPollPath } from "../lib/report-poll.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { type CommandHandler, type CommandResult, runCommand, validationFailure } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type CommandResult,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 /** Groupings the Reports API accepts for `--group-by`. */
 const GROUP_BY_CHOICES = ["payroll", "employee", "work_address", "work_address_state"] as const;
@@ -247,6 +253,6 @@ reference for the full column vocabulary.
     .option("--timeout <seconds>", "Max seconds to poll for completion when waiting (default 120)")
     .option(...TOKEN_STDIN_OPT)
     .action((requestUuid: string, opts: { wait?: boolean; timeout?: string; tokenStdin?: boolean }) =>
-      runCommand("gusto report get", readGlobalFlags(parent.opts()), reportGetHandler(requestUuid, opts)),
+      runReadCommand("gusto report get", readGlobalFlags(parent.opts()), reportGetHandler(requestUuid, opts)),
     );
 }

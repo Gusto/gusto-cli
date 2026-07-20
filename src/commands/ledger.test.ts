@@ -132,4 +132,19 @@ describe("executeLedgerShow", () => {
     expect(result.error.code).toBe("report_failed");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
   });
+
+  test("a non-terminal error mid-poll keeps the request_uuid + poll_path so the run is resumable", async () => {
+    // ledger show inherits the mid-poll behavior from pollReport (shared with `report`). A 5xx (or
+    // token expiry, a 4xx) while polling leaves the report generating server-side; the caller never
+    // saw the request_uuid, so the error must carry it to resume via `gusto report get`.
+    const client = clientWith({
+      post: { status: 200, body: { request_uuid: "req-1" } },
+      report: { status: 500, body: { message: "boom" } },
+    });
+    const result = await executeLedgerShow(client, PAYROLL, {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("api_server_error");
+    expect(result.error.details).toMatchObject({ request_uuid: "req-1", poll_path: "/v1/reports/req-1" });
+  });
 });
