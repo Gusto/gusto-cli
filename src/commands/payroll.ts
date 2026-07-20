@@ -10,7 +10,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs, validateEnum } from "../lib/parse.ts";
+import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs, splitTokens, validateEnum } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import {
   type CommandHandler,
@@ -77,6 +77,7 @@ const SHOW_INCLUDE_OPTIONS = [
  * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
 export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult {
   const blocked: BlockedOn[] = [];
+  const hasTokens = (raw: string | undefined): raw is string => raw !== undefined && splitTokens(raw).length > 0;
   if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {
     blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
   }
@@ -93,11 +94,8 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
     if (entry) blocked.push(entry);
   }
   // The API rejects date_filter_by unless processing_statuses is exactly "processed".
-  if (opts.dateFilterBy !== undefined && opts.processingStatus) {
-    const tokens = opts.processingStatus
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
+  if (hasTokens(opts.dateFilterBy) && opts.processingStatus) {
+    const tokens = splitTokens(opts.processingStatus);
     if (tokens.length === 0 || tokens.some((t) => t !== "processed")) {
       blocked.push({
         field: "processing-status",
@@ -110,18 +108,19 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
 
   const query: QueryParams = {};
   const set = (key: string, value: string | undefined): void => {
-    if (value !== undefined) query[key] = value;
+    if (value === undefined) return;
+    if (splitTokens(value).length === 0) return;
+    query[key] = value;
   };
   // Apply the client-side defaults the help text documents, so an omitted or empty flag sends an
   // explicit value instead of relying on the server's fallback:
   //   processing_statuses -> both (so draft payrolls are visible by default)
   //   payroll_types       -> regular
-  // `||` (not `??`) so an explicit empty value ("") also falls back to the default rather than being
-  // dropped by toQueryString and silently reverting to the server's own default.
-  // When --date-filter-by is set the default narrows to "processed" so the request doesn't 422.
-  const defaultProcessingStatuses = opts.dateFilterBy !== undefined ? "processed" : PROCESSING_STATUSES.join(",");
-  set("processing_statuses", opts.processingStatus || defaultProcessingStatuses);
-  set("payroll_types", opts.payrollType || "regular");
+  // When --date-filter-by will actually ship, the default narrows to "processed" so the request
+  // doesn't 422.
+  const defaultProcessingStatuses = hasTokens(opts.dateFilterBy) ? "processed" : PROCESSING_STATUSES.join(",");
+  set("processing_statuses", hasTokens(opts.processingStatus) ? opts.processingStatus : defaultProcessingStatuses);
+  set("payroll_types", hasTokens(opts.payrollType) ? opts.payrollType : "regular");
   set("start_date", opts.startDate);
   set("end_date", opts.endDate);
   set("date_filter_by", opts.dateFilterBy);
@@ -143,7 +142,7 @@ export function buildPayrollShowQuery(opts: PayrollShowOpts): PayrollQueryResult
   const entry = validateEnum("include", opts.include, SHOW_INCLUDE_OPTIONS, true);
   if (entry) return { ok: false, blocked: [entry] };
   const query: QueryParams = {};
-  if (opts.include !== undefined) query.include = opts.include;
+  if (opts.include !== undefined && splitTokens(opts.include).length > 0) query.include = opts.include;
   return { ok: true, query };
 }
 

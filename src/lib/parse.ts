@@ -1,5 +1,17 @@
 import type { BlockedOn } from "./output.ts";
 
+/** Split a comma-separated flag value into its non-empty tokens, trimming whitespace around each.
+ * Returns `[]` for a tokenless-truthy input (`","`, `" "`, `"\n"`, `", ,"`), so callers can
+ * distinguish "no tokens" from "one or more real tokens" without having to reimplement the
+ * split/trim/filter dance — otherwise a truthy raw string with zero real tokens can leak to the
+ * wire as e.g. `?key=%2C`, bypassing `toQueryString`'s empty-string drop. */
+export function splitTokens(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+}
+
 export type PositiveNumberResult = { ok: true; value: number } | { ok: false; reason: string };
 
 /** Parse a string as a positive, finite number.

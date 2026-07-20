@@ -46,6 +46,12 @@ describe("buildPayrollShowQuery", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.blocked[0]?.reason).toContain("employee_compensations");
   });
+
+  test("drops a tokenless-truthy --include rather than leaking it to the API", () => {
+    for (const raw of [",", " ", "\n", ", ,"]) {
+      expect(buildPayrollShowQuery({ include: raw })).toEqual({ ok: true, query: {} });
+    }
+  });
 });
 
 describe("renderPayrollShow", () => {
@@ -161,6 +167,38 @@ describe("buildPayrollListQuery", () => {
       ok: true,
       query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
     });
+  });
+
+  test("a tokenless-truthy filter value falls back to its default (same as the empty-string case)", () => {
+    for (const raw of [",", " ", "\n", ", ,"]) {
+      expect(buildPayrollListQuery({ processingStatus: raw, payrollType: raw })).toEqual({
+        ok: true,
+        query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
+      });
+    }
+  });
+
+  test("a tokenless-truthy value on a passthrough flag is dropped rather than leaking to the API", () => {
+    expect(buildPayrollListQuery({ sortOrder: " ", include: ",", dateFilterBy: "\n" })).toEqual({
+      ok: true,
+      query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
+    });
+  });
+
+  test("a whitespace-only --date-filter-by does not narrow the processing_statuses default", () => {
+    for (const raw of ["", " ", "\n"]) {
+      expect(buildPayrollListQuery({ dateFilterBy: raw })).toEqual({
+        ok: true,
+        query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
+      });
+    }
+  });
+
+  test("a bare comma on a single-value flag is invalid (the whole string is one token, not tokenless)", () => {
+    const result = buildPayrollListQuery({ sortOrder: "," });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "sort-order" }));
   });
 
   test("maps every flag to its API param name", () => {
