@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { type ApiClient, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
+import { type ApiClient, ApiError, PollFailedError, PollTimeoutError } from "../lib/api-client.ts";
 import { fetchCompanyResource, fetchResource, putCompanyResource, resolveApiContext } from "../lib/api-context.ts";
 import { CONFIRM_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { confirmationGate } from "../lib/confirm.ts";
@@ -807,6 +807,32 @@ Examples:
     );
 
   cmd
+    .command("blockers")
+    .description("List the company's payroll blockers (issues that must be resolved before payroll can run)")
+    .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Company-scoped: reads /v1/companies/{company}/payrolls/blockers and returns the blockers
+array verbatim (identical to 'gusto api request GET /v1/companies/{company}/payrolls/blockers').
+An empty array means the company has no outstanding blockers and can run payroll. This is a
+company-wide readiness check, distinct from per-payroll risk blockers. For per-payroll blockers,
+use 'gusto payroll list --include risk_blockers': submission blockers appear on unprocessed
+payrolls, credit blockers on processed payrolls (off-cycle payrolls need --payroll-type off_cycle
+and a date window to appear).
+Most blockers (bank verification, signatory, tax setup, forms) are cleared in the Gusto app, not the CLI.
+
+Examples:
+  $ gusto payroll blockers
+  $ gusto payroll blockers --company-uuid 1a2b3c4d-0000-1111-2222-333344445555
+`,
+    )
+    .action((opts: PayrollBlockersOpts) =>
+      runReadCommand("gusto payroll blockers", readGlobalFlags(parent.opts()), payrollBlockersHandler(opts)),
+    );
+
+  cmd
     .command("prepare [payroll_uuid]")
     .description("Prepare a draft payroll: lay in its employee compensations (does not compute dollar totals)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
@@ -967,6 +993,37 @@ export function isPayrollCalculationFailed(body: PayrollShowResponse): boolean {
   return body.processing_request?.status === "processing_failed";
 }
 
+const BLOCKER_HINT = "this company has payroll blockers; run `gusto payroll blockers` to list them";
+
+/** True when a Gusto API `errors` array carries the `payroll_blocker` category: the company has
+ * outstanding payroll blockers that stop this write. Works for both the synchronous 422 body and
+ * the async `processing_request.errors` the calculate poll surfaces. */
+function hasPayrollBlockerError(errors: unknown): boolean {
+  return (
+    Array.isArray(errors) &&
+    errors.some(
+      (e) => typeof e === "object" && e !== null && (e as { category?: unknown }).category === "payroll_blocker",
+    )
+  );
+}
+
+/** The `errors` array from an ApiError's JSON body, or undefined when the error isn't an ApiError
+ * or carries no structured body. */
+function apiErrorBodyErrors(err: unknown): unknown {
+  if (!(err instanceof ApiError) || typeof err.body !== "object" || err.body === null) return undefined;
+  return (err.body as { errors?: unknown }).errors;
+}
+
+/** When a failed result was caused by outstanding payroll blockers, point the caller at the read
+ * command that lists them (so they can see and clear them). No-op for successes and non-blocker
+ * failures, so it is safe to wrap any calculate error path. */
+function attachBlockerHint(result: CommandResult, errors: unknown): CommandResult {
+  if (!result.ok && hasPayrollBlockerError(errors)) {
+    return { ...result, error: { ...result.error, hint: BLOCKER_HINT } };
+  }
+  return result;
+}
+
 /** PUT the calculate request, then either return immediately (`wait === false`) or poll the
  * payroll's processing_request status until the calculate phase finishes (or the timeout elapses)
  * and return the payroll with its totals. Takes the client directly so the PUT-then-poll flow is
@@ -983,7 +1040,9 @@ export async function executePayrollCalculate(
   try {
     await client.request("PUT", `${base}/calculate`, undefined);
   } catch (err) {
-    return toResult(err);
+    // A 422 here is usually the company's payroll blockers refusing the calc; surface a pointer
+    // to `gusto payroll blockers` so the caller can list them (mirrors the raw blocker payload).
+    return attachBlockerHint(toResult(err), apiErrorBodyErrors(err));
   }
 
   // --no-wait: hand back the fire-and-forget shape so an agent can poll the totals itself later.
@@ -1005,15 +1064,21 @@ export async function executePayrollCalculate(
   } catch (err) {
     if (err instanceof PollFailedError) {
       const body = err.body as PayrollShowResponse | undefined;
-      return {
-        ok: false,
-        exitCode: ExitCode.ApiServer,
-        error: {
-          code: "calculate_failed",
-          message: `payroll ${payrollUuid} calculation failed`,
-          details: { payroll_uuid: payrollUuid, errors: body?.processing_request?.errors ?? null },
+      const errors = body?.processing_request?.errors ?? null;
+      // An async calc failure can carry the same `payroll_blocker` category as the synchronous 422,
+      // so attach the same hint here rather than only on the PUT-catch above.
+      return attachBlockerHint(
+        {
+          ok: false,
+          exitCode: ExitCode.ApiServer,
+          error: {
+            code: "calculate_failed",
+            message: `payroll ${payrollUuid} calculation failed`,
+            details: { payroll_uuid: payrollUuid, errors },
+          },
         },
-      };
+        errors,
+      );
     }
     if (err instanceof PollTimeoutError) {
       return {
@@ -1159,6 +1224,24 @@ function payrollListHandler(opts: PayrollListOpts): CommandHandler {
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls${toQueryString(parsed.query)}`,
+    );
+  };
+}
+
+export interface PayrollBlockersOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+/** GET the company's payroll blockers. No payroll_uuid and no query params: the endpoint is
+ * company-scoped and returns every outstanding blocker (an empty array means none). The API body is
+ * passed through untouched so output matches the raw `api request GET .../payrolls/blockers`. */
+export function payrollBlockersHandler(opts: PayrollBlockersOpts): CommandHandler {
+  return async ({ globals }) => {
+    return fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/payrolls/blockers`,
     );
   };
 }

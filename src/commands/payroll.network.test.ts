@@ -8,7 +8,13 @@ import {
   okData as data,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
-import { payrollCalculateHandler, payrollPrepareHandler, payrollShowHandler, payrollUpdateHandler } from "./payroll.ts";
+import {
+  payrollBlockersHandler,
+  payrollCalculateHandler,
+  payrollPrepareHandler,
+  payrollShowHandler,
+  payrollUpdateHandler,
+} from "./payroll.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -157,6 +163,45 @@ describe("payrollShowHandler", () => {
   test("a 404 (missing payroll) surfaces as a failed result", async () => {
     stub(() => ({ status: 404, body: { errors: [{ message: "not found" }] } }));
     const result = await payrollShowHandler("pay-1", auth)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
+});
+
+describe("payrollBlockersHandler", () => {
+  test("GETs the company-scoped blockers path and returns the body verbatim", async () => {
+    const blockers = [{ key: "bank_account_unverified", message: "Verify the company bank account" }];
+    const s = stub((u) => (u.includes("/payrolls/blockers") ? { status: 200, body: blockers } : { status: 404 }));
+
+    const result = await payrollBlockersHandler(auth)(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.data).toEqual(blockers);
+
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.method).toBe("GET");
+    expect(get?.url).toContain("/v1/companies/co-1/payrolls/blockers");
+  });
+
+  test("an empty array (no blockers) passes through as success", async () => {
+    stub((u) => (u.includes("/payrolls/blockers") ? { status: 200, body: [] } : { status: 404 }));
+    const result = await payrollBlockersHandler(auth)(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.data).toEqual([]);
+  });
+
+  test("--company-uuid overrides the company in the path", async () => {
+    const s = stub((u) => (u.includes("/payrolls/blockers") ? { status: 200, body: [] } : { status: 404 }));
+    await payrollBlockersHandler({ ...auth, companyUuid: "co-override" })(ctx);
+    const get = s.calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/v1/companies/co-override/payrolls/blockers");
+  });
+
+  test("an API error surfaces as a failed result", async () => {
+    stub(() => ({ status: 404, body: { errors: [{ message: "not found" }] } }));
+    const result = await payrollBlockersHandler(auth)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.exitCode).toBe(ExitCode.ApiClient);
