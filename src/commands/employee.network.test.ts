@@ -142,7 +142,7 @@ describe("employeeAddressesHandler", () => {
     expect(urls.some((u) => u.includes("/v1/employees/emp-1/home_addresses"))).toBe(true);
   });
 
-  test("a home-address failure fails the whole command", async () => {
+  test("a home-address failure fails the whole command with a home-scoped message", async () => {
     const fetchStub = routeFetch([
       { match: "/work_addresses", status: 200, body: [] },
       { match: "/home_addresses", status: 404, body: { error: "not found" } },
@@ -150,9 +150,11 @@ describe("employeeAddressesHandler", () => {
     restore = fetchStub.restore;
     const result = await employeeAddressesHandler("emp-1", {})(ctx);
     expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("home addresses for employee emp-1");
   });
 
-  test("a work-address failure short-circuits before fetching home", async () => {
+  test("a work-address failure wins and names the work side, even though both GETs fire", async () => {
     const fetchStub = routeFetch([
       { match: "/work_addresses", status: 404, body: { error: "not found" } },
       { match: "/home_addresses", status: 200, body: [] },
@@ -160,8 +162,34 @@ describe("employeeAddressesHandler", () => {
     restore = fetchStub.restore;
     const result = await employeeAddressesHandler("emp-1", {})(ctx);
     expect(result.ok).toBe(false);
-    expect(fetchStub.calls).toHaveLength(1);
-    expect(fetchStub.calls[0]?.url).toContain("/work_addresses");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("work addresses for employee emp-1");
+    // Runs in parallel now, so both endpoints are hit (no short-circuit).
+    expect(fetchStub.calls).toHaveLength(2);
+  });
+
+  test("a non-array work_addresses body is rejected as malformed", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: { not: "an array" } },
+      { match: "/home_addresses", status: 200, body: [] },
+    ]);
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+  });
+
+  test("a non-array home_addresses body is rejected as malformed", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: [] },
+      { match: "/home_addresses", status: 200, body: { not: "an array" } },
+    ]);
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
   });
 });
 

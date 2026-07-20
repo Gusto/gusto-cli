@@ -3,6 +3,7 @@ import { fetchAtPath, fetchResource, resolveApiContext, withCompanyContext } fro
 import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
+import { malformedResponse } from "../lib/errors.ts";
 import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
 
 interface EmployeeListOpts {
@@ -135,36 +136,77 @@ never read as company totals.
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}`);
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${encodeURIComponent(employeeUuid)}`);
 }
 
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/onboarding_status`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/onboarding_status`,
+    );
 }
 
 export function workAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/work_addresses/${addressUuid}`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/work_addresses/${encodeURIComponent(addressUuid)}`,
+    );
 }
 
 export function homeAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/home_addresses/${addressUuid}`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/home_addresses/${encodeURIComponent(addressUuid)}`,
+    );
 }
 
-// Two independent GETs on the employee-scoped (no company) path, combined under
-// stable keys. Either failing fails the whole command; the single-address gets
-// exist for granular access when one side errors.
+// Two independent GETs on the employee-scoped (no company) path, run in parallel
+// and combined under stable keys. Either failing fails the whole command (work's
+// error wins if both fail); each error names its side + employee. The single-address
+// gets exist for granular access when one side errors. A 2xx that isn't a JSON array
+// is rejected as malformed rather than passed through, so the address list contract
+// (and --fields discovery over it) stays honest.
 export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) => {
     const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
     if (!resolved.ok) return resolved.result;
 
-    const work = await fetchAtPath(resolved.ctx.client, `/v1/employees/${employeeUuid}/work_addresses`);
-    if (!work.ok) return work;
-    const home = await fetchAtPath(resolved.ctx.client, `/v1/employees/${employeeUuid}/home_addresses`);
-    if (!home.ok) return home;
+    const [work, home] = await Promise.all([
+      fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`),
+      fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/home_addresses`),
+    ]);
+    if (!work.ok) {
+      return {
+        ok: false,
+        exitCode: work.exitCode,
+        error: {
+          ...work.error,
+          message: `looking up work addresses for employee ${employeeUuid}: ${work.error.message}`,
+        },
+      };
+    }
+    if (!home.ok) {
+      return {
+        ok: false,
+        exitCode: home.exitCode,
+        error: {
+          ...home.error,
+          message: `looking up home addresses for employee ${employeeUuid}: ${home.error.message}`,
+        },
+      };
+    }
+    if (!Array.isArray(work.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/work_addresses returned a non-array body`);
+    }
+    if (!Array.isArray(home.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/home_addresses returned a non-array body`);
+    }
 
     return { ok: true, data: { work_addresses: work.data, home_addresses: home.data } };
   };
