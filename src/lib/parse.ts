@@ -1,3 +1,5 @@
+import type { BlockedOn } from "./output.ts";
+
 export type PositiveNumberResult = { ok: true; value: number } | { ok: false; reason: string };
 
 /** Parse a string as a positive, finite number.
@@ -48,6 +50,31 @@ export function isValidIsoDate(value: string): boolean {
 export function isValidIso8601(value: string): boolean {
   if (!ISO_8601.test(value)) return false;
   return !Number.isNaN(new Date(value).getTime());
+}
+
+/** Validate a flag value against a closed enum, returning a `blocked_on` entry
+ * for any unrecognized token (or null if all are valid). `multi` splits the
+ * value on commas for the comma-separated multi-value params; empty tokens
+ * (from trailing/double commas) are ignored. Shared by the query-building read
+ * commands (`payroll list`, `pay-schedule periods`) so their enum checks and
+ * error messages can't drift. */
+export function validateEnum(
+  field: string,
+  value: string | undefined,
+  allowed: readonly string[],
+  multi: boolean,
+): BlockedOn | null {
+  if (value === undefined) return null;
+  // Trim each token before the enum check: the server does `str.strip` on these params, so
+  // `"totals, taxes"` (space after the comma) is valid server-side and must validate here too.
+  // Empty tokens (from trailing/double commas) are then dropped.
+  const tokens = (multi ? value.split(",") : [value]).map((t) => t.trim()).filter((t) => t.length > 0);
+  const invalid = tokens.filter((t) => !allowed.includes(t));
+  if (invalid.length === 0) return null;
+  return {
+    field,
+    reason: `invalid value(s) ${invalid.map((t) => `'${t}'`).join(", ")}; allowed: ${allowed.join(", ")}`,
+  };
 }
 
 /** Parse a `--timeout <seconds>` flag into milliseconds; ok:false when it isn't a positive, finite

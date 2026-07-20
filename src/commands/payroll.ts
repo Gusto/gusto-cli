@@ -10,7 +10,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs } from "../lib/parse.ts";
+import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs, validateEnum } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import {
   type CommandHandler,
@@ -67,29 +67,6 @@ const SHOW_INCLUDE_OPTIONS = [
   "reversals",
   "payroll_taxes",
 ] as const;
-
-/** Validate a flag value against a closed enum, returning a `blocked_on` entry
- * for any unrecognized token (or null if all are valid). `multi` splits the
- * value on commas for the comma-separated multi-value params; empty tokens
- * (from trailing/double commas) are ignored. */
-function validateEnum(
-  field: string,
-  value: string | undefined,
-  allowed: readonly string[],
-  multi: boolean,
-): BlockedOn | null {
-  if (value === undefined) return null;
-  // Trim each token before the enum check: the server does `str.strip` on these params, so
-  // `"totals, taxes"` (space after the comma) is valid server-side and must validate here too.
-  // Empty tokens (from trailing/double commas) are then dropped.
-  const tokens = (multi ? value.split(",") : [value]).map((t) => t.trim()).filter((t) => t.length > 0);
-  const invalid = tokens.filter((t) => !allowed.includes(t));
-  if (invalid.length === 0) return null;
-  return {
-    field,
-    reason: `invalid value(s) ${invalid.map((t) => `'${t}'`).join(", ")}; allowed: ${allowed.join(", ")}`,
-  };
-}
 
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
  * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The

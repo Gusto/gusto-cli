@@ -4,7 +4,7 @@ import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { addPayScheduleOptions, type PayScheduleCreateOpts, payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIsoDate } from "../lib/parse.ts";
+import { isValidIsoDate, validateEnum } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import { type CommandHandler, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
 
@@ -40,21 +40,8 @@ export function buildPayPeriodsQuery(opts: PayPeriodsListOpts): PayPeriodsQueryR
   if (opts.endDate !== undefined && !isValidIsoDate(opts.endDate)) {
     blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
   }
-  if (opts.payrollTypes !== undefined) {
-    // The server does `str.strip` on each token, so trim before the enum check; drop empty
-    // tokens from a trailing/double comma.
-    const tokens = opts.payrollTypes
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-    const invalid = tokens.filter((t) => !(PAY_PERIOD_PAYROLL_TYPES as readonly string[]).includes(t));
-    if (invalid.length > 0) {
-      blocked.push({
-        field: "payroll-types",
-        reason: `invalid value(s) ${invalid.map((t) => `'${t}'`).join(", ")}; allowed: ${PAY_PERIOD_PAYROLL_TYPES.join(", ")}`,
-      });
-    }
-  }
+  const typeEntry = validateEnum("payroll-types", opts.payrollTypes, PAY_PERIOD_PAYROLL_TYPES, true);
+  if (typeEntry) blocked.push(typeEntry);
   if (blocked.length > 0) return { ok: false, blocked };
 
   const query: QueryParams = {};
