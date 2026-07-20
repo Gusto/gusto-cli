@@ -119,8 +119,8 @@ describe("auth required commands without a token", () => {
   });
 
   test("pay-schedule get <uuid> (alias for show) dispatches the show handler instead of erroring", async () => {
-    // `get` aliases `show <uuid>`; pass a uuid so commander doesn't reject on a missing
-    // argument (exit 2) before the handler runs. Without a token the handler exits 3.
+    // `get` aliases `show <uuid>`; pass a uuid so we reach the handler rather than the
+    // missing-argument validation error (exit 7). Without a token the handler exits 3.
     const result = await run(["pay-schedule", "get", "ps-1"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
