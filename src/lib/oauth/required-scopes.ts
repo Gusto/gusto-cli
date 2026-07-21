@@ -32,7 +32,10 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "jobs:read", usedBy: ["employee inspect"] },
   { scope: "compensations:read", usedBy: ["employee inspect"] },
   { scope: "pay_schedules:read", usedBy: ["pay-schedule list", "pay-schedule assignments", "pay-schedule show"] },
-  { scope: "payrolls:read", usedBy: ["payroll list", "ledger show"] },
+  {
+    scope: "payrolls:read",
+    usedBy: ["payroll list", "ledger show", "pay-schedule periods", "pay-schedule termination-periods"],
+  },
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
   { scope: "company_payment_configs:read", usedBy: ["company show"] },
