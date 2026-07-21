@@ -51,5 +51,5 @@ export function departmentListHandler(opts: DepartmentListOpts): CommandHandler 
 
 export function departmentShowHandler(departmentUuid: string, opts: DepartmentShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/departments/${departmentUuid}`);
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/departments/${encodeURIComponent(departmentUuid)}`);
 }

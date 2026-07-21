@@ -36,4 +36,12 @@ describe("departmentShowHandler", () => {
     expect(stub.calls[0]?.url).toContain("/v1/departments/dept-1");
     expect(d).toEqual({ uuid: "dept-1", title: "Engineering" });
   });
+
+  test("percent-encodes the UUID so '../' can't retarget the GET within the same origin", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 404 }));
+    restore = stub.restore;
+    await departmentShowHandler("../companies/co-1/payroll_reversals", {})(ctx);
+    expect(stub.calls[0]?.url).toContain("/v1/departments/..%2Fcompanies%2Fco-1%2Fpayroll_reversals");
+    expect(stub.calls[0]?.url).not.toContain("/v1/companies/co-1/payroll_reversals");
+  });
 });
