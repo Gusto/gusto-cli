@@ -27,8 +27,8 @@ export interface ScopeRequirement {
 
 export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   // Reads
-  { scope: "companies:read", usedBy: ["company show", "company locations"] },
-  { scope: "employees:read", usedBy: ["employee show", "employee status", "employee list"] },
+  { scope: "companies:read", usedBy: ["company show", "company locations", "company custom-fields"] },
+  { scope: "employees:read", usedBy: ["employee show", "employee status", "employee list", "employee custom-fields"] },
   { scope: "employments:read", usedBy: ["employee history", "employee terminations", "employee rehire"] },
   { scope: "contractors:read", usedBy: ["contractor show", "contractor list"] },
   { scope: "departments:read", usedBy: ["department list", "department show"] },
@@ -37,7 +37,13 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "pay_schedules:read", usedBy: ["pay-schedule list", "pay-schedule assignments", "pay-schedule show"] },
   {
     scope: "payrolls:read",
-    usedBy: ["payroll list", "ledger show", "pay-schedule periods", "pay-schedule termination-periods"],
+    usedBy: [
+      "payroll list",
+      "ledger show",
+      "pay-schedule periods",
+      "pay-schedule termination-periods",
+      "company earning-types",
+    ],
   },
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
