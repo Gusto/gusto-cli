@@ -32,8 +32,8 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "employments:read", usedBy: ["employee history", "employee terminations", "employee rehire"] },
   { scope: "contractors:read", usedBy: ["contractor show", "contractor list"] },
   { scope: "departments:read", usedBy: ["department list", "department show"] },
-  { scope: "jobs:read", usedBy: ["employee inspect"] },
-  { scope: "compensations:read", usedBy: ["employee inspect"] },
+  { scope: "jobs:read", usedBy: ["payroll update", "employee jobs", "job show"] },
+  { scope: "compensations:read", usedBy: ["compensation show", "job compensations"] },
   { scope: "pay_schedules:read", usedBy: ["pay-schedule list", "pay-schedule assignments", "pay-schedule show"] },
   {
     scope: "payrolls:read",
@@ -42,8 +42,6 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
   { scope: "company_payment_configs:read", usedBy: ["company show"] },
-  { scope: "employee_federal_taxes:read", usedBy: ["employee inspect"] },
-  { scope: "employee_state_taxes:read", usedBy: ["employee inspect"] },
 
   // Writes: the per-cycle payroll flow, plus the employee-offboarding path.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
@@ -76,6 +74,8 @@ export const DROPPED_SCOPES: readonly string[] = [
   "compensations:write",
   "employee_federal_taxes:write",
   "employee_state_taxes:write",
+  "employee_federal_taxes:read",
+  "employee_state_taxes:read",
 ] as const;
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to
