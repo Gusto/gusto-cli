@@ -150,7 +150,7 @@ Returns the pay periods for past and future terminated employees whose terminati
 payroll has not been processed yet.
 `,
     )
-    .action((opts: PayScheduleShowOpts) =>
+    .action((opts: PayScheduleReadOpts) =>
       runReadCommand(
         "gusto pay-schedule termination-periods",
         readGlobalFlags(parent.opts()),
@@ -171,7 +171,7 @@ export function payPeriodsListHandler(opts: PayPeriodsListOpts): CommandHandler 
   };
 }
 
-export function terminationPeriodsHandler(opts: PayScheduleShowOpts): CommandHandler {
+export function terminationPeriodsHandler(opts: PayScheduleReadOpts): CommandHandler {
   return async ({ globals }) =>
     fetchCompanyResource(
       globals,
