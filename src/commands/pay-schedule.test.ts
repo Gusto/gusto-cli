@@ -45,6 +45,15 @@ describe("pay-schedule read handlers", () => {
     const get = calls.find((c) => c.method === "GET");
     expect(get?.url).toContain("/v1/companies/co-1/pay_schedules/ps-9");
   });
+
+  test("show percent-encodes the pay schedule uuid so it can't retarget the request", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/pay_schedules/", status: 200, body: {} }]);
+    restore = r;
+    await payScheduleShowHandler("a/b?c", { ...auth })(ctx);
+    const get = calls.find((c) => c.method === "GET");
+    expect(get?.url).toContain("/pay_schedules/a%2Fb%3Fc");
+    expect(get?.url).not.toContain("/pay_schedules/a/b");
+  });
 });
 
 describe("payScheduleCreateHandler anchor_end_of_pay_period validation", () => {

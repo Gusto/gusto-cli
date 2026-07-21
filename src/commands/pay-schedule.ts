@@ -86,6 +86,6 @@ export function payScheduleShowHandler(payScheduleUuid: string, opts: PaySchedul
     fetchCompanyResource(
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}/pay_schedules/${payScheduleUuid}`,
+      (ctx) => `/v1/companies/${ctx.companyUuid}/pay_schedules/${encodeURIComponent(payScheduleUuid)}`,
     );
 }
