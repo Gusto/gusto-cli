@@ -47,6 +47,7 @@ describe("compiled binary", () => {
       "company",
       "employee",
       "contractor",
+      "department",
       "pay-schedule",
       "payroll",
       "ledger",
@@ -123,11 +124,20 @@ describe("auth required commands without a token", () => {
   test.each([
     ["employee", ["employee", "get", "employee-uuid-123"]],
     ["contractor", ["contractor", "get", "contractor-uuid-123"]],
+    ["department", ["department", "get", "department-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
     ["timesheet", ["timesheet", "get", "time-sheet-uuid-123"]],
   ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {
     const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("department list without a token returns no_access_token (exit 3)", async () => {
+    // A brand-new non-alias subcommand: assert it dispatches (reaches the auth check, exit 3) rather
+    // than commander's unknown-command (exit 2), proving it is wired into the compiled binary.
+    const result = await run(["department", "list"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
