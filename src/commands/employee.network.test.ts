@@ -376,6 +376,16 @@ describe("employeeTerminateHandler", () => {
     expect(post?.url).toContain("/v1/employees/emp-1/terminations");
     expect(post?.body).toEqual({ effective_date: "2026-08-01", run_termination_payroll: false });
   });
+
+  test("encodes a uuid with URL-significant characters into a single path segment", async () => {
+    const s = stubGlobalFetch(() => ({ status: 201, body: {} }));
+    restore = s.restore;
+    await employeeTerminateHandler("a/b?c#d", { ...auth, effectiveDate: "2026-08-01", confirm: true })(ctx);
+    const post = s.calls.find((c) => c.method === "POST");
+    // The raw `/`, `?`, `#` must be percent-encoded so they can't retarget the write.
+    expect(post?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/terminations");
+    expect(post?.url).not.toContain("a/b?c");
+  });
 });
 
 describe("employeeTerminateCancelHandler", () => {
