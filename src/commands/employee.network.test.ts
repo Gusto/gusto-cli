@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type EmployeeListData, type EmployeeListSummary, employeeListHandler } from "./employee.ts";
+import {
+  type EmployeeListData,
+  type EmployeeListSummary,
+  employeeAddressesHandler,
+  employeeListHandler,
+  homeAddressHandler,
+  workAddressHandler,
+} from "./employee.ts";
 import {
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
   blockedFields,
   okData,
   pagedRouter,
+  routeFetch,
   stubGlobalFetch,
 } from "../lib/test-support.ts";
 
@@ -107,5 +115,98 @@ describe("employeeListHandler pagination", () => {
     await employeeListHandler({ ...auth })(ctx);
     expect(fetchStub.calls[0]?.url).toContain("page=1");
     expect(fetchStub.calls[0]?.url).toContain("per=100");
+  });
+});
+
+describe("employeeAddressesHandler", () => {
+  test("combines work and home addresses under stable keys", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: [{ uuid: "wa-1", street_1: "1 Main" }] },
+      { match: "/home_addresses", status: 200, body: [{ uuid: "ha-1", street_1: "2 Elm" }] },
+    ]);
+    restore = fetchStub.restore;
+    const d = okData(await employeeAddressesHandler("emp-1", {})(ctx));
+    expect(d.work_addresses).toEqual([{ uuid: "wa-1", street_1: "1 Main" }]);
+    expect(d.home_addresses).toEqual([{ uuid: "ha-1", street_1: "2 Elm" }]);
+  });
+
+  test("hits both employee address endpoints", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: [] },
+      { match: "/home_addresses", status: 200, body: [] },
+    ]);
+    restore = fetchStub.restore;
+    await employeeAddressesHandler("emp-1", {})(ctx);
+    const urls = fetchStub.calls.map((c) => c.url);
+    expect(urls.some((u) => u.includes("/v1/employees/emp-1/work_addresses"))).toBe(true);
+    expect(urls.some((u) => u.includes("/v1/employees/emp-1/home_addresses"))).toBe(true);
+  });
+
+  test("a home-address failure fails the whole command with a home-scoped message", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: [] },
+      { match: "/home_addresses", status: 404, body: { error: "not found" } },
+    ]);
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("home addresses for employee emp-1");
+  });
+
+  test("a work-address failure wins and names the work side, even though both GETs fire", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 404, body: { error: "not found" } },
+      { match: "/home_addresses", status: 200, body: [] },
+    ]);
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("work addresses for employee emp-1");
+    // Runs in parallel now, so both endpoints are hit (no short-circuit).
+    expect(fetchStub.calls).toHaveLength(2);
+  });
+
+  test("a non-array work_addresses body is rejected as malformed", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: { not: "an array" } },
+      { match: "/home_addresses", status: 200, body: [] },
+    ]);
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+  });
+
+  test("a non-array home_addresses body is rejected as malformed", async () => {
+    const fetchStub = routeFetch([
+      { match: "/work_addresses", status: 200, body: [] },
+      { match: "/home_addresses", status: 200, body: { not: "an array" } },
+    ]);
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+  });
+});
+
+describe("single address gets", () => {
+  test("work-address hits /v1/work_addresses/{uuid} and returns the body verbatim", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { uuid: "wa-1", street_1: "1 Main" } }));
+    restore = fetchStub.restore;
+    const d = okData(await workAddressHandler("wa-1", {})(ctx));
+    expect(d).toEqual({ uuid: "wa-1", street_1: "1 Main" });
+    expect(fetchStub.calls[0]?.url).toContain("/v1/work_addresses/wa-1");
+  });
+
+  test("home-address hits /v1/home_addresses/{uuid} and returns the body verbatim", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { uuid: "ha-1", street_1: "2 Elm" } }));
+    restore = fetchStub.restore;
+    const d = okData(await homeAddressHandler("ha-1", {})(ctx));
+    expect(d).toEqual({ uuid: "ha-1", street_1: "2 Elm" });
+    expect(fetchStub.calls[0]?.url).toContain("/v1/home_addresses/ha-1");
   });
 });
