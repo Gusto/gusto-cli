@@ -1,8 +1,9 @@
 import type { Command } from "commander";
-import { fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { fetchAtPath, fetchResource, resolveApiContext, withCompanyContext } from "../lib/api-context.ts";
 import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
+import { malformedResponse } from "../lib/errors.ts";
 import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
 
 interface EmployeeListOpts {
@@ -44,6 +45,67 @@ export function registerEmployeeCommand(parent: Command): void {
     );
 
   cmd
+    .command("addresses <employee_uuid>")
+    .description("Read an employee's work and home addresses")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee addresses <employee_uuid>                      # work + home addresses
+  $ gusto employee addresses <employee_uuid> --fields work_addresses   # just the work list
+
+Returns both address lists under \`work_addresses\` and \`home_addresses\`. Each entry
+carries its own UUID; pass it to \`employee work-address\`/\`home-address\` for a single record.
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee addresses",
+        readGlobalFlags(parent.opts()),
+        employeeAddressesHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("work-address <address_uuid>")
+    .description("Read a single work address by UUID")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee work-address <address_uuid>   # one work address; UUIDs come from \`employee addresses\`
+`,
+    )
+    .action((addressUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee work-address",
+        readGlobalFlags(parent.opts()),
+        workAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("home-address <address_uuid>")
+    .description("Read a single home address by UUID")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee home-address <address_uuid>   # one home address; UUIDs come from \`employee addresses\`
+`,
+    )
+    .action((addressUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee home-address",
+        readGlobalFlags(parent.opts()),
+        homeAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
     .command("list")
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
@@ -74,12 +136,80 @@ never read as company totals.
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}`);
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${encodeURIComponent(employeeUuid)}`);
 }
 
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/onboarding_status`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/onboarding_status`,
+    );
+}
+
+export function workAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/work_addresses/${encodeURIComponent(addressUuid)}`,
+    );
+}
+
+export function homeAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/home_addresses/${encodeURIComponent(addressUuid)}`,
+    );
+}
+
+// Two independent GETs on the employee-scoped (no company) path, run in parallel
+// and combined under stable keys. Either failing fails the whole command (work's
+// error wins if both fail); each error names its side + employee. The single-address
+// gets exist for granular access when one side errors. A 2xx that isn't a JSON array
+// is rejected as malformed rather than passed through, so the address list contract
+// (and --fields discovery over it) stays honest.
+export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) => {
+    const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
+    if (!resolved.ok) return resolved.result;
+
+    const [work, home] = await Promise.all([
+      fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`),
+      fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/home_addresses`),
+    ]);
+    if (!work.ok) {
+      return {
+        ok: false,
+        exitCode: work.exitCode,
+        error: {
+          ...work.error,
+          message: `looking up work addresses for employee ${employeeUuid}: ${work.error.message}`,
+        },
+      };
+    }
+    if (!home.ok) {
+      return {
+        ok: false,
+        exitCode: home.exitCode,
+        error: {
+          ...home.error,
+          message: `looking up home addresses for employee ${employeeUuid}: ${home.error.message}`,
+        },
+      };
+    }
+    if (!Array.isArray(work.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/work_addresses returned a non-array body`);
+    }
+    if (!Array.isArray(home.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/home_addresses returned a non-array body`);
+    }
+
+    return { ok: true, data: { work_addresses: work.data, home_addresses: home.data } };
+  };
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {

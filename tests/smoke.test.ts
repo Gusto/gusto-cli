@@ -93,18 +93,36 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  test("pay-schedule list (alias for show) dispatches the show handler instead of erroring", async () => {
-    // Without a token the show handler still exits 3 (no_access_token); the win is
-    // not getting commander's "unknown command 'list'" (exit 2) before we ever reach it.
+  // The three address reads dispatch their handlers (reaching the auth check, exit 3) rather than
+  // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
+  test.each([
+    ["addresses", ["employee", "addresses", "emp-123"]],
+    ["work-address", ["employee", "work-address", "wa-123"]],
+    ["home-address", ["employee", "home-address", "ha-123"]],
+  ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("pay-schedule list dispatches its handler instead of erroring", async () => {
+    // Without a token the list handler still exits 3 (no_access_token); the win is
+    // reaching the handler at all rather than commander's "unknown command" (exit 2).
     const result = await run(["pay-schedule", "list"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  test("pay-schedule get (second alias for show) dispatches the show handler instead of erroring", async () => {
-    // pay-schedule is the only command stacking two aliases (`list` and `get`) on one subcommand;
-    // exercise `get` too so a regression where one alias shadows the other would be caught.
-    const result = await run(["pay-schedule", "get"]);
+  test("pay-schedule assignments dispatches its handler instead of erroring", async () => {
+    const result = await run(["pay-schedule", "assignments"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("pay-schedule get <uuid> (alias for show) dispatches the show handler instead of erroring", async () => {
+    // `get` aliases `show <uuid>`; pass a uuid so we reach the handler rather than the
+    // missing-argument validation error (exit 7). Without a token the handler exits 3.
+    const result = await run(["pay-schedule", "get", "ps-1"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
@@ -148,6 +166,12 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  test("payroll blockers without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["payroll", "blockers"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll calculate with a uuid and --confirm but no token returns no_access_token (exit 3)", async () => {
     // calculate is a gated write, so --confirm is needed to get past the agent-mode confirmation
     // gate and reach the auth check this asserts (without it the run blocks with exit 8 first).
@@ -171,10 +195,10 @@ describe("auth required commands without a token", () => {
 
 describe("usage errors are self-correcting envelopes in agent mode", () => {
   test("an unknown subcommand returns a parseable unknown_command envelope (exit 2)", async () => {
-    // `payroll blockers` has no first-class command; instead of commander's bare stderr line, an
+    // `payroll frobnicate` has no first-class command; instead of commander's bare stderr line, an
     // agent gets a {ok:false} envelope on stdout listing the valid subcommands and the api-hatch
     // fallback, so it can self-correct rather than dead-end.
-    const result = await run(["payroll", "blockers"]);
+    const result = await run(["payroll", "frobnicate"]);
     expect(result.exitCode).toBe(2);
     const env = JSON.parse(result.stdout.trim());
     expect(env.ok).toBe(false);
