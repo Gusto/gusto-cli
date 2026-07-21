@@ -143,9 +143,8 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         }
       };
 
-      const [companyR, paymentR, scheduleR] = await Promise.all([
+      const [companyR, scheduleR] = await Promise.all([
         safe("company", async () => (await ctx.client.get<CompanyRecord>(base)).body),
-        safe("payment_config", async () => (await ctx.client.get<PaymentConfig>(`${base}/payment_configs`)).body),
         safe("pay_schedules", async () => (await ctx.client.get<PaySchedule[]>(`${base}/pay_schedules`)).body),
       ]);
 
@@ -154,19 +153,26 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       if (!companyR.ok) throw companyR.cause;
 
       const company = companyR.data;
+      // Skip payment_configs when we know it will 404: the endpoint gates on an active
+      // PartnerCompanyMapping, which non-partner-managed companies don't have.
+      const paymentR:
+        | { ok: true; data: PaymentConfig | null }
+        | { ok: false; label: string; error: string; status?: number; cause: unknown } =
+        company.is_partner_managed === false
+          ? { ok: true, data: null }
+          : await safe(
+              "payment_config",
+              async () => (await ctx.client.get<PaymentConfig>(`${base}/payment_configs`)).body,
+            );
+
       const paymentConfig = paymentR.ok ? paymentR.data : null;
       // Sanitize once here so pay_schedules is genuinely PaySchedule[] | null downstream: the API
       // body is typed but not runtime-validated, and a malformed-but-200 non-array would otherwise
       // crash the human renderer's .map. Keeping the guard here lets callers trust the type.
       const paySchedules = scheduleR.ok && Array.isArray(scheduleR.data) ? scheduleR.data : null;
       const firstSchedule = paySchedules?.[0] ?? null;
-      // payment_configs is gated on an active PartnerCompanyMapping; non-partner-managed
-      // companies always 404 here, which reads as a bug to anyone watching the output. Drop only the 404 -
-      // a 5xx or network error against the same endpoint is still a real failure.
-      const suppressPaymentConfig404 = company?.is_partner_managed === false;
       const errors = [paymentR, scheduleR]
         .filter((r): r is { ok: false; label: string; error: string; status?: number; cause: unknown } => !r.ok)
-        .filter((r) => !(r.label === "payment_config" && r.status === 404 && suppressPaymentConfig404))
         .map(({ label, error }) => ({ label, error }));
 
       const payload: CompanyShowBase = {

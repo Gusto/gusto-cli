@@ -66,9 +66,9 @@ describe("companyShowHandler", () => {
     expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["pay_schedules"]);
   });
 
-  test("payment_config 404 is suppressed when the company isn't partner-managed", async () => {
-    routeFetch([
-      { match: "/payment_configs", status: 404, body: { errors: [{ category: "not_found" }] } },
+  test("payment_configs is skipped when the company isn't partner-managed", async () => {
+    const { calls, restore: r } = setupRouteFetch([
+      { match: "/payment_configs", status: 500, body: { error: "route should not be hit" } },
       { match: "/pay_schedules", status: 200, body: [{ frequency: "Every week", anchor_pay_date: "2026-02-06" }] },
       {
         match: "/companies/co-1",
@@ -76,22 +76,22 @@ describe("companyShowHandler", () => {
         body: { name: "Acme", company_status: "Approved", is_partner_managed: false },
       },
     ]);
+    restore = r;
     const d = data(await companyShowHandler(auth)(ctx));
     expect(d.success).toBe(true);
     expect(d.partial_errors).toBeUndefined();
     expect(d.payment_config).toBeNull();
+    expect(calls.filter((c) => c.url.includes("/payment_configs"))).toEqual([]);
   });
 
-  test("non-404 payment_config failure still surfaces on a non-partner-managed company", async () => {
-    // Suppression must be narrow: only the expected 404. A 401/422/etc on the same endpoint
-    // is a real failure the user should still see.
+  test("non-404 payment_config failure still surfaces on a partner-managed company", async () => {
     routeFetch([
       { match: "/payment_configs", status: 422, body: { errors: [{ category: "invalid_request" }] } },
       { match: "/pay_schedules", status: 200, body: [] },
       {
         match: "/companies/co-1",
         status: 200,
-        body: { name: "Acme", company_status: "Approved", is_partner_managed: false },
+        body: { name: "Acme", company_status: "Approved", is_partner_managed: true },
       },
     ]);
     const d = data(await companyShowHandler(auth)(ctx));
