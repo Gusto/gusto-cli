@@ -57,13 +57,8 @@ describe("buildPayPeriodsQuery", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked.map((b) => b.field)).toEqual(["start-date", "end-date", "payroll-types"]);
   });
-
-  test("a comma/whitespace-only --payroll-types has no real tokens to reject (server treats it as default)", () => {
-    // "," and " " trim/filter to zero tokens, so there is nothing invalid to block; the raw value is
-    // forwarded and the server maps an empty payroll_types to its regular-only default.
-    expect(okQuery({ payrollTypes: "," }).payroll_types).toBe(",");
-    expect(okQuery({ payrollTypes: " " }).payroll_types).toBe(" ");
-  });
+  // Exhaustive enum cases (comma/whitespace-only, multiple invalid tokens, non-multi) live in
+  // parse.test.ts under validateEnum; here we only assert it is wired in with the right field.
 });
 
 describe("payPeriodsListHandler", () => {
