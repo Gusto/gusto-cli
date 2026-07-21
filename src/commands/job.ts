@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { fetchResource } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { malformedResponse } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { type CommandHandler, runReadCommand } from "../lib/runner.ts";
 
@@ -31,10 +32,20 @@ export function registerJobCommand(parent: Command): void {
 }
 
 export function jobShowHandler(jobUuid: string, opts: JobReadOpts): CommandHandler {
-  return async ({ globals }) => fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/jobs/${jobUuid}`);
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/jobs/${encodeURIComponent(jobUuid)}`);
 }
 
 export function jobCompensationsHandler(jobUuid: string, opts: JobReadOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/jobs/${jobUuid}/compensations`);
+  return async ({ globals }) => {
+    const res = await fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/jobs/${encodeURIComponent(jobUuid)}/compensations`,
+    );
+    if (res.ok && !Array.isArray(res.data)) {
+      return malformedResponse(`/v1/jobs/${jobUuid}/compensations returned a non-array body`);
+    }
+    return res;
+  };
 }

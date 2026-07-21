@@ -13,4 +13,12 @@ describe("compensationShowHandler", () => {
     expect(stub.calls[0]?.url).toContain("/v1/compensations/comp-1");
     expect(d).toEqual({ uuid: "comp-1", rate: "50.00" });
   });
+
+  test("encodes a uuid with URL-significant characters into a single segment", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    await compensationShowHandler("a/b?c#d", {})(ctx);
+    expect(stub.calls[0]?.url).toContain("/v1/compensations/a%2Fb%3Fc%23d");
+    expect(stub.calls[0]?.url).not.toContain("a/b?c");
+  });
 });

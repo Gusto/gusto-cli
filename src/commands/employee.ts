@@ -311,8 +311,17 @@ export function employeeRehireHandler(employeeUuid: string, opts: EmployeeShowOp
 }
 
 export function employeeJobsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${employeeUuid}/jobs`);
+  return async ({ globals }) => {
+    const res = await fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/jobs`,
+    );
+    if (res.ok && !Array.isArray(res.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a non-array body`);
+    }
+    return res;
+  };
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {

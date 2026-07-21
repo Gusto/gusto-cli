@@ -273,4 +273,21 @@ describe("employeeJobsHandler", () => {
     expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/jobs");
     expect(result.data).toEqual(body);
   });
+
+  test("encodes a uuid with URL-significant characters into a single segment", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = fetchStub.restore;
+    await employeeJobsHandler("a/b?c#d", {})(ctx);
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/jobs");
+    expect(fetchStub.calls[0]?.url).not.toContain("a/b?c");
+  });
+
+  test("a non-array 2xx body is rejected as malformed", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { not: "an array" } }));
+    restore = fetchStub.restore;
+    const result = await employeeJobsHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+  });
 });

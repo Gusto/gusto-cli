@@ -13,6 +13,14 @@ describe("jobShowHandler", () => {
     expect(stub.calls[0]?.url).toContain("/v1/jobs/job-1");
     expect(d).toEqual({ uuid: "job-1", title: "Engineer" });
   });
+
+  test("encodes a uuid with URL-significant characters into a single segment", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    await jobShowHandler("a/b?c#d", {})(ctx);
+    expect(stub.calls[0]?.url).toContain("/v1/jobs/a%2Fb%3Fc%23d");
+    expect(stub.calls[0]?.url).not.toContain("a/b?c");
+  });
 });
 
 describe("jobCompensationsHandler", () => {
@@ -24,5 +32,22 @@ describe("jobCompensationsHandler", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(stub.calls[0]?.url).toContain("/v1/jobs/job-1/compensations");
     expect(result.data).toEqual(body);
+  });
+
+  test("encodes a uuid with URL-significant characters into a single segment", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = stub.restore;
+    await jobCompensationsHandler("a/b?c#d", {})(ctx);
+    expect(stub.calls[0]?.url).toContain("/v1/jobs/a%2Fb%3Fc%23d/compensations");
+    expect(stub.calls[0]?.url).not.toContain("a/b?c");
+  });
+
+  test("a non-array 2xx body is rejected as malformed", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: { not: "an array" } }));
+    restore = stub.restore;
+    const result = await jobCompensationsHandler("job-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
   });
 });

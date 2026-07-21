@@ -28,5 +28,9 @@ export function registerCompensationCommand(parent: Command): void {
 
 export function compensationShowHandler(compensationUuid: string, opts: CompensationReadOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/compensations/${compensationUuid}`);
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/compensations/${encodeURIComponent(compensationUuid)}`,
+    );
 }
