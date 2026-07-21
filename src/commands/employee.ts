@@ -415,7 +415,10 @@ interface TerminationBody {
   run_termination_payroll: boolean;
 }
 
-const terminationsPath = (employeeUuid: string): string => `/v1/employees/${employeeUuid}/terminations`;
+// Encode the uuid as a single path segment: a raw `/`, `?`, or `#` in an agent-supplied
+// uuid would otherwise retarget the write (the client resolves paths via `new URL`).
+const terminationsPath = (employeeUuid: string): string =>
+  `/v1/employees/${encodeURIComponent(employeeUuid)}/terminations`;
 
 /** Schedule a termination: POST /v1/employees/{id}/terminations. `effective_date` is the only
  * required field; `run_termination_payroll` decides whether final wages go out off-cycle. Semantic
