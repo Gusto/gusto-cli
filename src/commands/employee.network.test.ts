@@ -3,6 +3,7 @@ import {
   type EmployeeListData,
   type EmployeeListSummary,
   employeeAddressesHandler,
+  employeeCustomFieldsHandler,
   employeeListHandler,
   homeAddressHandler,
   workAddressHandler,
@@ -208,5 +209,30 @@ describe("single address gets", () => {
     const d = okData(await homeAddressHandler("ha-1", {})(ctx));
     expect(d).toEqual({ uuid: "ha-1", street_1: "2 Elm" });
     expect(fetchStub.calls[0]?.url).toContain("/v1/home_addresses/ha-1");
+  });
+});
+
+describe("employeeCustomFieldsHandler", () => {
+  test("GETs the employee custom_fields and passes the body through", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { custom_fields: [{ uuid: "cf-1", value: "L" }] } }));
+    restore = fetchStub.restore;
+    const d = okData(await employeeCustomFieldsHandler("emp-1", {})(ctx));
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/custom_fields");
+    expect(d.custom_fields).toEqual([{ uuid: "cf-1", value: "L" }]);
+  });
+
+  test("encodes a uuid with URL-significant characters into a single segment", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { custom_fields: [] } }));
+    restore = fetchStub.restore;
+    await employeeCustomFieldsHandler("a/b?c#d", {})(ctx);
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/custom_fields");
+    expect(fetchStub.calls[0]?.url).not.toContain("a/b?c");
+  });
+
+  test("surfaces an API error as a failed CommandResult", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
+    restore = fetchStub.restore;
+    const result = await employeeCustomFieldsHandler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
   });
 });

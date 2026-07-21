@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { companyLocationsHandler, companyShowHandler } from "./company.ts";
+import {
+  companyCustomFieldsHandler,
+  companyEarningTypesHandler,
+  companyLocationsHandler,
+  companyShowHandler,
+} from "./company.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import {
   type Route,
@@ -155,6 +160,45 @@ describe("companyLocationsHandler", () => {
   test("surfaces an API error as a failed CommandResult (not silently wrapped)", async () => {
     routeFetch([{ match: "/locations", status: 404, body: { error: "not found" } }]);
     const result = await companyLocationsHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("companyEarningTypesHandler", () => {
+  test("GETs the company earning_types and passes the body through", async () => {
+    const { calls, restore: r } = setupRouteFetch([
+      { match: "/earning_types", status: 200, body: { default: [{ uuid: "et-1", name: "Bonus" }], custom: [] } },
+    ]);
+    restore = r;
+    const d = data(await companyEarningTypesHandler(auth)(ctx));
+    expect(calls.find((c) => c.method === "GET")?.url).toContain("/v1/companies/co-1/earning_types");
+    expect(d.default).toEqual([{ uuid: "et-1", name: "Bonus" }]);
+    expect(d.custom).toEqual([]);
+  });
+
+  test("surfaces an API error as a failed CommandResult", async () => {
+    const { restore: r } = setupRouteFetch([{ match: "/earning_types", status: 404, body: { error: "not found" } }]);
+    restore = r;
+    const result = await companyEarningTypesHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("companyCustomFieldsHandler", () => {
+  test("GETs the company custom_fields and passes the body through", async () => {
+    const { calls, restore: r } = setupRouteFetch([
+      { match: "/custom_fields", status: 200, body: { custom_fields: [{ uuid: "cf-1", name: "T-shirt size" }] } },
+    ]);
+    restore = r;
+    const d = data(await companyCustomFieldsHandler(auth)(ctx));
+    expect(calls.find((c) => c.method === "GET")?.url).toContain("/v1/companies/co-1/custom_fields");
+    expect(d.custom_fields).toEqual([{ uuid: "cf-1", name: "T-shirt size" }]);
+  });
+
+  test("surfaces an API error as a failed CommandResult", async () => {
+    const { restore: r } = setupRouteFetch([{ match: "/custom_fields", status: 404, body: { error: "not found" } }]);
+    restore = r;
+    const result = await companyCustomFieldsHandler(auth)(ctx);
     expect(result.ok).toBe(false);
   });
 });
