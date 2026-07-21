@@ -51,7 +51,7 @@ export async function pollReport(
         error: {
           code: "report_failed",
           message: `${label} generation failed`,
-          details: { request_uuid: requestUuid, poll_path: pollPath, report: err.body },
+          details: { request_uuid: requestUuid, poll_path: pollPath, response: err.body },
         },
       };
     }

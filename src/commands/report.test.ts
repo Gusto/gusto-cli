@@ -141,6 +141,8 @@ describe("executeReportRun", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("report_failed");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
+    // The upstream body is exposed under `details.response` (same key the mid-poll error uses).
+    expect(result.error.details).toMatchObject({ response: { status: "failed" } });
   });
 
   test("a timeout before any poll attempt reports report_timeout", async () => {
@@ -166,7 +168,12 @@ describe("executeReportRun", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("api_server_error");
-    expect(result.error.details).toMatchObject({ request_uuid: "req-1", poll_path: "/v1/reports/req-1" });
+    // Upstream body under `details.response`, consistent with the report_failed branch above.
+    expect(result.error.details).toMatchObject({
+      request_uuid: "req-1",
+      poll_path: "/v1/reports/req-1",
+      response: { message: "boom" },
+    });
   });
 });
 
