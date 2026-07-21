@@ -31,6 +31,13 @@ describe("REQUIRED_SCOPES", () => {
     const entry = REQUIRED_SCOPES.find((r) => r.scope === "departments:read");
     expect(entry?.usedBy).toEqual(expect.arrayContaining(["department list", "department show"]));
   });
+
+  test("employments:write is required for the employee-offboarding commands (granted to the CLI partner app)", () => {
+    expect(DROPPED_SCOPES).not.toContain("employments:write");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "employments:write");
+    expect(entry?.usedBy).toContain("employee terminate");
+    expect(entry?.usedBy).toContain("employee cancel-termination");
+  });
 });
 
 describe("findMissingScopes", () => {
