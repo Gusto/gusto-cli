@@ -106,6 +106,18 @@ Examples:
     );
 
   cmd
+    .command("custom-fields <employee_uuid>")
+    .description("Read an employee's custom field values")
+    .option(...TOKEN_STDIN_OPT)
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand(
+        "gusto employee custom-fields",
+        readGlobalFlags(parent.opts()),
+        employeeCustomFieldsHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
     .command("list")
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
@@ -137,6 +149,15 @@ never read as company totals.
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
     fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${encodeURIComponent(employeeUuid)}`);
+}
+
+export function employeeCustomFieldsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/custom_fields`,
+    );
 }
 
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
