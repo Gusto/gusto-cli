@@ -92,12 +92,15 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  // The three lifecycle reads dispatch their handlers (reaching the auth check, exit 3) rather than
+  // The six new employee reads dispatch their handlers (reaching the auth check, exit 3) rather than
   // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
   test.each([
     ["history", ["employee", "history", "emp-123"]],
     ["terminations", ["employee", "terminations", "emp-123"]],
     ["rehire", ["employee", "rehire", "emp-123"]],
+    ["addresses", ["employee", "addresses", "emp-123"]],
+    ["work-address", ["employee", "work-address", "wa-123"]],
+    ["home-address", ["employee", "home-address", "ha-123"]],
   ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
@@ -150,6 +153,12 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  test("payroll blockers without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["payroll", "blockers"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll calculate with a uuid and --confirm but no token returns no_access_token (exit 3)", async () => {
     // calculate is a gated write, so --confirm is needed to get past the agent-mode confirmation
     // gate and reach the auth check this asserts (without it the run blocks with exit 8 first).
@@ -173,10 +182,10 @@ describe("auth required commands without a token", () => {
 
 describe("usage errors are self-correcting envelopes in agent mode", () => {
   test("an unknown subcommand returns a parseable unknown_command envelope (exit 2)", async () => {
-    // `payroll blockers` has no first-class command; instead of commander's bare stderr line, an
+    // `payroll frobnicate` has no first-class command; instead of commander's bare stderr line, an
     // agent gets a {ok:false} envelope on stdout listing the valid subcommands and the api-hatch
     // fallback, so it can self-correct rather than dead-end.
-    const result = await run(["payroll", "blockers"]);
+    const result = await run(["payroll", "frobnicate"]);
     expect(result.exitCode).toBe(2);
     const env = JSON.parse(result.stdout.trim());
     expect(env.ok).toBe(false);
