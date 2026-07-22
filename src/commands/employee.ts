@@ -10,6 +10,7 @@ import { ALL_OPT, CONFIRM_OPT, CURSOR_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
+import { isValidIsoDate } from "../lib/parse.ts";
 import { type CommandHandler, missingArgs, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
 
 interface EmployeeListOpts {
@@ -422,7 +423,7 @@ const terminationsPath = (employeeUuid: string): string =>
 
 /** Schedule a termination: POST /v1/employees/{id}/terminations. `effective_date` is the only
  * required field; `run_termination_payroll` decides whether final wages go out off-cycle. Semantic
- * validation (a real date, not already terminated) is the API's job - this only enforces presence. */
+ * validation (a real date, not already terminated) is the API's job - this enforces presence and ISO format. */
 export function employeeTerminateHandler(employeeUuid: string, opts: EmployeeTerminateOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
@@ -439,6 +440,11 @@ export function employeeTerminateHandler(employeeUuid: string, opts: EmployeeTer
     if (!opts.effectiveDate) {
       return missingArgs([
         { field: "effective-date", reason: "required (YYYY-MM-DD, the employee's last day of work)" },
+      ]);
+    }
+    if (!isValidIsoDate(opts.effectiveDate)) {
+      return validationFailure("invalid --effective-date", [
+        { field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" },
       ]);
     }
     const body: TerminationBody = {

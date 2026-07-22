@@ -321,6 +321,17 @@ describe("employeeTerminateHandler", () => {
     expect(s.calls).toHaveLength(0);
   });
 
+  test("a malformed --effective-date is refused pre-flight with a blocked_on list, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeTerminateHandler("emp-1", { ...auth, effectiveDate: "08-01-2026" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["effective-date"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
   test("dry-run builds the termination body and hits the employee-scoped path", async () => {
     const result = await employeeTerminateHandler("emp-1", {
       ...auth,
