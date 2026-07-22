@@ -28,6 +28,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   // Reads
   { scope: "companies:read", usedBy: ["company show", "company locations"] },
   { scope: "employees:read", usedBy: ["employee show", "employee status", "employee list"] },
+  { scope: "employments:read", usedBy: ["employee history", "employee terminations", "employee rehire"] },
   { scope: "contractors:read", usedBy: ["contractor show", "contractor list"] },
   { scope: "departments:read", usedBy: ["department list", "department show"] },
   { scope: "jobs:read", usedBy: ["employee inspect"] },

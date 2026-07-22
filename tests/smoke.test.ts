@@ -94,9 +94,12 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  // The three address reads dispatch their handlers (reaching the auth check, exit 3) rather than
+  // The six new employee reads dispatch their handlers (reaching the auth check, exit 3) rather than
   // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
   test.each([
+    ["history", ["employee", "history", "emp-123"]],
+    ["terminations", ["employee", "terminations", "emp-123"]],
+    ["rehire", ["employee", "rehire", "emp-123"]],
     ["addresses", ["employee", "addresses", "emp-123"]],
     ["work-address", ["employee", "work-address", "wa-123"]],
     ["home-address", ["employee", "home-address", "ha-123"]],
