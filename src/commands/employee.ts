@@ -169,6 +169,14 @@ Examples:
     );
 
   cmd
+    .command("jobs <employee_uuid>")
+    .description("Read an employee's jobs")
+    .option(...TOKEN_STDIN_OPT)
+    .action((employeeUuid: string, opts: EmployeeShowOpts) =>
+      runReadCommand("gusto employee jobs", readGlobalFlags(parent.opts()), employeeJobsHandler(employeeUuid, opts)),
+    );
+
+  cmd
     .command("list")
     .description("List company employees (active by default)")
     .option("--status <status>", "Which employees to list: active, onboarding, terminated, or all", "active")
@@ -300,6 +308,20 @@ export function employeeRehireHandler(employeeUuid: string, opts: EmployeeShowOp
       { tokenStdin: opts.tokenStdin },
       () => `/v1/employees/${encodeURIComponent(employeeUuid)}/rehire`,
     );
+}
+
+export function employeeJobsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+  return async ({ globals }) => {
+    const res = await fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}/jobs`,
+    );
+    if (res.ok && !Array.isArray(res.data)) {
+      return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a non-array body`);
+    }
+    return res;
+  };
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {

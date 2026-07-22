@@ -48,6 +48,8 @@ describe("compiled binary", () => {
       "employee",
       "contractor",
       "department",
+      "job",
+      "compensation",
       "pay-schedule",
       "payroll",
       "ledger",
@@ -164,6 +166,8 @@ describe("auth required commands without a token", () => {
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
     ["timesheet", ["timesheet", "get", "time-sheet-uuid-123"]],
+    ["job", ["job", "get", "job-uuid-123"]],
+    ["compensation", ["compensation", "get", "comp-uuid-123"]],
   ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
@@ -218,6 +222,18 @@ describe("auth required commands without a token", () => {
 
   test("report get without a token returns no_access_token (exit 3)", async () => {
     const result = await run(["report", "get", "req-uuid-123"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("employee jobs <uuid> without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["employee", "jobs", "emp-123"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("job compensations <uuid> without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["job", "compensations", "job-123"]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
