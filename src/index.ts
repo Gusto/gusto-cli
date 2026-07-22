@@ -9,6 +9,7 @@ import { registerFeedbackCommand } from "./commands/feedback.ts";
 import { registerLedgerCommand } from "./commands/ledger.ts";
 import { registerPayScheduleCommand } from "./commands/pay-schedule.ts";
 import { registerPayrollCommand } from "./commands/payroll.ts";
+import { registerReportCommand } from "./commands/report.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
@@ -62,6 +63,7 @@ function buildProgram(): Command {
   registerPayScheduleCommand(program);
   registerPayrollCommand(program);
   registerLedgerCommand(program);
+  registerReportCommand(program);
   registerTimesheetCommand(program);
   registerAuthCommand(program);
   registerSkillCommand(program);
