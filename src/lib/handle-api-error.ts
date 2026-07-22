@@ -1,11 +1,8 @@
 import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
+import { isObject } from "./predicates.ts";
 import type { CommandResult } from "./runner.ts";
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
   return {
