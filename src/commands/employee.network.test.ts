@@ -432,4 +432,30 @@ describe("employeeTerminateCancelHandler", () => {
     const del = s.calls.find((c) => c.method === "DELETE");
     expect(del?.url).toContain("/v1/employees/emp-1/terminations");
   });
+
+  // A not_found 404 is either "nothing scheduled to cancel" or a bad uuid; both share the generic
+  // `DELETE ... -> 404` message, and human mode never prints `details`. Surface the API's message as
+  // a hint (which human mode does print) so the two can be told apart.
+  test("a 404 not_found surfaces the API's message as a hint, keeping the raw body in details", async () => {
+    const body = { errors: [{ category: "not_found", message: "The employee has not been terminated." }] };
+    const s = stubGlobalFetch(() => ({ status: 404, body }));
+    restore = s.restore;
+    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toContain("The employee has not been terminated.");
+    expect(result.error.details).toEqual(body);
+  });
+
+  test("a non-not_found failure is left untouched (no hint added)", async () => {
+    const s = stubGlobalFetch(() => ({
+      status: 422,
+      body: { errors: [{ category: "invalid_attributes", message: "nope" }] },
+    }));
+    restore = s.restore;
+    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toBeUndefined();
+  });
 });
