@@ -3,7 +3,10 @@ import {
   type EmployeeListData,
   type EmployeeListSummary,
   employeeAddressesHandler,
+  employeeHistoryHandler,
   employeeListHandler,
+  employeeRehireHandler,
+  employeeTerminationsHandler,
   homeAddressHandler,
   workAddressHandler,
 } from "./employee.ts";
@@ -115,6 +118,54 @@ describe("employeeListHandler pagination", () => {
     await employeeListHandler({ ...auth })(ctx);
     expect(fetchStub.calls[0]?.url).toContain("page=1");
     expect(fetchStub.calls[0]?.url).toContain("per=100");
+  });
+});
+
+describe("employee lifecycle reads", () => {
+  test("history hits /v1/employees/{uuid}/employment_history and returns the body verbatim", async () => {
+    const body = { employee_uuid: "emp-1", terminations: [{ uuid: "term-1" }], rehires: [] };
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = fetchStub.restore;
+    const d = okData(await employeeHistoryHandler("emp-1", {})(ctx));
+    expect(d).toEqual(body);
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/employment_history");
+  });
+
+  test("terminations hits /v1/employees/{uuid}/terminations and returns the list verbatim", async () => {
+    const body = [{ uuid: "term-1", effective_date: "2026-01-31" }];
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = fetchStub.restore;
+    const result = await employeeTerminationsHandler("emp-1", {})(ctx);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.data).toEqual(body);
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/terminations");
+  });
+
+  test("rehire hits /v1/employees/{uuid}/rehire and returns the body verbatim", async () => {
+    const body = { uuid: "rehire-1", effective_date: "2026-06-01" };
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = fetchStub.restore;
+    const d = okData(await employeeRehireHandler("emp-1", {})(ctx));
+    expect(d).toEqual(body);
+    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/rehire");
+  });
+
+  test("terminations returns an empty list for a never-terminated employee", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = fetchStub.restore;
+    const result = await employeeTerminationsHandler("emp-1", {})(ctx);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.data).toEqual([]);
+  });
+
+  test.each([
+    ["history", employeeHistoryHandler],
+    ["terminations", employeeTerminationsHandler],
+    ["rehire", employeeRehireHandler],
+  ])("an API error fails the command (%s)", async (_name, handler) => {
+    restore = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } })).restore;
+    const result = await handler("emp-1", {})(ctx);
+    expect(result.ok).toBe(false);
   });
 });
 
