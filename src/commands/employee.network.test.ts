@@ -447,6 +447,22 @@ describe("employeeTerminateCancelHandler", () => {
     expect(result.error.details).toEqual(body);
   });
 
+  test("a mixed-category body surfaces only the not_found message, not unrelated ones", async () => {
+    const body = {
+      errors: [
+        { category: "not_found", message: "The employee has not been terminated." },
+        { category: "invalid_attributes", message: "some unrelated error" },
+      ],
+    };
+    const s = stubGlobalFetch(() => ({ status: 404, body }));
+    restore = s.restore;
+    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toContain("The employee has not been terminated.");
+    expect(result.error.hint).not.toContain("some unrelated error");
+  });
+
   test("a non-not_found failure is left untouched (no hint added)", async () => {
     const s = stubGlobalFetch(() => ({
       status: 422,
