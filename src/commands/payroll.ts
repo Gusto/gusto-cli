@@ -68,6 +68,8 @@ const SHOW_INCLUDE_OPTIONS = [
   "payroll_taxes",
 ] as const;
 
+const hasTokens = (raw: string | undefined): raw is string => raw !== undefined && splitTokens(raw).length > 0;
+
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
  * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The
  * range rules (end_date at most 3 months out; start/end at most 1 year apart)
@@ -77,7 +79,6 @@ const SHOW_INCLUDE_OPTIONS = [
  * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
 export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult {
   const blocked: BlockedOn[] = [];
-  const hasTokens = (raw: string | undefined): raw is string => raw !== undefined && splitTokens(raw).length > 0;
   if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {
     blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
   }
@@ -93,10 +94,12 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
   ]) {
     if (entry) blocked.push(entry);
   }
-  // The API rejects date_filter_by unless processing_statuses is exactly "processed".
-  if (hasTokens(opts.dateFilterBy) && opts.processingStatus) {
+  // The API rejects date_filter_by unless processing_statuses is exactly "processed". Gate on
+  // hasTokens for both flags so tokenless-truthy values (e.g. ","/" ") fall through to the
+  // default-narrowing below rather than tripping the block.
+  if (hasTokens(opts.dateFilterBy) && hasTokens(opts.processingStatus)) {
     const tokens = splitTokens(opts.processingStatus);
-    if (tokens.length === 0 || tokens.some((t) => t !== "processed")) {
+    if (tokens.some((t) => t !== "processed")) {
       blocked.push({
         field: "processing-status",
         reason:
@@ -108,8 +111,7 @@ export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult
 
   const query: QueryParams = {};
   const set = (key: string, value: string | undefined): void => {
-    if (value === undefined) return;
-    if (splitTokens(value).length === 0) return;
+    if (!hasTokens(value)) return;
     query[key] = value;
   };
   // Apply the client-side defaults the help text documents, so an omitted or empty flag sends an
@@ -142,7 +144,7 @@ export function buildPayrollShowQuery(opts: PayrollShowOpts): PayrollQueryResult
   const entry = validateEnum("include", opts.include, SHOW_INCLUDE_OPTIONS, true);
   if (entry) return { ok: false, blocked: [entry] };
   const query: QueryParams = {};
-  if (opts.include !== undefined && splitTokens(opts.include).length > 0) query.include = opts.include;
+  if (hasTokens(opts.include)) query.include = opts.include;
   return { ok: true, query };
 }
 

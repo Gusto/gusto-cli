@@ -161,8 +161,6 @@ describe("buildPayrollListQuery", () => {
   });
 
   test("an empty filter value falls back to its default instead of dropping the param", () => {
-    // "" would otherwise pass validateEnum (no tokens) and be dropped by toQueryString, silently
-    // reverting to the server's own default. `||` keeps the documented client-side defaults.
     expect(buildPayrollListQuery({ processingStatus: "", payrollType: "" })).toEqual({
       ok: true,
       query: { processing_statuses: "processed,unprocessed", payroll_types: "regular" },
@@ -331,11 +329,12 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
-  test("date-filter-by with a comma-only --processing-status is blocked", () => {
+  test("date-filter-by with a comma-only --processing-status falls back to the processed default", () => {
     const result = buildPayrollListQuery({ dateFilterBy: "check_date", processingStatus: "," });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "processing-status" }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.query.processing_statuses).toBe("processed");
+    expect(result.query.date_filter_by).toBe("check_date");
   });
 
   test("rejects an invalid sort-order", () => {
