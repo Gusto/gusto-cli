@@ -50,6 +50,7 @@ describe("compiled binary", () => {
       "pay-schedule",
       "payroll",
       "ledger",
+      "report",
       "auth",
       "skill",
       "config",
@@ -184,6 +185,18 @@ describe("auth required commands without a token", () => {
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
+
+  test("report run without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["report", "run", "--columns", "net_pay"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("report get without a token returns no_access_token (exit 3)", async () => {
+    const result = await run(["report", "get", "req-uuid-123"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
 });
 
 describe("usage errors are self-correcting envelopes in agent mode", () => {
@@ -264,6 +277,32 @@ describe("payroll/ledger validate before auth (exit 7)", () => {
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "timeout" }));
+  });
+
+  test("report run with a malformed --to date blocks on to (before auth)", async () => {
+    const result = await run(["report", "run", "--columns", "net_pay", "--to", "03-31-2026"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "to" }));
+  });
+
+  test("report run without --columns blocks on columns (validation/exit 7, not cli_usage)", async () => {
+    const result = await run(["report", "run"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "columns" }));
+  });
+
+  test("report run with an all-empty --columns list blocks on columns (must list at least one)", async () => {
+    const result = await run(["report", "run", "--columns", ",,,"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(
+      expect.objectContaining({ field: "columns", reason: "must list at least one column" }),
+    );
   });
 });
 
