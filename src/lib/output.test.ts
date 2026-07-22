@@ -93,6 +93,95 @@ describe("emit", () => {
     expect(stderr.buffer).toBe("error: missing fields\nblocked on:\n  - ein: required\n");
   });
 
+  test("surfaces the API's message from details as a reason line, right after the error line", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "human", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "api_client_error",
+          message: "DELETE https://api.gusto.com/v1/employees/e-1/terminations -> 404",
+          details: { errors: [{ category: "not_found", message: "The employee has not been terminated." }] },
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toBe(
+      "error: DELETE https://api.gusto.com/v1/employees/e-1/terminations -> 404\n" +
+        "reason: The employee has not been terminated.\n",
+    );
+  });
+
+  test("joins multiple API error messages into one reason line", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "human", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "api_client_error",
+          message: "POST /x -> 422",
+          details: { errors: [{ message: "bad start_date" }, { message: "bad end_date" }] },
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toBe("error: POST /x -> 422\nreason: bad start_date; bad end_date\n");
+  });
+
+  test("suppresses the reason line when the error message already contains it", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "human", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "x",
+          message: "your token is missing the scope this command needs",
+          details: { errors: [{ message: "missing the scope" }] },
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toBe("error: your token is missing the scope this command needs\n");
+  });
+
+  test("does not surface non-errors-array detail shapes (no JSON dump to a human)", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "human", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "report_failed",
+          message: "report r-1 failed",
+          details: { response: { status: "failed", rows: [1, 2, 3] } },
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toBe("error: report r-1 failed\n");
+  });
+
+  test("orders the reason line before the hint line", () => {
+    const { sinks, stderr } = captureSinks();
+    emit(
+      { mode: "human", color: false, verbose: false },
+      {
+        ok: false,
+        error: {
+          code: "api_client_error",
+          message: "DELETE /x -> 404",
+          details: { errors: [{ category: "not_found", message: "not terminated" }] },
+          hint: "re-verify the uuid",
+        },
+      },
+      sinks,
+    );
+    expect(stderr.buffer).toBe("error: DELETE /x -> 404\nreason: not terminated\nhint: re-verify the uuid\n");
+  });
+
   test("agent mode surfaces did_you_mean, available commands, and hint on stderr", () => {
     const { sinks, stdout, stderr } = captureSinks();
     const error = {

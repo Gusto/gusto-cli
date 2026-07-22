@@ -433,34 +433,21 @@ describe("employeeTerminateCancelHandler", () => {
     expect(del?.url).toContain("/v1/employees/emp-1/terminations");
   });
 
-  // A not_found 404 is either "nothing scheduled to cancel" or a bad uuid; both share the generic
-  // `DELETE ... -> 404` message, and human mode never prints `details`. Surface the API's message as
-  // a hint (which human mode does print) so the two can be told apart.
-  test("a 404 not_found surfaces the API's message as a hint, keeping the raw body in details", async () => {
+  // A not_found 404 is either "nothing scheduled to cancel" or a bad uuid. The API's own message
+  // (surfaced generically via writeHumanError's `reason:` line) tells those apart; the hint only adds
+  // the safety note that a bad uuid also 404s, leaving a real termination scheduled. The raw body
+  // stays in details untouched, so the message is preserved verbatim for the reason line / agent mode.
+  test("a 404 not_found attaches the static safety hint and leaves the API message in details", async () => {
     const body = { errors: [{ category: "not_found", message: "The employee has not been terminated." }] };
     const s = stubGlobalFetch(() => ({ status: 404, body }));
     restore = s.restore;
     const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.hint).toContain("The employee has not been terminated.");
+    expect(result.error.hint).toContain("a real termination may still be scheduled");
+    // The hint no longer embeds the API message - that reaches humans via the reason line.
+    expect(result.error.hint).not.toContain("The employee has not been terminated.");
     expect(result.error.details).toEqual(body);
-  });
-
-  test("a mixed-category body surfaces only the not_found message, not unrelated ones", async () => {
-    const body = {
-      errors: [
-        { category: "not_found", message: "The employee has not been terminated." },
-        { category: "invalid_attributes", message: "some unrelated error" },
-      ],
-    };
-    const s = stubGlobalFetch(() => ({ status: 404, body }));
-    restore = s.restore;
-    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.hint).toContain("The employee has not been terminated.");
-    expect(result.error.hint).not.toContain("some unrelated error");
   });
 
   test("a non-not_found failure is left untouched (no hint added)", async () => {
