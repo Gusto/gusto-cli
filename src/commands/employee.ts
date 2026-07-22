@@ -476,9 +476,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * for why). Returns undefined for any other shape, so the caller falls back to default behavior. */
 function notFoundApiMessage(details: unknown): string | undefined {
   if (!isObject(details) || !Array.isArray(details.errors)) return undefined;
-  const entries = details.errors.filter((e): e is Record<string, unknown> => isObject(e));
-  if (!entries.some((e) => e.category === "not_found")) return undefined;
-  const messages = entries
+  // Collect messages only from the not_found entries themselves, not every entry once any is
+  // not_found - a mixed-category body must not leak an unrelated error's message into the hint.
+  const messages = details.errors
+    .filter((e): e is Record<string, unknown> => isObject(e) && e.category === "not_found")
     .map((e) => (typeof e.message === "string" ? e.message.trim() : ""))
     .filter((m) => m.length > 0);
   return messages.length > 0 ? messages.join("; ") : undefined;
