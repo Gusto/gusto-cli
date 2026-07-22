@@ -5,12 +5,13 @@
  * list; any command added in a future PR that needs a new scope must update
  * this set in the same change so the audit trail stays accurate.
  *
- * The set is intentionally narrow. The only writes are the per-cycle payroll
- * flow (timesheets, payroll prepare/calculate, pay schedules, reports); employee
- * and contractor data stay read-only on this surface. Scopes dropped from the
- * original 50+ grant (`company_bank_accounts:write`, `signatories:manage`, and
- * the employee/contractor write scopes) have no in-surface consumer and are
- * listed in `DROPPED_SCOPES` below for audit history.
+ * The set is intentionally narrow. The writes are the per-cycle payroll flow
+ * (timesheets, payroll prepare/calculate, pay schedules, reports) plus the
+ * employee-offboarding path (`employments:write`, for terminate/cancel-termination);
+ * other employee and contractor data stays read-only on this surface. Scopes
+ * dropped from the original 50+ grant (`company_bank_accounts:write`,
+ * `signatories:manage`, and the bulk employee/contractor write scopes) have no
+ * in-surface consumer and are listed in `DROPPED_SCOPES` below for audit history.
  *
  * This list enumerates scopes that individual CLI commands exercise. Two
  * categories are deliberately NOT listed and remain granted: baseline auth
@@ -31,8 +32,8 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "employments:read", usedBy: ["employee history", "employee terminations", "employee rehire"] },
   { scope: "contractors:read", usedBy: ["contractor show", "contractor list"] },
   { scope: "departments:read", usedBy: ["department list", "department show"] },
-  { scope: "jobs:read", usedBy: ["employee inspect"] },
-  { scope: "compensations:read", usedBy: ["employee inspect"] },
+  { scope: "jobs:read", usedBy: ["payroll update", "employee jobs", "job show"] },
+  { scope: "compensations:read", usedBy: ["compensation show", "job compensations"] },
   { scope: "pay_schedules:read", usedBy: ["pay-schedule list", "pay-schedule assignments", "pay-schedule show"] },
   {
     scope: "payrolls:read",
@@ -41,16 +42,15 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
   { scope: "company_payment_configs:read", usedBy: ["company show"] },
-  { scope: "employee_federal_taxes:read", usedBy: ["employee inspect"] },
-  { scope: "employee_state_taxes:read", usedBy: ["employee inspect"] },
 
-  // Writes: the per-cycle payroll flow only.
+  // Writes: the per-cycle payroll flow, plus the employee-offboarding path.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
   { scope: "payrolls:run", usedBy: ["payroll calculate"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
+  { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
@@ -74,6 +74,8 @@ export const DROPPED_SCOPES: readonly string[] = [
   "compensations:write",
   "employee_federal_taxes:write",
   "employee_state_taxes:write",
+  "employee_federal_taxes:read",
+  "employee_state_taxes:read",
 ] as const;
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to

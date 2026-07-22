@@ -280,6 +280,58 @@ export async function putCompanyResource(
   return companyResourceRequest(globals, "PUT", resource, body, body !== undefined, opts);
 }
 
+export interface ResourceWriteOpts {
+  tokenStdin?: boolean;
+  readStdin?: StdinReader;
+  dryRun?: boolean;
+  /** `--confirm`: the operator approved this write, so the agent-mode confirmation gate lets it
+   * through. Ignored for dry-runs. */
+  confirm?: boolean;
+  store?: TokenStore;
+  http?: OAuthHttpOptions;
+  now?: () => number;
+}
+
+/** Send a write to a fully-resolved resource path - the resource UUID is already in `path`, so no
+ * company context is needed. The employee-scoped counterpart to createCompanyResource: it applies
+ * the agent-mode confirmation gate, honors --dry-run (echoes the request without sending or even
+ * resolving auth, since the path needs no interpolation), and maps API/network errors. `body` is
+ * omitted from both the request and the dry-run shape when undefined, so a bodyless DELETE stays
+ * clean. */
+export async function writeResource(
+  globals: GlobalFlags,
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  path: string,
+  body: unknown,
+  opts: ResourceWriteOpts,
+): Promise<CommandResult> {
+  // Human-in-the-loop: in agent mode a write needs an explicit --confirm. Gate before resolving auth
+  // so an agent learns it must confirm without first needing a valid token (see confirmationGate).
+  const gate = confirmationGate(globals, method, path, { confirm: opts.confirm, dryRun: opts.dryRun });
+  if (gate) return gate;
+
+  const bodyShape = body !== undefined ? { body } : {};
+  // The path is already complete, so a dry-run needs no auth - just echo what would be sent.
+  if (opts.dryRun) return { ok: true, data: { method, path, ...bodyShape } };
+
+  const resolved = await resolveApiContext(globals, {
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
+    requireCompany: false,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
+  if (!resolved.ok) return resolved.result;
+
+  try {
+    const response = await resolved.ctx.client.request(method, path, body);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
 /** Resolve auth/company context, GET the path from `buildPath`, and map API/network errors.
  * `buildPath` receives a context narrowed to `hasCompany: true`, so accessing `companyUuid`
  * is a compile-error-safe operation. */
