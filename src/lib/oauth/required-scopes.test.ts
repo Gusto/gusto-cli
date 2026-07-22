@@ -25,6 +25,12 @@ describe("REQUIRED_SCOPES", () => {
     const entry = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:run");
     expect(entry?.usedBy).toContain("payroll calculate");
   });
+
+  test("departments:read is required for the department read commands", () => {
+    expect(DROPPED_SCOPES).not.toContain("departments:read");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "departments:read");
+    expect(entry?.usedBy).toEqual(expect.arrayContaining(["department list", "department show"]));
+  });
 });
 
 describe("findMissingScopes", () => {
