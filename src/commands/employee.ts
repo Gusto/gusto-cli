@@ -11,7 +11,14 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
 import { isValidIsoDate } from "../lib/parse.ts";
-import { type CommandHandler, missingArgs, runCommand, runReadCommand, validationFailure } from "../lib/runner.ts";
+import {
+  type CommandHandler,
+  type CommandResult,
+  missingArgs,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 interface EmployeeListOpts {
   status?: string;
@@ -459,17 +466,56 @@ export function employeeTerminateHandler(employeeUuid: string, opts: EmployeeTer
   };
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** The API returns `category: "not_found"` for BOTH a "nothing is scheduled to cancel" DELETE and a
+ * DELETE against an unknown employee uuid, differing only in the body's message text. Pull those
+ * message(s) out of the error body so the cancel handler can surface them (see surfaceCancelNotFound
+ * for why). Returns undefined for any other shape, so the caller falls back to default behavior. */
+function notFoundApiMessage(details: unknown): string | undefined {
+  if (!isObject(details) || !Array.isArray(details.errors)) return undefined;
+  const entries = details.errors.filter((e): e is Record<string, unknown> => isObject(e));
+  if (!entries.some((e) => e.category === "not_found")) return undefined;
+  const messages = entries
+    .map((e) => (typeof e.message === "string" ? e.message.trim() : ""))
+    .filter((m) => m.length > 0);
+  return messages.length > 0 ? messages.join("; ") : undefined;
+}
+
+/** A cancel-termination 404 is ambiguous in human mode: writeHumanError prints `error.message`
+ * (the generic `DELETE ... -> 404`) but never `error.details`, where the API's real message lives -
+ * so "nothing was scheduled to cancel" and a mistyped uuid render identically, and an operator can't
+ * tell a successful no-op from a bad uuid that left a real termination live. Lift the API's message
+ * into `hint`, which human mode does print, mirroring how payroll's attachBlockerHint surfaces a
+ * different error shape. No-op unless the failure is a not_found (agent mode already has `details`). */
+function surfaceCancelNotFound(result: CommandResult): CommandResult {
+  if (result.ok) return result;
+  const apiMessage = notFoundApiMessage(result.error.details);
+  if (apiMessage === undefined) return result;
+  return {
+    ...result,
+    error: {
+      ...result.error,
+      hint: `${apiMessage} (a 404 here means either nothing was scheduled to cancel, or the employee uuid is unknown - re-verify the uuid, since a real termination may still be scheduled)`,
+    },
+  };
+}
+
 /** Cancel a pending termination: DELETE /v1/employees/{id}/terminations (no body, 204 on success). */
 export function employeeTerminateCancelHandler(
   employeeUuid: string,
   opts: EmployeeTerminateCancelOpts,
 ): CommandHandler {
   return async ({ globals }) =>
-    writeResource(globals, "DELETE", terminationsPath(employeeUuid), undefined, {
-      tokenStdin: opts.tokenStdin,
-      dryRun: opts.dryRun,
-      confirm: opts.confirm,
-    });
+    surfaceCancelNotFound(
+      await writeResource(globals, "DELETE", terminationsPath(employeeUuid), undefined, {
+        tokenStdin: opts.tokenStdin,
+        dryRun: opts.dryRun,
+        confirm: opts.confirm,
+      }),
+    );
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
