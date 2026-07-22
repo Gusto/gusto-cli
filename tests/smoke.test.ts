@@ -131,6 +131,20 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  test("pay-schedule periods dispatches (new subcommand is registered in the compiled binary)", async () => {
+    // A brand-new non-alias subcommand: assert it reaches the auth check (exit 3) rather than
+    // commander's unknown-command (exit 2) that would mean it was never wired into the binary.
+    const result = await run(["pay-schedule", "periods"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("pay-schedule termination-periods dispatches (new subcommand is registered)", async () => {
+    const result = await run(["pay-schedule", "termination-periods"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("company get (alias for show) dispatches the show handler instead of erroring", async () => {
     // Agents reach for `company get` first; the alias means they hit the show
     // handler (exit 3 no_access_token without a token) rather than commander's
@@ -409,6 +423,15 @@ describe("validation returns structured blocked_on before auth (exit 7)", () => 
     const result = await run(["api", "request", "BLAH", "/v1/me"]);
     expect(result.exitCode).toBe(7);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("unsupported_method");
+  });
+
+  test("pay-schedule periods with a malformed --start-date blocks before auth", async () => {
+    // The client-side query validation runs before auth/company resolution, so a bad date is a
+    // blocked_on (exit 7) even without a token - it never reaches the API.
+    const result = await run(["pay-schedule", "periods", "--start-date", "01/01/2026"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "start-date" }));
   });
 });
 

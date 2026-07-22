@@ -5,6 +5,7 @@ import {
   parseNonNegativeNumber,
   parsePositiveNumber,
   resolveTimeoutMs,
+  validateEnum,
 } from "./parse.ts";
 
 describe("parsePositiveNumber", () => {
@@ -134,5 +135,45 @@ describe("resolveTimeoutMs", () => {
     expect(resolveTimeoutMs("-1")).toEqual({ ok: false });
     expect(resolveTimeoutMs("abc")).toEqual({ ok: false });
     expect(resolveTimeoutMs("Infinity")).toEqual({ ok: false });
+  });
+});
+
+describe("validateEnum", () => {
+  const ALLOWED = ["regular", "transition"] as const;
+
+  test("undefined passes (an absent flag is not validated)", () => {
+    expect(validateEnum("payroll-types", undefined, ALLOWED, true)).toBeNull();
+  });
+
+  test("a single valid value passes", () => {
+    expect(validateEnum("payroll-type", "regular", ALLOWED, false)).toBeNull();
+  });
+
+  test("a single invalid value is rejected with the field and allowed list in the reason", () => {
+    const entry = validateEnum("payroll-type", "off_cycle", ALLOWED, false);
+    expect(entry).not.toBeNull();
+    expect(entry?.field).toBe("payroll-type");
+    expect(entry?.reason).toContain("'off_cycle'");
+    expect(entry?.reason).toContain("regular, transition");
+  });
+
+  test("multi: all-valid comma list passes, tolerating whitespace the server strips", () => {
+    expect(validateEnum("payroll-types", "regular, transition", ALLOWED, true)).toBeNull();
+  });
+
+  test("multi: reports every invalid token, ignoring empty tokens from double/trailing commas", () => {
+    const entry = validateEnum("payroll-types", "regular,,nope,,bad", ALLOWED, true);
+    expect(entry?.reason).toContain("'nope'");
+    expect(entry?.reason).toContain("'bad'");
+  });
+
+  test("multi: a comma/whitespace-only value has no real tokens, so nothing is rejected", () => {
+    expect(validateEnum("payroll-types", ",", ALLOWED, true)).toBeNull();
+    expect(validateEnum("payroll-types", " ", ALLOWED, true)).toBeNull();
+  });
+
+  test("non-multi does not split on commas: a comma list is treated as one invalid token", () => {
+    const entry = validateEnum("payroll-type", "regular,transition", ALLOWED, false);
+    expect(entry?.reason).toContain("'regular,transition'");
   });
 });
