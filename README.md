@@ -2,7 +2,7 @@
 
 Agent-friendly developer interface for Gusto payroll. From `curl | sh` to running per-cycle payroll prep in a single chat session with an agent.
 
-> **Status: v0.1.0.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) is live, along with per-cycle payroll prep: `gusto timesheet`, `gusto payroll`, `gusto pay-schedule`, and the `gusto employee` / `gusto contractor` commands.
+> **Status: v0.1.0.** The command surface is stable. Config, skill bundling, and the REST commands are implemented and callable today. OAuth login (`gusto auth login`) is live, along with per-cycle payroll prep: `gusto timesheet`, `gusto payroll`, `gusto pay-schedule`, and the `gusto employee` / `gusto contractor` / `gusto job` / `gusto compensation` commands.
 
 > **Driving this with an agent?** Point it at [`AGENTS.md`](AGENTS.md) (raw: <https://raw.githubusercontent.com/Gusto/gusto-cli/main/AGENTS.md>) - it covers install, `auth login`, and the conventions. `gusto --help` / `gusto <command> --help` is the authoritative command surface.
 
