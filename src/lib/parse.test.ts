@@ -5,8 +5,32 @@ import {
   parseNonNegativeNumber,
   parsePositiveNumber,
   resolveTimeoutMs,
+  splitTokens,
   validateEnum,
 } from "./parse.ts";
+
+describe("splitTokens", () => {
+  test("splits on commas, trims whitespace, and drops empty tokens", () => {
+    expect(splitTokens("processed, unprocessed")).toEqual(["processed", "unprocessed"]);
+    expect(splitTokens("a, b,,c ")).toEqual(["a", "b", "c"]);
+  });
+
+  test("returns [] for an empty string", () => {
+    expect(splitTokens("")).toEqual([]);
+  });
+
+  test("returns [] for tokenless-truthy inputs", () => {
+    expect(splitTokens(",")).toEqual([]);
+    expect(splitTokens(" ")).toEqual([]);
+    expect(splitTokens("\n")).toEqual([]);
+    expect(splitTokens(", ,")).toEqual([]);
+    expect(splitTokens("processed,")).toEqual(["processed"]);
+  });
+
+  test("preserves duplicates (validation, not deduplication, is the caller's concern)", () => {
+    expect(splitTokens("processed,processed")).toEqual(["processed", "processed"]);
+  });
+});
 
 describe("parsePositiveNumber", () => {
   test("accepts a positive integer", () => {
