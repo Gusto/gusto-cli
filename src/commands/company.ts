@@ -21,7 +21,7 @@ export function registerCompanyCommand(parent: Command): void {
       .command("show")
       // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
       .alias("get")
-      .description("Company overview: record, payment config, and pay schedule"),
+      .description("Company overview: record and pay schedules"),
   ).action((opts: CompanyShowOpts) =>
     runReadCommand("gusto company show", readGlobalFlags(parent.opts()), companyShowHandler(opts)),
   );
@@ -51,11 +51,6 @@ interface CompanyRecord {
   tier?: string;
   ein?: string;
   entity_type?: string;
-  is_partner_managed?: boolean;
-}
-interface PaymentConfig {
-  payment_speed?: string;
-  fast_payment_limit?: unknown;
 }
 interface PaySchedule {
   uuid?: string;
@@ -71,7 +66,6 @@ interface CompanyShowSummary {
   tier: string | null;
   ein: string | null;
   entity_type: string | null;
-  payment_speed: string | null;
   pay_schedule: { frequency?: string; anchor_pay_date?: string } | null;
 }
 
@@ -84,7 +78,6 @@ interface CompanyShowBase {
   company_uuid: string;
   summary: CompanyShowSummary;
   company: CompanyRecord | null;
-  payment_config: PaymentConfig | null;
   pay_schedules: PaySchedule[] | null;
 }
 
@@ -106,7 +99,6 @@ export function renderCompanyShow(data: CompanyShowData): string {
     ["Tier", s.tier],
     ["EIN", s.ein],
     ["Entity type", s.entity_type],
-    ["Payment speed", s.payment_speed],
   ]);
 
   const rows = data.pay_schedules ?? [];
@@ -143,9 +135,8 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
         }
       };
 
-      const [companyR, paymentR, scheduleR] = await Promise.all([
+      const [companyR, scheduleR] = await Promise.all([
         safe("company", async () => (await ctx.client.get<CompanyRecord>(base)).body),
-        safe("payment_config", async () => (await ctx.client.get<PaymentConfig>(`${base}/payment_configs`)).body),
         safe("pay_schedules", async () => (await ctx.client.get<PaySchedule[]>(`${base}/pay_schedules`)).body),
       ]);
 
@@ -154,20 +145,12 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
       if (!companyR.ok) throw companyR.cause;
 
       const company = companyR.data;
-      const paymentConfig = paymentR.ok ? paymentR.data : null;
       // Sanitize once here so pay_schedules is genuinely PaySchedule[] | null downstream: the API
       // body is typed but not runtime-validated, and a malformed-but-200 non-array would otherwise
       // crash the human renderer's .map. Keeping the guard here lets callers trust the type.
       const paySchedules = scheduleR.ok && Array.isArray(scheduleR.data) ? scheduleR.data : null;
       const firstSchedule = paySchedules?.[0] ?? null;
-      // payment_configs is gated on an active PartnerCompanyMapping; non-partner-managed
-      // companies always 404 here, which reads as a bug to anyone watching the output. Drop only the 404 -
-      // a 5xx or network error against the same endpoint is still a real failure.
-      const suppressPaymentConfig404 = company?.is_partner_managed === false;
-      const errors = [paymentR, scheduleR]
-        .filter((r): r is { ok: false; label: string; error: string; status?: number; cause: unknown } => !r.ok)
-        .filter((r) => !(r.label === "payment_config" && r.status === 404 && suppressPaymentConfig404))
-        .map(({ label, error }) => ({ label, error }));
+      const errors = scheduleR.ok ? [] : [{ label: scheduleR.label, error: scheduleR.error }];
 
       const payload: CompanyShowBase = {
         company_uuid: ctx.companyUuid,
@@ -178,13 +161,11 @@ export function companyShowHandler(opts: CompanyShowOpts): CommandHandler {
           tier: company?.tier ?? null,
           ein: company?.ein ?? null,
           entity_type: company?.entity_type ?? null,
-          payment_speed: paymentConfig?.payment_speed ?? null,
           pay_schedule: firstSchedule
             ? { frequency: firstSchedule.frequency, anchor_pay_date: firstSchedule.anchor_pay_date }
             : null,
         },
         company,
-        payment_config: paymentConfig,
         pay_schedules: paySchedules,
       };
       const data: CompanyShowData =

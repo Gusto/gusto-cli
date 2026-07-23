@@ -12,11 +12,9 @@ function showData(overrides: Partial<CompanyShowData> = {}): CompanyShowData {
       tier: "plus",
       ein: "12-3456789",
       entity_type: "LLC",
-      payment_speed: "2-day",
       pay_schedule: { frequency: "every_other_week", anchor_pay_date: "2026-01-15" },
     },
     company: null,
-    payment_config: null,
     pay_schedules: [{ uuid: "ps-1", frequency: "every_other_week", anchor_pay_date: "2026-01-15" }],
     ...rest,
   };
@@ -53,7 +51,6 @@ describe("renderCompanyShow", () => {
           tier: null,
           ein: null,
           entity_type: null,
-          payment_speed: null,
           pay_schedule: null,
         },
         pay_schedules: null,
@@ -71,9 +68,9 @@ describe("renderCompanyShow", () => {
 
   test("surfaces partial_errors as a warning block", () => {
     const out = renderCompanyShow(
-      showData({ success: false, partial_errors: [{ label: "payment_config", error: "404 not found" }] }),
+      showData({ success: false, partial_errors: [{ label: "pay_schedules", error: "500 server error" }] }),
     );
-    expect(out).toContain("payment_config");
-    expect(out).toContain("404 not found");
+    expect(out).toContain("pay_schedules");
+    expect(out).toContain("500 server error");
   });
 });

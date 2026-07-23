@@ -18,10 +18,8 @@ function routeFetch(routes: Route[]): void {
 }
 
 describe("companyShowHandler", () => {
-  test("aggregates the three GETs and surfaces a partial 404 without failing", async () => {
-    // Order matters: more specific suffixes before the bare /companies/co-1.
+  test("aggregates company + pay_schedules into the summary", async () => {
     routeFetch([
-      { match: "/payment_configs", status: 404 },
       {
         match: "/pay_schedules",
         status: 200,
@@ -31,17 +29,15 @@ describe("companyShowHandler", () => {
     ]);
 
     const d = data(await companyShowHandler(auth)(ctx));
-    expect(d.success).toBe(false);
+    expect(d.success).toBe(true);
+    expect(d.partial_errors).toBeUndefined();
     expect((d.summary as Record<string, unknown>).name).toBe("Acme");
     expect((d.summary as Record<string, unknown>).status).toBe("Approved");
     expect((d.summary as { pay_schedule?: { frequency?: string } }).pay_schedule?.frequency).toBe("Every other week");
-    const partial = d.partial_errors as { label: string }[];
-    expect(partial.map((e) => e.label)).toEqual(["payment_config"]);
   });
 
   test("a failed primary company GET is a real failure, not a buried partial_error", async () => {
     routeFetch([
-      { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
       { match: "/pay_schedules", status: 200, body: [] },
       { match: "/companies/co-1", status: 404, body: { error: "not found" } }, // primary company GET fails (404 = not retried)
     ]);
@@ -54,7 +50,6 @@ describe("companyShowHandler", () => {
 
   test("company succeeds but a secondary pay_schedules GET fails: ok:true with partial_errors", async () => {
     routeFetch([
-      { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
       { match: "/pay_schedules", status: 404, body: { error: "not found" } }, // 404 = not retried
       { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved" } },
     ]);
@@ -66,64 +61,15 @@ describe("companyShowHandler", () => {
     expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toEqual(["pay_schedules"]);
   });
 
-  test("payment_config 404 is suppressed when the company isn't partner-managed", async () => {
-    routeFetch([
-      { match: "/payment_configs", status: 404, body: { errors: [{ category: "not_found" }] } },
-      { match: "/pay_schedules", status: 200, body: [{ frequency: "Every week", anchor_pay_date: "2026-02-06" }] },
-      {
-        match: "/companies/co-1",
-        status: 200,
-        body: { name: "Acme", company_status: "Approved", is_partner_managed: false },
-      },
-    ]);
-    const d = data(await companyShowHandler(auth)(ctx));
-    expect(d.success).toBe(true);
-    expect(d.partial_errors).toBeUndefined();
-    expect(d.payment_config).toBeNull();
-  });
-
-  test("non-404 payment_config failure still surfaces on a non-partner-managed company", async () => {
-    // Suppression must be narrow: only the expected 404. A 401/422/etc on the same endpoint
-    // is a real failure the user should still see.
-    routeFetch([
-      { match: "/payment_configs", status: 422, body: { errors: [{ category: "invalid_request" }] } },
-      { match: "/pay_schedules", status: 200, body: [] },
-      {
-        match: "/companies/co-1",
-        status: 200,
-        body: { name: "Acme", company_status: "Approved", is_partner_managed: false },
-      },
-    ]);
-    const d = data(await companyShowHandler(auth)(ctx));
-    expect(d.success).toBe(false);
-    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toContain("payment_config");
-  });
-
-  test("payment_config 404 still surfaces when the company IS partner-managed (real bug)", async () => {
-    routeFetch([
-      { match: "/payment_configs", status: 404, body: { errors: [{ category: "not_found" }] } },
-      { match: "/pay_schedules", status: 200, body: [] },
-      {
-        match: "/companies/co-1",
-        status: 200,
-        body: { name: "Acme", company_status: "Approved", is_partner_managed: true },
-      },
-    ]);
-    const d = data(await companyShowHandler(auth)(ctx));
-    expect(d.success).toBe(false);
-    expect((d.partial_errors as { label: string }[]).map((e) => e.label)).toContain("payment_config");
-  });
-
-  test("all three GETs succeed: success true, no partial_errors", async () => {
-    routeFetch([
-      { match: "/payment_configs", status: 200, body: { payment_speed: "standard" } },
+  test("payment_configs endpoint is never called", async () => {
+    const { calls, restore: r } = setupRouteFetch([
       { match: "/pay_schedules", status: 200, body: [{ frequency: "Every week", anchor_pay_date: "2026-02-06" }] },
       { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved" } },
     ]);
+    restore = r;
     const d = data(await companyShowHandler(auth)(ctx));
     expect(d.success).toBe(true);
-    expect(d.partial_errors).toBeUndefined();
-    expect((d.summary as { payment_speed?: string }).payment_speed).toBe("standard");
+    expect(calls.filter((c) => /\/companies\/[^/]+\/payment_configs(?:$|\?)/.test(c.url))).toEqual([]);
   });
 });
 

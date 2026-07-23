@@ -40,7 +40,6 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   },
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
-  { scope: "company_payment_configs:read", usedBy: ["company show"] },
   { scope: "employee_federal_taxes:read", usedBy: ["employee inspect"] },
   { scope: "employee_state_taxes:read", usedBy: ["employee inspect"] },
 
@@ -60,6 +59,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
  * registration is the authoritative grant. */
 export const DROPPED_SCOPES: readonly string[] = [
   "company_bank_accounts:write",
+  "company_payment_configs:read",
   "signatories:manage",
   "company_signatories:write",
   "employee_bank_accounts:write",
