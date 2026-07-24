@@ -3,6 +3,7 @@ import type { ApiResponse } from "../lib/api-client.ts";
 import {
   fetchAtPath,
   fetchResource,
+  putResourceWithVersion,
   resolveApiContext,
   withCompanyContext,
   writeResource,
@@ -17,6 +18,12 @@ import {
   withContextOptions,
 } from "../lib/cli-options.ts";
 import { confirmationGate } from "../lib/confirm.ts";
+import {
+  buildHomeAddressUpdate,
+  buildWorkAddressUpdate,
+  type HomeAddressUpdateOpts,
+  type WorkAddressUpdateOpts,
+} from "../lib/employee-address.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { partialFailure } from "../lib/handle-api-error.ts";
@@ -46,6 +53,17 @@ interface EmployeeListOpts {
 interface EmployeeShowOpts {
   tokenStdin?: boolean;
 }
+
+/** Auth + write-gate flags every address update command shares. */
+interface AddressWriteOpts {
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+}
+
+type HomeAddressUpdateCmdOpts = HomeAddressUpdateOpts & AddressWriteOpts;
+type WorkAddressUpdateCmdOpts = WorkAddressUpdateOpts & AddressWriteOpts;
 
 export function registerEmployeeCommand(parent: Command): void {
   const cmd = parent.command("employee").description("List and inspect W-2 employees");
@@ -193,6 +211,71 @@ Examples:
         "gusto employee home-address",
         readGlobalFlags(parent.opts()),
         homeAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("update-home-address <address_uuid>")
+    .description("Update an employee's home address (partial; only the flags you pass change)")
+    .option("--street-1 <street>", "Street line 1")
+    .option("--street-2 <street>", "Street line 2")
+    .option("--city <city>", "City")
+    .option("--state <state>", "Two-letter state code (e.g. CO)")
+    .option("--zip <zip>", "ZIP code")
+    .option("--effective-date <date>", "Date the address takes effect (YYYY-MM-DD)")
+    .option("--courtesy-withholding <bool>", "Courtesy withholding: true or false")
+    .option("--record-version <token>", "Resource version; skips the auto-fetch (a value you pass always wins)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Address UUIDs come from \`gusto employee addresses <employee_uuid>\`. This is a partial update:
+only the fields you pass are changed. The optimistic-concurrency \`version\` is read from the
+current record automatically; pass --record-version to supply it yourself and skip that read.
+
+Examples:
+  $ gusto employee update-home-address <address_uuid> --street-1 "123 Main St" --city Denver --state CO --zip 80202
+  $ gusto employee update-home-address <address_uuid> --zip 80203 --dry-run
+`,
+    )
+    .action((addressUuid: string, opts: HomeAddressUpdateCmdOpts) =>
+      runCommand(
+        "gusto employee update-home-address",
+        readGlobalFlags(parent.opts()),
+        updateHomeAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("update-work-address <address_uuid>")
+    .description("Update an employee's work address (partial; only the flags you pass change)")
+    .option("--location-uuid <uuid>", "Company location the work address points at")
+    .option("--effective-date <date>", "Date the address takes effect (YYYY-MM-DD)")
+    .option("--record-version <token>", "Resource version; skips the auto-fetch (a value you pass always wins)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+A work address points at one of the company's locations; set it via --location-uuid (list them
+with \`gusto company locations\`). Address UUIDs come from \`gusto employee addresses <employee_uuid>\`.
+The \`version\` is read from the current record automatically; pass --record-version to skip that read.
+
+Examples:
+  $ gusto employee update-work-address <address_uuid> --location-uuid <company_location_uuid>
+  $ gusto employee update-work-address <address_uuid> --effective-date 2026-08-01 --dry-run
+`,
+    )
+    .action((addressUuid: string, opts: WorkAddressUpdateCmdOpts) =>
+      runCommand(
+        "gusto employee update-work-address",
+        readGlobalFlags(parent.opts()),
+        updateWorkAddressHandler(addressUuid, opts),
       ),
     );
 
@@ -424,6 +507,52 @@ export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeSho
     }
 
     return { ok: true, data: { work_addresses: work.data, home_addresses: home.data } };
+  };
+}
+
+export function updateHomeAddressHandler(addressUuid: string, opts: HomeAddressUpdateCmdOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/home_addresses/{home_address_uuid}",
+          body: { street_1: "123 Main St", street_2: "Apt 4", city: "Denver", state: "CO", zip: "80202" },
+          note: "example: a partial update - pass only the fields you change; version is read from the current record unless you pass --record-version",
+        },
+      };
+    }
+    const validated = buildHomeAddressUpdate(opts);
+    if (!validated.ok) return validationFailure(validated.message, validated.blocked);
+    return putResourceWithVersion(globals, `/v1/home_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
+      tokenStdin: opts.tokenStdin,
+      dryRun: opts.dryRun,
+      confirm: opts.confirm,
+    });
+  };
+}
+
+export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressUpdateCmdOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/work_addresses/{work_address_uuid}",
+          body: { location_uuid: "<company_location_uuid>", effective_date: "2026-08-01" },
+          note: "example: a work address points at a company location; version is read from the current record unless you pass --record-version",
+        },
+      };
+    }
+    const validated = buildWorkAddressUpdate(opts);
+    if (!validated.ok) return validationFailure(validated.message, validated.blocked);
+    return putResourceWithVersion(globals, `/v1/work_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
+      tokenStdin: opts.tokenStdin,
+      dryRun: opts.dryRun,
+      confirm: opts.confirm,
+    });
   };
 }
 

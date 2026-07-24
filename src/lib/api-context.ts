@@ -8,8 +8,10 @@ import { oauthHttp } from "./oauth/context.ts";
 import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
 import { getValidUserToken } from "./oauth/session.ts";
 import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
+import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
+import { getAndInjectVersion } from "./versioning.ts";
 
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
@@ -326,6 +328,72 @@ export async function writeResource(
 
   try {
     const response = await resolved.ctx.client.request(method, path, body);
+    return { ok: true, data: response.body };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
+/** PUT `body` to a resource-scoped `path` (e.g. `/v1/home_addresses/{uuid}`) with the
+ * optimistic-concurrency `version` dance, matching `api request --auto-version`: a `version`
+ * already in `body` (supplied by the caller) is authoritative and skips the read, otherwise the
+ * current resource is GET'd and its version injected before the PUT. Honors the agent-mode
+ * confirmation gate and --dry-run (which never sends, and notes the send-time version fetch when
+ * the version will be auto-resolved). For company-scoped writes use putCompanyResource instead. */
+export async function putResourceWithVersion(
+  globals: GlobalFlags,
+  path: string,
+  body: Record<string, unknown>,
+  opts: ResourceWriteOpts,
+): Promise<CommandResult> {
+  // Gate before resolving auth so an agent learns it must confirm without first needing a valid
+  // token. --dry-run and human/TTY mode pass through (see confirmationGate).
+  const gate = confirmationGate(globals, "PUT", path, { confirm: opts.confirm, dryRun: opts.dryRun });
+  if (gate) return gate;
+
+  // Pending when the version will be read from the resource at send time: the caller passed no
+  // `version` in the body. A caller version always wins and skips the GET.
+  const versionPending = readString(body, "version") === undefined;
+
+  // A dry-run never sends and needs no auth; it notes the send-time version fetch when pending,
+  // mirroring `api request --auto-version --dry-run`.
+  if (opts.dryRun) {
+    return {
+      ok: true,
+      data: {
+        method: "PUT",
+        path,
+        body,
+        ...(versionPending ? { note: "dry-run: version is read from the current resource at send time" } : {}),
+      },
+    };
+  }
+
+  const resolved = await resolveApiContext(globals, {
+    tokenStdin: opts.tokenStdin,
+    readStdin: opts.readStdin,
+    requireCompany: false,
+    store: opts.store,
+    http: opts.http,
+    now: opts.now,
+  });
+  if (!resolved.ok) return resolved.result;
+
+  try {
+    // GET-then-inject lives in versioning.ts (shared with `api request`); a failing version GET maps
+    // through toResult below rather than escaping as an unhandled error.
+    const injected = await getAndInjectVersion(resolved.ctx.client, path, body);
+    if (!injected.ok) {
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: {
+          code: "version_unresolved",
+          message: `no \`version\` field in the GET ${path} response; supply one explicitly to skip the auto-fetch`,
+        },
+      };
+    }
+    const response = await resolved.ctx.client.request("PUT", path, injected.body);
     return { ok: true, data: response.body };
   } catch (err) {
     return toResult(err);

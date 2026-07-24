@@ -6,6 +6,7 @@ import {
   fetchCompanyResource,
   fetchResource,
   putCompanyResource,
+  putResourceWithVersion,
   resolveApiContext,
   resolveAuthToken,
   withCompanyContext,
@@ -362,6 +363,142 @@ describe("company-resource write confirmation gate", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("confirmation_required");
+  });
+
+  test("putResourceWithVersion is gated the same way", async () => {
+    const result = await putResourceWithVersion(flags, "/v1/things/thing-1", { name: "x" }, noSession());
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+  });
+});
+
+describe("putResourceWithVersion", () => {
+  test("dry-run with a pending version notes the send-time fetch and never calls the API", async () => {
+    const result = await putResourceWithVersion(
+      flags,
+      "/v1/things/thing-1",
+      { name: "x" },
+      {
+        dryRun: true,
+        ...noSession(),
+      },
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        method: "PUT",
+        path: "/v1/things/thing-1",
+        body: { name: "x" },
+        note: "dry-run: version is read from the current resource at send time",
+      },
+    });
+  });
+
+  test("dry-run with a caller-supplied version drops the note", async () => {
+    const result = await putResourceWithVersion(
+      flags,
+      "/v1/things/thing-1",
+      { name: "x", version: "v1" },
+      {
+        dryRun: true,
+        ...noSession(),
+      },
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: { method: "PUT", path: "/v1/things/thing-1", body: { name: "x", version: "v1" } },
+    });
+  });
+
+  test("auto-fetches the current version and injects it into the PUT body", async () => {
+    const fetchStub = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } }, // GET
+      { status: 200, body: { updated: true } }, // PUT
+    ]);
+    try {
+      const result = await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(result.ok).toBe(true);
+      expect(fetchStub.calls[0]?.method).toBe("GET");
+      expect(fetchStub.calls[1]?.method).toBe("PUT");
+      expect(fetchStub.calls[1]?.body).toEqual({ name: "x", version: "v-current" });
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  test("a caller-supplied version wins and skips the version GET", async () => {
+    const fetchStub = stubGlobalFetch([{ status: 200, body: { updated: true } }]);
+    try {
+      await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x", version: "caller" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(fetchStub.calls).toHaveLength(1);
+      expect(fetchStub.calls[0]?.method).toBe("PUT");
+      expect(fetchStub.calls[0]?.body).toEqual({ name: "x", version: "caller" });
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  test("a resource with no version maps to version_unresolved and never PUTs", async () => {
+    const fetchStub = stubGlobalFetch([{ status: 200, body: { no_version_here: true } }]);
+    try {
+      const result = await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Validation);
+      expect(result.error.code).toBe("version_unresolved");
+      expect(fetchStub.calls).toHaveLength(1); // GET only
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  test("a non-2xx on the PUT maps through toResult to a coded error envelope", async () => {
+    const fetchStub = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } }, // GET succeeds
+      { status: 422, body: { errors: [{ message: "invalid" }] } }, // PUT fails
+    ]);
+    try {
+      const result = await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.ApiClient);
+    } finally {
+      fetchStub.restore();
+    }
   });
 });
 
