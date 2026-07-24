@@ -70,20 +70,59 @@ const SHOW_INCLUDE_OPTIONS = [
 
 const hasTokens = (raw: string | undefined): raw is string => raw !== undefined && splitTokens(raw).length > 0;
 
+/** UTC midnight `Date` for a `YYYY-MM-DD` string. Callers only invoke this once
+ * `isValidIsoDate` has confirmed the format. */
+function parseIsoDateUtc(value: string): Date {
+  return new Date(`${value}T00:00:00Z`);
+}
+
+/** True when `end` is more than one calendar year after `start` — mirrors the API's
+ * "start_date and end_date can't be more than 1 year apart" rule. */
+function isMoreThanOneYearApart(start: Date, end: Date): boolean {
+  const limit = new Date(start);
+  limit.setUTCFullYear(limit.getUTCFullYear() + 1);
+  return end > limit;
+}
+
+/** True when `end` is more than three calendar months after `reference` — mirrors the
+ * API's "end_date can be at most 3 months in the future" rule. */
+function isMoreThanThreeMonthsAfter(reference: Date, end: Date): boolean {
+  const limit = new Date(reference);
+  limit.setUTCMonth(limit.getUTCMonth() + 3);
+  return end > limit;
+}
+
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
- * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The
- * range rules (end_date at most 3 months out; start/end at most 1 year apart)
- * are enforced server-side and surfaced through the API error envelope, so they
- * are intentionally not duplicated here. The deprecated `processed` /
- * `include_off_cycle` params are omitted in favor of `processing_statuses` /
- * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
-export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult {
+ * query params, validating that any supplied dates are ISO `YYYY-MM-DD` and satisfy the
+ * endpoint's documented range rules (end_date at most 3 months out; start/end at most
+ * 1 year apart). Failing fast client-side turns a deterministic server 422 into an
+ * actionable blocked_on before the request goes out. `now` is injectable for tests;
+ * defaults to the real clock. The deprecated `processed` / `include_off_cycle` params
+ * are omitted in favor of `processing_statuses` / `payroll_types`. Pagination params
+ * (`page`/`per`) are not yet implemented. */
+export function buildPayrollListQuery(opts: PayrollListOpts, now: Date = new Date()): PayrollQueryResult {
   const blocked: BlockedOn[] = [];
   if (opts.startDate !== undefined && !isValidIsoDate(opts.startDate)) {
     blocked.push({ field: "start-date", reason: "must be a valid date in YYYY-MM-DD format" });
   }
   if (opts.endDate !== undefined && !isValidIsoDate(opts.endDate)) {
     blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
+  }
+  if (
+    opts.startDate !== undefined &&
+    isValidIsoDate(opts.startDate) &&
+    opts.endDate !== undefined &&
+    isValidIsoDate(opts.endDate) &&
+    isMoreThanOneYearApart(parseIsoDateUtc(opts.startDate), parseIsoDateUtc(opts.endDate))
+  ) {
+    blocked.push({ field: "start-date", reason: "start-date and end-date can't be more than 1 year apart" });
+  }
+  if (
+    opts.endDate !== undefined &&
+    isValidIsoDate(opts.endDate) &&
+    isMoreThanThreeMonthsAfter(now, parseIsoDateUtc(opts.endDate))
+  ) {
+    blocked.push({ field: "end-date", reason: "end-date can be at most 3 months in the future" });
   }
   for (const entry of [
     validateEnum("processing-status", opts.processingStatus, PROCESSING_STATUSES, true),
@@ -745,7 +784,10 @@ See also:
       `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed; narrowed to 'processed' when --date-filter-by is set)`,
     )
     .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
-    .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
+    .option(
+      "--start-date <date>",
+      "Only payrolls whose pay period is on/after this date (YYYY-MM-DD; at most 1 year before --end-date)",
+    )
     .option("--end-date <date>", "Only payrolls up to this date (YYYY-MM-DD; at most 3 months in the future)")
     .option(
       "--date-filter-by <field>",

@@ -259,6 +259,68 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
+  test("rejects a start/end range more than 1 year apart", () => {
+    const result = buildPayrollListQuery({ startDate: "2025-03-01", endDate: "2026-07-16" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(
+      expect.objectContaining({ field: "start-date", reason: expect.stringContaining("1 year apart") }),
+    );
+  });
+
+  test("accepts a start/end range exactly 1 year apart", () => {
+    const result = buildPayrollListQuery({ startDate: "2025-07-16", endDate: "2026-07-16" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts a start/end range just under 1 year apart", () => {
+    const result = buildPayrollListQuery({ startDate: "2025-07-17", endDate: "2026-07-16" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("range check is skipped when only one of start/end is supplied", () => {
+    expect(buildPayrollListQuery({ startDate: "2020-01-01" }).ok).toBe(true);
+    expect(buildPayrollListQuery({ endDate: "2020-01-01" }, new Date("2026-07-24T00:00:00Z")).ok).toBe(true);
+  });
+
+  test("rejects an end-date more than 3 months in the future", () => {
+    const now = new Date("2026-07-24T00:00:00Z");
+    const result = buildPayrollListQuery({ endDate: "2026-11-01" }, now);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(
+      expect.objectContaining({ field: "end-date", reason: expect.stringContaining("3 months in the future") }),
+    );
+  });
+
+  test("accepts an end-date exactly 3 months in the future", () => {
+    const now = new Date("2026-07-24T00:00:00Z");
+    const result = buildPayrollListQuery({ endDate: "2026-10-24" }, now);
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts an end-date in the past regardless of the range check", () => {
+    const now = new Date("2026-07-24T00:00:00Z");
+    const result = buildPayrollListQuery({ endDate: "2020-01-01" }, now);
+    expect(result.ok).toBe(true);
+  });
+
+  test("reports both the >1yr-apart and >3mo-future violations together", () => {
+    const now = new Date("2026-07-24T00:00:00Z");
+    const result = buildPayrollListQuery({ startDate: "2024-01-01", endDate: "2026-11-01" }, now);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
+  });
+
+  test("skips the range checks entirely for malformed dates (format error already reported)", () => {
+    const result = buildPayrollListQuery({ startDate: "01-01-2026", endDate: "2026/03/01" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toHaveLength(2);
+  });
+
   test("accepts every valid enum value (incl. external payroll type and index-only includes)", () => {
     const result = buildPayrollListQuery({
       processingStatus: "processed,unprocessed",
