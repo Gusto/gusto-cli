@@ -1,4 +1,5 @@
 import type { GlobalFlags } from "./global-flags.ts";
+import { isObject } from "./predicates.ts";
 
 export type OutputMode = "agent" | "human";
 
@@ -97,8 +98,27 @@ export function emit<T>(
   writeHumanError(payload.error, sinks.stderr);
 }
 
+/** The human-facing message(s) from a Gusto API error body's `errors` array, joined, or undefined
+ * when `details` isn't that shape. `error.details` is never printed in human mode otherwise, so this
+ * is how the API's own reason for a failure reaches a human. Only the `{ errors: [{ message }] }`
+ * shape is surfaced; other detail shapes (report's `response` wrapper, partial-failure structures,
+ * raw bodies) are deliberately left out so a human terminal never gets a large JSON dump. */
+function apiErrorMessages(details: unknown): string | undefined {
+  if (!isObject(details) || !Array.isArray(details.errors)) return undefined;
+  const messages = details.errors
+    .map((e) => (isObject(e) && typeof e.message === "string" ? e.message.trim() : ""))
+    .filter((m) => m.length > 0);
+  return messages.length > 0 ? messages.join("; ") : undefined;
+}
+
 function writeHumanError(err: EnvelopeError, stderr: NodeJS.WritableStream): void {
   stderr.write(`error: ${err.message}\n`);
+  // Surface the API's own message from details (invisible in human mode otherwise), unless the
+  // error line already carries it (e.g. a curated message that quotes the API text verbatim).
+  const reason = apiErrorMessages(err.details);
+  if (reason !== undefined && !err.message.toLowerCase().includes(reason.toLowerCase())) {
+    stderr.write(`reason: ${reason}\n`);
+  }
   if (err.blocked_on && err.blocked_on.length > 0) {
     stderr.write("blocked on:\n");
     for (const b of err.blocked_on) {

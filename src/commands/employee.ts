@@ -1,10 +1,25 @@
 import type { Command } from "commander";
-import { fetchAtPath, fetchResource, resolveApiContext, withCompanyContext } from "../lib/api-context.ts";
-import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import {
+  fetchAtPath,
+  fetchResource,
+  resolveApiContext,
+  withCompanyContext,
+  writeResource,
+} from "../lib/api-context.ts";
+import { ALL_OPT, CONFIRM_OPT, CURSOR_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
-import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
+import { isValidIsoDate } from "../lib/parse.ts";
+import { isObject } from "../lib/predicates.ts";
+import {
+  type CommandHandler,
+  type CommandResult,
+  missingArgs,
+  runCommand,
+  runReadCommand,
+  validationFailure,
+} from "../lib/runner.ts";
 
 interface EmployeeListOpts {
   status?: string;
@@ -203,6 +218,69 @@ never read as company totals.
     .action((opts: EmployeeListOpts) =>
       runReadCommand("gusto employee list", readGlobalFlags(parent.opts()), employeeListHandler(opts)),
     );
+
+  // `terminate` (schedule) and `cancel-termination` (undo) are flat sibling actions, mirroring the
+  // existing `show`/`status`/`list` structure. They deliberately aren't a `terminate`
+  // command-plus-`cancel`-subcommand: a command that has its own action + positional AND a
+  // subcommand forces commander into positional-option mode, which drops trailing global flags
+  // (`--json`/`--agent`) - the CLI's core agent surface.
+  cmd
+    .command("terminate <employee_uuid>")
+    .description("Schedule an employee termination (the offboarding write path)")
+    .option("--effective-date <date>", "The employee's last day of work (YYYY-MM-DD)")
+    .option(
+      "--run-termination-payroll",
+      "Pay final wages via a one-off off-cycle payroll instead of the regular pay schedule",
+    )
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee terminate <uuid> --effective-date 2026-08-01
+  $ gusto employee terminate <uuid> --effective-date 2026-08-01 --run-termination-payroll
+  $ gusto employee cancel-termination <uuid>   # undo a pending termination
+
+Mirrors POST /v1/employees/{id}/terminations. In agent mode this write is gated:
+preview it with --dry-run, then re-run with --confirm once the operator approves.
+Some states require final wages within 24 hours, where --run-termination-payroll
+may be the only compliant option.
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeTerminateOpts) =>
+      runCommand(
+        "gusto employee terminate",
+        readGlobalFlags(parent.opts()),
+        employeeTerminateHandler(employeeUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("cancel-termination <employee_uuid>")
+    .description("Cancel a pending (scheduled) employee termination")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .addHelpText(
+      "after",
+      `
+Example:
+  $ gusto employee cancel-termination <uuid>
+
+Mirrors DELETE /v1/employees/{id}/terminations. Gated in agent mode like any write:
+preview with --dry-run, then re-run with --confirm once the operator approves.
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeTerminateCancelOpts) =>
+      runCommand(
+        "gusto employee cancel-termination",
+        readGlobalFlags(parent.opts()),
+        employeeTerminateCancelHandler(employeeUuid, opts),
+      ),
+    );
 }
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
@@ -322,6 +400,112 @@ export function employeeJobsHandler(employeeUuid: string, opts: EmployeeShowOpts
     }
     return res;
   };
+}
+
+interface EmployeeTerminateOpts {
+  effectiveDate?: string;
+  runTerminationPayroll?: boolean;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+}
+
+interface EmployeeTerminateCancelOpts {
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+}
+
+/** The termination request body. `run_termination_payroll` is always sent (API default is false),
+ * so the request is self-documenting and the dry-run preview matches what actually goes over the wire. */
+interface TerminationBody {
+  effective_date: string;
+  run_termination_payroll: boolean;
+}
+
+// Encode the uuid as a single path segment: a raw `/`, `?`, or `#` in an agent-supplied
+// uuid would otherwise retarget the write (the client resolves paths via `new URL`).
+const terminationsPath = (employeeUuid: string): string =>
+  `/v1/employees/${encodeURIComponent(employeeUuid)}/terminations`;
+
+/** Schedule a termination: POST /v1/employees/{id}/terminations. `effective_date` is the only
+ * required field; `run_termination_payroll` decides whether final wages go out off-cycle. Semantic
+ * validation (a real date, not already terminated) is the API's job - this enforces presence and ISO format. */
+export function employeeTerminateHandler(employeeUuid: string, opts: EmployeeTerminateOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "POST",
+          path: "/v1/employees/{employee_id}/terminations",
+          body: { effective_date: "2026-08-01", run_termination_payroll: false } satisfies TerminationBody,
+          note: "example: --effective-date is the last day of work; add --run-termination-payroll to pay final wages off-cycle",
+        },
+      };
+    }
+    if (!opts.effectiveDate) {
+      return missingArgs([
+        { field: "effective-date", reason: "required (YYYY-MM-DD, the employee's last day of work)" },
+      ]);
+    }
+    if (!isValidIsoDate(opts.effectiveDate)) {
+      return validationFailure("invalid --effective-date", [
+        { field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" },
+      ]);
+    }
+    const body: TerminationBody = {
+      effective_date: opts.effectiveDate,
+      run_termination_payroll: opts.runTerminationPayroll === true,
+    };
+    return writeResource(globals, "POST", terminationsPath(employeeUuid), body, {
+      tokenStdin: opts.tokenStdin,
+      dryRun: opts.dryRun,
+      confirm: opts.confirm,
+    });
+  };
+}
+
+/** True when a Gusto error body carries a `not_found` category entry. The API returns `not_found`
+ * for BOTH a "nothing is scheduled to cancel" DELETE and a DELETE against an unknown employee uuid.
+ * The API's own message (which now reaches human mode via writeHumanError's `reason:` line) tells
+ * those apart; this predicate only decides whether to add the extra safety hint below. */
+function isNotFoundError(details: unknown): boolean {
+  return (
+    isObject(details) &&
+    Array.isArray(details.errors) &&
+    details.errors.some((e) => isObject(e) && e.category === "not_found")
+  );
+}
+
+/** Both cancel-termination 404s now surface their distinct API message via the `reason:` line, so the
+ * hint no longer carries the message - it adds the safety note the raw message doesn't spell out: a
+ * mistyped uuid also 404s, silently leaving a real termination scheduled. No-op unless not_found. */
+function surfaceCancelNotFound(result: CommandResult): CommandResult {
+  if (result.ok || !isNotFoundError(result.error.details)) return result;
+  return {
+    ...result,
+    error: {
+      ...result.error,
+      hint: "a 404 here means either nothing was scheduled to cancel, or the employee uuid is unknown - re-verify the uuid, since a real termination may still be scheduled",
+    },
+  };
+}
+
+/** Cancel a pending termination: DELETE /v1/employees/{id}/terminations (no body, 204 on success). */
+export function employeeTerminateCancelHandler(
+  employeeUuid: string,
+  opts: EmployeeTerminateCancelOpts,
+): CommandHandler {
+  return async ({ globals }) =>
+    surfaceCancelNotFound(
+      await writeResource(globals, "DELETE", terminationsPath(employeeUuid), undefined, {
+        tokenStdin: opts.tokenStdin,
+        dryRun: opts.dryRun,
+        confirm: opts.confirm,
+      }),
+    );
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {
