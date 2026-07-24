@@ -1,12 +1,12 @@
 import type { Command } from "commander";
 import { ApiError } from "../lib/api-client.ts";
-import { fetchCompanyResource, withCompanyContext } from "../lib/api-context.ts";
-import { errMsg } from "../lib/errors.ts";
+import { fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { errMsg, malformedResponse } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { fetchCompanyLocations } from "../lib/locations.ts";
 import { kvLines, table } from "../lib/human.ts";
 import { type CommandHandler, runReadCommand } from "../lib/runner.ts";
-import { withContextOptions } from "../lib/cli-options.ts";
+import { TOKEN_STDIN_OPT, withContextOptions } from "../lib/cli-options.ts";
 
 interface CompanyShowOpts {
   companyUuid?: string;
@@ -44,6 +44,101 @@ export function registerCompanyCommand(parent: Command): void {
     (opts: CompanyShowOpts) =>
       runReadCommand("gusto company custom-fields", readGlobalFlags(parent.opts()), companyCustomFieldsHandler(opts)),
   );
+
+  const forms = cmd.command("forms").description("List and inspect the company's forms");
+
+  withContextOptions(forms.command("list").description("List the company's forms")).action(
+    (opts: CompanyResourceReadOpts) =>
+      runReadCommand("gusto company forms list", readGlobalFlags(parent.opts()), companyFormsListHandler(opts)),
+  );
+
+  forms
+    .command("show <form_uuid>")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
+    .description("Read a single form record")
+    .option(...TOKEN_STDIN_OPT)
+    .action((formUuid: string, opts: FormReadOpts) =>
+      runReadCommand(
+        "gusto company forms show",
+        readGlobalFlags(parent.opts()),
+        companyFormShowHandler(formUuid, opts),
+      ),
+    );
+
+  forms
+    .command("pdf <form_uuid>")
+    .description("Get a form's signed PDF document URL")
+    .option(...TOKEN_STDIN_OPT)
+    .action((formUuid: string, opts: FormReadOpts) =>
+      runReadCommand("gusto company forms pdf", readGlobalFlags(parent.opts()), companyFormPdfHandler(formUuid, opts)),
+    );
+
+  withContextOptions(cmd.command("signatories").description("List the company's signatories")).action(
+    (opts: CompanyResourceReadOpts) =>
+      runReadCommand("gusto company signatories", readGlobalFlags(parent.opts()), companySignatoriesHandler(opts)),
+  );
+
+  withContextOptions(cmd.command("federal-taxes").description("Read the company's federal tax details")).action(
+    (opts: CompanyResourceReadOpts) =>
+      runReadCommand("gusto company federal-taxes", readGlobalFlags(parent.opts()), companyFederalTaxesHandler(opts)),
+  );
+}
+
+interface CompanyResourceReadOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+interface FormReadOpts {
+  tokenStdin?: boolean;
+}
+
+export function companyFormsListHandler(opts: CompanyResourceReadOpts): CommandHandler {
+  return async ({ globals }) => {
+    const res = await fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/forms`,
+    );
+    if (res.ok && !Array.isArray(res.data)) {
+      return malformedResponse("/v1/companies/{company_uuid}/forms returned a non-array body");
+    }
+    return res;
+  };
+}
+
+export function companyFormShowHandler(formUuid: string, opts: FormReadOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/forms/${encodeURIComponent(formUuid)}`);
+}
+
+export function companyFormPdfHandler(formUuid: string, opts: FormReadOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/forms/${encodeURIComponent(formUuid)}/pdf`);
+}
+
+export function companySignatoriesHandler(opts: CompanyResourceReadOpts): CommandHandler {
+  return async ({ globals }) => {
+    const res = await fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/signatories`,
+    );
+    if (res.ok && !Array.isArray(res.data)) {
+      return malformedResponse("/v1/companies/{company_uuid}/signatories returned a non-array body");
+    }
+    return res;
+  };
+}
+
+export function companyFederalTaxesHandler(opts: CompanyResourceReadOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/federal_tax_details`,
+    );
 }
 
 /** GET /v1/companies/{id}/earning_types. Returns the body unchanged (`{ default, custom }`),
