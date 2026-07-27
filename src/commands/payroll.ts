@@ -76,20 +76,34 @@ function parseIsoDateUtc(value: string): Date {
   return new Date(`${value}T00:00:00Z`);
 }
 
+/** Adds calendar months/years to `date`, clamping to the target month's last day instead
+ * of letting `setUTCMonth`/`setUTCFullYear` overflow into the month after (e.g. Nov 30 + 3mo
+ * lands on Feb 28/29, not Mar 2; Feb 29 + 1yr lands on Feb 28, not Mar 1). Unclamped, that
+ * overflow makes the range checks below more permissive than the API's actual cutoff. */
+function addUtcClamped(date: Date, unit: "month" | "year", amount: number): Date {
+  const day = date.getUTCDate();
+  const result = new Date(date);
+  if (unit === "month") {
+    result.setUTCMonth(result.getUTCMonth() + amount);
+  } else {
+    result.setUTCFullYear(result.getUTCFullYear() + amount);
+  }
+  if (result.getUTCDate() !== day) {
+    result.setUTCDate(0);
+  }
+  return result;
+}
+
 /** True when `end` is more than one calendar year after `start` — mirrors the API's
  * "start_date and end_date can't be more than 1 year apart" rule. */
 function isMoreThanOneYearApart(start: Date, end: Date): boolean {
-  const limit = new Date(start);
-  limit.setUTCFullYear(limit.getUTCFullYear() + 1);
-  return end > limit;
+  return end > addUtcClamped(start, "year", 1);
 }
 
 /** True when `end` is more than three calendar months after `reference` — mirrors the
  * API's "end_date can be at most 3 months in the future" rule. */
 function isMoreThanThreeMonthsAfter(reference: Date, end: Date): boolean {
-  const limit = new Date(reference);
-  limit.setUTCMonth(limit.getUTCMonth() + 3);
-  return end > limit;
+  return end > addUtcClamped(reference, "month", 3);
 }
 
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`

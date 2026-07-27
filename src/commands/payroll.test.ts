@@ -314,6 +314,28 @@ describe("buildPayrollListQuery", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
   });
 
+  test("clamps the 3-month boundary at month-end instead of overflowing (Nov 30 -> Feb 28)", () => {
+    const now = new Date("2026-11-30T00:00:00Z");
+    expect(buildPayrollListQuery({ endDate: "2027-03-01" }, now).ok).toBe(false);
+    expect(buildPayrollListQuery({ endDate: "2027-02-28" }, now).ok).toBe(true);
+  });
+
+  test("clamps the 3-month boundary at month-end in a leap year (Nov 30 -> Feb 29)", () => {
+    const now = new Date("2027-11-30T00:00:00Z");
+    expect(buildPayrollListQuery({ endDate: "2028-03-01" }, now).ok).toBe(false);
+    expect(buildPayrollListQuery({ endDate: "2028-02-29" }, now).ok).toBe(true);
+  });
+
+  test("clamps the 1-year boundary for a leap-day start-date (Feb 29 -> Feb 28)", () => {
+    const result = buildPayrollListQuery({ startDate: "2024-02-29", endDate: "2025-03-01" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toContainEqual(
+      expect.objectContaining({ field: "start-date", reason: expect.stringContaining("1 year apart") }),
+    );
+    expect(buildPayrollListQuery({ startDate: "2024-02-29", endDate: "2025-02-28" }).ok).toBe(true);
+  });
+
   test("skips the range checks entirely for malformed dates (format error already reported)", () => {
     const result = buildPayrollListQuery({ startDate: "01-01-2026", endDate: "2026/03/01" });
     expect(result.ok).toBe(false);
