@@ -514,6 +514,17 @@ describe("employeeUpdateHandler", () => {
     expect(s.calls).toHaveLength(1);
   });
 
+  test("--dry-run against an already-matching state still returns the no-op result, not a fake preview", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, workState: "PA", dryRun: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(d.method).toBeUndefined();
+    expect(s.calls).toHaveLength(1);
+  });
+
   test("a lowercase --work-state matching the current (uppercase) state is still a no-op", async () => {
     const s = routeFetch([
       { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, state: "PA" }] },
