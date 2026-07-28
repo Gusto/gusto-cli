@@ -53,8 +53,6 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
   { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
-  // Re-grant: dropped from the original 50+ grant as unused, now needed to PUT an
-  // employee's work address (gusto employee update --work-state).
   { scope: "employees:manage", usedBy: ["employee update"] },
 ] as const;
 
