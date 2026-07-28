@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { OAuthError, expiresAtFrom, postForm, toTokenSet } from "./endpoints.ts";
+import { OAuthError, expiresAtFrom, postForm, postJson, toTokenSet } from "./endpoints.ts";
 
 describe("expiresAtFrom", () => {
   test("adds expires_in seconds to now", () => {
@@ -52,6 +52,47 @@ describe("OAuthError on non-2xx responses", () => {
     expect(oerr.status).toBe(400);
     expect(oerr.body).toEqual({ error: "invalid_grant", error_description: "code already redeemed" });
     expect(oerr.requestId).toBe("req-token-1");
+  });
+
+  test("postForm stamps X-Gusto-CLI-Install-Id when configured", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postForm(
+      { baseUrl: "https://api.test", fetchImpl, installId: "11111111-2222-4333-8444-555555555555" },
+      "/v1/mcp/oauth/token",
+      { grant_type: "authorization_code", code: "c" },
+    );
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBe("11111111-2222-4333-8444-555555555555");
+  });
+
+  test("postJson (DCR) stamps X-Gusto-CLI-Install-Id when configured", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response(JSON.stringify({ client_id: "x", client_secret: "y" }), { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postJson(
+      { baseUrl: "https://api.test", fetchImpl, installId: "11111111-2222-4333-8444-555555555555" },
+      "/v1/mcp/oauth/register",
+      { client_type: "cli" },
+    );
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBe("11111111-2222-4333-8444-555555555555");
+  });
+
+  test("omits X-Gusto-CLI-Install-Id entirely when installId is undefined (opt-out)", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postJson({ baseUrl: "https://api.test", fetchImpl }, "/v1/mcp/oauth/register", {});
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBeUndefined();
   });
 
   test("OAuthError.requestId is undefined when the server omits x-request-id", async () => {

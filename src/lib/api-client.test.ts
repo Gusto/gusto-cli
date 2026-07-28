@@ -84,6 +84,24 @@ describe("ApiClient basics", () => {
     expect(result.status).toBe(200);
   });
 
+  test("stamps X-Gusto-CLI-Install-Id when installId is configured", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }), {
+      installId: "11111111-2222-4333-8444-555555555555",
+    });
+    await client.get("/v1/me");
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBe("11111111-2222-4333-8444-555555555555");
+  });
+
+  test("omits X-Gusto-CLI-Install-Id entirely when installId is undefined (opt-out)", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }));
+    await client.get("/v1/me");
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBeUndefined();
+  });
+
   test("POST sends a JSON body and the right content-type", async () => {
     const captured: { url?: string; init?: RequestInit } = {};
     const client = makeClient(mockFetch(captured, { status: 201, body: { id: "x" } }));
