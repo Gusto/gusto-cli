@@ -521,9 +521,7 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
     }
     const workState = opts.workState.toUpperCase();
 
-    // The target work-address uuid isn't known until the reads below run, but the write's
-    // shape (a PUT against a work address) is - gate on that before any network call, same
-    // as the single-request write helpers.
+    // Gate on the write's shape before any reads - the work-address uuid isn't known yet.
     const gate = confirmationGate(globals, "PUT", "/v1/work_addresses/{work_address_uuid}", {
       confirm: opts.confirm,
       dryRun: opts.dryRun,
@@ -540,9 +538,8 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
         if (!Array.isArray(addressesRes.data)) {
           return malformedResponse(`${addressesPath} returned a non-array body`);
         }
-        // Strict `=== true` on purpose - the opposite default from findLocationForState's
-        // permissive `!== false`. Picking the wrong work address to overwrite is worse than
-        // failing to find one; skipping a usable location is worse than rejecting a real one.
+        // Strict `=== true`, unlike findLocationForState's permissive `!== false` - picking
+        // the wrong address to overwrite is worse than failing to find one.
         const active = addressesRes.data.find((a) => a.active === true);
         if (!active) {
           return {
@@ -600,11 +597,7 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
               changed: true,
               work_address: response.body,
               compliance: { fetched: false, state: workState, error: nudgeRes.error },
-              // The write is real and already done; a failed nudge fetch shouldn't undo that.
-              // But this feature exists specifically to catch a silent state move before it
-              // turns into months of missed filings, so a caller that only checks top-level
-              // `ok` (true) must not read "no compliance concerns" into a nudge that never
-              // loaded - `warning` is the one signal that survives not descending into `compliance`.
+              // `warning` so a caller checking only top-level `ok` doesn't read a failed nudge as "no concerns".
               warning:
                 `wrote the work-state change, but couldn't fetch ${workState}'s tax requirements to check for ` +
                 "outstanding items - retry with `gusto api request GET " +

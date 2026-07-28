@@ -654,9 +654,6 @@ describe("employeeUpdateHandler", () => {
     const data = result.data as Record<string, unknown>;
     expect(data.changed).toBe(true);
     expect((data.compliance as Record<string, unknown>).fetched).toBe(false);
-    // The write succeeding is real, but a caller checking only the top-level `ok` must not
-    // read this as "no compliance concerns" - a `warning` at the top of `data` is the one
-    // signal that survives a consumer that doesn't descend into `compliance`.
     expect(typeof data.warning).toBe("string");
     expect(data.warning).toContain("gusto api request GET /v1/companies/co-1/tax_requirements/MD");
   });
