@@ -514,6 +514,16 @@ describe("employeeUpdateHandler", () => {
     expect(s.calls).toHaveLength(1);
   });
 
+  test("a lowercase --work-state matching the current (uppercase) state is still a no-op", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, workState: "pa", confirm: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(s.calls).toHaveLength(1);
+  });
+
   test("no active company location in the target state returns a domain error and never PUTs", async () => {
     const s = routeFetch([
       { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [activeAddress] },
@@ -571,7 +581,60 @@ describe("employeeUpdateHandler", () => {
     expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
   });
 
-  test("a failed tax-requirements nudge fetch doesn't fail the already-successful write", async () => {
+  test("picks the matching location out of several, not just the first in the list", async () => {
+    const s = happyPathRoutes({
+      locations: {
+        status: 200,
+        body: [
+          { uuid: "loc-ca", state: "CA", active: true },
+          { uuid: "loc-md", state: "MD", active: true },
+          { uuid: "loc-ny", state: "NY", active: true },
+        ],
+      },
+    });
+    restore = s.restore;
+    await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("a lowercase --work-state resolves to the matching location and the uppercased nudge path", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    await employeeUpdateHandler("emp-1", { ...auth, workState: "md", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+    expect(s.calls.some((c) => c.url.includes("tax_requirements/MD"))).toBe(true);
+  });
+
+  test("matches a location whose stored state is lowercase", async () => {
+    const s = happyPathRoutes({ locations: { status: 200, body: [{ uuid: "loc-md", state: "md", active: true }] } });
+    restore = s.restore;
+    await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("a non-array work_addresses body is rejected as malformed, no locations/PUT/nudge calls", async () => {
+    const s = routeFetch([{ match: "/v1/employees/emp-1/work_addresses", status: 200, body: { not: "an array" } }]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("a rejected PUT (e.g. a stale version) fails the command instead of reporting a phantom success", async () => {
+    const s = happyPathRoutes({ put: { status: 422, body: { errors: [{ message: "stale version" }] } } });
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(s.calls.some((c) => c.url.includes("tax_requirements"))).toBe(false);
+  });
+
+  test("a failed tax-requirements nudge fetch doesn't fail the already-successful write, but surfaces a visible warning", async () => {
     const s = happyPathRoutes({ tax: { status: 404 } });
     restore = s.restore;
     const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
@@ -579,7 +642,12 @@ describe("employeeUpdateHandler", () => {
     if (!result.ok) throw new Error("unreachable");
     const data = result.data as Record<string, unknown>;
     expect(data.changed).toBe(true);
-    expect((data.compliance as Record<string, unknown>).ok).toBe(false);
+    expect((data.compliance as Record<string, unknown>).fetched).toBe(false);
+    // The write succeeding is real, but a caller checking only the top-level `ok` must not
+    // read this as "no compliance concerns" - a `warning` at the top of `data` is the one
+    // signal that survives a consumer that doesn't descend into `compliance`.
+    expect(typeof data.warning).toBe("string");
+    expect(data.warning).toContain("gusto api request GET /v1/companies/co-1/tax_requirements/MD");
   });
 
   test("encodes an employee uuid with URL-significant characters into a single path segment", async () => {

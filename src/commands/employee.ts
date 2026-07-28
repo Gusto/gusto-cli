@@ -540,6 +540,9 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
         if (!Array.isArray(addressesRes.data)) {
           return malformedResponse(`${addressesPath} returned a non-array body`);
         }
+        // Strict `=== true` on purpose - the opposite default from findLocationForState's
+        // permissive `!== false`. Picking the wrong work address to overwrite is worse than
+        // failing to find one; skipping a usable location is worse than rejecting a real one.
         const active = addressesRes.data.find((a) => a.active === true);
         if (!active) {
           return {
@@ -590,10 +593,27 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
           companyCtx.client,
           `/v1/companies/${companyCtx.companyUuid}/tax_requirements/${encodeURIComponent(workState)}`,
         );
-        const compliance = nudgeRes.ok
-          ? buildComplianceNudge(workState, nudgeRes.data)
-          : { ok: false, state: workState, error: nudgeRes.error };
+        if (!nudgeRes.ok) {
+          return {
+            ok: true,
+            data: {
+              changed: true,
+              work_address: response.body,
+              compliance: { fetched: false, state: workState, error: nudgeRes.error },
+              // The write is real and already done; a failed nudge fetch shouldn't undo that.
+              // But this feature exists specifically to catch a silent state move before it
+              // turns into months of missed filings, so a caller that only checks top-level
+              // `ok` (true) must not read "no compliance concerns" into a nudge that never
+              // loaded - `warning` is the one signal that survives not descending into `compliance`.
+              warning:
+                `wrote the work-state change, but couldn't fetch ${workState}'s tax requirements to check for ` +
+                "outstanding items - retry with `gusto api request GET " +
+                `/v1/companies/${companyCtx.companyUuid}/tax_requirements/${workState}\``,
+            },
+          };
+        }
 
+        const compliance = buildComplianceNudge(workState, nudgeRes.data);
         return { ok: true, data: { changed: true, work_address: response.body, compliance } };
       },
     );
