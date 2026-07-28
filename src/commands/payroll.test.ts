@@ -259,88 +259,14 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
-  test("rejects a start/end range more than 1 year apart", () => {
-    const result = buildPayrollListQuery({ startDate: "2025-03-01", endDate: "2026-07-16" });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "start-date", reason: expect.stringContaining("1 year apart") }),
-    );
-  });
-
-  test("accepts a start/end range exactly 1 year apart", () => {
-    const result = buildPayrollListQuery({ startDate: "2025-07-16", endDate: "2026-07-16" });
-    expect(result.ok).toBe(true);
-  });
-
-  test("accepts a start/end range just under 1 year apart", () => {
-    const result = buildPayrollListQuery({ startDate: "2025-07-17", endDate: "2026-07-16" });
-    expect(result.ok).toBe(true);
-  });
-
-  test("range check is skipped when only one of start/end is supplied", () => {
+  // The API's range rules are measured against defaults this layer can't see (an absent
+  // end_date becomes today) and the thresholds belong to the API, so a well-formed range
+  // is passed through even when the API will reject it. Re-adding the checks here means
+  // guessing those thresholds and blocking requests the API would have accepted.
+  test("passes well-formed dates through without mirroring the API's range rules", () => {
+    expect(buildPayrollListQuery({ startDate: "2020-01-01", endDate: "2026-07-16" }).ok).toBe(true);
     expect(buildPayrollListQuery({ startDate: "2020-01-01" }).ok).toBe(true);
-    expect(buildPayrollListQuery({ endDate: "2020-01-01" }, new Date("2026-07-24T00:00:00Z")).ok).toBe(true);
-  });
-
-  test("rejects an end-date more than 3 months in the future", () => {
-    const now = new Date("2026-07-24T00:00:00Z");
-    const result = buildPayrollListQuery({ endDate: "2026-11-01" }, now);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "end-date", reason: expect.stringContaining("3 months in the future") }),
-    );
-  });
-
-  test("accepts an end-date exactly 3 months in the future", () => {
-    const now = new Date("2026-07-24T00:00:00Z");
-    const result = buildPayrollListQuery({ endDate: "2026-10-24" }, now);
-    expect(result.ok).toBe(true);
-  });
-
-  test("accepts an end-date in the past regardless of the range check", () => {
-    const now = new Date("2026-07-24T00:00:00Z");
-    const result = buildPayrollListQuery({ endDate: "2020-01-01" }, now);
-    expect(result.ok).toBe(true);
-  });
-
-  test("reports both the >1yr-apart and >3mo-future violations together", () => {
-    const now = new Date("2026-07-24T00:00:00Z");
-    const result = buildPayrollListQuery({ startDate: "2024-01-01", endDate: "2026-11-01" }, now);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
-  });
-
-  test("clamps the 3-month boundary at month-end instead of overflowing (Nov 30 -> Feb 28)", () => {
-    const now = new Date("2026-11-30T00:00:00Z");
-    expect(buildPayrollListQuery({ endDate: "2027-03-01" }, now).ok).toBe(false);
-    expect(buildPayrollListQuery({ endDate: "2027-02-28" }, now).ok).toBe(true);
-  });
-
-  test("clamps the 3-month boundary at month-end in a leap year (Nov 30 -> Feb 29)", () => {
-    const now = new Date("2027-11-30T00:00:00Z");
-    expect(buildPayrollListQuery({ endDate: "2028-03-01" }, now).ok).toBe(false);
-    expect(buildPayrollListQuery({ endDate: "2028-02-29" }, now).ok).toBe(true);
-  });
-
-  test("clamps the 1-year boundary for a leap-day start-date (Feb 29 -> Feb 28)", () => {
-    const result = buildPayrollListQuery({ startDate: "2024-02-29", endDate: "2025-03-01" });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toContainEqual(
-      expect.objectContaining({ field: "start-date", reason: expect.stringContaining("1 year apart") }),
-    );
-    expect(buildPayrollListQuery({ startDate: "2024-02-29", endDate: "2025-02-28" }).ok).toBe(true);
-  });
-
-  test("skips the range checks entirely for malformed dates (format error already reported)", () => {
-    const result = buildPayrollListQuery({ startDate: "01-01-2026", endDate: "2026/03/01" });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.blocked).toHaveLength(2);
+    expect(buildPayrollListQuery({ endDate: "2099-01-01" }).ok).toBe(true);
   });
 
   test("accepts every valid enum value (incl. external payroll type and index-only includes)", () => {
