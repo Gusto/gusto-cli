@@ -5,8 +5,9 @@ import { errMsg, malformedResponse } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { fetchCompanyLocations } from "../lib/locations.ts";
 import { kvLines, table } from "../lib/human.ts";
-import { type CommandHandler, runReadCommand } from "../lib/runner.ts";
-import { TOKEN_STDIN_OPT, withContextOptions } from "../lib/cli-options.ts";
+import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
+import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT, withContextOptions } from "../lib/cli-options.ts";
+import { parsePaginationFlags, type PaginationFlags } from "../lib/pagination.ts";
 
 interface CompanyShowOpts {
   companyUuid?: string;
@@ -47,10 +48,13 @@ export function registerCompanyCommand(parent: Command): void {
 
   const forms = cmd.command("forms").description("List and inspect the company's forms");
 
-  withContextOptions(forms.command("list").description("List the company's forms")).action(
-    (opts: CompanyResourceReadOpts) =>
+  withContextOptions(forms.command("list").description("List the company's forms"))
+    .option(...CURSOR_OPT)
+    .option("--limit <n>", "Maximum forms to return across pages")
+    .option(...ALL_OPT)
+    .action((opts: CompanyFormsListOpts) =>
       runReadCommand("gusto company forms list", readGlobalFlags(parent.opts()), companyFormsListHandler(opts)),
-  );
+    );
 
   forms
     .command("show <form_uuid>")
@@ -94,28 +98,52 @@ interface FormReadOpts {
   tokenStdin?: boolean;
 }
 
-export function companyFormsListHandler(opts: CompanyResourceReadOpts): CommandHandler {
+type CompanyFormsListOpts = CompanyResourceReadOpts & PaginationFlags;
+
+interface FormRecord {
+  uuid: string;
+  title?: string;
+  type?: string;
+  year?: number | null;
+  quarter?: number | null;
+  requires_signing?: boolean;
+  document_content_type?: string;
+  employee_uuid?: string | null;
+  contractor_uuid?: string | null;
+}
+
+interface FormPdfUrl {
+  uuid?: string;
+  document_url: string | null;
+}
+
+export function companyFormsListHandler(opts: CompanyFormsListOpts): CommandHandler {
   return async ({ globals }) => {
-    const res = await fetchCompanyResource(
-      globals,
-      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
-      (ctx) => `/v1/companies/${ctx.companyUuid}/forms`,
-    );
-    if (res.ok && !Array.isArray(res.data)) {
-      return malformedResponse("/v1/companies/{company_uuid}/forms returned a non-array body");
-    }
-    return res;
+    const pg = parsePaginationFlags(opts);
+    if (!pg.ok) return validationFailure(pg.message, pg.blocked);
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const { items, next } = await ctx.client.paginate<FormRecord>(`/v1/companies/${ctx.companyUuid}/forms`, pg.body);
+      return { ok: true, data: items, next: pg.body.surfaceNext ? next : undefined };
+    });
   };
 }
 
 export function companyFormShowHandler(formUuid: string, opts: FormReadOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/forms/${encodeURIComponent(formUuid)}`);
+    fetchResource<FormRecord>(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/forms/${encodeURIComponent(formUuid)}`,
+    );
 }
 
 export function companyFormPdfHandler(formUuid: string, opts: FormReadOpts): CommandHandler {
   return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/forms/${encodeURIComponent(formUuid)}/pdf`);
+    fetchResource<FormPdfUrl>(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/forms/${encodeURIComponent(formUuid)}/pdf`,
+    );
 }
 
 export function companySignatoriesHandler(opts: CompanyResourceReadOpts): CommandHandler {

@@ -9,6 +9,7 @@ import {
   renderCompanyShow,
 } from "./company.ts";
 import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -98,13 +99,36 @@ describe("companyFormsListHandler", () => {
     expect(result.data).toEqual(body);
   });
 
-  test("a non-array 2xx body is rejected as malformed", async () => {
-    const stub = stubGlobalFetch(() => ({ status: 200, body: { not: "an array" } }));
+  test("--limit caps the number of forms returned across pages", async () => {
+    const body = [
+      { uuid: "form-1", title: "Form 8655" },
+      { uuid: "form-2", title: "Form 940" },
+    ];
+    const stub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = stub.restore;
+    const result = await companyFormsListHandler({ ...auth, limit: "1" })(ctx);
+    if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result.error)}`);
+    expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/forms");
+    expect(result.data).toEqual([{ uuid: "form-1", title: "Form 8655" }]);
+  });
+
+  test("rejects --cursor combined with --all before any request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = stub.restore;
+    const result = await companyFormsListHandler({ ...auth, cursor: "abc", all: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(stub.calls.length).toBe(0);
+  });
+
+  test("a 404 surfaces as a failed result with the api-client exit code", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
     restore = stub.restore;
     const result = await companyFormsListHandler({ ...auth })(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("malformed_response");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 });
 
@@ -124,6 +148,15 @@ describe("companyFormShowHandler", () => {
     expect(stub.calls[0]?.url).toContain("/v1/forms/..%2Fcompanies%2Fco-1%2Fsignatories");
     expect(stub.calls[0]?.url).not.toContain("/v1/companies/co-1/signatories");
   });
+
+  test("a 404 surfaces as a failed result with the api-client exit code", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
+    restore = stub.restore;
+    const result = await companyFormShowHandler("form-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
 });
 
 describe("companyFormPdfHandler", () => {
@@ -133,6 +166,15 @@ describe("companyFormPdfHandler", () => {
     const d = okData(await companyFormPdfHandler("form-1", {})(ctx));
     expect(stub.calls[0]?.url).toContain("/v1/forms/form-1/pdf");
     expect(d).toEqual({ document_url: "https://example.test/form.pdf" });
+  });
+
+  test("a 404 surfaces as a failed result with the api-client exit code", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
+    restore = stub.restore;
+    const result = await companyFormPdfHandler("form-1", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 });
 
@@ -155,6 +197,15 @@ describe("companySignatoriesHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("malformed_response");
   });
+
+  test("a 404 surfaces as a failed result with the api-client exit code", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
+    restore = stub.restore;
+    const result = await companySignatoriesHandler({ ...auth })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+  });
 });
 
 describe("companyFederalTaxesHandler", () => {
@@ -165,5 +216,14 @@ describe("companyFederalTaxesHandler", () => {
     const d = okData(await companyFederalTaxesHandler({ ...auth })(ctx));
     expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/federal_tax_details");
     expect(d).toEqual(body);
+  });
+
+  test("a 404 surfaces as a failed result with the api-client exit code", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
+    restore = stub.restore;
+    const result = await companyFederalTaxesHandler({ ...auth })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
   });
 });
