@@ -394,7 +394,7 @@ export async function putResourceWithVersion(
     const injected = await getAndInjectVersion(resolved.ctx.client, path, body);
     // A fallback: both address serializers always render `version`, but getAndInjectVersion's result
     // type makes the branch mandatory and a missing one has to fail loudly rather than PUT blind.
-    if (!injected.ok) return versionUnresolvedError(path, "supply one explicitly to skip the auto-fetch");
+    if (!injected.ok) return versionUnresolvedError(path, "pass --record-version to supply one yourself");
     versioned = injected.body;
   } catch (err) {
     return clarifyVersionReadFailure(toResult(err), path);

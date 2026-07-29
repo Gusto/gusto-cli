@@ -38,7 +38,9 @@ export async function getAndInjectVersion(
  * keyed on it can't be sent. `Blocked`, not `Validation`: the server omitted a field its own
  * concurrency contract requires, so it isn't the caller's flags to fix. Shared by both surfaces that
  * run the dance so the code and exit can't drift; `recovery` is the surface-specific way to supply a
- * version by hand. Belt-and-braces in practice - every versioned Gusto GET returns one. */
+ * version by hand. Unreachable from the address commands (their GETs always render `version`); the
+ * one path that does reach it is `api request --auto-version` against a payroll, whose token sits on
+ * `employee_compensations[]` instead. */
 export function versionUnresolvedError(path: string, recovery: string): CommandResult<never> {
   return {
     ok: false,
