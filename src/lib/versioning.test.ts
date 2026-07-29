@@ -118,6 +118,30 @@ describe("clarifyVersionConflict", () => {
     expect(clarifyVersionConflict(original)).toBe(original);
   });
 
+  // Regression: this runs inside a catch block, so a throw on a malformed body escapes as
+  // internal_error (exit 1) instead of the api_client_error envelope the catch is there to build.
+  test("leaves a hash-shaped errors body alone instead of throwing", () => {
+    const original = rejected({ errors: { version: ["is stale"] } });
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("skips a null entry in the errors array instead of throwing", () => {
+    const original = rejected({ errors: [null, { category: "invalid_operation" }] });
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("still matches when a null entry precedes the real conflict entry", () => {
+    const result = clarifyVersionConflict(rejected({ errors: [null, { category: "invalid_resource_version" }] }));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("version_conflict");
+  });
+
+  test("leaves a non-object details alone instead of throwing", () => {
+    const original = rejected("upstream returned HTML");
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
   test("leaves a rejection with no errors array alone", () => {
     const original = rejected({ message: "nope" });
     expect(clarifyVersionConflict(original)).toBe(original);

@@ -340,7 +340,8 @@ export async function writeResource(
  * current resource is GET'd and its version injected before the PUT. Honors the agent-mode
  * confirmation gate and --dry-run (which never sends, and notes the send-time version fetch when
  * the version will be auto-resolved). A version GET that errors and a PUT the API rejected stay
- * distinct rather than collapsing into one envelope; a 409 from the PUT becomes `version_conflict`.
+ * distinct rather than collapsing into one envelope; a PUT rejected with the `invalid_resource_version`
+ * category becomes `version_conflict`, and any other rejection maps normally.
  * For company-scoped writes use putCompanyResource instead. */
 export async function putResourceWithVersion(
   globals: GlobalFlags,

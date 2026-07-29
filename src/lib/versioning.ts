@@ -1,9 +1,11 @@
 /** Helpers for the optimistic-concurrency `version` dance used when PUT/PATCHing versioned
- * Gusto resources (`api request --auto-version`). Keeping them in one place stops the logic
- * (and its edge cases) from drifting between copies. */
+ * Gusto resources - by `api request --auto-version` and by `putResourceWithVersion` (the address
+ * update commands). Keeping them in one place stops the logic (and its edge cases) from drifting
+ * between those two surfaces. */
 
 import type { ApiClient } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
+import { isObject } from "./predicates.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 
@@ -19,7 +21,7 @@ export function withVersion(body: Record<string, unknown>, version: string | und
  * caller already supplied a valid one (theirs always wins, so the GET is skipped). Returns the
  * version-injected body, or `version_unresolved` when the GET response carried no top-level
  * `version`. The single source of truth for the GET-then-inject dance, run by `api request` when
- * `--auto-version` is passed. */
+ * `--auto-version` is passed and by `putResourceWithVersion` on every call. */
 export async function getAndInjectVersion(
   client: Pick<ApiClient, "get">,
   path: string,
@@ -57,8 +59,14 @@ export function clarifyVersionReadFailure(result: CommandResult, path: string): 
 export function clarifyVersionConflict(result: CommandResult): CommandResult {
   if (result.ok || result.exitCode !== ExitCode.ApiClient) return result;
 
-  const errors = (result.error.details as { errors?: { category?: string }[] } | undefined)?.errors;
-  if (!errors?.some((e) => e.category === "invalid_resource_version")) return result;
+  // `details` is the raw server body, so `errors` can be any shape - a hash on a non-standard error
+  // response, or an array with a null in it. Check the shape instead of asserting it: this runs inside
+  // a catch block, so a TypeError here would escape as `internal_error` and lose the envelope that
+  // catch exists to build. Widened past 409s (it gates on every ApiClient failure), so it has to hold
+  // for arbitrary bodies from `api request`.
+  const errors = isObject(result.error.details) ? result.error.details.errors : undefined;
+  if (!Array.isArray(errors)) return result;
+  if (!errors.some((e) => isObject(e) && e.category === "invalid_resource_version")) return result;
 
   return {
     ok: false,
