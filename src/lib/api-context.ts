@@ -11,7 +11,12 @@ import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
-import { clarifyVersionConflict, clarifyVersionReadFailure, getAndInjectVersion } from "./versioning.ts";
+import {
+  clarifyVersionConflict,
+  clarifyVersionReadFailure,
+  getAndInjectVersion,
+  versionUnresolvedError,
+} from "./versioning.ts";
 
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
@@ -387,20 +392,9 @@ export async function putResourceWithVersion(
   let versioned: Record<string, unknown>;
   try {
     const injected = await getAndInjectVersion(resolved.ctx.client, path, body);
-    // Unreachable on these endpoints (both address serializers always render `version`), but
-    // getAndInjectVersion's result type makes the branch mandatory. `Blocked`, not `Validation`: the
-    // server omitted a field its own concurrency contract requires, so it isn't the caller's flags
-    // to fix.
-    if (!injected.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Blocked,
-        error: {
-          code: "version_unresolved",
-          message: `no \`version\` field in the GET ${path} response; supply one explicitly to skip the auto-fetch`,
-        },
-      };
-    }
+    // A fallback: both address serializers always render `version`, but getAndInjectVersion's result
+    // type makes the branch mandatory and a missing one has to fail loudly rather than PUT blind.
+    if (!injected.ok) return versionUnresolvedError(path, "supply one explicitly to skip the auto-fetch");
     versioned = injected.body;
   } catch (err) {
     return clarifyVersionReadFailure(toResult(err), path);

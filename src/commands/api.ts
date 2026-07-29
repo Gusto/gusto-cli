@@ -8,7 +8,12 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
-import { clarifyVersionConflict, clarifyVersionReadFailure, getAndInjectVersion } from "../lib/versioning.ts";
+import {
+  clarifyVersionConflict,
+  clarifyVersionReadFailure,
+  getAndInjectVersion,
+  versionUnresolvedError,
+} from "../lib/versioning.ts";
 
 const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];
@@ -151,18 +156,7 @@ export function apiRequestHandler(
       if (autoVersionPending) {
         try {
           const resolved = await getAndInjectVersion(client, finalPath, (body ?? {}) as Record<string, unknown>);
-          // `Blocked`, not `Validation`: a 2xx GET that omits `version` is the server breaking its
-          // own concurrency contract, not a bad flag. Matches putResourceWithVersion.
-          if (!resolved.ok) {
-            return {
-              ok: false,
-              exitCode: ExitCode.Blocked,
-              error: {
-                code: "version_unresolved",
-                message: `no \`version\` field in the GET ${finalPath} response; pass it explicitly in --data`,
-              },
-            };
-          }
+          if (!resolved.ok) return versionUnresolvedError(finalPath, "pass it explicitly in --data");
           finalBody = resolved.body;
         } catch (err) {
           return clarifyVersionReadFailure(toResult(err), finalPath);

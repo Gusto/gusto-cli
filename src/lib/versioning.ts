@@ -34,6 +34,22 @@ export async function getAndInjectVersion(
   return { ok: true, body: withVersion(body, version) };
 }
 
+/** The fallback for a version GET that returned 2xx but carried no top-level `version`, so the write
+ * keyed on it can't be sent. `Blocked`, not `Validation`: the server omitted a field its own
+ * concurrency contract requires, so it isn't the caller's flags to fix. Shared by both surfaces that
+ * run the dance so the code and exit can't drift; `recovery` is the surface-specific way to supply a
+ * version by hand. Belt-and-braces in practice - every versioned Gusto GET returns one. */
+export function versionUnresolvedError(path: string, recovery: string): CommandResult<never> {
+  return {
+    ok: false,
+    exitCode: ExitCode.Blocked,
+    error: {
+      code: "version_unresolved",
+      message: `no \`version\` field in the GET ${path} response; ${recovery}`,
+    },
+  };
+}
+
 /** Prefix a failure from the version GET so it can't be misread as a failed write: the write was
  * never sent. The code and exit are left alone - a 403 `insufficient_scope` or a `network_error` on
  * the GET still needs its own classification. */

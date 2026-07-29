@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import type { ApiClient } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
-import { clarifyVersionConflict, clarifyVersionReadFailure, getAndInjectVersion, withVersion } from "./versioning.ts";
+import {
+  clarifyVersionConflict,
+  clarifyVersionReadFailure,
+  getAndInjectVersion,
+  versionUnresolvedError,
+  withVersion,
+} from "./versioning.ts";
 
 /** Minimal stub: a `get` that returns a fixed body and records the paths it was called with. */
 function stubClient(getBody: unknown): { client: Pick<ApiClient, "get">; paths: string[] } {
@@ -63,6 +69,20 @@ describe("getAndInjectVersion", () => {
     const { client } = stubClient({ no_version_here: true });
     const result = await getAndInjectVersion(client, "/v1/thing", { a: 1 });
     expect(result).toEqual({ ok: false, reason: "version_unresolved" });
+  });
+});
+
+describe("versionUnresolvedError", () => {
+  test("exits Blocked and carries the caller's recovery clause", () => {
+    // Blocked, not Validation: the server omitted `version`, so it isn't the caller's flags to fix.
+    expect(versionUnresolvedError("/v1/thing", "pass it explicitly in --data")).toEqual({
+      ok: false,
+      exitCode: ExitCode.Blocked,
+      error: {
+        code: "version_unresolved",
+        message: "no `version` field in the GET /v1/thing response; pass it explicitly in --data",
+      },
+    });
   });
 });
 
