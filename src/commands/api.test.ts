@@ -219,7 +219,8 @@ describe("api request --auto-version", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("version_unresolved");
-      expect(result.exitCode).toBe(ExitCode.Validation);
+      // Blocked, not Validation: the server omitted `version`, so it isn't --data's to fix.
+      expect(result.exitCode).toBe(ExitCode.Blocked);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
     } finally {
@@ -236,8 +237,26 @@ describe("api request --auto-version", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("api_client_error");
+      expect(result.error.message).toContain("nothing was written"); // the write never went out
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
+    } finally {
+      restore();
+    }
+  });
+
+  test("a lost version race on the write maps to version_conflict", async () => {
+    const { calls, restore } = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } }, // version GET
+      { status: 409, body: { errors: [{ category: "invalid_resource_version", message: "stale" }] } }, // PUT
+    ]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true, data: '{"x":1}' })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("version_conflict");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(calls).toHaveLength(2);
     } finally {
       restore();
     }

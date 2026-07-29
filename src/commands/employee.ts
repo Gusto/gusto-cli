@@ -235,6 +235,8 @@ Examples:
 Address UUIDs come from \`gusto employee addresses <employee_uuid>\`. This is a partial update:
 only the fields you pass are changed. The optimistic-concurrency \`version\` is read from the
 current record automatically; pass --record-version to supply it yourself and skip that read.
+If the record changes between that read and the write, nothing is saved and you get a
+\`version_conflict\` (exit 8) - re-run to pick up the current version.
 
 Examples:
   $ gusto employee update-home-address <address_uuid> --street-1 "123 Main St" --city Denver --state CO --zip 80202
@@ -265,6 +267,8 @@ Examples:
 A work address points at one of the company's locations; set it via --location-uuid (list them
 with \`gusto company locations\`). Address UUIDs come from \`gusto employee addresses <employee_uuid>\`.
 The \`version\` is read from the current record automatically; pass --record-version to skip that read.
+If the record changes between that read and the write, nothing is saved and you get a
+\`version_conflict\` (exit 8) - re-run to pick up the current version.
 
 Examples:
   $ gusto employee update-work-address <address_uuid> --location-uuid <company_location_uuid>

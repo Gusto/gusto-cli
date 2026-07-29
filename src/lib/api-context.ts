@@ -11,7 +11,12 @@ import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
-import { getAndInjectVersion } from "./versioning.ts";
+import {
+  clarifyVersionConflict,
+  clarifyVersionReadFailure,
+  getAndInjectVersion,
+  versionUnresolvedError,
+} from "./versioning.ts";
 
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
@@ -339,7 +344,10 @@ export async function writeResource(
  * already in `body` (supplied by the caller) is authoritative and skips the read, otherwise the
  * current resource is GET'd and its version injected before the PUT. Honors the agent-mode
  * confirmation gate and --dry-run (which never sends, and notes the send-time version fetch when
- * the version will be auto-resolved). For company-scoped writes use putCompanyResource instead. */
+ * the version will be auto-resolved). The three ways this can fail stay distinct: a version GET that
+ * errors (`clarifyVersionReadFailure` - nothing written), a 2xx GET with no version at all
+ * (`version_unresolved`), and a PUT the API rejected - which is `version_conflict` when the record
+ * changed under us, else the generic mapping. For company-scoped writes use putCompanyResource. */
 export async function putResourceWithVersion(
   globals: GlobalFlags,
   path: string,
@@ -379,24 +387,28 @@ export async function putResourceWithVersion(
   });
   if (!resolved.ok) return resolved.result;
 
+  // Each leg of the dance gets its own catch, so a failed version read, a lost version race, and a
+  // plain rejected write stay distinguishable instead of collapsing into one api_client_error.
+  let versioned: Record<string, unknown>;
   try {
     // GET-then-inject lives in versioning.ts (shared with `api request`); a failing version GET maps
-    // through toResult below rather than escaping as an unhandled error.
+    // through toResult rather than escaping as an unhandled error, then gets prefixed to say the PUT
+    // never went out.
     const injected = await getAndInjectVersion(resolved.ctx.client, path, body);
     if (!injected.ok) {
-      return {
-        ok: false,
-        exitCode: ExitCode.Validation,
-        error: {
-          code: "version_unresolved",
-          message: `no \`version\` field in the GET ${path} response; supply one explicitly to skip the auto-fetch`,
-        },
-      };
+      return versionUnresolvedError(path, "supply one explicitly to skip the auto-fetch");
     }
-    const response = await resolved.ctx.client.request("PUT", path, injected.body);
+    versioned = injected.body;
+  } catch (err) {
+    return clarifyVersionReadFailure(toResult(err), path);
+  }
+
+  try {
+    const response = await resolved.ctx.client.request("PUT", path, versioned);
     return { ok: true, data: response.body };
   } catch (err) {
-    return toResult(err);
+    // A 409 here is the version race, not a bad payload - clarifyVersionConflict splits the two.
+    return clarifyVersionConflict(toResult(err));
   }
 }
 

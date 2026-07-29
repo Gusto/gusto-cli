@@ -470,9 +470,61 @@ describe("putResourceWithVersion", () => {
       );
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
-      expect(result.exitCode).toBe(ExitCode.Validation);
+      // Blocked, not Validation: the server omitted `version`, so it isn't the caller's flags to fix.
+      expect(result.exitCode).toBe(ExitCode.Blocked);
       expect(result.error.code).toBe("version_unresolved");
       expect(fetchStub.calls).toHaveLength(1); // GET only
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  test("a failing version GET keeps its own classification, says nothing was written, and never PUTs", async () => {
+    // 404 on the GET: non-retryable, so no backoff sleeps. The envelope must stay api_client_error
+    // (a 403 insufficient_scope on this leg needs its own code too) with only the message scoped.
+    const fetchStub = stubGlobalFetch([{ status: 404, body: { errors: [{ message: "not found" }] } }]);
+    try {
+      const result = await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.ApiClient);
+      expect(result.error.code).toBe("api_client_error");
+      expect(result.error.message).toContain("reading the current version from GET /v1/things/thing-1 failed");
+      expect(result.error.message).toContain("nothing was written");
+      expect(fetchStub.calls).toHaveLength(1); // GET only - the PUT never went out
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  test("a lost version race on the PUT maps to version_conflict, not a generic client error", async () => {
+    const fetchStub = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } }, // GET succeeds
+      { status: 409, body: { errors: [{ category: "invalid_resource_version", message: "stale" }] } }, // PUT loses the race
+    ]);
+    try {
+      const result = await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("version_conflict");
+      expect(result.error.details).toEqual({ errors: [{ category: "invalid_resource_version", message: "stale" }] });
     } finally {
       fetchStub.restore();
     }
@@ -496,6 +548,31 @@ describe("putResourceWithVersion", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.exitCode).toBe(ExitCode.ApiClient);
+      expect(result.error.code).toBe("api_client_error"); // not version_conflict - the payload was bad
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  test("an unrelated 409 on the PUT is left as-is (the conflict match is category-scoped)", async () => {
+    const fetchStub = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } }, // GET succeeds
+      { status: 409, body: { errors: [{ category: "invalid_operation", message: "already exists" }] } },
+    ]);
+    try {
+      const result = await putResourceWithVersion(
+        flags,
+        "/v1/things/thing-1",
+        { name: "x" },
+        {
+          ...stdinAuth(),
+          confirm: true,
+        },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.ApiClient);
+      expect(result.error.code).toBe("api_client_error");
     } finally {
       fetchStub.restore();
     }
