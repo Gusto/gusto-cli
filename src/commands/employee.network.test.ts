@@ -645,17 +645,18 @@ describe("employeeUpdateHandler", () => {
     expect(s.calls.some((c) => c.url.includes("tax_requirements"))).toBe(false);
   });
 
-  test("a failed tax-requirements nudge fetch doesn't fail the already-successful write, but surfaces a visible warning", async () => {
-    const s = happyPathRoutes({ tax: { status: 404 } });
+  test("a failed tax-requirements nudge fetch fails the command as a partial failure, not a phantom success", async () => {
+    const s = happyPathRoutes({ tax: { status: 404, body: { errors: [{ message: "not found" }] } } });
     restore = s.restore;
     const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    const data = result.data as Record<string, unknown>;
-    expect(data.changed).toBe(true);
-    expect((data.compliance as Record<string, unknown>).fetched).toBe(false);
-    expect(typeof data.warning).toBe("string");
-    expect(data.warning).toContain("gusto api request GET /v1/companies/co-1/tax_requirements/MD");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("compliance_nudge_fetch_failed");
+    const details = result.error.details as Record<string, unknown>;
+    expect(details.completed).toEqual(["work_address"]);
+    expect((details.work_address as Record<string, unknown>).state).toBe("MD");
+    expect((details.failed as Record<string, unknown>).domain).toBe("tax_requirements");
   });
 
   test("encodes an employee uuid with URL-significant characters into a single path segment", async () => {

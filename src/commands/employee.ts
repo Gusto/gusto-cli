@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import type { ApiResponse } from "../lib/api-client.ts";
 import {
   fetchAtPath,
   fetchResource,
@@ -18,6 +19,7 @@ import {
 import { confirmationGate } from "../lib/confirm.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import { partialFailure } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
@@ -586,27 +588,24 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
 
         const response = await companyCtx.client.request<WorkAddressRecord>("PUT", path, body);
 
-        const nudgeRes = await fetchAtPath<TaxRequirementsStateResponse>(
-          companyCtx.client,
-          `/v1/companies/${companyCtx.companyUuid}/tax_requirements/${encodeURIComponent(workState)}`,
-        );
-        if (!nudgeRes.ok) {
-          return {
-            ok: true,
-            data: {
-              changed: true,
-              work_address: response.body,
-              compliance: { fetched: false, state: workState, error: nudgeRes.error },
-              // `warning` so a caller checking only top-level `ok` doesn't read a failed nudge as "no concerns".
-              warning:
-                `wrote the work-state change, but couldn't fetch ${workState}'s tax requirements to check for ` +
-                "outstanding items - retry with `gusto api request GET " +
-                `/v1/companies/${companyCtx.companyUuid}/tax_requirements/${workState}\``,
-            },
-          };
+        let nudgeResponse: ApiResponse<TaxRequirementsStateResponse>;
+        try {
+          nudgeResponse = await companyCtx.client.get<TaxRequirementsStateResponse>(
+            `/v1/companies/${companyCtx.companyUuid}/tax_requirements/${encodeURIComponent(workState)}`,
+          );
+        } catch (err) {
+          // A failed nudge fetch after a successful write is exactly what partialFailure models -
+          // ok: false (not a data-level flag `--fields` could drop) so the failure can't go unseen.
+          return partialFailure({
+            code: "compliance_nudge_fetch_failed",
+            message: `wrote the work-state change to ${workState}, but couldn't fetch its tax requirements`,
+            err,
+            completed: { work_address: response.body },
+            failedDomain: "tax_requirements",
+          });
         }
 
-        const compliance = buildComplianceNudge(workState, nudgeRes.data);
+        const compliance = buildComplianceNudge(workState, nudgeResponse.body);
         return { ok: true, data: { changed: true, work_address: response.body, compliance } };
       },
     );
