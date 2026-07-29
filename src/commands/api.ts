@@ -54,6 +54,10 @@ A literal {company_uuid} in the path is replaced with the bound company UUID
 (from --company-uuid, GUSTO_COMPANY_UUID, or a company-scoped login).
 
 --auto-version grabs the resource's latest version and injects it into PUT/PATCH update requests (a version you pass in --data always wins).
+It GETs the same path you are writing to and reads a top-level 'version' from the response, so it only works where the resource exposes one
+there. It does not fit endpoints that keep the token on a nested object - a payroll's lives at employee_compensations[].version, so
+'PUT /v1/companies/{company_uuid}/payrolls/{payroll_uuid} --auto-version' returns version_unresolved; pass the per-employee versions in --data
+instead (or use 'gusto payroll update'). Resources with no GET at the write path (e.g. bank accounts) surface the failed read instead.
 
 Examples:
   $ gusto api request GET /v1/me

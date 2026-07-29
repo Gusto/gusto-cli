@@ -907,7 +907,11 @@ Updates an unprocessed (draft) payroll from a CSV. Columns (case-insensitive):
 
 One row per employee-job: repeat employee_uuid across rows to split hours over multiple jobs (the
 rows merge into one compensation). Blank cells are left untouched; an explicit 0 overrides to zero.
-Each row's 'version' is the optimistic-lock token from the prepared payroll. overtime_hours/double_overtime_hours use the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a reviewable draft.
+Each row's 'version' is the optimistic-lock token from the prepared payroll. A payroll carries no
+single top-level version: the token lives per employee, at employee_compensations[].version in
+'gusto payroll show', so read each row's value from there. overtime_hours/double_overtime_hours use
+the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a
+reviewable draft.
 
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
