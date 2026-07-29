@@ -22,7 +22,7 @@ describe("toResult", () => {
 
   // `ApiError.message` is only the request line, so an API that explained itself needs its
   // explanation lifted into `error.message`. Body shapes below are the ones the API actually
-  // emits: SimpleErrorRenderer for parameter errors, RecordErrorRenderer for record errors.
+  // emits: a flat shape for parameter errors, a nested one for record-level errors.
   test("leads with the API's own message for a parameter error, keeping the request line", () => {
     const body = {
       errors: [{ error_key: "start_date", category: "invalid_parameter", message: "Date range too long, max 1 year" }],
