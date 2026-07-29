@@ -73,11 +73,11 @@ describe("getAndInjectVersion", () => {
 });
 
 describe("versionUnresolvedError", () => {
-  test("exits Blocked (not Validation) and names the caller's recovery", () => {
+  test("names the caller's recovery in the message", () => {
     const result = versionUnresolvedError("/v1/thing", "pass it explicitly in --data");
     expect(result).toEqual({
       ok: false,
-      exitCode: ExitCode.Blocked,
+      exitCode: ExitCode.Validation,
       error: {
         code: "version_unresolved",
         message: "no `version` field in the GET /v1/thing response; pass it explicitly in --data",

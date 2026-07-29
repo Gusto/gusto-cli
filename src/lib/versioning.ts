@@ -33,15 +33,21 @@ export async function getAndInjectVersion(
 }
 
 /** The failure for a version GET that succeeded (2xx) but carried no top-level `version`, so the
- * write keyed on it can't be sent. Not a caller-input problem - the server omitted a field its own
- * optimistic-concurrency contract requires - so it exits `Blocked` ("can't proceed as-is", the code
- * the confirmation gate also uses) rather than `Validation`, which an agent reads as "fix your
- * flags". `recovery` names the surface-specific way to supply a version by hand. Shared so
- * `putResourceWithVersion` and `api request --auto-version` can't drift on the code or exit. */
+ * write keyed on it can't be sent. `recovery` names the surface-specific way to supply a version by
+ * hand. Shared so `putResourceWithVersion` and `api request --auto-version` can't drift on the code,
+ * exit, or wording - the escape hatch has returned this since before the address commands existed.
+ *
+ * Unreachable for the address commands: zenpayroll's `home_addresses`/`work_addresses` show
+ * serializers always render `version` (via `HomeAddressFacade.version_for` -> `Versionable
+ * .version_hash`, an MD5 digest that is never nil), and a bad uuid is a 403/404 rather than a 2xx
+ * with the field missing. It stays because `getAndInjectVersion`'s result type forces the branch,
+ * and because the escape hatch can hit it for real - `GET /v1/companies/{uuid}/payrolls/{uuid}`
+ * renders no top-level `version` (the token lives on `employee_compensations[]`), so
+ * `api request PUT ... --auto-version` against a payroll lands here. */
 export function versionUnresolvedError(path: string, recovery: string): CommandResult<never> {
   return {
     ok: false,
-    exitCode: ExitCode.Blocked,
+    exitCode: ExitCode.Validation,
     error: {
       code: "version_unresolved",
       message: `no \`version\` field in the GET ${path} response; ${recovery}`,

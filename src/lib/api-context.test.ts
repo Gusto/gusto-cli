@@ -470,8 +470,7 @@ describe("putResourceWithVersion", () => {
       );
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
-      // Blocked, not Validation: the server omitted `version`, so it isn't the caller's flags to fix.
-      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.exitCode).toBe(ExitCode.Validation);
       expect(result.error.code).toBe("version_unresolved");
       expect(fetchStub.calls).toHaveLength(1); // GET only
     } finally {

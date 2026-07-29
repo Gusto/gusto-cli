@@ -346,8 +346,9 @@ export async function writeResource(
  * confirmation gate and --dry-run (which never sends, and notes the send-time version fetch when
  * the version will be auto-resolved). The three ways this can fail stay distinct: a version GET that
  * errors (`clarifyVersionReadFailure` - nothing written), a 2xx GET with no version at all
- * (`version_unresolved`), and a PUT the API rejected - which is `version_conflict` when the record
- * changed under us, else the generic mapping. For company-scoped writes use putCompanyResource. */
+ * (`version_unresolved` - unreachable for the address endpoints, see the helper), and a PUT the API
+ * rejected - which is `version_conflict` when the record changed under us, else the generic mapping.
+ * For company-scoped writes use putCompanyResource. */
 export async function putResourceWithVersion(
   globals: GlobalFlags,
   path: string,
