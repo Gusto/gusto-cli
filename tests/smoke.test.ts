@@ -738,7 +738,7 @@ describe("token-stdin authentication", () => {
 });
 
 describe("the pulled employee/contractor write surface is gone", () => {
-  // AINT-713 dropped these from the production surface; commander should reject them
+  // These were dropped from the production surface; commander should reject them
   // outright (exit 2) rather than reach a handler.
   for (const args of [
     ["employee", "add", "personal-details"],
