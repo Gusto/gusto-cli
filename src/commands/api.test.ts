@@ -261,6 +261,25 @@ describe("api request --auto-version", () => {
     }
   });
 
+  test("a write with no version at all still maps to version_conflict, without claiming one was read", async () => {
+    // No --auto-version and no `version` in --data: a versioned endpoint compares against nil and
+    // rejects, so the same 409 arrives having never done a version GET. The message must fit that.
+    const { calls, restore } = stubGlobalFetch([
+      { status: 409, body: { errors: [{ category: "invalid_resource_version", message: "missing" }] } },
+    ]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { confirm: true, data: '{"city":"Denver"}' })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("version_conflict");
+      expect(result.error.message).toContain("or none was sent");
+      expect(calls).toHaveLength(1); // the PUT only - no version GET happened
+      expect(calls[0]?.method).toBe("PUT");
+    } finally {
+      restore();
+    }
+  });
+
   test("--auto-version with a non-object body is rejected (can't inject version)", async () => {
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: {} }]);
     try {

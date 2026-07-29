@@ -47,10 +47,13 @@ export function clarifyVersionReadFailure(result: CommandResult, path: string): 
   };
 }
 
-/** Re-code the API's optimistic-concurrency rejection of a versioned write. A 409 tagged
- * `invalid_resource_version` means the record changed between the version GET and the write, so it
- * earns its own code instead of collapsing into the `api_client_error` a bad payload also produces:
- * the fix is to re-read and retry. Category-scoped, so an unrelated 409 surfaces as-is. */
+/** Re-code the API's optimistic-concurrency rejection of a versioned write, so it doesn't collapse
+ * into the `api_client_error` a bad payload also produces: the fix is to re-read the record, not to
+ * change the request. Category-scoped, so an unrelated 409 surfaces as-is.
+ *
+ * The message covers both ways to earn one, because this also wraps plain `api request` writes: the
+ * `version` sent was stale (the record moved under an auto-fetched version), or none was sent at all
+ * (a versioned endpoint compares against nil and rejects - omitting the field is never a bypass). */
 export function clarifyVersionConflict(result: CommandResult): CommandResult {
   if (result.ok || result.exitCode !== ExitCode.ApiClient) return result;
 
@@ -63,9 +66,9 @@ export function clarifyVersionConflict(result: CommandResult): CommandResult {
     error: {
       code: "version_conflict",
       message:
-        "the record changed between reading its version and sending this update, so the write was " +
-        "rejected and nothing was saved. Re-run to pick up the current version, or pass the new " +
-        "version explicitly.",
+        "the `version` sent with this update did not match the record's current version, or none was " +
+        "sent, so the write was rejected and nothing was saved. GET the record for its current " +
+        "`version` and retry with that value.",
       ...(result.error.details !== undefined ? { details: result.error.details } : {}),
       ...(result.error.request_id ? { request_id: result.error.request_id } : {}),
     },

@@ -105,7 +105,10 @@ describe("clarifyVersionConflict", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Blocked);
     expect(result.error.code).toBe("version_conflict");
-    expect(result.error.message).toContain("Re-run to pick up the current version");
+    // Covers both causes: `api request` also reaches this with no version sent at all, so the wording
+    // must not claim a version was read.
+    expect(result.error.message).toContain("or none was sent");
+    expect(result.error.message).toContain("GET the record for its current");
     expect(result.error.details).toEqual(details); // the raw body survives for debugging
     expect(result.error.request_id).toBe("req-1");
   });
