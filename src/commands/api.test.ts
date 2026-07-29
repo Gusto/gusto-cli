@@ -219,7 +219,8 @@ describe("api request --auto-version", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("version_unresolved");
-      expect(result.exitCode).toBe(ExitCode.Validation);
+      // Blocked, not Validation: the server omitted `version`, so it isn't --data's to fix.
+      expect(result.exitCode).toBe(ExitCode.Blocked);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
     } finally {

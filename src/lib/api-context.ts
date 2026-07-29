@@ -387,11 +387,13 @@ export async function putResourceWithVersion(
   try {
     const injected = await getAndInjectVersion(resolved.ctx.client, path, body);
     // Unreachable on these endpoints (both address serializers always render `version`), but
-    // getAndInjectVersion's result type makes the branch mandatory.
+    // getAndInjectVersion's result type makes the branch mandatory. `Blocked`, not `Validation`: the
+    // server omitted a field its own concurrency contract requires, so it isn't the caller's flags
+    // to fix.
     if (!injected.ok) {
       return {
         ok: false,
-        exitCode: ExitCode.Validation,
+        exitCode: ExitCode.Blocked,
         error: {
           code: "version_unresolved",
           message: `no \`version\` field in the GET ${path} response; supply one explicitly to skip the auto-fetch`,

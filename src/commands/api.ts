@@ -151,10 +151,12 @@ export function apiRequestHandler(
       if (autoVersionPending) {
         try {
           const resolved = await getAndInjectVersion(client, finalPath, (body ?? {}) as Record<string, unknown>);
+          // `Blocked`, not `Validation`: a 2xx GET that omits `version` is the server breaking its
+          // own concurrency contract, not a bad flag. Matches putResourceWithVersion.
           if (!resolved.ok) {
             return {
               ok: false,
-              exitCode: ExitCode.Validation,
+              exitCode: ExitCode.Blocked,
               error: {
                 code: "version_unresolved",
                 message: `no \`version\` field in the GET ${finalPath} response; pass it explicitly in --data`,
