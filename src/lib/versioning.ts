@@ -32,40 +32,9 @@ export async function getAndInjectVersion(
   return { ok: true, body: withVersion(body, version) };
 }
 
-/** The failure for a version GET that succeeded (2xx) but carried no top-level `version`, so the
- * write keyed on it can't be sent. `recovery` names the surface-specific way to supply a version by
- * hand. Shared so `putResourceWithVersion` and `api request --auto-version` can't drift on the code,
- * exit, or wording - the escape hatch has returned this since before the address commands existed.
- *
- * No dedicated command can reach this. Both address endpoints always render `version` (via
- * `{Home,Work}AddressFacade.version_for` -> `Versionable.version_hash`, an MD5 digest that is never
- * nil), and a bad uuid is a 403/404 rather than a 2xx with the field missing. `payroll update` never
- * auto-fetches - its per-employee tokens come from the CSV.
- *
- * It stays live for `api request --auto-version`, where the caller picks the path, and it can't be
- * deleted regardless: `getAndInjectVersion`'s result type forces the branch. Audited against
- * zenpayroll, these write paths have a 2xx GET at the same URL with no top-level `version`:
- * `/v1/companies/{uuid}/payrolls/{uuid}` (versioned, but the token is on
- * `employee_compensations[]`), `/v1/companies/{uuid}/payment_configs`,
- * `/v1/companies/{uuid}/industry_selection`, `/v1/employees/{uuid}/state_taxes`,
- * `/v1/employees/{uuid}/i9_authorization`, and `/v1/webhook_subscriptions/{uuid}` - the last five
- * being unversioned resources where the flag doesn't apply. Write paths with no GET at all (e.g.
- * `bank_accounts`, routed without `:show`) 404 on the read and surface that instead. */
-export function versionUnresolvedError(path: string, recovery: string): CommandResult<never> {
-  return {
-    ok: false,
-    exitCode: ExitCode.Validation,
-    error: {
-      code: "version_unresolved",
-      message: `no \`version\` field in the GET ${path} response; ${recovery}`,
-    },
-  };
-}
-
 /** Prefix a failure from the version GET so it can't be misread as a failed write: the write was
- * never sent, and the caller's state is untouched. The code and exit are left alone on purpose - a
- * 403 `insufficient_scope` or a `network_error` on the GET still needs its own classification, and
- * only the message says which leg of the dance failed. */
+ * never sent. The code and exit are left alone - a 403 `insufficient_scope` or a `network_error` on
+ * the GET still needs its own classification. */
 export function clarifyVersionReadFailure(result: CommandResult, path: string): CommandResult {
   if (result.ok) return result;
   return {
@@ -79,11 +48,9 @@ export function clarifyVersionReadFailure(result: CommandResult, path: string): 
 }
 
 /** Re-code the API's optimistic-concurrency rejection of a versioned write. A 409 tagged
- * `invalid_resource_version` means the resource changed between the version GET and the write - the
- * exact race the version dance exists to catch - so it earns its own code and a `Blocked` exit
- * instead of collapsing into the `api_client_error` a bad payload would also produce: the fix is to
- * re-read and retry, not to change the request. Detection is narrow (the category the API tags these
- * with) so an unrelated 409 still surfaces as-is. */
+ * `invalid_resource_version` means the record changed between the version GET and the write, so it
+ * earns its own code instead of collapsing into the `api_client_error` a bad payload also produces:
+ * the fix is to re-read and retry. Category-scoped, so an unrelated 409 surfaces as-is. */
 export function clarifyVersionConflict(result: CommandResult): CommandResult {
   if (result.ok || result.exitCode !== ExitCode.ApiClient) return result;
 

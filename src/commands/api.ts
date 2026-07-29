@@ -8,12 +8,7 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
-import {
-  clarifyVersionConflict,
-  clarifyVersionReadFailure,
-  getAndInjectVersion,
-  versionUnresolvedError,
-} from "../lib/versioning.ts";
+import { clarifyVersionConflict, clarifyVersionReadFailure, getAndInjectVersion } from "../lib/versioning.ts";
 
 const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];
@@ -54,10 +49,8 @@ A literal {company_uuid} in the path is replaced with the bound company UUID
 (from --company-uuid, GUSTO_COMPANY_UUID, or a company-scoped login).
 
 --auto-version grabs the resource's latest version and injects it into PUT/PATCH update requests (a version you pass in --data always wins).
-It GETs the same path you are writing to and reads a top-level 'version' from the response, so it only works where the resource exposes one
-there. It does not fit endpoints that keep the token on a nested object - a payroll's lives at employee_compensations[].version, so
-'PUT /v1/companies/{company_uuid}/payrolls/{payroll_uuid} --auto-version' returns version_unresolved; pass the per-employee versions in --data
-instead (or use 'gusto payroll update'). Resources with no GET at the write path (e.g. bank accounts) surface the failed read instead.
+It reads a top-level 'version' from a GET of the same path, so it does not fit a payroll, whose tokens are per employee at
+employee_compensations[].version - pass those in --data instead, or use 'gusto payroll update'.
 
 Examples:
   $ gusto api request GET /v1/me
@@ -150,16 +143,24 @@ export function apiRequestHandler(
     });
 
     // Send (real request): substitute is already done; auto-version GETs finalPath for its version.
-    // Each leg has its own catch so a failing version GET maps through toResult (a clean
-    // api_client_error envelope, prefixed to say nothing was written) rather than escaping as an
-    // unhandled internal_error, and a lost version race on the write stays distinguishable from a
-    // rejected payload. Same helpers as putResourceWithVersion, so the two can't drift.
+    // Each leg has its own catch so a failing version GET still maps through toResult rather than
+    // escaping as an unhandled internal_error, and a lost version race on the write stays
+    // distinguishable from a rejected payload. Same helpers as putResourceWithVersion.
     const send = async (client: ApiClient, finalPath: string): Promise<CommandResult> => {
       let finalBody = body;
       if (autoVersionPending) {
         try {
           const resolved = await getAndInjectVersion(client, finalPath, (body ?? {}) as Record<string, unknown>);
-          if (!resolved.ok) return versionUnresolvedError(finalPath, "pass it explicitly in --data");
+          if (!resolved.ok) {
+            return {
+              ok: false,
+              exitCode: ExitCode.Validation,
+              error: {
+                code: "version_unresolved",
+                message: `no \`version\` field in the GET ${finalPath} response; pass it explicitly in --data`,
+              },
+            };
+          }
           finalBody = resolved.body;
         } catch (err) {
           return clarifyVersionReadFailure(toResult(err), finalPath);

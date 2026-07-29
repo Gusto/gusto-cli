@@ -11,12 +11,7 @@ import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
-import {
-  clarifyVersionConflict,
-  clarifyVersionReadFailure,
-  getAndInjectVersion,
-  versionUnresolvedError,
-} from "./versioning.ts";
+import { clarifyVersionConflict, clarifyVersionReadFailure, getAndInjectVersion } from "./versioning.ts";
 
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
@@ -344,11 +339,9 @@ export async function writeResource(
  * already in `body` (supplied by the caller) is authoritative and skips the read, otherwise the
  * current resource is GET'd and its version injected before the PUT. Honors the agent-mode
  * confirmation gate and --dry-run (which never sends, and notes the send-time version fetch when
- * the version will be auto-resolved). The three ways this can fail stay distinct: a version GET that
- * errors (`clarifyVersionReadFailure` - nothing written), a 2xx GET with no version at all
- * (`version_unresolved` - unreachable for the address endpoints, see the helper), and a PUT the API
- * rejected - which is `version_conflict` when the record changed under us, else the generic mapping.
- * For company-scoped writes use putCompanyResource. */
+ * the version will be auto-resolved). A version GET that errors and a PUT the API rejected stay
+ * distinct rather than collapsing into one envelope; a 409 from the PUT becomes `version_conflict`.
+ * For company-scoped writes use putCompanyResource instead. */
 export async function putResourceWithVersion(
   globals: GlobalFlags,
   path: string,
@@ -392,12 +385,18 @@ export async function putResourceWithVersion(
   // plain rejected write stay distinguishable instead of collapsing into one api_client_error.
   let versioned: Record<string, unknown>;
   try {
-    // GET-then-inject lives in versioning.ts (shared with `api request`); a failing version GET maps
-    // through toResult rather than escaping as an unhandled error, then gets prefixed to say the PUT
-    // never went out.
     const injected = await getAndInjectVersion(resolved.ctx.client, path, body);
+    // Unreachable on these endpoints (both address serializers always render `version`), but
+    // getAndInjectVersion's result type makes the branch mandatory.
     if (!injected.ok) {
-      return versionUnresolvedError(path, "supply one explicitly to skip the auto-fetch");
+      return {
+        ok: false,
+        exitCode: ExitCode.Validation,
+        error: {
+          code: "version_unresolved",
+          message: `no \`version\` field in the GET ${path} response; supply one explicitly to skip the auto-fetch`,
+        },
+      };
     }
     versioned = injected.body;
   } catch (err) {
