@@ -47,29 +47,39 @@ function failure(failed: { result: CommandResult<never> }) {
   return failed.result;
 }
 
-describe("platformAsset", () => {
-  // The names install.sh asks for and release.yml publishes. If this list and install.sh's
-  // `asset="gusto-$os-$arch"` ever diverge, `gusto upgrade` starts 404ing on hosts the installer
-  // still serves - so both sides are pinned to the same three strings.
-  const TARGETS = ["gusto-darwin-arm64", "gusto-darwin-x64", "gusto-linux-x64"];
+const repoFile = (name: string): Promise<string> => Bun.file(path.resolve(import.meta.dir, "..", "..", name)).text();
 
-  test("produces exactly the three published asset names", () => {
-    const produced = (
-      [
-        ["darwin", "arm64"],
-        ["darwin", "x64"],
-        ["linux", "x64"],
-      ] as const
-    ).map(([platform, arch]) => {
-      const result = platformAsset(platform, arch);
-      expect(result.ok).toBe(true);
-      return result.ok ? result.asset : "";
-    });
-    expect(produced).toEqual(TARGETS);
+describe("platformAsset", () => {
+  const EVERY_COMBO = [
+    ["darwin", "arm64"],
+    ["darwin", "x64"],
+    ["linux", "arm64"],
+    ["linux", "x64"],
+  ] as const;
+
+  /** Every asset name platformAsset will ask for, across all four platform/arch combinations. */
+  function acceptedAssets(): string[] {
+    return EVERY_COMBO.map(([platform, arch]) => platformAsset(platform, arch)).flatMap((r) => (r.ok ? [r.asset] : []));
+  }
+
+  // The invariant that matters: upgrade asks for exactly the assets the release actually publishes.
+  // Pinned against release.yml rather than a literal list here, so adding a platform (linux-arm64,
+  // once there's a build for it) fails this test until platformAsset follows - otherwise upgrade
+  // keeps rejecting a host the installer has started serving.
+  test("accepts exactly the platforms release.yml publishes", async () => {
+    const workflow = await repoFile(".github/workflows/release.yml");
+    const line = /^\s*assets="(.+)"\s*$/m.exec(workflow);
+    expect(line).not.toBeNull();
+    const published = line![1]
+      .split(/\s+/)
+      .map((p) => path.basename(p))
+      .filter((name) => name !== "SHA256SUMS");
+
+    expect(acceptedAssets().sort()).toEqual(published.sort());
   });
 
   test("still matches the asset name install.sh builds", async () => {
-    const script = await Bun.file(path.resolve(import.meta.dir, "..", "..", "install.sh")).text();
+    const script = await repoFile("install.sh");
     expect(script).toContain('asset="gusto-$os-$arch"');
     // The tokens install.sh maps uname output to, which are also what process.platform/arch yield.
     for (const token of ["darwin", "linux", 'arch="arm64"', 'arch="x64"']) {
