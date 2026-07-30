@@ -20,7 +20,9 @@ function scopeFromBody(body: unknown): string | undefined {
   if (!Array.isArray(body.errors)) return undefined;
   const [firstError] = body.errors;
   if (!isObject(firstError) || !isObject(firstError.metadata)) return undefined;
-  return typeof firstError.metadata.missing_scope_name === "string" ? firstError.metadata.missing_scope_name : undefined;
+  return typeof firstError.metadata.missing_scope_name === "string"
+    ? firstError.metadata.missing_scope_name
+    : undefined;
 }
 
 /** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
