@@ -96,7 +96,7 @@ bun run build:all        # macOS arm64 + macOS x86_64 + Linux x86_64
 ## Commit style
 
 - Single-line summary, 20-80 chars, imperative mood
-- Reference the related issue when there is one
+- Reference the related GitHub issue when there is one; an internal ticket key belongs in the PR description, not the commit subject
 - Body explains why if non-obvious; otherwise leave it terse
 - Sign off every commit (see [Developer Certificate of Origin](#developer-certificate-of-origin))
 
