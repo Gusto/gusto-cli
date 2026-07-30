@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { OAuthError, expiresAtFrom, postForm, toTokenSet } from "./endpoints.ts";
+import { USER_AGENT } from "../version.ts";
+import { OAUTH_PATHS, OAuthError, expiresAtFrom, postForm, postJson, toTokenSet } from "./endpoints.ts";
 
 describe("expiresAtFrom", () => {
   test("adds expires_in seconds to now", () => {
@@ -69,5 +70,44 @@ describe("OAuthError on non-2xx responses", () => {
 
     expect(err).toBeInstanceOf(OAuthError);
     expect((err as OAuthError).requestId).toBeUndefined();
+  });
+});
+
+describe("User-Agent on OAuth requests", () => {
+  function capturingFetch(captured: { init?: RequestInit }): typeof fetch {
+    return ((_url: string | URL | Request, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(
+        new Response(JSON.stringify({ access_token: "at" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+  }
+
+  // These endpoints don't go through ApiClient (they're not bearer-authenticated), so without
+  // this the login/refresh leg would be the one blind spot in version-adoption data.
+  test("postForm sends the versioned User-Agent", async () => {
+    const captured: { init?: RequestInit } = {};
+    await postForm({ baseUrl: "https://api.test", fetchImpl: capturingFetch(captured) }, OAUTH_PATHS.token, {
+      grant_type: "refresh_token",
+    });
+
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["User-Agent"]).toBe(USER_AGENT);
+    // Merging the UA in must not drop the headers the caller set.
+    expect(headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+  });
+
+  test("postJson sends the versioned User-Agent", async () => {
+    const captured: { init?: RequestInit } = {};
+    await postJson({ baseUrl: "https://api.test", fetchImpl: capturingFetch(captured) }, OAUTH_PATHS.register, {
+      client_name: "gusto-cli",
+    });
+
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["User-Agent"]).toBe(USER_AGENT);
+    expect(headers["Content-Type"]).toBe("application/json");
   });
 });
