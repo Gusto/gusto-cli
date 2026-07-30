@@ -35,14 +35,11 @@ export function confirmationGate(
   return agentWriteGate(globals, `${method} ${target}`, opts, stdoutIsTty);
 }
 
-/** The gate itself, over a free-form description of the write rather than an HTTP verb and path.
+/** The gate over a free-form description, for writes with no method or endpoint to name -
+ * `gusto upgrade` replaces the binary the agent is executing and wants the same treatment.
  *
- * Not every write this CLI performs is an API call - `gusto upgrade` replaces the binary the agent
- * is currently executing, which wants the same human-in-the-loop treatment and the same
- * `confirmation_required` contract, but has no method or endpoint to name. `confirmationGate` is
- * the HTTP-shaped caller; this is the shared decision. `description` is dropped into the message as
- * the subject of "is a write running in agent mode", so phrase it as a noun (`POST /v1/...`,
- * `replacing the gusto binary at ...`). */
+ * `description` becomes the subject of "is a write running in agent mode", so phrase it as a noun
+ * (`POST /v1/...`, `replacing the gusto binary at ...`). */
 export function agentWriteGate(
   globals: GlobalFlags,
   description: string,
