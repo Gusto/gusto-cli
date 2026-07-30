@@ -31,9 +31,26 @@ export function confirmationGate(
   opts: ConfirmOpts,
   stdoutIsTty = process.stdout.isTTY === true,
 ): CommandResult<never> | null {
+  if (!WRITE_METHODS.has(method.toUpperCase())) return null;
+  return agentWriteGate(globals, `${method} ${target}`, opts, stdoutIsTty);
+}
+
+/** The gate itself, over a free-form description of the write rather than an HTTP verb and path.
+ *
+ * Not every write this CLI performs is an API call - `gusto upgrade` replaces the binary the agent
+ * is currently executing, which wants the same human-in-the-loop treatment and the same
+ * `confirmation_required` contract, but has no method or endpoint to name. `confirmationGate` is
+ * the HTTP-shaped caller; this is the shared decision. `description` is dropped into the message as
+ * the subject of "is a write running in agent mode", so phrase it as a noun (`POST /v1/...`,
+ * `replacing the gusto binary at ...`). */
+export function agentWriteGate(
+  globals: GlobalFlags,
+  description: string,
+  opts: ConfirmOpts,
+  stdoutIsTty = process.stdout.isTTY === true,
+): CommandResult<never> | null {
   if (opts.dryRun) return null;
   if (opts.confirm) return null;
-  if (!WRITE_METHODS.has(method.toUpperCase())) return null;
   if (resolveOutputMode(globals, stdoutIsTty) !== "agent") return null;
 
   return {
@@ -42,8 +59,8 @@ export function confirmationGate(
     error: {
       code: "confirmation_required",
       message:
-        `${method} ${target} is a write running in agent mode. Surface it to the operator and ` +
-        `re-run with --confirm once they approve. Preview the request first with --dry-run.`,
+        `${description} is a write running in agent mode. Surface it to the operator and ` +
+        `re-run with --confirm once they approve. Preview it first with --dry-run.`,
       details: { retry_with: ["--confirm"], preview_with: ["--dry-run"] },
     },
   };

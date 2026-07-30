@@ -57,6 +57,7 @@ describe("compiled binary", () => {
       "auth",
       "skill",
       "config",
+      "upgrade",
       "api",
     ]) {
       expect(result.stdout).toContain(cmd);
@@ -559,6 +560,56 @@ describe("skill commands work without auth", () => {
     } finally {
       rmSync(scratchRaw, { recursive: true, force: true });
     }
+  });
+});
+
+// Every case here pins GUSTO_CLI_VERSION so the release lookup never leaves the machine, and
+// GUSTO_INSTALL_DIR so the compiled binary under test is never the thing being replaced.
+describe("upgrade works without auth and without touching the network", () => {
+  let installDir: string;
+
+  beforeEach(() => {
+    installDir = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-upgrade-"));
+  });
+
+  afterEach(() => {
+    rmSync(installDir, { recursive: true, force: true });
+  });
+
+  test("already up to date is a success, not an error", async () => {
+    const result = await run(["upgrade"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: `v${pkg.version}`,
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.status).toBe("up_to_date");
+    expect(envelope.data.from).toBe(pkg.version);
+  });
+
+  test("a real upgrade in agent mode is blocked until --confirm (exit 8)", async () => {
+    const result = await run(["upgrade"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: "v9.9.9",
+    });
+    expect(result.exitCode).toBe(8);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("confirmation_required");
+    expect(existsSync(path.join(installDir, "gusto"))).toBe(false);
+  });
+
+  test("--dry-run reports an available upgrade without --confirm", async () => {
+    const result = await run(["upgrade", "--dry-run"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: "v9.9.9",
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data).toMatchObject({ status: "available", from: pkg.version, to: "9.9.9" });
+    expect(existsSync(path.join(installDir, "gusto"))).toBe(false);
   });
 });
 

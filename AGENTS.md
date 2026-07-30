@@ -15,6 +15,17 @@ curl -fsSL https://cli.gusto.com/install.sh | sh
 
 Pulls the notarized binary for the user's OS/arch from the latest GitHub Release, verifies SHA256, installs to `~/.gusto/bin/gusto`, and updates `PATH`. If the current shell doesn't see `gusto` yet, source the rc file or `export PATH="$HOME/.gusto/bin:$PATH"`. Then `gusto --help` to verify.
 
+## Upgrade
+
+```sh
+gusto upgrade --dry-run   # is a newer release available?
+gusto upgrade --confirm   # replace the binary (agent mode needs --confirm)
+```
+
+Downloads the matching release asset, verifies it against that release's `SHA256SUMS`, checks the new binary runs, then atomically replaces the installed one. Already being up to date is a success (exit `0`, `status: "up_to_date"`), not an error. A checksum mismatch or a binary that won't run leaves the current install untouched.
+
+If a command's behavior doesn't match this file or `--help`, check `gusto --version` against `gusto upgrade --dry-run` before digging further - a stale binary explains a lot. An install managed by a package manager (Homebrew, Nix) is refused with `managed_install`; use the package manager for those. A read-only install dir returns `install_dir_not_writable` without downloading anything.
+
 ## Windows
 
 The `gusto` binary ships for macOS and Linux only. On Windows, run it inside WSL2 - the linux-x64 binary works there unchanged. Do all gusto work (and ideally this whole agent session) from the WSL2 shell, not PowerShell or CMD.
@@ -30,7 +41,7 @@ During `auth login` (see below), WSL2 usually can't open a browser, so the CLI p
 - **`--agent` / `--json`** emits a stable JSON envelope: `{ "ok": true, "data": {...} }` or `{ "ok": false, "error": {...} }`. Auto-on when stdout is piped.
 - **Pagination:** `list` commands return one page by default plus an opaque top-level `next` cursor when more results exist. Pass it back via `--cursor <next>`, or use `--all` to fetch every page and `--limit <n>` to cap the total. `next` is absent on the last page.
 - **`--dry-run`** on any create command prints the request body without sending.
-- **Writes need `--confirm` in agent mode.** A write run by an agent (piped stdout, `--agent`, or `--json`) is blocked with a `confirmation_required` envelope (exit code `8`) instead of executing - this covers `timesheet create`/`sync`, `payroll prepare`/`calculate`/`update`, `pay-schedule create`, `employee terminate`/`cancel-termination`, and any non-GET `gusto api` call. Surface the action to the person you're working for, get their approval, then re-run the same command with `--confirm`. `--dry-run` previews the request without needing `--confirm`. Don't reflexively add `--confirm` to get past the block - the point is that a human approved this specific write. Interactive (TTY) runs aren't gated; the operator at the keyboard is the approval.
+- **Writes need `--confirm` in agent mode.** A write run by an agent (piped stdout, `--agent`, or `--json`) is blocked with a `confirmation_required` envelope (exit code `8`) instead of executing - this covers `timesheet create`/`sync`, `payroll prepare`/`calculate`/`update`, `pay-schedule create`, `employee terminate`/`cancel-termination`, `upgrade` (it replaces the binary you're running), and any non-GET `gusto api` call. Surface the action to the person you're working for, get their approval, then re-run the same command with `--confirm`. `--dry-run` previews the request without needing `--confirm`. Don't reflexively add `--confirm` to get past the block - the point is that a human approved this specific write. Interactive (TTY) runs aren't gated; the operator at the keyboard is the approval.
 - **No payroll-run command.** The CLI only drafts payroll (`payroll prepare`/`update` populate an unprocessed draft). Submitting/running payroll - the irreversible money movement - happens in the Gusto app, not the CLI. There is no `gusto payroll run`/`submit`, so an agent cannot move money through this tool even with `--confirm`.
 - **Missing required args** return a `blocked_on` envelope (exit code `7`) listing the fields to retry with. Exit codes live in `src/lib/exit-codes.ts`.
 - **Auth precedence:** `--token-stdin` > `GUSTO_ACCESS_TOKEN` > stored session (`gusto auth login`). An explicit token always wins so a bad secret surfaces the real auth error rather than silently running as the logged-in identity. `GUSTO_COMPANY_UUID` (or `--company-uuid`) sets the company.
