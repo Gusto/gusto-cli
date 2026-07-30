@@ -46,8 +46,14 @@ function serverMessages(body: unknown): string[] {
   const found: string[] = [];
   const visit = (node: unknown): void => {
     if (!isObject(node)) return;
-    if (typeof node.message === "string") found.push(node.message);
-    else if (typeof node.error === "string") found.push(node.error);
+    let text: string | undefined;
+    if (typeof node.message === "string") text = node.message;
+    else if (typeof node.error === "string") text = node.error;
+    if (text !== undefined) {
+      // Keep `error_key`: it names the offending field, and the API reuses one message across
+      // fields, so dropping it collapses a multi-field 422 to "can't be blank; can't be blank".
+      found.push(typeof node.error_key === "string" ? `${node.error_key}: ${text}` : text);
+    }
     if (!Array.isArray(node.errors)) return;
     for (const nested of node.errors) {
       // A bare string entry is the message itself. Only honored inside `errors` - a
@@ -58,7 +64,7 @@ function serverMessages(body: unknown): string[] {
     }
   };
   visit(body);
-  return found;
+  return Array.from(new Set(found));
 }
 
 export function toResult(err: unknown): CommandResult<never> {

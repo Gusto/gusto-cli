@@ -30,7 +30,9 @@ describe("toResult", () => {
     const err = new ApiError(422, body, ExitCode.ApiClient, "GET /v1/companies/c-1/payrolls -> 422");
     const result = toResult(err);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.message).toBe("Date range too long, max 1 year (GET /v1/companies/c-1/payrolls -> 422)");
+    expect(result.error.message).toBe(
+      "start_date: Date range too long, max 1 year (GET /v1/companies/c-1/payrolls -> 422)",
+    );
     // The structured body is still there untouched for callers that want the key/category.
     expect(result.error.details).toEqual(body);
   });
@@ -47,7 +49,7 @@ describe("toResult", () => {
     const err = new ApiError(422, body, ExitCode.ApiClient, "PUT /x -> 422");
     const result = toResult(err);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.message).toBe("Please ensure a correct response type is provided. (PUT /x -> 422)");
+    expect(result.error.message).toBe("response: Please ensure a correct response type is provided. (PUT /x -> 422)");
   });
 
   test("joins multiple messages", () => {
@@ -56,6 +58,30 @@ describe("toResult", () => {
     const result = toResult(err);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.message).toBe("first problem; second problem (POST /x -> 422)");
+  });
+
+  // The API reuses one message across fields, so without `error_key` a multi-field 422 reads
+  // "can't be blank; can't be blank" - repeated, and naming none of the fields that failed.
+  test("names the field on each message when the body carries error_key", () => {
+    const body = {
+      errors: [
+        { error_key: "first_name", message: "can't be blank" },
+        { error_key: "last_name", message: "can't be blank" },
+        { error_key: "email", message: "is invalid" },
+      ],
+    };
+    const result = toResult(new ApiError(422, body, ExitCode.ApiClient, "POST /v1/employees -> 422"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe(
+      "first_name: can't be blank; last_name: can't be blank; email: is invalid (POST /v1/employees -> 422)",
+    );
+  });
+
+  test("collapses messages that repeat verbatim", () => {
+    const body = { errors: [{ message: "is invalid" }, { message: "is invalid" }] };
+    const result = toResult(new ApiError(422, body, ExitCode.ApiClient, "POST /x -> 422"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe("is invalid (POST /x -> 422)");
   });
 
   test("reads a bare top-level error string", () => {
