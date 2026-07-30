@@ -36,6 +36,19 @@ describe("REQUIRED_SCOPES", () => {
     expect(DROPPED_SCOPES).not.toContain("employees:manage");
   });
 
+  test("employees:read covers the address reads as well as the updates' auto-version GET", () => {
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "employees:read");
+    expect(entry?.usedBy).toEqual(
+      expect.arrayContaining([
+        "employee addresses",
+        "employee home-address",
+        "employee work-address",
+        "employee update-home-address",
+        "employee update-work-address",
+      ]),
+    );
+  });
+
   test("departments:read is required for the department read commands", () => {
     expect(DROPPED_SCOPES).not.toContain("departments:read");
     const entry = REQUIRED_SCOPES.find((r) => r.scope === "departments:read");

@@ -21,7 +21,9 @@ import { confirmationGate } from "../lib/confirm.ts";
 import {
   buildHomeAddressUpdate,
   buildWorkAddressUpdate,
+  type HomeAddressBody,
   type HomeAddressUpdateOpts,
+  type WorkAddressBody,
   type WorkAddressUpdateOpts,
 } from "../lib/employee-address.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
@@ -235,8 +237,10 @@ Examples:
 Address UUIDs come from \`gusto employee addresses <employee_uuid>\`. This is a partial update:
 only the fields you pass are changed. The optimistic-concurrency \`version\` is read from the
 current record automatically; pass --record-version to supply it yourself and skip that read.
-If the record changes between that read and the write, nothing is saved and you get a
-\`version_conflict\` (exit 8) - re-run to pick up the current version.
+If the record changes before the write, nothing is saved and you get a \`version_conflict\`
+(exit 8). On the automatic read, re-running picks up the current version. If you passed
+--record-version, re-running re-sends the same stale token: read the record again with
+\`gusto employee home-address <address_uuid>\` and pass its new \`version\`.
 
 Examples:
   $ gusto employee update-home-address <address_uuid> --street-1 "123 Main St" --city Denver --state CO --zip 80202
@@ -267,8 +271,10 @@ Examples:
 A work address points at one of the company's locations; set it via --location-uuid (list them
 with \`gusto company locations\`). Address UUIDs come from \`gusto employee addresses <employee_uuid>\`.
 The \`version\` is read from the current record automatically; pass --record-version to skip that read.
-If the record changes between that read and the write, nothing is saved and you get a
-\`version_conflict\` (exit 8) - re-run to pick up the current version.
+If the record changes before the write, nothing is saved and you get a \`version_conflict\`
+(exit 8). On the automatic read, re-running picks up the current version. If you passed
+--record-version, re-running re-sends the same stale token: read the record again with
+\`gusto employee work-address <address_uuid>\` and pass its new \`version\`.
 
 Examples:
   $ gusto employee update-work-address <address_uuid> --location-uuid <company_location_uuid>
@@ -522,7 +528,13 @@ export function updateHomeAddressHandler(addressUuid: string, opts: HomeAddressU
         data: {
           method: "PUT",
           path: "/v1/home_addresses/{home_address_uuid}",
-          body: { street_1: "123 Main St", street_2: "Apt 4", city: "Denver", state: "CO", zip: "80202" },
+          body: {
+            street_1: "123 Main St",
+            street_2: "Apt 4",
+            city: "Denver",
+            state: "CO",
+            zip: "80202",
+          } satisfies HomeAddressBody,
           note: "example: a partial update - pass only the fields you change; version is read from the current record unless you pass --record-version",
         },
       };
@@ -545,7 +557,7 @@ export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressU
         data: {
           method: "PUT",
           path: "/v1/work_addresses/{work_address_uuid}",
-          body: { location_uuid: "<company_location_uuid>", effective_date: "2026-08-01" },
+          body: { location_uuid: "<company_location_uuid>", effective_date: "2026-08-01" } satisfies WorkAddressBody,
           note: "example: a work address points at a company location; version is read from the current record unless you pass --record-version",
         },
       };

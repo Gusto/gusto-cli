@@ -37,8 +37,9 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "company_forms:read", usedBy: ["company forms list", "company forms show", "company forms pdf"] },
   { scope: "signatories:read", usedBy: ["company signatories"] },
   { scope: "company_federal_taxes:read", usedBy: ["company federal-taxes"] },
-  // The address-update writes also read here: their auto-version GET fetches the current record's
-  // version before the PUT (skipped only when --record-version is passed), which needs employees:read.
+  // The address reads and the address-update writes both land here: home_addresses and
+  // work_addresses #index/#show sit under employees:read, and the writes' auto-version GET fetches
+  // the current record before the PUT (skipped only when --record-version is passed).
   {
     scope: "employees:read",
     usedBy: [
@@ -46,6 +47,9 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
       "employee status",
       "employee list",
       "employee custom-fields",
+      "employee addresses",
+      "employee home-address",
+      "employee work-address",
       "employee update-home-address",
       "employee update-work-address",
     ],

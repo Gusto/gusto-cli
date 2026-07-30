@@ -36,7 +36,7 @@ export interface WorkAddressUpdateOpts {
  * field key or wrong-typed value is a compile error rather than an API rejection. All fields are
  * optional because the update is partial. Written as type aliases (not interfaces) so they stay
  * assignable to the `Record<string, unknown>` that `putResourceWithVersion` accepts. */
-type HomeAddressBody = {
+export type HomeAddressBody = {
   street_1?: string;
   street_2?: string;
   city?: string;
@@ -47,7 +47,7 @@ type HomeAddressBody = {
   version?: string;
 };
 
-type WorkAddressBody = {
+export type WorkAddressBody = {
   location_uuid?: string;
   effective_date?: string;
   version?: string;
