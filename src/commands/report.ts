@@ -23,6 +23,27 @@ const DATE_FILTER_CHOICES = ["period_end_date", "period_start_date", "check_date
 /** Output formats the Reports API accepts; the CLI defaults to json for agent consumption. */
 const FILE_TYPE_CHOICES = ["json", "csv", "pdf"] as const;
 
+/** Columns the Reports API would happily return but the CLI blocks before the request ever goes
+ * out, per the data-classification review in AINT-795 (Chris Barnett, 7/23): bank account
+ * details and garnishments are Restricted; home address and date_of_birth are Protected and
+ * blocked here as a deliberate exception given the re-identification risk of landing them in an
+ * agent's context. Not a security boundary against a malicious caller (a company admin can read
+ * this data in the Gusto app already) - it keeps a broad `--columns *` from routing the most
+ * sensitive fields into an agent transcript by default. */
+const RESTRICTED_COLUMNS: Record<string, string> = {
+  bank_account: "bank account data is restricted from CLI reports",
+  bank_account_account_number: "bank account data is restricted from CLI reports",
+  bank_account_routing_number: "bank account data is restricted from CLI reports",
+  bank_account_type: "bank account data is restricted from CLI reports",
+  garnishments: "wage garnishment data is restricted from CLI reports",
+  home_address: "home address data is restricted from CLI reports",
+  home_address_street: "home address data is restricted from CLI reports",
+  home_address_city: "home address data is restricted from CLI reports",
+  home_address_state: "home address data is restricted from CLI reports",
+  home_address_zip: "home address data is restricted from CLI reports",
+  date_of_birth: "date of birth is restricted from CLI reports pending privacy review",
+};
+
 export interface ReportRunOpts {
   /** Report columns; required and non-empty (the API rejects an empty column list). */
   columns: string[];
@@ -135,6 +156,17 @@ function splitList(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+/** One `blocked_on` entry per restricted column present in `columns`, naming the column and why
+ * it's blocked. Empty when every column is allowed. */
+export function restrictedColumnErrors(columns: string[]): BlockedOn[] {
+  const blocked: BlockedOn[] = [];
+  for (const column of columns) {
+    const reason = RESTRICTED_COLUMNS[column];
+    if (reason !== undefined) blocked.push({ field: column, reason });
+  }
+  return blocked;
+}
+
 interface ReportRunCliOpts {
   columns?: string;
   groupBy?: string;
@@ -168,6 +200,11 @@ function reportRunHandler(opts: ReportRunCliOpts): CommandHandler {
     if (opts.columns === undefined) blocked.push({ field: "columns", reason: "required" });
     else if (columns.length === 0) blocked.push({ field: "columns", reason: "must list at least one column" });
     if (blocked.length > 0) return validationFailure("invalid arguments", blocked);
+
+    // Enforce the data-classification denylist before the API is ever called - see
+    // RESTRICTED_COLUMNS for why each of these is blocked.
+    const restricted = restrictedColumnErrors(columns);
+    if (restricted.length > 0) return validationFailure("restricted column(s) in --columns", restricted);
 
     const resolved = await resolveApiContext(globals, {
       tokenStdin: opts.tokenStdin,
@@ -240,6 +277,15 @@ the request_uuid back immediately and fetch the result later with
 Columns are validated by the Reports API, not the CLI: an unrecognized column is
 named back in the error so you can drop or correct it. See the Reports API
 reference for the full column vocabulary.
+
+A small set of columns is restricted by the CLI itself and rejected before the
+API is called: bank_account, bank_account_account_number,
+bank_account_routing_number, bank_account_type, garnishments, home_address,
+home_address_street, home_address_city, home_address_state, home_address_zip,
+and date_of_birth. These are high-sensitivity fields (bank details, wage
+garnishments, home address, date of birth) that a company admin can already see
+in the Gusto app, but the CLI blocks them from --columns to avoid routing them
+into an agent's context by default.
 `,
   );
   run.action((opts: ReportRunCliOpts) =>

@@ -1,7 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { ApiClient } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { buildReportBody, executeReportGet, executeReportRun } from "./report.ts";
+import { buildReportBody, executeReportGet, executeReportRun, restrictedColumnErrors } from "./report.ts";
+
+const RESTRICTED_COLUMNS = [
+  "bank_account",
+  "bank_account_account_number",
+  "bank_account_routing_number",
+  "bank_account_type",
+  "garnishments",
+  "home_address",
+  "home_address_street",
+  "home_address_city",
+  "home_address_state",
+  "home_address_zip",
+  "date_of_birth",
+];
 
 interface MockResponse {
   status: number;
@@ -66,6 +80,36 @@ describe("buildReportBody", () => {
   test("omits with_totals unless the flag is set", () => {
     const body = buildReportBody({ columns: ["net_pay"], withTotals: false });
     expect("with_totals" in body).toBe(false);
+  });
+});
+
+describe("restrictedColumnErrors", () => {
+  test.each(RESTRICTED_COLUMNS)("rejects the blocked column %s", (column) => {
+    const blocked = restrictedColumnErrors([column]);
+    expect(blocked).toContainEqual(expect.objectContaining({ field: column }));
+    expect(blocked[0]?.reason).toBeTruthy();
+  });
+
+  test("reports every blocked column present, not just the first", () => {
+    const blocked = restrictedColumnErrors(["gross_earnings", "bank_account", "home_address"]);
+    expect(blocked.map((b) => b.field)).toEqual(["bank_account", "home_address"]);
+  });
+
+  test("allowed columns (earnings, hours, rates, taxes, names, work address) pass through unchanged", () => {
+    expect(
+      restrictedColumnErrors([
+        "gross_earnings",
+        "net_pay",
+        "regular_hours",
+        "pay_rate",
+        "federal_income_tax",
+        "employer_taxes",
+        "reimbursements",
+        "first_name",
+        "last_name",
+        "work_address_street",
+      ]),
+    ).toEqual([]);
   });
 });
 
