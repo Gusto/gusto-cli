@@ -61,6 +61,15 @@ export function isTruthy(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
+/** Telemetry is opt-out: enabled unless GUSTO_TELEMETRY is set to a recognized falsy value
+ * (`0`, `false`, or `no`). Anything else — unset, empty, or a truthy value — leaves it on. */
+export function isTelemetryEnabled(source: EnvSource = process.env as EnvSource): boolean {
+  const value = source.GUSTO_TELEMETRY;
+  if (!value) return true;
+  const normalized = value.toLowerCase();
+  return !(normalized === "0" || normalized === "false" || normalized === "no");
+}
+
 export function resolveApiVersion(source: EnvSource = process.env as EnvSource): string {
   return source.GUSTO_API_VERSION ?? DEFAULT_API_VERSION;
 }

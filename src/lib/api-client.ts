@@ -104,6 +104,8 @@ export interface ApiClientOptions {
   baseUrl: string;
   token: string;
   apiVersion: string;
+  /** Anonymous per-install UUID sent as `X-Gusto-CLI-Install-Id`; omit to suppress the header. */
+  installId?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxRetries?: number;
@@ -142,6 +144,7 @@ export class ApiClient {
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly apiVersion: string;
+  private readonly installId?: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
@@ -152,6 +155,7 @@ export class ApiClient {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
     this.token = opts.token;
     this.apiVersion = opts.apiVersion;
+    this.installId = opts.installId;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -350,6 +354,9 @@ export class ApiClient {
       Accept: "application/json",
       "X-Gusto-API-Version": this.apiVersion,
     };
+    if (this.installId !== undefined) {
+      headers["X-Gusto-CLI-Install-Id"] = this.installId;
+    }
     let init: RequestInit = { method, headers, signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";

@@ -282,7 +282,7 @@ export function authLoginHandler(
     try {
       const info = await doLogin(defaultEnv(globals.env), {
         store: resolveStore(),
-        http: oauthHttp(globals),
+        http: await oauthHttp(globals),
         noBrowser: opts.noBrowser,
         emitEvent: buildSignInUrlEmitter(globals, sinks),
       });

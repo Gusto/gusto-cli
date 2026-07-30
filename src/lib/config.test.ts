@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   type ConfigPaths,
+  getOrCreateInstallId,
   normalizeValue,
   readConfig,
   resetConfig,
+  resolveInstallIdHeader,
   validateKey,
   validateValue,
   writeConfig,
@@ -129,5 +131,106 @@ describe("read/write/reset", () => {
   test("resetConfig on a missing file is a no-op", async () => {
     await resetConfig(paths);
     expect(await readConfig(paths)).toEqual({});
+  });
+});
+
+describe("getOrCreateInstallId", () => {
+  test("generates a v4-shaped UUID on first call and persists it", async () => {
+    const id = await getOrCreateInstallId(paths);
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(await readConfig(paths)).toEqual({ install_id: id });
+  });
+
+  test("second call returns the same value without rewriting", async () => {
+    const first = await getOrCreateInstallId(paths);
+    const second = await getOrCreateInstallId(paths);
+    expect(second).toBe(first);
+  });
+
+  test("preserves other config keys when generating", async () => {
+    await writeConfig({ environment: "sandbox", format: "human" }, paths);
+    const id = await getOrCreateInstallId(paths);
+    expect(await readConfig(paths)).toEqual({ environment: "sandbox", format: "human", install_id: id });
+  });
+
+  test("regenerates after resetConfig", async () => {
+    const first = await getOrCreateInstallId(paths);
+    await resetConfig(paths);
+    const second = await getOrCreateInstallId(paths);
+    expect(second).not.toBe(first);
+  });
+
+  test("readConfig drops an empty-string install_id from disk", async () => {
+    await Bun.write(paths.file, `install_id = ""\n`);
+    expect(await readConfig(paths)).toEqual({});
+  });
+
+  test("readConfig drops a non-UUID install_id from disk", async () => {
+    await Bun.write(paths.file, `install_id = "not-a-uuid"\nformat = "agent"\n`);
+    // Invalid install_id is dropped; sibling valid keys are preserved.
+    expect(await readConfig(paths)).toEqual({ format: "agent" });
+  });
+
+  test("corrupted install_id is regenerated on next getOrCreateInstallId", async () => {
+    await Bun.write(paths.file, `install_id = "corrupted-value"\n`);
+    const fresh = await getOrCreateInstallId(paths);
+    expect(fresh).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect((await readConfig(paths)).install_id).toBe(fresh);
+  });
+
+  test("concurrent first-run calls each produce a valid install_id and the file converges to one", async () => {
+    // Documented behavior: two racing callers can each generate + write their own UUID. The
+    // file ends up with whichever wrote last, and any future caller sees that value. Formal
+    // first-writer-wins would require a lock — accepted trade-off, since divergence is bounded
+    // to one command per racing caller and self-heals on the next call.
+    const [a, b] = await Promise.all([getOrCreateInstallId(paths), getOrCreateInstallId(paths)]);
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    expect(a).toMatch(uuidPattern);
+    expect(b).toMatch(uuidPattern);
+    const settled = await getOrCreateInstallId(paths);
+    expect([a, b]).toContain(settled);
+  });
+
+  test("writeConfig cleans up its temp file on rename failure", async () => {
+    // A file at paths.dir makes mkdir fail with ENOTDIR AND rename fail. Verify writeConfig
+    // throws (propagated to caller) and doesn't leave a .tmp behind under the parent scratch dir.
+    const badDir = path.join(scratch, "not-a-dir");
+    await Bun.write(badDir, "");
+    const broken: ConfigPaths = { dir: badDir, file: path.join(badDir, "config.toml") };
+    await expect(writeConfig({ install_id: "x" }, broken)).rejects.toThrow();
+    const { readdirSync } = await import("node:fs");
+    // No `.tmp` sibling under scratch either — the write couldn't proceed past mkdir.
+    for (const entry of readdirSync(scratch)) {
+      expect(entry.endsWith(".tmp")).toBe(false);
+    }
+  });
+});
+
+describe("resolveInstallIdHeader", () => {
+  test("returns a UUID when telemetry is enabled and the config path is writable", async () => {
+    const id = await resolveInstallIdHeader(paths);
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  test("returns undefined without side-effects when GUSTO_TELEMETRY=0", async () => {
+    const prev = process.env.GUSTO_TELEMETRY;
+    process.env.GUSTO_TELEMETRY = "0";
+    try {
+      expect(await resolveInstallIdHeader(paths)).toBeUndefined();
+      // No config file should have been written under opt-out.
+      expect(await readConfig(paths)).toEqual({});
+    } finally {
+      if (prev === undefined) delete process.env.GUSTO_TELEMETRY;
+      else process.env.GUSTO_TELEMETRY = prev;
+    }
+  });
+
+  test("returns undefined (fail-open) when the config path is unwritable", async () => {
+    // A regular file where the config dir should be: mkdir hits ENOTDIR, getOrCreateInstallId
+    // throws, resolveInstallIdHeader must catch and silently degrade telemetry.
+    const badDir = path.join(scratch, "config-blocked");
+    await Bun.write(badDir, "");
+    const broken: ConfigPaths = { dir: badDir, file: path.join(badDir, "config.toml") };
+    expect(await resolveInstallIdHeader(broken)).toBeUndefined();
   });
 });

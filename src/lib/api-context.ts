@@ -1,4 +1,5 @@
 import { ApiClient, stderrRequestObserver } from "./api-client.ts";
+import { resolveInstallIdHeader } from "./config.ts";
 import { confirmationGate } from "./confirm.ts";
 import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
@@ -54,12 +55,13 @@ export interface ApiContextOpts extends AuthOpts {
  * as a follow-up. */
 export function buildApiClient(
   globals: GlobalFlags,
-  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream },
+  opts: { baseUrl: string; token: string; installId?: string; stderr?: NodeJS.WritableStream },
 ): ApiClient {
   return new ApiClient({
     baseUrl: opts.baseUrl,
     token: opts.token,
     apiVersion: resolveApiVersion(),
+    installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
   });
 }
@@ -131,7 +133,8 @@ export async function resolveApiContext(
   const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
-  const client = buildApiClient(globals, { baseUrl, token });
+  const installId = await resolveInstallIdHeader();
+  const client = buildApiClient(globals, { baseUrl, token, installId });
 
   if (opts.requireCompany === false) {
     return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };
@@ -162,7 +165,7 @@ export async function resolveApiContext(
 /** The token from the stored login session, refreshed on near-expiry; null if none. */
 async function sessionToken(globals: GlobalFlags, opts: AuthOpts): Promise<string | null> {
   const store = opts.store ?? resolveStore();
-  const http = opts.http ?? oauthHttp(globals);
+  const http = opts.http ?? (await oauthHttp(globals));
   try {
     return await getValidUserToken(store, defaultEnv(globals.env), http, opts.now);
   } catch (err) {

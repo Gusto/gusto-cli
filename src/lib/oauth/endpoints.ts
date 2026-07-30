@@ -28,6 +28,7 @@ export interface OAuthHttpOptions {
   baseUrl: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  installId?: string;
 }
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -58,10 +59,15 @@ async function send(opts: OAuthHttpOptions, path: string, init: RequestInit): Pr
   return body;
 }
 
+function withInstallIdHeader(opts: OAuthHttpOptions, headers: Record<string, string>): Record<string, string> {
+  if (opts.installId !== undefined) headers["X-Gusto-CLI-Install-Id"] = opts.installId;
+  return headers;
+}
+
 export function postJson(opts: OAuthHttpOptions, path: string, body: unknown): Promise<unknown> {
   return send(opts, path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: withInstallIdHeader(opts, { "Content-Type": "application/json", Accept: "application/json" }),
     body: JSON.stringify(body),
   });
 }
@@ -72,10 +78,10 @@ export function postForm(
   form: Record<string, string>,
   authHeader?: string,
 ): Promise<unknown> {
-  const headers: Record<string, string> = {
+  const headers: Record<string, string> = withInstallIdHeader(opts, {
     "Content-Type": "application/x-www-form-urlencoded",
     Accept: "application/json",
-  };
+  });
   if (authHeader) headers.Authorization = authHeader;
   return send(opts, path, { method: "POST", headers, body: new URLSearchParams(form).toString() });
 }
