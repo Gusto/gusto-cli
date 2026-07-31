@@ -9,10 +9,10 @@
  * (timesheets, payroll prepare/calculate, pay schedules, reports), the
  * employee-offboarding path (`employments:write`, for terminate/cancel-termination),
  * the employee work-state path (`employees:manage`, for `employee update`), and the
- * employee address updates (`employee update-home-address` needs `employees:write`,
- * `update-work-address` needs `employees:manage` - verified against zenpayroll's
- * `config/doorkeeper_scopes.yml`, where `home_addresses#update`/`work_addresses#update`
- * live). All other employee and contractor data stays read-only on this surface.
+ * employee address updates (`update-home-address` maps to `employees:write`,
+ * `update-work-address` to `employees:manage` - verified against the API's OAuth scope
+ * configuration, where both update actions live). All other employee and contractor data
+ * stays read-only on this surface.
  * Scopes dropped from the original 50+ grant (`company_bank_accounts:write`,
  * `signatories:manage`, and the remaining employee/contractor write scopes) have no
  * in-surface consumer and are listed in `DROPPED_SCOPES` below for audit history.
@@ -82,8 +82,8 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
   { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
-  // Employee address updates. Home vs work map to different scopes in zenpayroll's
-  // doorkeeper_scopes.yml: home_addresses#update -> employees:write, work_addresses#update -> employees:manage.
+  // Employee address updates. The home and work update actions map to different scopes in the
+  // API's OAuth scope configuration: employees:write for home, employees:manage for work.
   { scope: "employees:write", usedBy: ["employee update-home-address"] },
   { scope: "employees:manage", usedBy: ["employee update", "employee update-work-address"] },
 ] as const;

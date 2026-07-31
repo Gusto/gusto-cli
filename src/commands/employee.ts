@@ -242,6 +242,10 @@ If the record changes before the write, nothing is saved and you get a \`version
 --record-version, re-running re-sends the same stale token: read the record again with
 \`gusto employee home-address <address_uuid>\` and pass its new \`version\`.
 
+Empty flag values are rejected, so \`--street-2 ""\` won't clear an existing line 2: it returns
+\`blocked_on\` (exit 7). There is no clear flag yet; \`gusto api request PUT\` can do it, without
+the automatic version read.
+
 Examples:
   $ gusto employee update-home-address <address_uuid> --street-1 "123 Main St" --city Denver --state CO --zip 80202
   $ gusto employee update-home-address <address_uuid> --zip 80203 --dry-run
