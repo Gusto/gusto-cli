@@ -207,13 +207,22 @@ export interface UpgradeDeps {
   stripQuarantine?: (file: string) => Promise<void>;
 }
 
-/** Gating the install on this means a build that segfaults never becomes the live binary. */
+/** Gating the install on this means a build that segfaults never becomes the live binary.
+ *
+ * Wrapped because a file that isn't a valid executable at all - the shape a truncated or garbage
+ * download actually takes - makes `Bun.spawn` *throw* ENOEXEC rather than exit non-zero. Letting
+ * that escape would surface as `internal_error` with a raw posix_spawn message instead of the
+ * `binary_check_failed` the caller can act on. */
 export async function defaultVersionOf(file: string): Promise<string | null> {
-  const proc = Bun.spawn([file, "--version"], { stdout: "pipe", stderr: "ignore" });
-  const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-  if (code !== 0) return null;
-  const version = out.trim();
-  return version.length > 0 ? version : null;
+  try {
+    const proc = Bun.spawn([file, "--version"], { stdout: "pipe", stderr: "ignore" });
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    if (code !== 0) return null;
+    const version = out.trim();
+    return version.length > 0 ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The darwin binaries can't carry a stapled notarization ticket (a bare Mach-O isn't stapleable),

@@ -194,8 +194,15 @@ describe("upgradeHandler", () => {
     expect(installedVersion(fixture)).toBe("0.1.0");
   });
 
-  test("aborts when the downloaded binary fails its --version check", async () => {
-    fixture = startFixture({ binaryBody: "#!/bin/sh\nexit 1\n" });
+  // Two distinct failure shapes. A binary that runs and exits non-zero gives Bun.spawn a normal
+  // exit code, but bytes that aren't an executable at all - what a truncated or garbage download
+  // actually looks like - make it throw ENOEXEC. Both have to land on binary_check_failed rather
+  // than escaping as internal_error.
+  test.each([
+    ["a binary that runs but exits non-zero", "#!/bin/sh\nexit 1\n"],
+    ["bytes that aren't executable at all", "not an executable\n"],
+  ])("aborts on %s", async (_label, binaryBody) => {
+    fixture = startFixture({ binaryBody });
     const { result } = await runUpgrade(fixture, { confirm: true });
 
     expect(result.ok).toBe(false);
