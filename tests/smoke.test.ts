@@ -592,9 +592,8 @@ describe("upgrade works without auth and without touching the network", () => {
     expect(envelope.data.from).toBe(pkg.version);
   });
 
-  // Guards the bug this replaced: with nothing installed at install_path, upgrade used to compare
-  // the release against the *running* process's version and report "already up to date" about a
-  // binary that did not exist.
+  // The pin deliberately matches the running process's version while the install dir is empty, so
+  // comparing against the wrong side of the swap reads as up-to-date about a binary that isn't there.
   test("does not claim up-to-date when no binary is installed at the target", async () => {
     const result = await run(["upgrade", "--dry-run"], {
       GUSTO_INSTALL_DIR: installDir,

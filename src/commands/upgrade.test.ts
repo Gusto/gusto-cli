@@ -172,9 +172,7 @@ describe("upgradeHandler", () => {
     expect(fixture.requests).toEqual([]);
   });
 
-  // The version compared against has to be the one at install_path. Reading it off the running
-  // process instead makes upgrade report "up to date" while leaving a stale binary in place, which
-  // is reachable whenever GUSTO_INSTALL_DIR names an install other than the running one.
+  // Reachable whenever GUSTO_INSTALL_DIR names an install other than the running one.
   test("compares against the installed binary, not the running process", async () => {
     fixture = startFixture({ installedVersion: "0.0.1" });
     const { result } = await runUpgrade(fixture, { confirm: true });
@@ -246,10 +244,8 @@ describe("upgradeHandler", () => {
     expect(installedVersion(fixture)).toBe("0.1.0");
   });
 
-  // Two distinct failure shapes. A binary that runs and exits non-zero gives Bun.spawn a normal
-  // exit code, but bytes that aren't an executable at all - what a truncated or garbage download
-  // actually looks like - make it throw ENOEXEC. Both have to land on binary_check_failed rather
-  // than escaping as internal_error.
+  // Both cases matter because they fail differently: the second makes Bun.spawn throw ENOEXEC
+  // rather than exit non-zero, which without the catch escapes as internal_error.
   test.each([
     ["a binary that runs but exits non-zero", "#!/bin/sh\nexit 1\n"],
     ["bytes that aren't executable at all", "not an executable\n"],

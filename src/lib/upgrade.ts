@@ -305,11 +305,8 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   const { tag } = tagResult;
   const targetVersion = tag === null ? null : tagToVersion(tag);
 
-  // The version being replaced has to come from the file at targetPath, not from this process.
-  // `GUSTO_INSTALL_DIR` can name a different install, and using our own VERSION there would compare
-  // the wrong two things - reporting "already up to date" while leaving a genuinely stale binary
-  // (or no binary at all) in place. Only when the target *is* us can VERSION stand in, which also
-  // keeps the common path free of an extra spawn. Null means nothing runnable is installed there.
+  // Only when the target is us can VERSION stand in for it (see `isSelf`), which also keeps the
+  // common path free of an extra spawn. Null means nothing runnable is installed there.
   const from = isSelf ? currentVersion : await versionOf(targetPath);
   const base = { from, to: targetVersion, asset, install_path: targetPath };
 
