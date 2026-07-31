@@ -28,6 +28,9 @@ export interface ScopeRequirement {
 export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   // Reads
   { scope: "companies:read", usedBy: ["company show", "company locations", "company custom-fields"] },
+  { scope: "company_forms:read", usedBy: ["company forms list", "company forms show", "company forms pdf"] },
+  { scope: "signatories:read", usedBy: ["company signatories"] },
+  { scope: "company_federal_taxes:read", usedBy: ["company federal-taxes"] },
   { scope: "employees:read", usedBy: ["employee show", "employee status", "employee list", "employee custom-fields"] },
   { scope: "employments:read", usedBy: ["employee history", "employee terminations", "employee rehire"] },
   { scope: "contractors:read", usedBy: ["contractor show", "contractor list"] },

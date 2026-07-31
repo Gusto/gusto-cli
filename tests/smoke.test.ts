@@ -182,6 +182,21 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  // The company forms/signatories/federal-tax reads: assert each dispatches (reaches the auth check,
+  // exit 3) rather than commander's unknown-command (exit 2), proving they are wired into the binary.
+  test.each([
+    ["company forms list", ["company", "forms", "list"]],
+    ["company forms show", ["company", "forms", "show", "form-uuid-123"]],
+    ["company forms get (alias)", ["company", "forms", "get", "form-uuid-123"]],
+    ["company forms pdf", ["company", "forms", "pdf", "form-uuid-123"]],
+    ["company signatories", ["company", "signatories"]],
+    ["company federal-taxes", ["company", "federal-taxes"]],
+  ])("%s without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
   test("payroll list without a token returns no_access_token (exit 3)", async () => {
     const result = await run(["payroll", "list"]);
     expect(result.exitCode).toBe(3);
