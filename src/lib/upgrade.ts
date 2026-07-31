@@ -273,8 +273,9 @@ async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: tru
 }
 
 /** The step order below is deliberate, not incidental: every cheap failure resolves before a byte is
- * fetched, and the bytes are verified in a staging file before the swap. Replacing the binary this
- * process is currently executing is safe on Unix - the running image keeps its own inode. */
+ * fetched, the bytes are checksummed before they are ever written, and the file they're written to
+ * is exec-checked before the swap. Replacing the binary this process is currently executing is safe
+ * on Unix - the running image keeps its own inode. */
 export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Promise<CommandResult<UpgradeResult>> {
   const {
     gate,
