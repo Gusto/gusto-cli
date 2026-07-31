@@ -334,51 +334,19 @@ describe("upgradeHandler", () => {
     expect(fixture.requests).toEqual([]);
   });
 
-  // SIGINT is the realistic way a staging file gets stranded: index.ts's handler calls process.exit,
-  // which doesn't unwind the finally block guarding the staging write.
-  test("sweeps a staging file stranded by an interrupted earlier run", async () => {
+  // SIGINT is the realistic way one gets stranded: index.ts's handler calls process.exit, which
+  // doesn't unwind the finally block guarding the staging write.
+  test("reuses a staging file stranded by an interrupted earlier run", async () => {
     fixture = startFixture();
-    const stale = path.join(fixture.installDir, ".gusto-upgrade-2147483646");
+    const stale = path.join(fixture.installDir, ".gusto-upgrade");
     writeFileSync(stale, "half a download");
 
-    const { result, stderr } = await runUpgrade(fixture, { confirm: true });
+    const { result } = await runUpgrade(fixture, { confirm: true });
 
     expect(result.ok).toBe(true);
     expect(existsSync(stale)).toBe(false);
-    expect(stderr).toContain("leftover staging file");
+    expect(installedVersion(fixture)).toBe("0.2.0");
     expect(leftoverStagingFiles(fixture)).toEqual([]);
-  });
-
-  test("leaves a staging file belonging to a live process alone", async () => {
-    fixture = startFixture();
-    // A real live process stands in for a concurrent `gusto upgrade` mid-download. Sweeping its
-    // staged file would break that run, so it has to survive while a dead pid's file does not.
-    const other = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
-    const liveFile = path.join(fixture.installDir, `.gusto-upgrade-${other.pid}`);
-    const deadFile = path.join(fixture.installDir, ".gusto-upgrade-2147483646");
-    writeFileSync(liveFile, "a concurrent run's staged download");
-    writeFileSync(deadFile, "stranded by a dead process");
-
-    try {
-      const { result } = await runUpgrade(fixture, { confirm: true });
-      expect(result.ok).toBe(true);
-      expect(existsSync(liveFile)).toBe(true);
-      expect(existsSync(deadFile)).toBe(false);
-    } finally {
-      other.kill();
-      await other.exited;
-    }
-  });
-
-  test("a non-writable install dir does not fail on the sweep - it fails before it", async () => {
-    if (process.getuid?.() === 0) return;
-    fixture = startFixture();
-    writeFileSync(path.join(fixture.installDir, ".gusto-upgrade-2147483646"), "stale");
-    chmodSync(fixture.installDir, 0o500);
-
-    const { result } = await runUpgrade(fixture, { confirm: true });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("install_dir_not_writable");
   });
 
   test("does not gate in human mode - the operator at the TTY is the approval", async () => {

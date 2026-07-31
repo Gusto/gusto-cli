@@ -1,5 +1,5 @@
 import { constants as FS_CONST, realpathSync } from "node:fs";
-import { access, chmod, readdir, rename, unlink } from "node:fs/promises";
+import { access, chmod, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { EnvSource } from "./env.ts";
@@ -27,8 +27,10 @@ const MANAGED_PREFIXES: readonly { prefix: string; manager: string }[] = [
 
 const REINSTALL_HINT = "Reinstall instead: curl -fsSL https://cli.gusto.com/install.sh | sh";
 
-/** Staging files are `.gusto-upgrade-<pid>`, dot-prefixed so they don't show up in a bare `ls`. */
-const STAGING_PREFIX = `.${BINARY_NAME}-upgrade-`;
+/** One fixed name rather than a per-run one: a run interrupted past the point of no return (SIGKILL,
+ * or SIGINT, which `index.ts` turns into a `process.exit` that skips the cleanup below) strands this
+ * file, and a fixed name means the next run overwrites it instead of leaving another one behind. */
+const STAGING_NAME = `.${BINARY_NAME}-upgrade`;
 
 export interface UpgradeResult {
   /** `available` is the `--dry-run` preview. */
@@ -251,47 +253,6 @@ export async function defaultStripQuarantine(file: string): Promise<void> {
   }
 }
 
-/** Delete staging files stranded by an earlier run.
- *
- * The `finally` around the staging block covers every catchable failure, but not SIGKILL, OOM, or
- * power loss - and not SIGINT either, since the handler in `index.ts` calls `process.exit`, which
- * doesn't unwind pending async work. So a Ctrl-C mid-download does strand a file, and without this
- * they accumulate in the install dir forever.
- *
- * Files belonging to a live pid are left alone: a concurrent `gusto upgrade` is unlikely, but
- * deleting its staged download out from under it would break that run for no benefit. Entirely
- * best-effort - a locked or foreign file must never fail the upgrade. */
-async function sweepStagingFiles(dir: string, log: (line: string) => void): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith(STAGING_PREFIX)) continue;
-    const pid = Number(entry.slice(STAGING_PREFIX.length));
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid)) continue;
-    try {
-      await unlink(path.join(dir, entry));
-      log(`removed a leftover staging file from an interrupted run (${entry})`);
-    } catch {
-      // Someone else's, locked, or already gone. None of that should stop the upgrade.
-    }
-  }
-}
-
-/** Signal 0 checks for the process without delivering anything: throws ESRCH when it's gone. A
- * recycled pid reads as alive, which only means one extra run before the file is swept. */
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** The installed version for display, when there may not be an installed binary at all. */
 function describeFrom(from: string | null): string {
   return from ?? "not installed";
@@ -401,11 +362,9 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   }
   log("checksum verified");
 
-  await sweepStagingFiles(path.dirname(targetPath), log);
-
   // Stage inside the install dir, not $TMPDIR: same filesystem is what makes the final rename an
   // atomic swap rather than a copy that can be observed half-written.
-  const staged = path.join(path.dirname(targetPath), `${STAGING_PREFIX}${process.pid}`);
+  const staged = path.join(path.dirname(targetPath), STAGING_NAME);
   try {
     await Bun.write(staged, binary.bytes);
     await chmod(staged, 0o755);
