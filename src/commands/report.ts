@@ -279,13 +279,11 @@ named back in the error so you can drop or correct it. See the Reports API
 reference for the full column vocabulary.
 
 A small set of columns is restricted by the CLI itself and rejected before the
-API is called: bank_account, bank_account_account_number,
-bank_account_routing_number, bank_account_type, garnishments, home_address,
-home_address_street, home_address_city, home_address_state, home_address_zip,
-and date_of_birth. These are high-sensitivity fields (bank details, wage
-garnishments, home address, date of birth) that a company admin can already see
-in the Gusto app, but the CLI blocks them from --columns to avoid routing them
-into an agent's context by default.
+API is called: ${Object.keys(RESTRICTED_COLUMNS).join(", ")}. These are
+high-sensitivity fields (bank details, wage garnishments, home address, date of
+birth) that a company admin can already see in the Gusto app, but the CLI
+blocks them from --columns to avoid routing them into an agent's context by
+default.
 `,
   );
   run.action((opts: ReportRunCliOpts) =>
