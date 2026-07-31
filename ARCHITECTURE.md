@@ -40,7 +40,8 @@ user CLI invocation
 
 ## Key modules
 
-- **`lib/api-client.ts`** — `fetch`-based HTTP client. Adds `Authorization`, `X-Gusto-API-Version`. Retries 5xx and network errors on `GET`/`DELETE` only (POST/PUT are not retried to avoid double-creates). `AbortSignal.timeout` enforces a per-attempt timeout.
+- **`lib/api-client.ts`** — `fetch`-based HTTP client. Adds `Authorization`, `X-Gusto-API-Version`, `User-Agent`. Retries 5xx and network errors on `GET`/`DELETE` only (POST/PUT are not retried to avoid double-creates). `AbortSignal.timeout` enforces a per-attempt timeout.
+- **`lib/version.ts`** — the one place the CLI's version is declared. Exports `VERSION` (read from `package.json`, what `gusto --version` prints) and `USER_AGENT`.
 - **`lib/handle-api-error.ts`** — converts thrown `ApiError`/`NetworkError` into a `CommandResult` with the right exit code and, for API errors, surfaces the raw response body in `error.details` and the request id in `error.request_id`.
 - **`lib/output.ts`** — `AgentEnvelope` shape (`{ ok, data?, error? }`) and the agent-vs-human emit logic. The `--agent` / `--human` / `--json` flags resolve to a single `OutputMode`.
 - **`lib/runner.ts`** — wraps every command handler so exceptions can't leak past the envelope. Centralizes exit code propagation.
@@ -67,6 +68,21 @@ Every command produces an `AgentEnvelope`:
 
 - Agent mode prints one JSON object per command, terminated by `\n`. No banners, no progress bars.
 - Human mode prints data with `JSON.stringify(..., 2)` or a string when scalar, and errors to stderr.
+
+## User-Agent
+
+Every outbound request carries:
+
+```
+User-Agent: gusto-cli/<version> (<os>-<arch>)      e.g. gusto-cli/0.1.0 (darwin-arm64)
+```
+
+**This format is a stable contract.** Version-adoption reporting groups on it, so changing the grammar - adding a field, reordering, appending free text - silently splits one release across buckets and breaks historical comparisons. Treat it like a wire format: extend only additively and only deliberately.
+
+- `<version>` is `VERSION` from `lib/version.ts`, the same value `gusto --version` prints. The release workflow rejects a tag that disagrees with `package.json`, so the two cannot drift.
+- `<os>-<arch>` come from `process.platform`/`process.arch` and use the same tokens as the published binaries (`darwin-arm64`, `darwin-x64`, `linux-x64`).
+- No locale-, clock-, or environment-dependent fields: two runs of the same build on the same machine always produce the identical string.
+- Attached in `ApiClient.sendOnce` (covers every command, MCP tool call, retry, and paginated page) and in the OAuth `send` helper (covers the legs that can't use `ApiClient` because they aren't bearer-authenticated: client registration, code exchange, token refresh). Login's `token_info` check is bearer-authenticated and goes through `ApiClient`, so it's covered by the first path.
 
 ## Auth
 

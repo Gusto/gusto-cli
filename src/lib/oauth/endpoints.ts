@@ -1,6 +1,7 @@
 // OAuth/DCR endpoints aren't bearer-authenticated, so they can't use ApiClient
 // (which always sends Authorization: Bearer). fetch is injectable for tests.
 
+import { USER_AGENT } from "../version.ts";
 import type { TokenSet } from "./types.ts";
 
 export const OAUTH_PATHS = {
@@ -38,13 +39,20 @@ export function basicAuth(clientId: string, clientSecret: string): string {
   return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
 }
 
-async function send(opts: OAuthHttpOptions, path: string, init: RequestInit): Promise<unknown> {
+/** `headers` is a plain record (not `HeadersInit`) so the shared `User-Agent` can be merged
+ * in here - every OAuth call is version-attributed without each caller remembering to add it. */
+async function send(
+  opts: OAuthHttpOptions,
+  path: string,
+  init: RequestInit & { headers: Record<string, string> },
+): Promise<unknown> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const url = joinUrl(opts.baseUrl, path);
   const signal = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_OAUTH_TIMEOUT_MS);
+  const headers = { ...init.headers, "User-Agent": USER_AGENT };
   let response: Response;
   try {
-    response = await fetchImpl(url, { ...init, signal });
+    response = await fetchImpl(url, { ...init, headers, signal });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new OAuthError(0, null, `network error calling ${path}: ${msg}`);
