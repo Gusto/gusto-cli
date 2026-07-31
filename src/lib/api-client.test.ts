@@ -11,6 +11,7 @@ import {
 } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { captureStream } from "./test-support.ts";
+import { USER_AGENT } from "./version.ts";
 
 interface MockResponse {
   status: number;
@@ -70,7 +71,7 @@ function makeClient(fetchImpl: typeof fetch, overrides: Partial<ApiClientOptions
 }
 
 describe("ApiClient basics", () => {
-  test("GET attaches bearer token + API version headers", async () => {
+  test("GET attaches bearer token + API version + User-Agent headers", async () => {
     const captured: { url?: string; init?: RequestInit } = {};
     const client = makeClient(mockFetch(captured, { status: 200, body: { ok: true } }));
     const result = await client.get<{ ok: boolean }>("/v1/me");
@@ -80,6 +81,7 @@ describe("ApiClient basics", () => {
     const headers = captured.init?.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer test-token");
     expect(headers["X-Gusto-API-Version"]).toBe("2026-02-01");
+    expect(headers["User-Agent"]).toBe(USER_AGENT);
     expect(result.body.ok).toBe(true);
     expect(result.status).toBe(200);
   });
@@ -92,6 +94,22 @@ describe("ApiClient basics", () => {
     const headers = captured.init?.headers as Record<string, string>;
     expect(headers["Content-Type"]).toBe("application/json");
     expect(captured.init?.body).toBe(JSON.stringify({ name: "thing" }));
+  });
+
+  // The header comes from the client itself, not from an option a caller passes, so writes
+  // and retried attempts are attributed to a version too - not just the first read.
+  test("every verb carries the User-Agent", async () => {
+    for (const send of [
+      (c: ApiClient) => c.get("/v1/things"),
+      (c: ApiClient) => c.post("/v1/things", { name: "thing" }),
+      (c: ApiClient) => c.put("/v1/things/1", { name: "thing" }),
+      (c: ApiClient) => c.delete("/v1/things/1"),
+    ]) {
+      const captured: { url?: string; init?: RequestInit } = {};
+      await send(makeClient(mockFetch(captured, { status: 200, body: {} })));
+      const headers = captured.init?.headers as Record<string, string>;
+      expect(headers["User-Agent"]).toBe(USER_AGENT);
+    }
   });
 
   test("same-origin absolute URLs are passed through", async () => {

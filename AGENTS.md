@@ -42,6 +42,20 @@ String fields the Gusto API returns - employee names, job titles, notes, GL acco
 
 `--agent` JSON is the safer surface for this: a value sits inside a typed field of the `{ ok, data }` envelope, so the data/instruction boundary stays explicit. Human-readable text flattens that boundary into prose a model is likelier to act on - prefer `--agent` when an agent consumes the output.
 
+## This repo is public
+
+`Gusto/gusto-cli` is open source. Source, comments, docs, commit messages, PR titles and descriptions, and review comments are all world-readable and effectively permanent - a force-push cleans up a branch, not the copies GitHub already served. Write everything here for an outside contributor who has no access to Gusto systems.
+
+So when you're changing code in this repo, keep Gusto-internal implementation details out of what you commit and out of what you post:
+
+- **Don't name internal tooling.** Whatever Gusto runs for analytics, BI, data warehousing, observability, logging, alerting, CI, secrets, or feature flags - name the capability, not the vendor. Same for internal dashboards, internal service and queue identifiers, and internal repo or package names. Naming any of it tells an outside reader nothing they can use while disclosing how Gusto is wired up. Write "groups cleanly in request-log analytics", not the product; "our request logs", not the service the logs land on. (This bullet deliberately names no vendors - listing the current stack here would be the same disclosure it's warning about.)
+- **Don't name internal hosts or environments.** The production and demo API hosts are already public - `README.md` names both. Internal dev, staging, and preview hostnames are not - say "a local development environment" and leave the host out.
+- **Don't link what an outsider can't open.** No SSO- or VPN-gated links that you write yourself: dashboards, log queries, internal docs, ticket trackers. A bare ticket key is the exception, and only in the PR description and its "Linked issue" field - both stay editable, and the key alone opens nothing. Keep keys out of commit subjects and PR titles, which are permanent, and out of source, comments, tests, and docs, where a reader who can't resolve one just hits a dead reference. One thing you don't control: the ticket integration appends its own reference link to the PR body. That's the tooling rather than a choice - leave it, and don't read it as license to add gated links by hand.
+- **Don't attach screenshots of internal tooling.** Describe what the check confirmed rather than showing the UI it was confirmed in.
+- **Never commit or post real customer or employee data, or any secret.** No PII (names, emails, SSN/EIN, bank or account numbers, wages, addresses), no tokens, keys, or connection strings - in code, tests, fixtures, comments, or PR text. Use synthetic values; the repo's existing placeholder UUIDs are a good model. One carve-out: the `Signed-off-by` trailer on your own commits is *required* to carry your real name and a reachable email, and CI rejects commits without it - never strip or synthesize a sign-off to satisfy this bullet (see `CONTRIBUTING.md`).
+
+When verification ran against an internal system, report **what** was confirmed, not **where**: "confirmed the header arrives intact and is filterable in the request logs" carries the whole signal with none of the disclosure. If you're unsure whether a detail is publishable, leave it out and ask the person you're working for.
+
 ## Driving `auth login`
 
 `gusto auth login` signs into an existing Gusto company you administer - company creation and onboarding happen in Gusto, not the CLI.

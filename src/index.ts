@@ -19,9 +19,7 @@ import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
 import type { GlobalFlags } from "./lib/global-flags.ts";
 import { emit, outputOptionsFrom } from "./lib/output.ts";
-import pkg from "../package.json" with { type: "json" };
-
-const VERSION: string = pkg.version;
+import { VERSION } from "./lib/version.ts";
 
 const HELP_FOOTER = `
 Documentation:
