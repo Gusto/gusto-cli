@@ -38,6 +38,16 @@ describe("REQUIRED_SCOPES", () => {
     expect(entry?.usedBy).toContain("employee terminate");
     expect(entry?.usedBy).toContain("employee cancel-termination");
   });
+
+  test("company forms, signatories, and federal-tax reads carry their read scopes", () => {
+    for (const scope of ["company_forms:read", "signatories:read", "company_federal_taxes:read"]) {
+      expect(DROPPED_SCOPES).not.toContain(scope);
+      expect(REQUIRED_SCOPES.find((r) => r.scope === scope)?.usedBy.length).toBeGreaterThan(0);
+    }
+    expect(REQUIRED_SCOPES.find((r) => r.scope === "company_forms:read")?.usedBy).toEqual(
+      expect.arrayContaining(["company forms list", "company forms show", "company forms pdf"]),
+    );
+  });
 });
 
 describe("findMissingScopes", () => {

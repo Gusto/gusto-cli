@@ -1,5 +1,6 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import { detectNext, encodeCursor, withPageParams } from "./pagination.ts";
+import { USER_AGENT } from "./version.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -349,6 +350,7 @@ export class ApiClient {
       Authorization: `Bearer ${this.token}`,
       Accept: "application/json",
       "X-Gusto-API-Version": this.apiVersion,
+      "User-Agent": USER_AGENT,
     };
     let init: RequestInit = { method, headers, signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
