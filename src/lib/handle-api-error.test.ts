@@ -119,7 +119,7 @@ describe("toResult 403 scope handling", () => {
   });
 
   test("a Gusto missing_oauth_scopes 403 with metadata.missing_scope_name names the scope", () => {
-    // Behind the AINT-810 flag: same shape as the generic body above, plus metadata naming the scope.
+    // Same shape as the generic body above, plus metadata naming the scope.
     const err = new ApiError(
       403,
       {
@@ -143,6 +143,30 @@ describe("toResult 403 scope handling", () => {
     expect(result.error.code).toBe("insufficient_scope");
     expect(result.error.message).toContain("company_benefits:read");
     expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test("the scope name is read off the missing_oauth_scopes entry even when it isn't errors[0]", () => {
+    const err = new ApiError(
+      403,
+      {
+        errors: [
+          { error_key: "request", category: "forbidden", message: "nope" },
+          {
+            error_key: "request",
+            category: "missing_oauth_scopes",
+            message: "You do not have the 'company_benefits:read' OAuth scope required for this request.",
+            metadata: { missing_scope_name: "company_benefits:read" },
+          },
+        ],
+      },
+      ExitCode.ApiClient,
+      "GET /v1/companies/x/benefits -> 403",
+    );
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.message).toContain("company_benefits:read");
   });
 
   test("a non-scope 403 still flows through as a client error", () => {
