@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EnvSource } from "../lib/env.ts";
@@ -15,7 +24,9 @@ import { upgradeHandler } from "./upgrade.ts";
 const TARGETS = ["gusto-darwin-arm64", "gusto-darwin-x64", "gusto-linux-x64"];
 
 const NEW_BINARY = '#!/bin/sh\necho "0.2.0"\n';
-const OLD_BINARY = '#!/bin/sh\necho "0.1.0"\n';
+
+/** A stub gusto binary reporting `version` - stands in for both the installed and served binaries. */
+const stub = (version: string): string => `#!/bin/sh\necho "${version}"\n`;
 
 interface Fixture {
   server: ReturnType<typeof Bun.serve>;
@@ -28,7 +39,14 @@ interface Fixture {
 }
 
 function startFixture(
-  opts: { corruptBinary?: boolean; binaryBody?: string; sha256sumsBody?: string; missingAsset?: boolean } = {},
+  opts: {
+    corruptBinary?: boolean;
+    binaryBody?: string;
+    sha256sumsBody?: string;
+    missingAsset?: boolean;
+    /** Version the *already installed* binary reports. Null installs nothing, leaving the dir empty. */
+    installedVersion?: string | null;
+  } = {},
 ): Fixture {
   const binaryBody = opts.binaryBody ?? NEW_BINARY;
   const hash = createHash("sha256").update(binaryBody).digest("hex");
@@ -54,7 +72,8 @@ function startFixture(
 
   const installDir = tmpDir("gusto-cli-upgrade-cmd-");
   const installed = path.join(installDir, "gusto");
-  writeFileSync(installed, OLD_BINARY, { mode: 0o755 });
+  const installedVersion = opts.installedVersion === undefined ? "0.1.0" : opts.installedVersion;
+  if (installedVersion !== null) writeFileSync(installed, stub(installedVersion), { mode: 0o755 });
 
   return { server, baseUrl: `http://localhost:${server.port}`, installDir, installed, requests };
 }
@@ -86,12 +105,13 @@ function flags(overrides: Partial<GlobalFlags> = {}): GlobalFlags {
   return { agent: true, human: false, json: false, verbose: false, ...overrides };
 }
 
-/** Run the handler against the fixture. `version` is the version the *current* binary reports;
- * `pin` is GUSTO_CLI_VERSION, which resolves the target tag without touching github.com. */
+/** Run the handler against the fixture. `pin` is GUSTO_CLI_VERSION, which resolves the target tag
+ * without touching github.com. The version upgrade compares against is read from the installed
+ * binary itself, so control it with startFixture's `installedVersion`. */
 async function runUpgrade(
   fx: Fixture,
   opts: { force?: boolean; dryRun?: boolean; confirm?: boolean } = {},
-  extra: { version?: string; pin?: string; env?: EnvSource; platform?: string; arch?: string } = {},
+  extra: { pin?: string; env?: EnvSource; platform?: string; arch?: string } = {},
 ) {
   const { sinks, stderr } = captureSinks();
   const ctx: CommandContext = { command: "gusto upgrade", globals: flags(), sinks };
@@ -103,7 +123,7 @@ async function runUpgrade(
   };
   const result = await upgradeHandler(opts, {
     env,
-    currentVersion: extra.version ?? "0.1.0",
+    currentVersion: "0.1.0",
     platform: extra.platform ?? "linux",
     arch: extra.arch ?? "x64",
   })(ctx);
@@ -144,18 +164,50 @@ describe("upgradeHandler", () => {
   });
 
   test("reports already-up-to-date as a success and downloads nothing", async () => {
-    fixture = startFixture();
-    const { result } = await runUpgrade(fixture, { confirm: true }, { version: "0.2.0" });
+    fixture = startFixture({ installedVersion: "0.2.0" });
+    const { result } = await runUpgrade(fixture, { confirm: true });
 
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data).toMatchObject({ status: "up_to_date", from: "0.2.0", to: "0.2.0" });
     expect(fixture.requests).toEqual([]);
-    expect(installedVersion(fixture)).toBe("0.1.0");
+  });
+
+  // The version compared against has to be the one at install_path. Reading it off the running
+  // process instead makes upgrade report "up to date" while leaving a stale binary in place, which
+  // is reachable whenever GUSTO_INSTALL_DIR names an install other than the running one.
+  test("compares against the installed binary, not the running process", async () => {
+    fixture = startFixture({ installedVersion: "0.0.1" });
+    const { result } = await runUpgrade(fixture, { confirm: true });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toMatchObject({ status: "upgraded", from: "0.0.1", to: "0.2.0" });
+    expect(installedVersion(fixture)).toBe("0.2.0");
+  });
+
+  test("installs, and reports from: null, when the target dir holds no binary yet", async () => {
+    fixture = startFixture({ installedVersion: null });
+    const { result } = await runUpgrade(fixture, { confirm: true });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toMatchObject({ status: "upgraded", from: null, to: "0.2.0" });
+    expect(installedVersion(fixture)).toBe("0.2.0");
+  });
+
+  test("does not treat two unknown versions as a match", async () => {
+    // No pin, so the target version is unknown under the base-url override; nothing is installed,
+    // so the current version is unknown too. Two nulls must not read as up-to-date.
+    fixture = startFixture({ installedVersion: null });
+    const { result } = await runUpgrade(fixture, { confirm: true }, { env: { GUSTO_CLI_VERSION: "" } });
+
+    expect(result.ok).toBe(true);
+    // `to` starts unknown and is filled in from the installed binary's own --version afterwards.
+    if (result.ok) expect(result.data).toMatchObject({ status: "upgraded", from: null, to: "0.2.0" });
+    expect(installedVersion(fixture)).toBe("0.2.0");
   });
 
   test("--force reinstalls even when already up to date", async () => {
-    fixture = startFixture();
-    const { result } = await runUpgrade(fixture, { confirm: true, force: true }, { version: "0.2.0" });
+    fixture = startFixture({ installedVersion: "0.2.0" });
+    const { result } = await runUpgrade(fixture, { confirm: true, force: true });
 
     expect(result.ok).toBe(true);
     if (result.ok) expect((result.data as { status: string }).status).toBe("upgraded");
@@ -282,6 +334,53 @@ describe("upgradeHandler", () => {
     expect(fixture.requests).toEqual([]);
   });
 
+  // SIGINT is the realistic way a staging file gets stranded: index.ts's handler calls process.exit,
+  // which doesn't unwind the finally block guarding the staging write.
+  test("sweeps a staging file stranded by an interrupted earlier run", async () => {
+    fixture = startFixture();
+    const stale = path.join(fixture.installDir, ".gusto-upgrade-2147483646");
+    writeFileSync(stale, "half a download");
+
+    const { result, stderr } = await runUpgrade(fixture, { confirm: true });
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(stderr).toContain("leftover staging file");
+    expect(leftoverStagingFiles(fixture)).toEqual([]);
+  });
+
+  test("leaves a staging file belonging to a live process alone", async () => {
+    fixture = startFixture();
+    // A real live process stands in for a concurrent `gusto upgrade` mid-download. Sweeping its
+    // staged file would break that run, so it has to survive while a dead pid's file does not.
+    const other = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+    const liveFile = path.join(fixture.installDir, `.gusto-upgrade-${other.pid}`);
+    const deadFile = path.join(fixture.installDir, ".gusto-upgrade-2147483646");
+    writeFileSync(liveFile, "a concurrent run's staged download");
+    writeFileSync(deadFile, "stranded by a dead process");
+
+    try {
+      const { result } = await runUpgrade(fixture, { confirm: true });
+      expect(result.ok).toBe(true);
+      expect(existsSync(liveFile)).toBe(true);
+      expect(existsSync(deadFile)).toBe(false);
+    } finally {
+      other.kill();
+      await other.exited;
+    }
+  });
+
+  test("a non-writable install dir does not fail on the sweep - it fails before it", async () => {
+    if (process.getuid?.() === 0) return;
+    fixture = startFixture();
+    writeFileSync(path.join(fixture.installDir, ".gusto-upgrade-2147483646"), "stale");
+    chmodSync(fixture.installDir, 0o500);
+
+    const { result } = await runUpgrade(fixture, { confirm: true });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("install_dir_not_writable");
+  });
+
   test("does not gate in human mode - the operator at the TTY is the approval", async () => {
     fixture = startFixture();
     const { sinks } = captureSinks();
@@ -310,11 +409,18 @@ describe("upgradeHandler", () => {
     if (upgraded.result.ok) expect(upgraded.result.human?.()).toBe("upgraded gusto 0.1.0 -> 0.2.0");
 
     fixture.server.stop(true);
-    fixture = startFixture();
-    const current = await runUpgrade(fixture, { confirm: true }, { version: "0.2.0" });
+    fixture = startFixture({ installedVersion: "0.2.0" });
+    const current = await runUpgrade(fixture, { confirm: true });
     if (current.result.ok) expect(current.result.human?.()).toBe("already up to date (0.2.0)");
 
+    fixture.server.stop(true);
+    fixture = startFixture({ installedVersion: "0.1.0" });
     const preview = await runUpgrade(fixture, { dryRun: true });
     if (preview.result.ok) expect(preview.result.human?.()).toBe("upgrade available: 0.1.0 -> 0.2.0");
+
+    fixture.server.stop(true);
+    fixture = startFixture({ installedVersion: null });
+    const absent = await runUpgrade(fixture, { dryRun: true });
+    if (absent.result.ok) expect(absent.result.human?.()).toBe("upgrade available: not installed -> 0.2.0");
   });
 });

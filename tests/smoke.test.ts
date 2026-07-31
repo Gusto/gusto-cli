@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
@@ -577,6 +577,10 @@ describe("upgrade works without auth and without touching the network", () => {
   });
 
   test("already up to date is a success, not an error", async () => {
+    // The installed binary has to actually be there and report this version - upgrade reads it from
+    // the file at install_path, not from the running process. Copying the binary under test in is
+    // the cheapest way to get a target whose --version matches pkg.version.
+    copyFileSync(BIN_PATH, path.join(installDir, "gusto"));
     const result = await run(["upgrade"], {
       GUSTO_INSTALL_DIR: installDir,
       GUSTO_CLI_VERSION: `v${pkg.version}`,
@@ -586,6 +590,21 @@ describe("upgrade works without auth and without touching the network", () => {
     expect(envelope.ok).toBe(true);
     expect(envelope.data.status).toBe("up_to_date");
     expect(envelope.data.from).toBe(pkg.version);
+  });
+
+  // Guards the bug this replaced: with nothing installed at install_path, upgrade used to compare
+  // the release against the *running* process's version and report "already up to date" about a
+  // binary that did not exist.
+  test("does not claim up-to-date when no binary is installed at the target", async () => {
+    const result = await run(["upgrade", "--dry-run"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: `v${pkg.version}`,
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.status).toBe("available");
+    expect(envelope.data.from).toBeNull();
+    expect(envelope.data.to).toBe(pkg.version);
   });
 
   test("a real upgrade in agent mode is blocked until --confirm (exit 8)", async () => {
@@ -601,6 +620,10 @@ describe("upgrade works without auth and without touching the network", () => {
   });
 
   test("--dry-run reports an available upgrade without --confirm", async () => {
+    const installed = path.join(installDir, "gusto");
+    copyFileSync(BIN_PATH, installed);
+    const before = statSync(installed).mtimeMs;
+
     const result = await run(["upgrade", "--dry-run"], {
       GUSTO_INSTALL_DIR: installDir,
       GUSTO_CLI_VERSION: "v9.9.9",
@@ -609,7 +632,8 @@ describe("upgrade works without auth and without touching the network", () => {
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
     expect(envelope.data).toMatchObject({ status: "available", from: pkg.version, to: "9.9.9" });
-    expect(existsSync(path.join(installDir, "gusto"))).toBe(false);
+    // Preview only: the installed binary is read for its version but never rewritten.
+    expect(statSync(installed).mtimeMs).toBe(before);
   });
 });
 

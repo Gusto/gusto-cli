@@ -138,6 +138,23 @@ describe("resolveTargetPath", () => {
     }
   });
 
+  test("flags the running executable as isSelf, and another install as not", () => {
+    const dir = tmpDir("gusto-cli-upgrade-self-");
+    const self = path.join(dir, "gusto");
+    writeFileSync(self, "#!/bin/sh\n", { mode: 0o755 });
+
+    // GUSTO_INSTALL_DIR naming the dir we're running from is still ourselves...
+    const same = resolveTargetPath({ GUSTO_INSTALL_DIR: dir }, self);
+    expect(same.ok && same.isSelf).toBe(true);
+
+    // ...but naming a different install is not, and that's what stops VERSION standing in for it.
+    const other = resolveTargetPath({ GUSTO_INSTALL_DIR: "/somewhere/else/bin" }, self);
+    expect(other.ok && other.isSelf).toBe(false);
+
+    const bare = resolveTargetPath({}, self);
+    expect(bare.ok && bare.isSelf).toBe(true);
+  });
+
   test("treats an empty GUSTO_INSTALL_DIR as unset", () => {
     const result = resolveTargetPath({ GUSTO_INSTALL_DIR: "" }, "/usr/local/bin/bun");
     expect(result.ok).toBe(false);

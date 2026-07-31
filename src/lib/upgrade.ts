@@ -1,5 +1,5 @@
 import { constants as FS_CONST, realpathSync } from "node:fs";
-import { access, chmod, rename, unlink } from "node:fs/promises";
+import { access, chmod, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { EnvSource } from "./env.ts";
@@ -27,10 +27,14 @@ const MANAGED_PREFIXES: readonly { prefix: string; manager: string }[] = [
 
 const REINSTALL_HINT = "Reinstall instead: curl -fsSL https://cli.gusto.com/install.sh | sh";
 
+/** Staging files are `.gusto-upgrade-<pid>`, dot-prefixed so they don't show up in a bare `ls`. */
+const STAGING_PREFIX = `.${BINARY_NAME}-upgrade-`;
+
 export interface UpgradeResult {
   /** `available` is the `--dry-run` preview. */
   status: "up_to_date" | "available" | "upgraded";
-  from: string;
+  /** The version at `install_path`, or null when nothing runnable is installed there yet. */
+  from: string | null;
   /** The release's version, `v` prefix stripped. Null only when a `GUSTO_CLI_BASE_URL` override
    * leaves the origin's version unknowable before the download. */
   to: string | null;
@@ -65,23 +69,32 @@ export function platformAsset(
   return { ok: true, asset: `${BINARY_NAME}-${platform}-${arch}` };
 }
 
+/** `realpathSync` that degrades to its input, for paths that may not exist yet. */
+function canonical(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 /** Symlinks are resolved so a `~/.local/bin/gusto` link upgrades its target, not itself.
  *
  * The basename guard is load-bearing: under `bun run dev -- upgrade` the running executable is the
- * developer's `bun`, and replacing that would be a destructive surprise. */
+ * developer's `bun`, and replacing that would be a destructive surprise.
+ *
+ * `isSelf` distinguishes upgrading ourselves from upgrading some other install that
+ * `GUSTO_INSTALL_DIR` named. Only in the first case is this process's compiled-in `VERSION` the
+ * version of the file being replaced. */
 export function resolveTargetPath(
   env: EnvSource,
   execPath: string = process.execPath,
-): { ok: true; targetPath: string } | Failed {
+): { ok: true; targetPath: string; isSelf: boolean } | Failed {
+  const resolved = canonical(execPath);
   const installDir = env.GUSTO_INSTALL_DIR;
   if (installDir !== undefined && installDir.length > 0) {
-    return { ok: true, targetPath: path.join(installDir, BINARY_NAME) };
-  }
-  let resolved: string;
-  try {
-    resolved = realpathSync(execPath);
-  } catch {
-    resolved = execPath;
+    const targetPath = path.join(installDir, BINARY_NAME);
+    return { ok: true, targetPath, isSelf: canonical(targetPath) === resolved };
   }
   if (path.basename(resolved) !== BINARY_NAME) {
     return fail(
@@ -92,7 +105,7 @@ export function resolveTargetPath(
       ExitCode.Validation,
     );
   }
-  return { ok: true, targetPath: resolved };
+  return { ok: true, targetPath: resolved, isSelf: true };
 }
 
 /** Strip a tag's leading `v` so a release tag compares against `package.json`'s version. */
@@ -238,6 +251,52 @@ export async function defaultStripQuarantine(file: string): Promise<void> {
   }
 }
 
+/** Delete staging files stranded by an earlier run.
+ *
+ * The `finally` around the staging block covers every catchable failure, but not SIGKILL, OOM, or
+ * power loss - and not SIGINT either, since the handler in `index.ts` calls `process.exit`, which
+ * doesn't unwind pending async work. So a Ctrl-C mid-download does strand a file, and without this
+ * they accumulate in the install dir forever.
+ *
+ * Files belonging to a live pid are left alone: a concurrent `gusto upgrade` is unlikely, but
+ * deleting its staged download out from under it would break that run for no benefit. Entirely
+ * best-effort - a locked or foreign file must never fail the upgrade. */
+async function sweepStagingFiles(dir: string, log: (line: string) => void): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(STAGING_PREFIX)) continue;
+    const pid = Number(entry.slice(STAGING_PREFIX.length));
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid)) continue;
+    try {
+      await unlink(path.join(dir, entry));
+      log(`removed a leftover staging file from an interrupted run (${entry})`);
+    } catch {
+      // Someone else's, locked, or already gone. None of that should stop the upgrade.
+    }
+  }
+}
+
+/** Signal 0 checks for the process without delivering anything: throws ESRCH when it's gone. A
+ * recycled pid reads as alive, which only means one extra run before the file is swept. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The installed version for display, when there may not be an installed binary at all. */
+function describeFrom(from: string | null): string {
+  return from ?? "not installed";
+}
+
 async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: true; bytes: Uint8Array } | Failed> {
   let res: Response;
   try {
@@ -275,7 +334,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
 
   const pathResult = resolveTargetPath(env, execPath);
   if (!pathResult.ok) return pathResult.result;
-  const { targetPath } = pathResult;
+  const { targetPath, isSelf } = pathResult;
 
   const preflight = await preflightInstallDir(targetPath);
   if (!preflight.ok) return preflight.result;
@@ -285,13 +344,21 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   const { tag } = tagResult;
   const targetVersion = tag === null ? null : tagToVersion(tag);
 
-  const base = { from: currentVersion, to: targetVersion, asset, install_path: targetPath };
+  // The version being replaced has to come from the file at targetPath, not from this process.
+  // `GUSTO_INSTALL_DIR` can name a different install, and using our own VERSION there would compare
+  // the wrong two things - reporting "already up to date" while leaving a genuinely stale binary
+  // (or no binary at all) in place. Only when the target *is* us can VERSION stand in, which also
+  // keeps the common path free of an extra spawn. Null means nothing runnable is installed there.
+  const from = isSelf ? currentVersion : await versionOf(targetPath);
+  const base = { from, to: targetVersion, asset, install_path: targetPath };
 
-  if (targetVersion === currentVersion && opts.force !== true) {
+  // A null on either side is "unknown", never a match: an unknown target version (a
+  // `GUSTO_CLI_BASE_URL` origin) and an absent installed binary must both still install.
+  if (targetVersion !== null && targetVersion === from && opts.force !== true) {
     return {
       ok: true,
       data: { status: "up_to_date", ...base },
-      human: () => `already up to date (${currentVersion})`,
+      human: () => `already up to date (${targetVersion})`,
     };
   }
 
@@ -299,7 +366,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     return {
       ok: true,
       data: { status: "available", ...base },
-      human: () => `upgrade available: ${currentVersion} -> ${targetVersion ?? "unknown"}`,
+      human: () => `upgrade available: ${describeFrom(from)} -> ${targetVersion ?? "unknown"}`,
     };
   }
 
@@ -334,9 +401,11 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   }
   log("checksum verified");
 
+  await sweepStagingFiles(path.dirname(targetPath), log);
+
   // Stage inside the install dir, not $TMPDIR: same filesystem is what makes the final rename an
   // atomic swap rather than a copy that can be observed half-written.
-  const staged = path.join(path.dirname(targetPath), `.${BINARY_NAME}-upgrade-${process.pid}`);
+  const staged = path.join(path.dirname(targetPath), `${STAGING_PREFIX}${process.pid}`);
   try {
     await Bun.write(staged, binary.bytes);
     await chmod(staged, 0o755);
@@ -359,7 +428,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     return {
       ok: true,
       data: { status: "upgraded", ...base, to: reported, checksum: "verified" },
-      human: () => `upgraded gusto ${currentVersion} -> ${reported}`,
+      human: () => `upgraded gusto ${describeFrom(from)} -> ${reported}`,
     };
   } finally {
     // Only present if we bailed before the rename; unlink is a no-op otherwise.

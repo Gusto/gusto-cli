@@ -25,7 +25,7 @@ gusto upgrade             # replace the binary in place
 
 Resolves the latest release, downloads the asset for your OS/arch, verifies it against that release's `SHA256SUMS`, checks the new binary runs, then atomically replaces the installed one. A checksum mismatch or a binary that won't run leaves your current install untouched; being already up to date exits `0`.
 
-Same overrides as the installer: `GUSTO_CLI_VERSION` pins a release (which is also how to downgrade), `GUSTO_INSTALL_DIR` names the binary to replace, and `GUSTO_CLI_REPO`/`GUSTO_CLI_BASE_URL` point at a different origin. Installs managed by a package manager (Homebrew, Nix) are refused - update those with the package manager, so its metadata stays in step with what's on disk.
+Same overrides as the installer: `GUSTO_CLI_VERSION` pins a release (which is also how to downgrade), `GUSTO_INSTALL_DIR` names the binary to replace, and `GUSTO_CLI_REPO`/`GUSTO_CLI_BASE_URL` point at a different origin. The version compared against is read from the binary at that path, not from the `gusto` you invoked, so pointing `GUSTO_INSTALL_DIR` at another install upgrades *that* one on its own merits. `from` is `null` when nothing runnable is installed there yet. Installs managed by a package manager (Homebrew, Nix) are refused - update those with the package manager, so its metadata stays in step with what's on disk.
 
 In agent mode (piped stdout, `--agent`, `--json`) the upgrade is gated behind `--confirm` like any other write, since it replaces the binary the agent is running. `--dry-run` needs no `--confirm`.
 
