@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { ApiError } from "../lib/api-client.ts";
-import { withCompanyContext } from "../lib/api-context.ts";
+import { fetchCompanyResource, withCompanyContext } from "../lib/api-context.ts";
 import { errMsg } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { fetchCompanyLocations } from "../lib/locations.ts";
@@ -33,6 +33,38 @@ export function registerCompanyCommand(parent: Command): void {
   ).action((opts: CompanyShowOpts) =>
     runReadCommand("gusto company locations", readGlobalFlags(parent.opts()), companyLocationsHandler(opts)),
   );
+
+  withContextOptions(
+    cmd.command("earning-types").description("List the company's earning types (default and custom)"),
+  ).action((opts: CompanyShowOpts) =>
+    runReadCommand("gusto company earning-types", readGlobalFlags(parent.opts()), companyEarningTypesHandler(opts)),
+  );
+
+  withContextOptions(cmd.command("custom-fields").description("List the company's custom fields")).action(
+    (opts: CompanyShowOpts) =>
+      runReadCommand("gusto company custom-fields", readGlobalFlags(parent.opts()), companyCustomFieldsHandler(opts)),
+  );
+}
+
+/** GET /v1/companies/{id}/earning_types. Returns the body unchanged (`{ default, custom }`),
+ * matching the equivalent `gusto api request` GET. */
+export function companyEarningTypesHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/earning_types`,
+    );
+}
+
+/** GET /v1/companies/{id}/custom_fields. Returns the body unchanged (`{ custom_fields }`). */
+export function companyCustomFieldsHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/custom_fields`,
+    );
 }
 
 export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {
