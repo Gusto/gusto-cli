@@ -44,7 +44,8 @@ interface Fixture {
 function startFixture(
   opts: {
     corruptBinary?: boolean;
-    binaryBody?: string;
+    /** Bytes, not a string, so a test can serve a real executable image without re-encoding it. */
+    binaryBody?: string | Uint8Array;
     sha256sumsBody?: string;
     missingAsset?: boolean;
     /** Serve assets as a 302 to this origin instead, for the redirect-scheme guard. */
@@ -376,6 +377,24 @@ describe("upgradeHandler", () => {
       elsewhere.server.stop(true);
     }
   });
+
+  // Every other case stages a shell script, which cannot catch this: Linux refuses to execute a file
+  // anyone holds open for writing (ETXTBSY), and that applies to the executable image, not to a
+  // script's interpreter - so holding the wrong kind of descriptor across the exec-check passes a
+  // script and breaks every real upgrade. Linux-only on both counts: it is where the hazard is, and
+  // macOS SIGKILLs a copied platform-signed binary like /bin/echo, which would fail for its own
+  // unrelated reason.
+  test.skipIf(process.platform !== "linux" || !existsSync("/bin/echo"))(
+    "exec-checks a real executable image, not just a script",
+    async () => {
+      fixture = startFixture({ binaryBody: new Uint8Array(readFileSync("/bin/echo")) });
+      const { result } = await runUpgrade(fixture, { confirm: true });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect((result.data as { status: string }).status).toBe("upgraded");
+      expect(leftoverStagingFiles(fixture)).toEqual([]);
+    },
+  );
 
   // Losing a race used to report `binary_check_failed` - the other run's preflight had unlinked our
   // staging file, so the exec-check found nothing to run and the code blamed the release. The other

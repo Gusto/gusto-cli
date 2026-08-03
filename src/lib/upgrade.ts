@@ -269,16 +269,33 @@ export async function preflightStagingPath(staged: string): Promise<{ ok: true }
   return { ok: true };
 }
 
-/** Whether the staging path still holds the exact file we created, by inode.
+/** Whether the staging path still holds the exact file we created.
  *
  * A fixed staging name is shared, so a concurrent run's own preflight will clear ours out from
  * under us mid-upgrade. Without this check that shows up as a lie: the exec-check finds nothing to
  * run and the code blames the release artifact, or the `rename` moves whatever the other run left
  * there - bytes this process never checksummed. There's no lock to take (POSIX advisory locks
- * aren't exposed here), but identity is enough to refuse rather than guess. */
-async function stagingStillOurs(staged: string, ino: number): Promise<boolean> {
+ * aren't exposed here), but identity is enough to refuse rather than guess.
+ *
+ * Identity is read off our own still-open descriptor, not off the path. Comparing inode numbers
+ * alone would be wrong: ext4 hands a just-freed inode straight back to the next create in the same
+ * directory, so an unlink-then-recreate can land the other run's file on our number. `nlink` can't
+ * be spoofed that way - once our file is unlinked, our descriptor reports zero links no matter
+ * what has since been created at the path.
+ *
+ * Both halves are needed. `nlink` alone still reads as ours after a successful `rename` (the file
+ * is simply at its new name), and the `lstat` alone is the inode-reuse trap. Together: our file is
+ * still linked, and the staging path is still where it's linked.
+ *
+ * The descriptor must be read-only. Linux refuses to execute a file that anyone holds open for
+ * writing (`ETXTBSY`), so keeping the write handle open across the exec-check would break every
+ * real upgrade there while passing here, since the tests stage shell scripts and `ETXTBSY` applies
+ * to the executable image, not to a script's interpreter. */
+async function stagingStillOurs(handle: Awaited<ReturnType<typeof open>>, staged: string): Promise<boolean> {
   try {
-    return (await lstat(staged)).ino === ino;
+    const ours = await handle.stat();
+    if (ours.nlink === 0) return false;
+    return (await lstat(staged)).ino === ours.ino;
   } catch {
     return false;
   }
@@ -512,12 +529,28 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   // symlink or a directory in. It also turns two concurrent upgrades from a silent race - each
   // renaming whatever the other last left at the shared staging path - into a clean refusal for
   // the second one, with its install untouched.
-  let handle: Awaited<ReturnType<typeof open>>;
-  // Recorded up front so every later step can ask whether the path still holds *this* file.
-  let stagedIno: number;
+  //
+  // A read-only descriptor on the same file is then held open past the `rename`, because that is
+  // what identifies our file for the rest of the run: see `stagingStillOurs`.
+  let ident: Awaited<ReturnType<typeof open>>;
   try {
-    handle = await open(staged, FS_CONST.O_WRONLY | FS_CONST.O_CREAT | FS_CONST.O_EXCL, 0o700);
-    stagedIno = (await handle.stat()).ino;
+    const writer = await open(staged, FS_CONST.O_WRONLY | FS_CONST.O_CREAT | FS_CONST.O_EXCL, 0o700);
+    try {
+      await writer.write(binary.bytes);
+      await writer.chmod(0o755);
+      // Reopened rather than reused so the exec-check isn't blocked by our own write handle. The
+      // reopen races the same concurrent run everything else here does, so it's checked against
+      // the writer while both are open: our inode can't be recycled while the writer pins it, so
+      // matching inodes prove the read handle is the file we just wrote.
+      ident = await open(staged, FS_CONST.O_RDONLY);
+      const [w, r] = await Promise.all([writer.stat(), ident.stat()]);
+      if (w.ino !== r.ino || w.dev !== r.dev) {
+        await ident.close().catch(() => {});
+        return concurrentUpgrade(staged, targetPath);
+      }
+    } finally {
+      await writer.close().catch(() => {});
+    }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     // Deliberately outside the cleanup below: whatever is at `staged` isn't ours to remove.
@@ -529,19 +562,13 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     ).result;
   }
   try {
-    try {
-      await handle.write(binary.bytes);
-      await handle.chmod(0o755);
-    } finally {
-      await handle.close();
-    }
     await stripQuarantine(staged);
 
     // Checked before the artifact is blamed for anything: a lost race and a corrupt release both
     // make `--version` come back null, and "the release artifact is corrupt" is a bad thing to tell
     // someone whose only mistake was running two upgrades at once.
     const reported = await versionOf(staged);
-    if (!(await stagingStillOurs(staged, stagedIno))) return concurrentUpgrade(staged, targetPath);
+    if (!(await stagingStillOurs(ident, staged))) return concurrentUpgrade(staged, targetPath);
     if (reported === null) {
       return {
         ok: false,
@@ -556,7 +583,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     // Again immediately before the swap, so what lands on `targetPath` is what was checksummed.
     // A window remains between this check and the rename - closing it needs `renameat2`, which
     // isn't reachable from here - but it shrinks from the whole exec-check to a syscall apart.
-    if (!(await stagingStillOurs(staged, stagedIno))) return concurrentUpgrade(staged, targetPath);
+    if (!(await stagingStillOurs(ident, staged))) return concurrentUpgrade(staged, targetPath);
     try {
       await rename(staged, targetPath);
     } catch (err) {
@@ -575,8 +602,10 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       human: () => `upgraded gusto ${describeFrom(from)} -> ${reported}`,
     };
   } finally {
-    // Only if it's still the file we created: after a successful rename there's nothing there, and
-    // if a concurrent run has since claimed the path, that file is theirs to remove, not ours.
-    if (await stagingStillOurs(staged, stagedIno)) await unlink(staged).catch(() => {});
+    // Only if the staging path is still our file: after a successful rename it isn't there at all,
+    // and if a concurrent run has claimed the path since, that file is theirs to remove, not ours.
+    const ours = await stagingStillOurs(ident, staged);
+    await ident.close().catch(() => {});
+    if (ours) await unlink(staged).catch(() => {});
   }
 }
