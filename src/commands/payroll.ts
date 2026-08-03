@@ -71,10 +71,11 @@ const SHOW_INCLUDE_OPTIONS = [
 const hasTokens = (raw: string | undefined): raw is string => raw !== undefined && splitTokens(raw).length > 0;
 
 /** Map `payroll list` flags onto the API's `GET /v1/companies/{uuid}/payrolls`
- * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The
- * range rules (end_date at most 3 months out; start/end at most 1 year apart)
- * are enforced server-side and surfaced through the API error envelope, so they
- * are intentionally not duplicated here. The deprecated `processed` /
+ * query params, validating that any supplied dates are ISO `YYYY-MM-DD`. The endpoint's
+ * range limits are deliberately not mirrored here: the thresholds are the API's to change,
+ * and it measures them against defaults this layer can't see (an omitted `end_date` becomes
+ * today, so `--start-date` alone can breach the range limit). A breach comes back as a 422
+ * whose message `toResult` surfaces verbatim. The deprecated `processed` /
  * `include_off_cycle` params are omitted in favor of `processing_statuses` /
  * `payroll_types`. Pagination params (`page`/`per`) are not yet implemented. */
 export function buildPayrollListQuery(opts: PayrollListOpts): PayrollQueryResult {
@@ -745,8 +746,11 @@ See also:
       `${PROCESSING_STATUSES.join(", ")} - comma-separate for multiple (default processed and unprocessed; narrowed to 'processed' when --date-filter-by is set)`,
     )
     .option("--payroll-type <types>", `${PAYROLL_TYPES.join(", ")} - comma-separate for multiple (default regular)`)
-    .option("--start-date <date>", "Only payrolls whose pay period is on/after this date (YYYY-MM-DD)")
-    .option("--end-date <date>", "Only payrolls up to this date (YYYY-MM-DD; at most 3 months in the future)")
+    .option(
+      "--start-date <date>",
+      "Only payrolls whose pay period is on/after this date (YYYY-MM-DD; the API rejects a range over ~1 year, measured against --end-date, which defaults to today)",
+    )
+    .option("--end-date <date>", "Only payrolls up to this date (YYYY-MM-DD; at most ~3 months in the future)")
     .option(
       "--date-filter-by <field>",
       "Date to filter by: check_date (defaults to pay period; requires --processing-status processed)",
