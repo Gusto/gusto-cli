@@ -4,8 +4,8 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
-  mkdirSync,
   readFileSync,
+  mkdirSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -239,6 +239,8 @@ describe("upgradeHandler", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("checksum_mismatch");
+      // Exit 1 is the integrity contract: a caller should read it as permanent, not retry it.
+      expect(result.exitCode).toBe(ExitCode.General);
       expect(result.error.message).toContain("nothing was changed");
     }
     expect(readFileSync(fixture.installed)).toEqual(before);
@@ -250,7 +252,10 @@ describe("upgradeHandler", () => {
     const { result } = await runUpgrade(fixture, { confirm: true });
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("checksum_missing");
+    if (!result.ok) {
+      expect(result.error.code).toBe("checksum_missing");
+      expect(result.exitCode).toBe(ExitCode.General);
+    }
     expect(installedVersion(fixture)).toBe("0.1.0");
   });
 
@@ -264,7 +269,10 @@ describe("upgradeHandler", () => {
     const { result } = await runUpgrade(fixture, { confirm: true });
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("binary_check_failed");
+    if (!result.ok) {
+      expect(result.error.code).toBe("binary_check_failed");
+      expect(result.exitCode).toBe(ExitCode.General);
+    }
     expect(installedVersion(fixture)).toBe("0.1.0");
     expect(leftoverStagingFiles(fixture)).toEqual([]);
   });
@@ -407,6 +415,41 @@ describe("upgradeHandler", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data).toMatchObject({ status: "upgraded", from: null });
     expect(existsSync(path.join(fresh, "gusto"))).toBe(true);
+  });
+
+  // The only invocation a real user makes - no GUSTO_INSTALL_DIR, upgrading the running binary -
+  // and the one every other test here opts out of by setting the env var. The compiled-in version
+  // standing in for the installed one is exactly what keeps this path free of an extra spawn, so
+  // the spy going uncalled is the assertion, not a detail.
+  test("upgrades the running binary using its own version, without spawning it", async () => {
+    fixture = startFixture();
+    const selfDir = tmpDir("gusto-cli-upgrade-self-");
+    const self = path.join(selfDir, "gusto");
+    writeFileSync(self, stub("0.1.0"), { mode: 0o755 });
+
+    let versionOfCalls = 0;
+    const { sinks } = captureSinks();
+    const ctx: CommandContext = { command: "gusto upgrade", globals: flags(), sinks };
+    const result = await upgradeHandler(
+      { dryRun: true },
+      {
+        env: { GUSTO_CLI_BASE_URL: fixture.baseUrl, GUSTO_CLI_VERSION: "v0.2.0" },
+        currentVersion: "0.1.0",
+        execPath: self,
+        platform: "linux",
+        arch: "x64",
+        versionOf: async () => {
+          versionOfCalls += 1;
+          return "0.0.0";
+        },
+      },
+    )(ctx);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toMatchObject({ status: "available", from: "0.1.0", to: "0.2.0", install_path: self });
+    }
+    expect(versionOfCalls).toBe(0);
   });
 
   // SIGINT is the realistic way one gets stranded: index.ts's handler calls process.exit, which
