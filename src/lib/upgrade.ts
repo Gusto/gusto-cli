@@ -222,6 +222,38 @@ async function nearestExistingPath(
   }
 }
 
+/** Errnos where the symlink itself is the problem and removing it is the only fix: nothing at the
+ * other end, a non-directory component along the way, or a cycle. Everything else - `EACCES` from a
+ * directory in the target path that denies search, an unmounted mountpoint - is about the *state* of
+ * a link that may be perfectly correct, and a chmod or a remount changes it. */
+const BROKEN_LINK_ERRNOS: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR", "ELOOP"]);
+
+/** Whether the anchor can serve as the install directory, and if not, whose fault that is.
+ *
+ * The two `*stat` calls here and in the walk want opposite link semantics, on purpose. The walk uses
+ * `lstat` so a dangling link stops it; this one *follows*, because a link pointing at a real
+ * directory is a perfectly good install dir and `mkdir -p` is happy with it. Swap either and it
+ * breaks: `lstat` here refuses a working symlinked install, `access`/`stat` in the walk lets a broken
+ * one through.
+ *
+ * Failing to follow is not on its own evidence of a broken link, which is the distinction this
+ * returns three states for. A link to a real directory behind an unreadable parent fails `stat` with
+ * `EACCES` exactly as a dangling one fails with `ENOENT`; collapsing both into "not a directory"
+ * tells someone to delete a correct symlink to fix a permission problem elsewhere. An unrecognized
+ * errno is treated as `unreadable` so the advice stays non-destructive. */
+async function classifyAnchor(anchor: {
+  path: string;
+  info: Awaited<ReturnType<typeof lstat>>;
+}): Promise<"directory" | "not-a-directory" | "unreadable"> {
+  if (!anchor.info.isSymbolicLink()) return anchor.info.isDirectory() ? "directory" : "not-a-directory";
+  try {
+    return (await stat(anchor.path)).isDirectory() ? "directory" : "not-a-directory";
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    return typeof code === "string" && BROKEN_LINK_ERRNOS.has(code) ? "not-a-directory" : "unreadable";
+  }
+}
+
 /** Runs before anything is downloaded *and* before the confirm gate, so it only reads. Checks the
  * *directory*, not the file, because that's what `rename` needs write+execute on - a read-only file
  * in a writable dir replaces fine.
@@ -254,20 +286,23 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
   // Type before permissions, because `access` ignores file type: a regular file with mode 0755
   // satisfies W_OK|X_OK just as a directory does, and would sail through the check below only to
   // fail as a bare ENOTDIR from `mkdir` after the gate.
-  //
-  // Note the two calls want opposite link semantics, on purpose. The walk above uses `lstat` so a
-  // dangling link stops it; here a link is *followed*, because one pointing at a real directory is a
-  // perfectly good install dir and `mkdir -p` is happy with it. Swap either and it breaks: `lstat`
-  // here would refuse a working symlinked install, `access`/`stat` in the walk lets a broken one
-  // through. A link we can't follow is therefore a link with nothing at the other end.
-  const isDirectory = anchor.info.isSymbolicLink()
-    ? await stat(anchor.path).then(
-        (s) => s.isDirectory(),
-        () => false,
-      )
-    : anchor.info.isDirectory();
+  const anchorKind = await classifyAnchor(anchor);
 
-  if (!isDirectory) {
+  if (anchorKind === "unreadable") {
+    // Blocked, not Validation, and pointedly *not* "remove or rename": the link may well be correct,
+    // with the problem somewhere in the path it points at. A chmod or a remount fixes this, which is
+    // exactly the "precondition might later be met" that exit 8 means.
+    return fail(
+      "install_dir_not_writable",
+      `cannot resolve what ${anchor.path} points at, so ${targetPath} can't be installed - something ` +
+        `along its target path denies access, or the volume holding it isn't mounted. Check ` +
+        `permissions on the target rather than removing ${anchor.path}. Nothing was changed.`,
+      ExitCode.Blocked,
+      REINSTALL_HINT,
+    );
+  }
+
+  if (anchorKind === "not-a-directory") {
     // Validation, not Blocked: exit 8 tells an agent the precondition might later be met on its own,
     // and neither a stray file nor a broken link removes itself. Someone has to.
     const kind = anchor.info.isSymbolicLink()

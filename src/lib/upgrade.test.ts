@@ -410,6 +410,50 @@ describe("preflightInstallDir", () => {
     expect(existsSync(path.join(stray, "deeper"))).toBe(false);
   });
 
+  // Failing to follow a link is not on its own evidence that the link is broken. A link to a real
+  // directory behind an unreadable parent fails `stat` with EACCES exactly as a dangling one fails
+  // with ENOENT, and collapsing the two told the user to delete a *correct* symlink to fix a
+  // permission problem somewhere else entirely.
+  test.skipIf(process.getuid?.() === 0)("reports an unreadable symlink target as a permission problem", async () => {
+    const root = tmpDir("gusto-cli-upgrade-eacces-");
+    const blocked = path.join(root, "blocked");
+    const real = path.join(blocked, "real");
+    mkdirSync(real, { recursive: true });
+    const link = path.join(root, "bin");
+    symlinkSync(real, link);
+    chmodSync(blocked, 0o000);
+
+    const result = await preflightInstallDir(path.join(link, "gusto"));
+    chmodSync(blocked, 0o755); // before any assertion can throw and strand the scratch dir
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Blocked, because a chmod or a remount fixes this - the precondition really can later be met.
+      expect(failure(result).error.code).toBe("install_dir_not_writable");
+      expect(failure(result).exitCode).toBe(ExitCode.Blocked);
+      // The load-bearing half: never advise deleting a symlink that is doing its job.
+      expect(failure(result).error.message).not.toContain("Remove or rename");
+    }
+    // Ground truth, now that the intermediate is readable again.
+    expect(statSync(real).isDirectory()).toBe(true);
+  });
+
+  // A cycle is the link's own fault, so it stays in the removal bucket rather than joining EACCES in
+  // the permissions one - no chmod fixes a symlink that points at itself.
+  test("treats a symlink loop as a broken link, not a permission problem", async () => {
+    const root = tmpDir("gusto-cli-upgrade-eloop-");
+    const link = path.join(root, "bin");
+    symlinkSync(link, link);
+
+    const result = await preflightInstallDir(path.join(link, "gusto"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(failure(result).error.code).toBe("install_dir_not_a_directory");
+      expect(failure(result).exitCode).toBe(ExitCode.Validation);
+      expect(failure(result).error.message).toContain("Remove or rename");
+    }
+  });
+
   // The other half of the lstat/stat split. The walk must use `lstat` so a *dangling* link stops it,
   // but the type check must follow links so a *working* one is accepted. Collapsing the two into a
   // single call breaks one shape or the other, so both directions are pinned.
