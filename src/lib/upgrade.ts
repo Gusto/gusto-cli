@@ -33,6 +33,18 @@ const REINSTALL_HINT = "Reinstall instead: curl -fsSL https://cli.gusto.com/inst
  * makes that safe is `preflightStagingPath` plus the `O_EXCL` create - see both. */
 const STAGING_NAME = `.${BINARY_NAME}-upgrade`;
 
+/** Deadlines, so a connection that opens and then stalls can't hang `gusto upgrade` with no
+ * envelope and no exit code. The download's is generous because release assets run to tens of MB
+ * over whatever link the user has; the lookup is a single redirect and the exec check is a
+ * `--version` print, so both are short. */
+const LOOKUP_TIMEOUT_MS = 30_000;
+const DOWNLOAD_TIMEOUT_MS = 600_000;
+const EXEC_CHECK_TIMEOUT_MS = 30_000;
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
 export interface UpgradeResult {
   /** `available` is the `--dry-run` preview. */
   status: "up_to_date" | "available" | "upgraded";
@@ -138,8 +150,11 @@ export async function resolveTargetTag(
   const url = `https://github.com/${repo}/releases/latest`;
   let res: Response;
   try {
-    res = await fetchImpl(url, { redirect: "manual" });
+    res = await fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) });
   } catch (err) {
+    if (isTimeout(err)) {
+      return fail("release_lookup_timed_out", `${url} did not respond within ${LOOKUP_TIMEOUT_MS}ms`, ExitCode.Timeout);
+    }
     const detail = err instanceof Error ? err.message : String(err);
     return fail("release_lookup_failed", `could not reach ${url}: ${detail}`, ExitCode.Network);
   }
@@ -283,14 +298,24 @@ export interface UpgradeDeps {
  * Wrapped because a file that isn't a valid executable at all - the shape a truncated or garbage
  * download actually takes - makes `Bun.spawn` *throw* ENOEXEC rather than exit non-zero. Letting
  * that escape would surface as `internal_error` with a raw posix_spawn message instead of the
- * `binary_check_failed` the caller can act on. */
+ * `binary_check_failed` the caller can act on.
+ *
+ * Killed on a deadline for the same reason: this is where a just-fetched artifact runs, and one
+ * that blocks on init would otherwise hang the upgrade with a staged 0755 file in the install dir.
+ * A build that won't print its version inside the deadline is a build we won't install, so the
+ * timeout reads as the same null every other bad artifact does. */
 export async function defaultVersionOf(file: string): Promise<string | null> {
   try {
     const proc = Bun.spawn([file, "--version"], { stdout: "pipe", stderr: "ignore" });
-    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-    if (code !== 0) return null;
-    const version = out.trim();
-    return version.length > 0 ? version : null;
+    const deadline = setTimeout(() => proc.kill("SIGKILL"), EXEC_CHECK_TIMEOUT_MS);
+    try {
+      const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      if (code !== 0) return null;
+      const version = out.trim();
+      return version.length > 0 ? version : null;
+    } finally {
+      clearTimeout(deadline);
+    }
   } catch {
     return null;
   }
@@ -314,18 +339,49 @@ function describeFrom(from: string | null): string {
   return from ?? "not installed";
 }
 
+/** install.sh passes `--proto-redir "=https"`: the *initial* scheme is deliberately unrestricted so
+ * `GUSTO_CLI_BASE_URL` can point at http for tests and staging, but a redirect can't land on http.
+ * Carry that over, since a redirect is the hop we don't choose. `res.url` is the final URL after
+ * any redirects, so a scheme change shows up there. */
+function redirectedToPlaintext(requested: string, final: string): boolean {
+  if (final.length === 0) return false;
+  try {
+    const to = new URL(final);
+    return to.href !== new URL(requested).href && to.protocol !== "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** The body read stays inside the try: a socket that dies partway through a multi-MB asset throws
+ * here, not at the headers, and outside the try that lands as `internal_error` with a raw
+ * "socket connection was closed" - a wifi drop reported as a bug in the CLI, and invisible to an
+ * agent watching for the network exit code. */
 async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: true; bytes: Uint8Array } | Failed> {
   let res: Response;
+  let bytes: Uint8Array;
   try {
-    res = await fetchImpl(url, { redirect: "follow" });
+    res = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    if (!res.ok) {
+      return fail("download_failed", `could not download ${url}: HTTP ${res.status}`, ExitCode.Network);
+    }
+    if (redirectedToPlaintext(url, res.url)) {
+      return fail(
+        "insecure_redirect",
+        `${url} redirected to ${res.url}, which is not https; refusing to install those bytes. ` +
+          `Nothing was changed.`,
+        ExitCode.General,
+      );
+    }
+    bytes = new Uint8Array(await res.arrayBuffer());
   } catch (err) {
+    if (isTimeout(err)) {
+      return fail("download_timed_out", `downloading ${url} exceeded ${DOWNLOAD_TIMEOUT_MS}ms`, ExitCode.Timeout);
+    }
     const detail = err instanceof Error ? err.message : String(err);
     return fail("download_failed", `could not download ${url}: ${detail}`, ExitCode.Network);
   }
-  if (!res.ok) {
-    return fail("download_failed", `could not download ${url}: HTTP ${res.status}`, ExitCode.Network);
-  }
-  return { ok: true, bytes: new Uint8Array(await res.arrayBuffer()) };
+  return { ok: true, bytes };
 }
 
 /** The step order below is deliberate, not incidental: every cheap failure resolves before a byte is

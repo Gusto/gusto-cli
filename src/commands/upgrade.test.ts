@@ -47,6 +47,8 @@ function startFixture(
     binaryBody?: string;
     sha256sumsBody?: string;
     missingAsset?: boolean;
+    /** Serve assets as a 302 to this origin instead, for the redirect-scheme guard. */
+    redirectAssetsTo?: string;
     /** Version the *already installed* binary reports. Null installs nothing, leaving the dir empty. */
     installedVersion?: string | null;
   } = {},
@@ -61,6 +63,9 @@ function startFixture(
     fetch(req) {
       const name = new URL(req.url).pathname.replace(/^\//, "");
       requests.push(name);
+      if (opts.redirectAssetsTo !== undefined) {
+        return new Response("", { status: 302, headers: { location: `${opts.redirectAssetsTo}/${name}` } });
+      }
       if (name === "SHA256SUMS") {
         return new Response(sha256sumsBody, { headers: { "content-type": "text/plain" } });
       }
@@ -333,6 +338,28 @@ describe("upgradeHandler", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("unsupported_platform");
     expect(fixture.requests).toEqual([]);
+  });
+
+  // install.sh's `--proto-redir "=https"`: the initial scheme is loose so GUSTO_CLI_BASE_URL can be
+  // http for tests and staging, but the hop we don't choose can't land on http. The redirect target
+  // here serves a perfectly good, correctly-checksummed asset - the scheme alone is the refusal.
+  test("refuses to install bytes from a redirect that leaves https", async () => {
+    const elsewhere = startFixture();
+    try {
+      fixture = startFixture({ redirectAssetsTo: elsewhere.baseUrl });
+      const before = readFileSync(fixture.installed);
+      const { result } = await runUpgrade(fixture, { confirm: true });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("insecure_redirect");
+        expect(result.exitCode).toBe(ExitCode.General);
+      }
+      expect(readFileSync(fixture.installed)).toEqual(before);
+      expect(leftoverStagingFiles(fixture)).toEqual([]);
+    } finally {
+      elsewhere.server.stop(true);
+    }
   });
 
   // Nothing used to check this: the write reached Bun.write as a raw EISDIR after the whole asset
