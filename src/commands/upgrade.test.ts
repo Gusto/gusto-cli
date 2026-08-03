@@ -432,6 +432,62 @@ describe("upgradeHandler", () => {
     expect(fixture.requests).toEqual([]);
   });
 
+  // The fallback an operator or agent follows when the automated path can't finish. Which failures
+  // carry it is the whole point: the installer fetches the same release by a different route, so it
+  // routes around a flaky network but is useless against a checksum mismatch and harmful on a
+  // package-managed install. A hint that can't work is worse than none - an agent will follow it.
+  // Rendering is not retested here: output.test.ts already pins `hint` reaching stderr in both agent
+  // and human mode, so these assert the envelope carries the right hint and let that composition be.
+  describe("recovery hints", () => {
+    const installerHint = "install.sh";
+
+    test("a network failure points at the installer, which retries where this doesn't", async () => {
+      fixture = startFixture({ missingAsset: true });
+      const { result } = await runUpgrade(fixture, { confirm: true });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("download_failed");
+        expect(result.error.hint).toContain(installerHint);
+      }
+    });
+
+    // Reinstalling reruns the identical verification against the identical bytes, so pointing there
+    // would be a loop with no exit. Naming a version is the only move that changes the input.
+    test.each([
+      ["a corrupt asset", { corruptBinary: true }, "checksum_mismatch"],
+      ["no checksum line", { sha256sumsBody: "aaa  gusto-other\n" }, "checksum_missing"],
+      ["a build that won't run", { binaryBody: "not an executable\n" }, "binary_check_failed"],
+    ])("an integrity failure points at pinning, not reinstalling: %s", async (_label, opts, code) => {
+      fixture = startFixture(opts);
+      const { result } = await runUpgrade(fixture, { confirm: true });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe(code);
+        expect(result.error.hint).toContain("GUSTO_CLI_VERSION");
+        expect(result.error.hint).not.toContain(installerHint);
+      }
+    });
+
+    // The installer drops a binary in ~/.gusto/bin and puts it on PATH, which would shadow the
+    // managed one - so this failure must never suggest it. Same for a platform with no build at all:
+    // no route fetches a binary that was never published.
+    test.each([
+      ["a package-managed install", { GUSTO_INSTALL_DIR: "/opt/homebrew/bin" }, {}, "managed_install"],
+      ["an unsupported platform", {}, { platform: "linux", arch: "arm64" }, "unsupported_platform"],
+    ])("offers no reinstall where it cannot help: %s", async (_label, env, hostOverrides, code) => {
+      fixture = startFixture();
+      const { result } = await runUpgrade(fixture, { confirm: true }, { env, ...hostOverrides });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe(code);
+        expect(result.error.hint).toBeUndefined();
+      }
+    });
+  });
+
   // install.sh's `--proto-redir "=https"`: the initial scheme is loose so GUSTO_CLI_BASE_URL can be
   // http for tests and staging, but the hop we don't choose can't land on http. The redirect target
   // here serves a perfectly good, correctly-checksummed asset - the scheme alone is the refusal.

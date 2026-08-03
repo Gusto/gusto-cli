@@ -25,7 +25,23 @@ const MANAGED_PREFIXES: readonly { prefix: string; manager: string }[] = [
   { prefix: "/nix/store/", manager: "Nix" },
 ];
 
+/** The way out when this command can't finish: the installer fetches the same release from the same
+ * origin, but by a different route - no tag lookup (it uses `/latest/download/`), `curl --retry 3
+ * --retry-all-errors` instead of one attempt, and its own `mktemp -d` staging rather than this
+ * install dir. So it routes around a flaky network or a wedged install path, which is exactly where
+ * it's offered below and nowhere else.
+ *
+ * Deliberately *not* attached to every failure. A hint that can't work is worse than none: it sends
+ * an agent round a loop it can't exit, and this command is largely driven by agents. See the call
+ * sites for which failures earn it and which get better-targeted advice instead. */
 const REINSTALL_HINT = "Reinstall instead: curl -fsSL https://cli.gusto.com/install.sh | sh";
+
+/** For integrity failures, where reinstalling is the one thing that cannot help: install.sh verifies
+ * the same asset against the same `SHA256SUMS`, so it fails identically. Naming a version is the
+ * only move that changes the input. */
+const PIN_HINT =
+  "If it recurs, the release asset may be bad - pin a known-good version: " +
+  "GUSTO_CLI_VERSION=v0.0.0 gusto upgrade --confirm";
 
 /** One fixed name rather than a per-run one: a run interrupted past the point of no return (SIGKILL,
  * or SIGINT, which `index.ts` turns into a `process.exit` that skips the cleanup below) strands this
@@ -154,10 +170,15 @@ export async function resolveTargetTag(
     res = await fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) });
   } catch (err) {
     if (isTimeout(err)) {
-      return fail("release_lookup_timed_out", `${url} did not respond within ${LOOKUP_TIMEOUT_MS}ms`, ExitCode.Timeout);
+      return fail(
+        "release_lookup_timed_out",
+        `${url} did not respond within ${LOOKUP_TIMEOUT_MS}ms`,
+        ExitCode.Timeout,
+        REINSTALL_HINT,
+      );
     }
     const detail = err instanceof Error ? err.message : String(err);
-    return fail("release_lookup_failed", `could not reach ${url}: ${detail}`, ExitCode.Network);
+    return fail("release_lookup_failed", `could not reach ${url}: ${detail}`, ExitCode.Network, REINSTALL_HINT);
   }
   const location = res.headers.get("location");
   const tag = location === null ? null : /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
@@ -167,6 +188,7 @@ export async function resolveTargetTag(
       `could not determine the latest release from ${url} (HTTP ${res.status}). ` +
         `Pin a version with GUSTO_CLI_VERSION=v0.0.0 to bypass the lookup.`,
       ExitCode.Network,
+      REINSTALL_HINT,
     );
   }
   return { ok: true, tag: decodeURIComponent(tag) };
@@ -314,6 +336,7 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
       `${what}, so ${targetPath} can't be installed. Remove or rename ${anchor.path}, or point ` +
         `GUSTO_INSTALL_DIR at a different directory. Nothing was changed.`,
       ExitCode.Validation,
+      REINSTALL_HINT,
     );
   }
 
@@ -538,7 +561,7 @@ async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: tru
   try {
     res = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (!res.ok) {
-      return fail("download_failed", `could not download ${url}: HTTP ${res.status}`, ExitCode.Network);
+      return fail("download_failed", `could not download ${url}: HTTP ${res.status}`, ExitCode.Network, REINSTALL_HINT);
     }
     if (redirectedToPlaintext(url, res.url)) {
       return fail(
@@ -551,10 +574,15 @@ async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: tru
     bytes = new Uint8Array(await res.arrayBuffer());
   } catch (err) {
     if (isTimeout(err)) {
-      return fail("download_timed_out", `downloading ${url} exceeded ${DOWNLOAD_TIMEOUT_MS}ms`, ExitCode.Timeout);
+      return fail(
+        "download_timed_out",
+        `downloading ${url} exceeded ${DOWNLOAD_TIMEOUT_MS}ms`,
+        ExitCode.Timeout,
+        REINSTALL_HINT,
+      );
     }
     const detail = err instanceof Error ? err.message : String(err);
-    return fail("download_failed", `could not download ${url}: ${detail}`, ExitCode.Network);
+    return fail("download_failed", `could not download ${url}: ${detail}`, ExitCode.Network, REINSTALL_HINT);
   }
   return { ok: true, bytes };
 }
@@ -646,7 +674,11 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     return {
       ok: false,
       exitCode: ExitCode.General,
-      error: { code: "checksum_missing", message: `no checksum for ${asset} in SHA256SUMS; nothing was changed` },
+      error: {
+        code: "checksum_missing",
+        message: `no checksum for ${asset} in SHA256SUMS; nothing was changed`,
+        hint: PIN_HINT,
+      },
     };
   }
   const actual = createHash("sha256").update(binary.bytes).digest("hex");
@@ -657,6 +689,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       error: {
         code: "checksum_mismatch",
         message: `checksum mismatch for ${asset} (expected ${expected}, got ${actual}); nothing was changed`,
+        hint: PIN_HINT,
       },
     };
   }
@@ -713,6 +746,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
         error: {
           code: "binary_check_failed",
           message: `the downloaded ${asset} failed \`--version\`; discarded it and left ${targetPath} in place`,
+          hint: PIN_HINT,
         },
       };
     }
@@ -730,6 +764,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
         `the download verified, but moving it into place at ${targetPath} failed: ${detail}. ` +
           `${targetPath} is unchanged.`,
         ExitCode.General,
+        REINSTALL_HINT,
       ).result;
     }
     log(`installed ${targetPath}`);

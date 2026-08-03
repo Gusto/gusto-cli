@@ -36,6 +36,15 @@ install untouched. Being already up to date is a success, not an error.
 Honors the same overrides as install.sh: GUSTO_CLI_VERSION, GUSTO_CLI_REPO,
 GUSTO_CLI_BASE_URL, GUSTO_INSTALL_DIR. Installs managed by a package manager
 (Homebrew, Nix) are refused - update those with the package manager instead.
+
+If an upgrade can't finish, the failure carries a hint naming the way out, so
+there's nothing to look up. Usually that's the installer, which fetches the same
+release by a different route (retrying curl, its own staging dir):
+
+  curl -fsSL https://cli.gusto.com/install.sh | sh
+
+Or download the binary for your platform by hand from
+https://github.com/Gusto/gusto-cli/releases and replace the one you're running.
 `,
     )
     .action((opts: UpgradeCommandOpts) =>
