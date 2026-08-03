@@ -438,10 +438,11 @@ export async function preflightStagingPath(staged: string): Promise<{ ok: true }
  * `ino` alone - the same pair the create-time check compares, since an inode number only identifies
  * a file within its filesystem.
  *
- * The descriptor must be read-only. Linux refuses to execute a file that anyone holds open for
- * writing (`ETXTBSY`), so keeping the write handle open across the exec-check would break every
- * real upgrade there while passing here, since the tests stage shell scripts and `ETXTBSY` applies
- * to the executable image, not to a script's interpreter. */
+ * The descriptor held *across the exec-check* must be read-only. Linux refuses to execute a file
+ * that anyone holds open for writing (`ETXTBSY`), so keeping the write handle open that long would
+ * break every real upgrade there while passing here, since the tests stage shell scripts and
+ * `ETXTBSY` applies to the executable image, not to a script's interpreter. The staging-write
+ * cleanup passes its writer, which runs nothing and closes immediately after. */
 async function stagingStillOurs(handle: Awaited<ReturnType<typeof open>>, staged: string): Promise<boolean> {
   try {
     const ours = await handle.stat();
@@ -723,46 +724,33 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   }
 
   let ident: Awaited<ReturnType<typeof open>>;
-  // Identity of the file we just created, read off the descriptor while it still pins the inode.
-  // Both questions below turn on it and neither is answerable from the path, which is shared: "is
-  // the file I reopened the one I wrote", and "is the file I'm about to delete still mine".
-  let created: Awaited<ReturnType<typeof writer.stat>> | null = null;
+  // One `try`, not two nested ones, so the `catch` runs while `writer` is still open - see there.
   try {
-    try {
-      created = await writer.stat();
-      await writer.write(binary.bytes);
-      await writer.chmod(0o755);
-      // Reopened rather than reused so the exec-check isn't blocked by our own write handle. The
-      // reopen races the same concurrent run everything else here does, so it's checked against
-      // the writer while both are open: our inode can't be recycled while the writer pins it, so
-      // matching inodes prove the read handle is the file we just wrote.
-      ident = await open(staged, FS_CONST.O_RDONLY);
-      const reopened = await ident.stat();
-      if (created.ino !== reopened.ino || created.dev !== reopened.dev) {
-        await ident.close().catch(() => {});
-        return concurrentUpgrade(staged, targetPath);
-      }
-    } finally {
-      await writer.close().catch(() => {});
+    const created = await writer.stat();
+    await writer.write(binary.bytes);
+    await writer.chmod(0o755);
+    // Reopened rather than reused so the exec-check isn't blocked by our own write handle. The
+    // reopen races the same concurrent run everything else here does, so it's checked against
+    // the writer while both are open: our inode can't be recycled while the writer pins it, so
+    // matching inodes prove the read handle is the file we just wrote.
+    ident = await open(staged, FS_CONST.O_RDONLY);
+    const reopened = await ident.stat();
+    if (created.ino !== reopened.ino || created.dev !== reopened.dev) {
+      await ident.close().catch(() => {});
+      return concurrentUpgrade(staged, targetPath);
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    // A const so the null check narrows inside the callback; TypeScript won't carry it across a
-    // closure boundary for a `let`.
-    const mine = created;
-    // Ownership decides the cleanup, not presence - the same rule as the mismatch branch above and
-    // the `finally` that ends this function. Past the `O_EXCL` create a half-written file is ours to
-    // discard rather than leave for the next run's preflight. But a concurrent run's preflight can
-    // clear ours mid-write and create its own at the shared name, and a reopen failing with ENOENT
-    // is precisely how we find that out - so unlinking by path here would delete *their* file and
-    // then claim to have discarded ours. Losing the race is the truer report of what happened.
-    const ours =
-      mine !== null &&
-      (await lstat(staged).then(
-        (s) => s.dev === mine.dev && s.ino === mine.ino,
-        () => false,
-      ));
-    if (!ours) return concurrentUpgrade(staged, targetPath);
+    // Ownership decides the cleanup, not presence. Past the `O_EXCL` create a half-written file is
+    // ours to discard rather than leave for the next run's preflight - but a rival's preflight can
+    // clear ours mid-write and create its own at the shared name, and unlinking by path would then
+    // delete theirs while claiming to have discarded ours. Losing the race is the truer report.
+    //
+    // Asked of `writer`, which the `finally` below has not closed yet: a live descriptor is the
+    // whole point, because it lets `stagingStillOurs` consult `nlink`. Comparing a stat snapshot
+    // after the close would walk into the inode-reuse trap that function documents - ext4 hands the
+    // freed inode straight to the rival's create, and their file would read as ours.
+    if (!(await stagingStillOurs(writer, staged))) return concurrentUpgrade(staged, targetPath);
     await unlink(staged).catch(() => {});
     return fail(
       "staging_write_failed",
@@ -770,6 +758,8 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
         `Discarded the partial file; ${targetPath} is unchanged.`,
       ExitCode.Blocked,
     ).result;
+  } finally {
+    await writer.close().catch(() => {});
   }
   try {
     await stripQuarantine(staged);
