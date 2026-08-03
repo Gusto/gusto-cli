@@ -68,7 +68,7 @@ Every command produces an `AgentEnvelope`:
 }
 ```
 
-`hint` is a recovery path, not a general remark, and it is per-failure rather than per-command: `commands/upgrade.ts` offers the installer only for the failures it would actually route around, and something else for the ones it wouldn't. A hint that can't work costs more than no hint, since an agent will follow it - so attach one only where you know it resolves the failure at hand.
+`hint` is a recovery path, not a general remark, and it is per-failure rather than per-command: `lib/upgrade.ts` offers the installer only for the failures it would actually route around, and something else for the ones it wouldn't. A hint that can't work costs more than no hint, since an agent will follow it - so attach one only where you know it resolves the failure at hand.
 
 - Agent mode prints one JSON object per command, terminated by `\n`. No banners, no progress bars.
 - Human mode prints data with `JSON.stringify(..., 2)` or a string when scalar, and errors to stderr.

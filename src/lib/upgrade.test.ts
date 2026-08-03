@@ -404,6 +404,8 @@ describe("preflightInstallDir", () => {
       // and a stray file never removes itself.
       expect(failure(result).exitCode).toBe(ExitCode.Validation);
       expect(failure(result).error.message).toContain(stray);
+      // And no reinstall hint: install.sh `mkdir -p`s this same path and fails on the same stray.
+      expect(failure(result).error.hint).toBeUndefined();
     }
     // Untouched, and no directory was conjured in its place.
     expect(lstatSync(stray).isSymbolicLink()).toBe(kind === "dangling");

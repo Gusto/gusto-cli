@@ -327,6 +327,10 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
   if (anchorKind === "not-a-directory") {
     // Validation, not Blocked: exit 8 tells an agent the precondition might later be met on its own,
     // and neither a stray file nor a broken link removes itself. Someone has to.
+    //
+    // And no reinstall hint, for the same reason: install.sh runs `mkdir -p` against this very path,
+    // so it fails on the stray file exactly as we do. Its separate `mktemp -d` staging doesn't help -
+    // the blockage is the install directory, which the installer still has to create.
     const kind = anchor.info.isSymbolicLink()
       ? "is a symlink that doesn't resolve to a directory"
       : "is not a directory";
@@ -336,7 +340,6 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
       `${what}, so ${targetPath} can't be installed. Remove or rename ${anchor.path}, or point ` +
         `GUSTO_INSTALL_DIR at a different directory. Nothing was changed.`,
       ExitCode.Validation,
-      REINSTALL_HINT,
     );
   }
 

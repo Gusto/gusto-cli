@@ -486,6 +486,24 @@ describe("upgradeHandler", () => {
         expect(result.error.hint).toBeUndefined();
       }
     });
+
+    // Separate from the two above because it needs something on disk. install.sh runs `mkdir -p` on
+    // the same GUSTO_INSTALL_DIR, so the stray file blocks it exactly as it blocks us - its own
+    // `mktemp -d` staging is beside the point. This is the one hint-bearing failure whose exit code
+    // (7, not 8) already says nobody's retry will help.
+    test("offers no reinstall where it cannot help: a file where the install dir belongs", async () => {
+      fixture = startFixture();
+      const stray = path.join(fixture.installDir, "not-a-dir");
+      writeFileSync(stray, "in the way\n");
+
+      const { result } = await runUpgrade(fixture, { confirm: true }, { env: { GUSTO_INSTALL_DIR: stray } });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("install_dir_not_a_directory");
+        expect(result.error.hint).toBeUndefined();
+      }
+    });
   });
 
   // install.sh's `--proto-redir "=https"`: the initial scheme is loose so GUSTO_CLI_BASE_URL can be
