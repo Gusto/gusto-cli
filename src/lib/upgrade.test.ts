@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ExitCode } from "./exit-codes.ts";
@@ -9,6 +20,7 @@ import {
   parseSha256Sums,
   platformAsset,
   preflightInstallDir,
+  preflightStagingPath,
   resolveTargetPath,
   resolveTargetTag,
   tagToVersion,
@@ -370,5 +382,54 @@ describe("preflightInstallDir", () => {
       expect(failure(result).error.code).toBe("install_dir_not_writable");
       expect(failure(result).error.message).toContain("cannot create");
     }
+  });
+});
+
+describe("preflightStagingPath", () => {
+  test("passes when nothing is there", async () => {
+    const dir = tmpDir("gusto-cli-staging-clear-");
+    expect((await preflightStagingPath(path.join(dir, ".gusto-upgrade"))).ok).toBe(true);
+  });
+
+  // The fixed staging name only bounds strays at one file if the next run can actually clear it.
+  test("clears a regular file stranded by an interrupted run", async () => {
+    const dir = tmpDir("gusto-cli-staging-strand-");
+    const staged = path.join(dir, ".gusto-upgrade");
+    writeFileSync(staged, "half a download");
+
+    expect((await preflightStagingPath(staged)).ok).toBe(true);
+    expect(existsSync(staged)).toBe(false);
+  });
+
+  // A directory here used to reach Bun.write as a raw EISDIR after the whole asset had downloaded,
+  // and nothing cleared it, so every later run repeated the download and died the same way.
+  test("refuses a directory, before anything is downloaded", async () => {
+    const dir = tmpDir("gusto-cli-staging-dir-");
+    const staged = path.join(dir, ".gusto-upgrade");
+    mkdirSync(staged);
+
+    const result = await preflightStagingPath(staged);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(failure(result).error.code).toBe("staging_path_blocked");
+      expect(failure(result).exitCode).toBe(ExitCode.Blocked);
+    }
+    expect(existsSync(staged)).toBe(true);
+  });
+
+  // Bun.write follows a symlink: the release bytes would land in the link's target, chmod would
+  // widen that file to 0755, and the rename would move the link itself onto the install path.
+  test("refuses a symlink rather than writing through it", async () => {
+    const dir = tmpDir("gusto-cli-staging-link-");
+    const victim = path.join(dir, "someone-elses-file");
+    writeFileSync(victim, "private", { mode: 0o600 });
+    const staged = path.join(dir, ".gusto-upgrade");
+    symlinkSync(victim, staged);
+
+    const result = await preflightStagingPath(staged);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(failure(result).error.code).toBe("staging_path_blocked");
+    expect(readFileSync(victim, "utf8")).toBe("private");
+    expect(statSync(victim).mode & 0o777).toBe(0o600);
   });
 });

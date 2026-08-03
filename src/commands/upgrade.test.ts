@@ -4,11 +4,13 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -331,6 +333,42 @@ describe("upgradeHandler", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("unsupported_platform");
     expect(fixture.requests).toEqual([]);
+  });
+
+  // Nothing used to check this: the write reached Bun.write as a raw EISDIR after the whole asset
+  // had downloaded, surfaced as internal_error, and never cleared - so every later run repeated it.
+  test("refuses a blocked staging path before downloading, leaving it alone", async () => {
+    fixture = startFixture();
+    const staged = path.join(fixture.installDir, ".gusto-upgrade");
+    mkdirSync(staged);
+
+    const { result } = await runUpgrade(fixture, { confirm: true });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("staging_path_blocked");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+    }
+    expect(fixture.requests).toEqual([]);
+    expect(statSync(staged).isDirectory()).toBe(true);
+    expect(installedVersion(fixture)).toBe("0.1.0");
+  });
+
+  // Bun.write follows a symlink, so without the guard the release bytes land in the link's target,
+  // chmod widens that file to 0755, and the rename moves the link itself onto the install path.
+  test("refuses a symlinked staging path rather than writing through it", async () => {
+    fixture = startFixture();
+    const victim = path.join(fixture.installDir, "someone-elses-file");
+    writeFileSync(victim, "private", { mode: 0o600 });
+    symlinkSync(victim, path.join(fixture.installDir, ".gusto-upgrade"));
+
+    const { result } = await runUpgrade(fixture, { confirm: true });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("staging_path_blocked");
+    expect(readFileSync(victim, "utf8")).toBe("private");
+    expect(statSync(victim).mode & 0o777).toBe(0o600);
+    expect(installedVersion(fixture)).toBe("0.1.0");
   });
 
   // install.sh does `mkdir -p "$INSTALL_DIR"`; without it this reported install_dir_not_writable.

@@ -1,5 +1,5 @@
 import { constants as FS_CONST, realpathSync } from "node:fs";
-import { access, chmod, mkdir, rename, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { EnvSource } from "./env.ts";
@@ -29,7 +29,8 @@ const REINSTALL_HINT = "Reinstall instead: curl -fsSL https://cli.gusto.com/inst
 
 /** One fixed name rather than a per-run one: a run interrupted past the point of no return (SIGKILL,
  * or SIGINT, which `index.ts` turns into a `process.exit` that skips the cleanup below) strands this
- * file, and a fixed name means the next run overwrites it instead of leaving another one behind. */
+ * file, and a fixed name means the next run clears it instead of leaving another one behind. What
+ * makes that safe is `preflightStagingPath` plus the `O_EXCL` create - see both. */
 const STAGING_NAME = `.${BINARY_NAME}-upgrade`;
 
 export interface UpgradeResult {
@@ -216,6 +217,43 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
   return { ok: true };
 }
 
+/** What sits at the staging path decides whether this run can stage at all, so it is settled here -
+ * before tens of MB are downloaded - rather than at the write.
+ *
+ * A regular file is a strand from an interrupted run, and clearing it is the whole point of the
+ * fixed name. Anything else is refused rather than written through: a directory or a root-owned
+ * leftover would otherwise surface as a raw errno from the middle of the upgrade and never
+ * self-heal, and a symlink is worse - `Bun.write` follows one, so the release bytes would land in
+ * the link's target, `chmod` would widen *that* file to 0755, and the `rename` would move the link
+ * itself onto the install path. */
+export async function preflightStagingPath(staged: string): Promise<{ ok: true } | Failed> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(staged);
+  } catch {
+    return { ok: true };
+  }
+  if (!info.isFile()) {
+    return fail(
+      "staging_path_blocked",
+      `${staged} exists and is not a regular file, so the download can't be staged there. ` +
+        `Remove it and retry; nothing was changed.`,
+      ExitCode.Blocked,
+    );
+  }
+  try {
+    await unlink(staged);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return fail(
+      "staging_path_blocked",
+      `could not clear the leftover staging file ${staged}: ${detail}. Nothing was changed.`,
+      ExitCode.Blocked,
+    );
+  }
+  return { ok: true };
+}
+
 export interface UpgradeOpts {
   force?: boolean;
   dryRun?: boolean;
@@ -350,6 +388,17 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   const gated = gate(`replacing the gusto binary at ${targetPath}`);
   if (gated) return gated;
 
+  // Stage inside the install dir, not $TMPDIR: same filesystem is what makes the final rename an
+  // atomic swap rather than a copy that can be observed half-written. Same *directory*, in fact,
+  // so the rename can't fail EXDEV however the install dir happens to be mounted.
+  //
+  // Settled here rather than at the write below, so a blocked staging path costs nothing instead of
+  // surfacing after tens of MB are already downloaded. Not any earlier, because clearing a stranded
+  // file is a mutation and `--dry-run` must leave the disk alone.
+  const staged = path.join(path.dirname(targetPath), STAGING_NAME);
+  const stagingPreflight = await preflightStagingPath(staged);
+  if (!stagingPreflight.ok) return stagingPreflight.result;
+
   const baseUrl = assetBaseUrl(env, tag);
   log(`downloading ${asset} from ${baseUrl}`);
   const binary = await download(fetchImpl, `${baseUrl}/${asset}`);
@@ -378,12 +427,30 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   }
   log("checksum verified");
 
-  // Stage inside the install dir, not $TMPDIR: same filesystem is what makes the final rename an
-  // atomic swap rather than a copy that can be observed half-written.
-  const staged = path.join(path.dirname(targetPath), STAGING_NAME);
+  // `O_EXCL` rather than a plain write, so between the staging preflight and here nothing can slip a
+  // symlink or a directory in. It also turns two concurrent upgrades from a silent race - each
+  // renaming whatever the other last left at the shared staging path - into a clean refusal for
+  // the second one, with its install untouched.
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    await Bun.write(staged, binary.bytes);
-    await chmod(staged, 0o755);
+    handle = await open(staged, FS_CONST.O_WRONLY | FS_CONST.O_CREAT | FS_CONST.O_EXCL, 0o700);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // Deliberately outside the cleanup below: whatever is at `staged` isn't ours to remove.
+    return fail(
+      "staging_path_blocked",
+      `could not stage the verified download at ${staged}: ${detail}. ` +
+        `Another \`gusto upgrade\` may be running. Nothing was changed.`,
+      ExitCode.Blocked,
+    ).result;
+  }
+  try {
+    try {
+      await handle.write(binary.bytes);
+      await handle.chmod(0o755);
+    } finally {
+      await handle.close();
+    }
     await stripQuarantine(staged);
 
     const reported = await versionOf(staged);
@@ -398,7 +465,17 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       };
     }
 
-    await rename(staged, targetPath);
+    try {
+      await rename(staged, targetPath);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return fail(
+        "install_failed",
+        `the download verified, but moving it into place at ${targetPath} failed: ${detail}. ` +
+          `${targetPath} is unchanged.`,
+        ExitCode.General,
+      ).result;
+    }
     log(`installed ${targetPath}`);
     return {
       ok: true,
