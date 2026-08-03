@@ -40,6 +40,7 @@ const STAGING_NAME = `.${BINARY_NAME}-upgrade`;
 const LOOKUP_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 600_000;
 const EXEC_CHECK_TIMEOUT_MS = 30_000;
+const QUARANTINE_TIMEOUT_MS = 10_000;
 
 function isTimeout(err: unknown): boolean {
   return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
@@ -404,7 +405,14 @@ export async function defaultStripQuarantine(file: string): Promise<void> {
   if (process.platform !== "darwin") return;
   try {
     const proc = Bun.spawn(["xattr", "-d", "com.apple.quarantine", file], { stdout: "ignore", stderr: "ignore" });
-    await proc.exited;
+    // Deadline for the same reason every other wait here has one: this is best-effort, so it must
+    // never be the thing that hangs the upgrade with no envelope.
+    const deadline = setTimeout(() => proc.kill("SIGKILL"), QUARANTINE_TIMEOUT_MS);
+    try {
+      await proc.exited;
+    } finally {
+      clearTimeout(deadline);
+    }
   } catch {
     // No xattr on PATH, or the attribute was never set. Neither blocks the upgrade.
   }
