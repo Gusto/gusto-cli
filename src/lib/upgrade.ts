@@ -705,9 +705,25 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   //
   // A read-only descriptor on the same file is then held open past the `rename`, because that is
   // what identifies our file for the rest of the run: see `stagingStillOurs`.
+  // The create is its own `try`, narrowly. It is the only step here that a concurrent run explains -
+  // `EEXIST` means someone else got the name - and blaming one for a disk that filled up mid-write
+  // would send an operator looking for a second process that doesn't exist.
+  let writer: Awaited<ReturnType<typeof open>>;
+  try {
+    writer = await open(staged, FS_CONST.O_WRONLY | FS_CONST.O_CREAT | FS_CONST.O_EXCL, 0o700);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // Nothing to clean up: the create is what failed, so whatever is at `staged` isn't ours.
+    return fail(
+      "staging_path_blocked",
+      `could not stage the verified download at ${staged}: ${detail}. ` +
+        `Another \`gusto upgrade\` may be running. Nothing was changed.`,
+      ExitCode.Blocked,
+    ).result;
+  }
+
   let ident: Awaited<ReturnType<typeof open>>;
   try {
-    const writer = await open(staged, FS_CONST.O_WRONLY | FS_CONST.O_CREAT | FS_CONST.O_EXCL, 0o700);
     try {
       await writer.write(binary.bytes);
       await writer.chmod(0o755);
@@ -726,11 +742,14 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    // Deliberately outside the cleanup below: whatever is at `staged` isn't ours to remove.
+    // Past the `O_EXCL` create the file *is* ours, so a half-written one is ours to remove. The next
+    // run's `preflightStagingPath` would clear it, but leaving a partial release binary sitting in
+    // the install dir until then is not something to rely on.
+    await unlink(staged).catch(() => {});
     return fail(
-      "staging_path_blocked",
-      `could not stage the verified download at ${staged}: ${detail}. ` +
-        `Another \`gusto upgrade\` may be running. Nothing was changed.`,
+      "staging_write_failed",
+      `could not write the verified download to ${staged}: ${detail}. ` +
+        `Discarded the partial file; ${targetPath} is unchanged.`,
       ExitCode.Blocked,
     ).result;
   }
