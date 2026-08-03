@@ -51,7 +51,7 @@ export function upgradeHandler(opts: UpgradeCommandOpts, overrides: Partial<Upgr
       { force: opts.force, dryRun: opts.dryRun },
       {
         gate: (description) => agentWriteGate(globals, description, { confirm: opts.confirm, dryRun: opts.dryRun }),
-        log: (line) => sinks.stderr.write(`${line}\n`),
+        log: (line) => sinks.stderr.write(`${line}\n`), // noboost
         ...overrides,
       },
     );

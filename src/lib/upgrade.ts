@@ -269,6 +269,31 @@ export async function preflightStagingPath(staged: string): Promise<{ ok: true }
   return { ok: true };
 }
 
+/** Whether the staging path still holds the exact file we created, by inode.
+ *
+ * A fixed staging name is shared, so a concurrent run's own preflight will clear ours out from
+ * under us mid-upgrade. Without this check that shows up as a lie: the exec-check finds nothing to
+ * run and the code blames the release artifact, or the `rename` moves whatever the other run left
+ * there - bytes this process never checksummed. There's no lock to take (POSIX advisory locks
+ * aren't exposed here), but identity is enough to refuse rather than guess. */
+async function stagingStillOurs(staged: string, ino: number): Promise<boolean> {
+  try {
+    return (await lstat(staged)).ino === ino;
+  } catch {
+    return false;
+  }
+}
+
+function concurrentUpgrade(staged: string, targetPath: string): CommandResult<never> {
+  return fail(
+    "staging_path_blocked",
+    `another \`gusto upgrade\` replaced the staging file at ${staged} while this one was running, ` +
+      `so the verified download can't be installed. ${targetPath} is unchanged; retry once the ` +
+      `other run finishes.`,
+    ExitCode.Blocked,
+  ).result;
+}
+
 export interface UpgradeOpts {
   force?: boolean;
   dryRun?: boolean;
@@ -488,8 +513,11 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   // renaming whatever the other last left at the shared staging path - into a clean refusal for
   // the second one, with its install untouched.
   let handle: Awaited<ReturnType<typeof open>>;
+  // Recorded up front so every later step can ask whether the path still holds *this* file.
+  let stagedIno: number;
   try {
     handle = await open(staged, FS_CONST.O_WRONLY | FS_CONST.O_CREAT | FS_CONST.O_EXCL, 0o700);
+    stagedIno = (await handle.stat()).ino;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     // Deliberately outside the cleanup below: whatever is at `staged` isn't ours to remove.
@@ -509,7 +537,11 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     }
     await stripQuarantine(staged);
 
+    // Checked before the artifact is blamed for anything: a lost race and a corrupt release both
+    // make `--version` come back null, and "the release artifact is corrupt" is a bad thing to tell
+    // someone whose only mistake was running two upgrades at once.
     const reported = await versionOf(staged);
+    if (!(await stagingStillOurs(staged, stagedIno))) return concurrentUpgrade(staged, targetPath);
     if (reported === null) {
       return {
         ok: false,
@@ -521,6 +553,10 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       };
     }
 
+    // Again immediately before the swap, so what lands on `targetPath` is what was checksummed.
+    // A window remains between this check and the rename - closing it needs `renameat2`, which
+    // isn't reachable from here - but it shrinks from the whole exec-check to a syscall apart.
+    if (!(await stagingStillOurs(staged, stagedIno))) return concurrentUpgrade(staged, targetPath);
     try {
       await rename(staged, targetPath);
     } catch (err) {
@@ -539,7 +575,8 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       human: () => `upgraded gusto ${describeFrom(from)} -> ${reported}`,
     };
   } finally {
-    // Only present if we bailed before the rename; unlink is a no-op otherwise.
-    await unlink(staged).catch(() => {});
+    // Only if it's still the file we created: after a successful rename there's nothing there, and
+    // if a concurrent run has since claimed the path, that file is theirs to remove, not ours.
+    if (await stagingStillOurs(staged, stagedIno)) await unlink(staged).catch(() => {});
   }
 }

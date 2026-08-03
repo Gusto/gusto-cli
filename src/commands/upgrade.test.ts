@@ -121,7 +121,13 @@ function flags(overrides: Partial<GlobalFlags> = {}): GlobalFlags {
 async function runUpgrade(
   fx: Fixture,
   opts: { force?: boolean; dryRun?: boolean; confirm?: boolean } = {},
-  extra: { pin?: string; env?: EnvSource; platform?: string; arch?: string } = {},
+  extra: {
+    pin?: string;
+    env?: EnvSource;
+    platform?: string;
+    arch?: string;
+    versionOf?: (file: string) => Promise<string | null>;
+  } = {},
 ) {
   const { sinks, stderr } = captureSinks();
   const ctx: CommandContext = { command: "gusto upgrade", globals: flags(), sinks };
@@ -136,6 +142,7 @@ async function runUpgrade(
     currentVersion: "0.1.0",
     platform: extra.platform ?? "linux",
     arch: extra.arch ?? "x64",
+    ...(extra.versionOf === undefined ? {} : { versionOf: extra.versionOf }),
   })(ctx);
   return { result, stderr: stderr.buffer };
 }
@@ -368,6 +375,39 @@ describe("upgradeHandler", () => {
     } finally {
       elsewhere.server.stop(true);
     }
+  });
+
+  // Losing a race used to report `binary_check_failed` - the other run's preflight had unlinked our
+  // staging file, so the exec-check found nothing to run and the code blamed the release. The other
+  // run is simulated by swapping the staging file out at exactly that moment; the point is that
+  // both the message and the rename decision key off file identity, not mere presence.
+  test("reports a lost race as such, not as a corrupt release artifact", async () => {
+    fixture = startFixture();
+    const staged = path.join(fixture.installDir, ".gusto-upgrade");
+    const before = readFileSync(fixture.installed);
+
+    const { result } = await runUpgrade(
+      fixture,
+      { confirm: true },
+      {
+        versionOf: async (file) => {
+          if (file !== staged) return "0.1.0";
+          rmSync(staged);
+          writeFileSync(staged, "another run's download", { mode: 0o755 });
+          return null;
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("staging_path_blocked");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.message).toContain("another `gusto upgrade`");
+    }
+    // The other run's staging file is theirs: not installed, and not cleaned up on our way out.
+    expect(readFileSync(fixture.installed)).toEqual(before);
+    expect(readFileSync(staged, "utf8")).toBe("another run's download");
   });
 
   // Nothing used to check this: the write reached Bun.write as a raw EISDIR after the whole asset
