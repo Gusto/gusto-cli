@@ -17,6 +17,7 @@ import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
 import {
   assetBaseUrl,
+  ensureInstallDir,
   parseSha256Sums,
   platformAsset,
   preflightInstallDir,
@@ -365,15 +366,18 @@ describe("preflightInstallDir", () => {
     }
   });
 
-  // install.sh's `mkdir -p "$INSTALL_DIR"`. Without it a first install into a dir that doesn't
-  // exist yet fails ENOENT and reports as "not writable", which is a different problem.
-  test("creates the install dir when it doesn't exist yet", async () => {
-    const dir = path.join(tmpDir("gusto-cli-upgrade-mkdir-"), "nested", "bin");
+  // A dir that doesn't exist yet is `ensureInstallDir`'s job, after the gate. Passing here without
+  // creating anything is what lets this run before `--dry-run` decides not to install.
+  test("accepts a dir that doesn't exist yet, and creates nothing", async () => {
+    const dir = path.join(tmpDir("gusto-cli-upgrade-missing-"), "nested", "bin");
     expect((await preflightInstallDir(path.join(dir, "gusto"))).ok).toBe(true);
-    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(path.dirname(dir))).toBe(false);
   });
 
-  test.skipIf(process.getuid?.() === 0)("names the real problem when the dir can't be created", async () => {
+  // Permissions are read off the nearest ancestor that exists, so an uncreatable dir is still
+  // refused up front - the early refusal survives the split, without the mutation.
+  test.skipIf(process.getuid?.() === 0)("refuses a dir whose nearest existing ancestor is read-only", async () => {
     const parent = tmpDir("gusto-cli-upgrade-nomkdir-");
     chmodSync(parent, 0o500);
     const result = await preflightInstallDir(path.join(parent, "bin", "gusto"));
@@ -381,6 +385,34 @@ describe("preflightInstallDir", () => {
     if (!result.ok) {
       expect(failure(result).error.code).toBe("install_dir_not_writable");
       expect(failure(result).error.message).toContain("cannot create");
+      expect(failure(result).error.message).toContain(parent);
+    }
+  });
+});
+
+describe("ensureInstallDir", () => {
+  // install.sh's `mkdir -p "$INSTALL_DIR"`, so a first install into a dir that doesn't exist works.
+  test("creates the install dir and any missing parents", async () => {
+    const dir = path.join(tmpDir("gusto-cli-upgrade-mkdir-"), "nested", "bin");
+    expect((await ensureInstallDir(path.join(dir, "gusto"))).ok).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test("is a no-op for a dir that already exists", async () => {
+    const dir = tmpDir("gusto-cli-upgrade-exists-");
+    expect((await ensureInstallDir(path.join(dir, "gusto"))).ok).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("reports a mkdir it can't perform, with a reinstall hint", async () => {
+    const parent = tmpDir("gusto-cli-upgrade-mkdirfail-");
+    chmodSync(parent, 0o500);
+    const result = await ensureInstallDir(path.join(parent, "bin", "gusto"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(failure(result).error.code).toBe("install_dir_not_writable");
+      expect(failure(result).exitCode).toBe(ExitCode.Blocked);
+      expect(failure(result).error.hint).toContain("install.sh");
     }
   });
 });

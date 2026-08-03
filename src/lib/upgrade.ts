@@ -192,8 +192,31 @@ export function parseSha256Sums(text: string, asset: string): string | null {
   return null;
 }
 
-/** Runs before anything is downloaded. Checks the *directory*, not the file, because that's what
- * `rename` needs write+execute on - a read-only file in a writable dir replaces fine. */
+/** The closest ancestor of `dir` that exists - `dir` itself when it already does. That's where a
+ * `mkdir -p` would land its first new component, so its permissions are what decide whether the
+ * install can happen, and reading them mutates nothing. */
+async function nearestExistingDir(dir: string): Promise<string> {
+  let current = dir;
+  for (;;) {
+    try {
+      await access(current, FS_CONST.F_OK);
+      return current;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return current;
+      current = parent;
+    }
+  }
+}
+
+/** Runs before anything is downloaded *and* before the confirm gate, so it only reads. Checks the
+ * *directory*, not the file, because that's what `rename` needs write+execute on - a read-only file
+ * in a writable dir replaces fine.
+ *
+ * A directory that doesn't exist yet is not a failure here: `ensureInstallDir` creates it after the
+ * gate, the way install.sh does. So the permission question is asked of the nearest ancestor that
+ * does exist. Asking it of `dir` would turn a first install into a bogus `install_dir_not_writable`
+ * - ENOENT reported as a permission problem an agent might retry, which it never can. */
 export async function preflightInstallDir(targetPath: string): Promise<{ ok: true } | Failed> {
   const dir = path.dirname(targetPath);
   const managed = MANAGED_PREFIXES.find((m) => targetPath.startsWith(m.prefix));
@@ -205,9 +228,30 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
       ExitCode.Blocked,
     );
   }
-  // install.sh does `mkdir -p "$INSTALL_DIR"`. Matching it keeps a first install into a directory
-  // that doesn't exist yet working - otherwise `access` below reports ENOENT as "not writable",
-  // which reads as a permission problem an agent might retry and isn't one.
+  const anchor = await nearestExistingDir(dir);
+  try {
+    await access(anchor, FS_CONST.W_OK | FS_CONST.X_OK);
+  } catch {
+    const because = anchor === dir ? `cannot write to ${dir}` : `cannot create ${dir}: ${anchor} is not writable`;
+    return fail(
+      "install_dir_not_writable",
+      `${because}, so ${targetPath} can't be replaced. Nothing was changed.`,
+      ExitCode.Blocked,
+      REINSTALL_HINT,
+    );
+  }
+  return { ok: true };
+}
+
+/** The mutating half of the install-dir preflight, split out so it can sit *below* the confirm gate:
+ * `--dry-run` and a run refused for want of `--confirm` must leave the disk exactly as they found
+ * it, and creating directories is not nothing. install.sh does `mkdir -p "$INSTALL_DIR"`, so a
+ * first install into a directory that doesn't exist yet works here too.
+ *
+ * `preflightInstallDir` has already vetted the permissions this needs, so a failure here is a race
+ * or something genuinely odd rather than the common case. */
+export async function ensureInstallDir(targetPath: string): Promise<{ ok: true } | Failed> {
+  const dir = path.dirname(targetPath);
   try {
     await mkdir(dir, { recursive: true });
   } catch (err) {
@@ -215,16 +259,6 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
     return fail(
       "install_dir_not_writable",
       `cannot create ${dir}, so ${targetPath} can't be installed: ${detail}. Nothing was changed.`,
-      ExitCode.Blocked,
-      REINSTALL_HINT,
-    );
-  }
-  try {
-    await access(dir, FS_CONST.W_OK | FS_CONST.X_OK);
-  } catch {
-    return fail(
-      "install_dir_not_writable",
-      `cannot write to ${dir}, so ${targetPath} can't be replaced. Nothing was changed.`,
       ExitCode.Blocked,
       REINSTALL_HINT,
     );
@@ -485,6 +519,10 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
 
   const gated = gate(`replacing the gusto binary at ${targetPath}`);
   if (gated) return gated;
+
+  // First mutation of the run, and deliberately the first thing past the gate.
+  const dirReady = await ensureInstallDir(targetPath);
+  if (!dirReady.ok) return dirReady.result;
 
   // Stage inside the install dir, not $TMPDIR: same filesystem is what makes the final rename an
   // atomic swap rather than a copy that can be observed half-written. Same *directory*, in fact,

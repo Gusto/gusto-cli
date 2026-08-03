@@ -318,6 +318,54 @@ describe("upgradeHandler", () => {
     if (result.ok) expect(result.data).toMatchObject({ status: "available", from: "0.1.0", to: "0.2.0" });
     expect(fixture.requests).toEqual([]);
     expect(installedVersion(fixture)).toBe("0.1.0");
+    // Not just "downloaded nothing" - the disk is untouched. Asserting only the former is what let
+    // a `mkdir` above the gate go unnoticed.
+    expect(readdirSync(fixture.installDir)).toEqual(["gusto"]);
+  });
+
+  // Both of these ran the install dir's `mkdir` before deciding not to upgrade: `--dry-run` says it
+  // reports "without downloading or replacing anything", and a blocked write is meant to stop
+  // instead of executing. Creating directories is not nothing.
+  test.each([
+    ["--dry-run", { dryRun: true }, "available"],
+    ["a run blocked for want of --confirm", {}, "confirmation_required"],
+  ])("leaves a missing install dir uncreated: %s", async (_label, opts, expected) => {
+    fixture = startFixture();
+    const missing = path.join(fixture.installDir, "not", "yet", "bin");
+    const { result } = await runUpgrade(fixture, opts, { env: { GUSTO_INSTALL_DIR: missing } });
+
+    if (result.ok) {
+      expect((result.data as { status: string }).status).toBe(expected);
+      // Honest about the state rather than inventing a permission problem: nothing is installed there.
+      expect((result.data as { from: string | null }).from).toBeNull();
+    } else {
+      expect(result.error.code).toBe(expected);
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+    }
+    expect(existsSync(missing)).toBe(false);
+    expect(existsSync(path.join(fixture.installDir, "not"))).toBe(false);
+    expect(fixture.requests).toEqual([]);
+  });
+
+  // The pre-gate check reads permissions off the nearest existing ancestor, so an install dir that
+  // can never be created is refused before the gate - and without creating anything on the way.
+  test.skipIf(process.getuid?.() === 0)("refuses an install dir whose parent is not writable", async () => {
+    fixture = startFixture();
+    const locked = path.join(fixture.installDir, "locked");
+    mkdirSync(locked, { mode: 0o500 });
+    const { result } = await runUpgrade(
+      fixture,
+      { confirm: true },
+      { env: { GUSTO_INSTALL_DIR: path.join(locked, "bin") } },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("install_dir_not_writable");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.message).toContain("is not writable");
+    }
+    expect(fixture.requests).toEqual([]);
   });
 
   test("refuses a read-only install dir without downloading", async () => {
