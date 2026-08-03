@@ -489,8 +489,8 @@ describe("upgradeHandler", () => {
 
     // Separate from the two above because it needs something on disk. install.sh runs `mkdir -p` on
     // the same GUSTO_INSTALL_DIR, so the stray file blocks it exactly as it blocks us - its own
-    // `mktemp -d` staging is beside the point. This is the one hint-bearing failure whose exit code
-    // (7, not 8) already says nobody's retry will help.
+    // `mktemp -d` staging is beside the point. Exit 7 rather than 8 already says nobody's retry
+    // will help here, so a hint offering one would have contradicted the code beside it.
     test("offers no reinstall where it cannot help: a file where the install dir belongs", async () => {
       fixture = startFixture();
       const stray = path.join(fixture.installDir, "not-a-dir");

@@ -723,8 +723,13 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   }
 
   let ident: Awaited<ReturnType<typeof open>>;
+  // Identity of the file we just created, read off the descriptor while it still pins the inode.
+  // Both questions below turn on it and neither is answerable from the path, which is shared: "is
+  // the file I reopened the one I wrote", and "is the file I'm about to delete still mine".
+  let created: Awaited<ReturnType<typeof writer.stat>> | null = null;
   try {
     try {
+      created = await writer.stat();
       await writer.write(binary.bytes);
       await writer.chmod(0o755);
       // Reopened rather than reused so the exec-check isn't blocked by our own write handle. The
@@ -732,8 +737,8 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       // the writer while both are open: our inode can't be recycled while the writer pins it, so
       // matching inodes prove the read handle is the file we just wrote.
       ident = await open(staged, FS_CONST.O_RDONLY);
-      const [w, r] = await Promise.all([writer.stat(), ident.stat()]);
-      if (w.ino !== r.ino || w.dev !== r.dev) {
+      const reopened = await ident.stat();
+      if (created.ino !== reopened.ino || created.dev !== reopened.dev) {
         await ident.close().catch(() => {});
         return concurrentUpgrade(staged, targetPath);
       }
@@ -742,9 +747,22 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    // Past the `O_EXCL` create the file *is* ours, so a half-written one is ours to remove. The next
-    // run's `preflightStagingPath` would clear it, but leaving a partial release binary sitting in
-    // the install dir until then is not something to rely on.
+    // A const so the null check narrows inside the callback; TypeScript won't carry it across a
+    // closure boundary for a `let`.
+    const mine = created;
+    // Ownership decides the cleanup, not presence - the same rule as the mismatch branch above and
+    // the `finally` that ends this function. Past the `O_EXCL` create a half-written file is ours to
+    // discard rather than leave for the next run's preflight. But a concurrent run's preflight can
+    // clear ours mid-write and create its own at the shared name, and a reopen failing with ENOENT
+    // is precisely how we find that out - so unlinking by path here would delete *their* file and
+    // then claim to have discarded ours. Losing the race is the truer report of what happened.
+    const ours =
+      mine !== null &&
+      (await lstat(staged).then(
+        (s) => s.dev === mine.dev && s.ino === mine.ino,
+        () => false,
+      ));
+    if (!ours) return concurrentUpgrade(staged, targetPath);
     await unlink(staged).catch(() => {});
     return fail(
       "staging_write_failed",
