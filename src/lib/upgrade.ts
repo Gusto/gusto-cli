@@ -1,5 +1,5 @@
 import { constants as FS_CONST, realpathSync } from "node:fs";
-import { access, chmod, rename, unlink } from "node:fs/promises";
+import { access, chmod, mkdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { EnvSource } from "./env.ts";
@@ -80,7 +80,11 @@ function canonical(p: string): string {
   }
 }
 
-/** Symlinks are resolved so a `~/.local/bin/gusto` link upgrades its target, not itself.
+/** Symlinks are resolved so a `~/.local/bin/gusto` link upgrades its target, not itself. Both
+ * branches canonicalize, because everything downstream reasons about the resolved path: the
+ * managed-install prefixes are matched against it (an Intel Homebrew install reached through
+ * `GUSTO_INSTALL_DIR=/usr/local/bin` has to fail the same way one reached through `execPath` does),
+ * `from` is read off it, and it's what `rename` lands on.
  *
  * The basename guard is load-bearing: under `bun run dev -- upgrade` the running executable is the
  * developer's `bun`, and replacing that would be a destructive surprise.
@@ -95,8 +99,8 @@ export function resolveTargetPath(
   const resolved = canonical(execPath);
   const installDir = env.GUSTO_INSTALL_DIR;
   if (installDir !== undefined && installDir.length > 0) {
-    const targetPath = path.join(installDir, BINARY_NAME);
-    return { ok: true, targetPath, isSelf: canonical(targetPath) === resolved };
+    const targetPath = canonical(path.join(installDir, BINARY_NAME));
+    return { ok: true, targetPath, isSelf: targetPath === resolved };
   }
   if (path.basename(resolved) !== BINARY_NAME) {
     return fail(
@@ -183,6 +187,20 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
       `${targetPath} is managed by ${managed.manager}. Update it with ${managed.manager} instead, ` +
         `so its metadata stays in step with what's on disk.`,
       ExitCode.Blocked,
+    );
+  }
+  // install.sh does `mkdir -p "$INSTALL_DIR"`. Matching it keeps a first install into a directory
+  // that doesn't exist yet working - otherwise `access` below reports ENOENT as "not writable",
+  // which reads as a permission problem an agent might retry and isn't one.
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return fail(
+      "install_dir_not_writable",
+      `cannot create ${dir}, so ${targetPath} can't be installed: ${detail}. Nothing was changed.`,
+      ExitCode.Blocked,
+      REINSTALL_HINT,
     );
   }
   try {

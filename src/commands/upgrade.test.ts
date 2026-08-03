@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -81,8 +82,10 @@ function startFixture(
 const scratchDirs: string[] = [];
 let fixture: Fixture | undefined;
 
+/** Canonicalized, because that's the form upgrade resolves paths to and reports back - on macOS
+ * `$TMPDIR` lives under a `/var -> /private/var` link. */
 function tmpDir(prefix: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), prefix)));
   scratchDirs.push(dir);
   return dir;
 }
@@ -328,6 +331,17 @@ describe("upgradeHandler", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("unsupported_platform");
     expect(fixture.requests).toEqual([]);
+  });
+
+  // install.sh does `mkdir -p "$INSTALL_DIR"`; without it this reported install_dir_not_writable.
+  test("creates an install dir that doesn't exist yet", async () => {
+    fixture = startFixture({ installedVersion: null });
+    const fresh = path.join(fixture.installDir, "nested", "bin");
+    const { result } = await runUpgrade(fixture, { confirm: true }, { env: { GUSTO_INSTALL_DIR: fresh } });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toMatchObject({ status: "upgraded", from: null });
+    expect(existsSync(path.join(fresh, "gusto"))).toBe(true);
   });
 
   // SIGINT is the realistic way one gets stranded: index.ts's handler calls process.exit, which

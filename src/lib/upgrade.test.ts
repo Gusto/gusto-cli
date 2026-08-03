@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ExitCode } from "./exit-codes.ts";
@@ -16,8 +16,10 @@ import {
 
 const scratchDirs: string[] = [];
 
+/** Canonicalized, because that's the form `resolveTargetPath` reports back - on macOS `$TMPDIR`
+ * lives under a `/var -> /private/var` link. */
 function tmpDir(prefix: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), prefix)));
   scratchDirs.push(dir);
   return dir;
 }
@@ -158,6 +160,20 @@ describe("resolveTargetPath", () => {
   test("treats an empty GUSTO_INSTALL_DIR as unset", () => {
     const result = resolveTargetPath({ GUSTO_INSTALL_DIR: "" }, "/usr/local/bin/bun");
     expect(result.ok).toBe(false);
+  });
+
+  // The shape that matters: /usr/local/bin/gusto is a symlink into the Cellar on an Intel Homebrew
+  // install, so leaving the GUSTO_INSTALL_DIR join unresolved would clear the managed-install guard
+  // and replace the link - and report `from` off a file it didn't touch.
+  test("resolves a GUSTO_INSTALL_DIR path through a symlink, like the execPath branch", () => {
+    const dir = tmpDir("gusto-cli-upgrade-dirlink-");
+    const real = path.join(dir, "gusto-real");
+    writeFileSync(real, "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync(real, path.join(dir, "gusto"));
+
+    const result = resolveTargetPath({ GUSTO_INSTALL_DIR: dir }, "/anything/at/all");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.targetPath).toBe(real);
   });
 });
 
@@ -334,6 +350,25 @@ describe("preflightInstallDir", () => {
       expect(failure(result).error.code).toBe("install_dir_not_writable");
       expect(failure(result).exitCode).toBe(ExitCode.Blocked);
       expect(failure(result).error.hint).toContain("install.sh");
+    }
+  });
+
+  // install.sh's `mkdir -p "$INSTALL_DIR"`. Without it a first install into a dir that doesn't
+  // exist yet fails ENOENT and reports as "not writable", which is a different problem.
+  test("creates the install dir when it doesn't exist yet", async () => {
+    const dir = path.join(tmpDir("gusto-cli-upgrade-mkdir-"), "nested", "bin");
+    expect((await preflightInstallDir(path.join(dir, "gusto"))).ok).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("names the real problem when the dir can't be created", async () => {
+    const parent = tmpDir("gusto-cli-upgrade-nomkdir-");
+    chmodSync(parent, 0o500);
+    const result = await preflightInstallDir(path.join(parent, "bin", "gusto"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(failure(result).error.code).toBe("install_dir_not_writable");
+      expect(failure(result).error.message).toContain("cannot create");
     }
   });
 });
