@@ -199,16 +199,24 @@ export function parseSha256Sums(text: string, asset: string): string | null {
  *
  * "Existing" deliberately means any file type, not just a directory. A regular file sitting where a
  * directory belongs is a reason to refuse, not a reason to keep walking past it to some grandparent
- * that happens to be writable - the caller checks the type. */
-async function nearestExistingPath(dir: string): Promise<string> {
+ * that happens to be writable - the caller checks the type.
+ *
+ * The probe is `lstat`, which does *not* follow symlinks, and that is load-bearing. `access` follows,
+ * so a dangling symlink reads as absent and the walk steps straight past it to the healthy
+ * grandparent - and then every check downstream inspects a directory that isn't where the install
+ * would go. A link with nothing at the other end is something that exists and that `mkdir` will
+ * refuse, so the walk has to stop on it. The returned stats are the caller's too, since it needs the
+ * type and there's no reason to ask twice. */
+async function nearestExistingPath(
+  dir: string,
+): Promise<{ path: string; info: Awaited<ReturnType<typeof lstat>> } | null> {
   let current = dir;
   for (;;) {
     try {
-      await access(current, FS_CONST.F_OK);
-      return current;
+      return { path: current, info: await lstat(current) };
     } catch {
       const parent = path.dirname(current);
-      if (parent === current) return current;
+      if (parent === current) return null;
       current = parent;
     }
   }
@@ -234,41 +242,51 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
     );
   }
   const anchor = await nearestExistingPath(dir);
-
-  // Type before permissions, because `access` ignores file type: a regular file with mode 0755
-  // satisfies W_OK|X_OK just as a directory does, and would sail through the check below to fail as
-  // a bare ENOTDIR from `mkdir` after the gate. `stat`, not `lstat`, on purpose - a symlink to a
-  // real directory is a perfectly good install dir and `mkdir -p` is happy with it.
-  let anchorType: Awaited<ReturnType<typeof stat>>;
-  try {
-    anchorType = await stat(anchor);
-  } catch {
-    // Vanished between the walk and here. Report it as the permission problem it looks like from
-    // out here rather than crashing; the confirmed run would fail at `mkdir` anyway.
+  if (anchor === null) {
     return fail(
       "install_dir_not_writable",
-      `cannot use ${dir} as the install directory, so ${targetPath} can't be replaced. Nothing was changed.`,
+      `cannot reach any existing parent of ${dir}, so ${targetPath} can't be installed. Nothing was changed.`,
       ExitCode.Blocked,
       REINSTALL_HINT,
     );
   }
-  if (!anchorType.isDirectory()) {
+
+  // Type before permissions, because `access` ignores file type: a regular file with mode 0755
+  // satisfies W_OK|X_OK just as a directory does, and would sail through the check below only to
+  // fail as a bare ENOTDIR from `mkdir` after the gate.
+  //
+  // Note the two calls want opposite link semantics, on purpose. The walk above uses `lstat` so a
+  // dangling link stops it; here a link is *followed*, because one pointing at a real directory is a
+  // perfectly good install dir and `mkdir -p` is happy with it. Swap either and it breaks: `lstat`
+  // here would refuse a working symlinked install, `access`/`stat` in the walk lets a broken one
+  // through. A link we can't follow is therefore a link with nothing at the other end.
+  const isDirectory = anchor.info.isSymbolicLink()
+    ? await stat(anchor.path).then(
+        (s) => s.isDirectory(),
+        () => false,
+      )
+    : anchor.info.isDirectory();
+
+  if (!isDirectory) {
     // Validation, not Blocked: exit 8 tells an agent the precondition might later be met on its own,
-    // and a file sitting where a directory belongs never will. Someone has to remove it.
-    const what =
-      anchor === dir ? `${dir} is not a directory` : `${anchor} is not a directory, so ${dir} can't be created`;
+    // and neither a stray file nor a broken link removes itself. Someone has to.
+    const kind = anchor.info.isSymbolicLink()
+      ? "is a symlink that doesn't resolve to a directory"
+      : "is not a directory";
+    const what = anchor.path === dir ? `${dir} ${kind}` : `${anchor.path} ${kind}, so ${dir} can't be created`;
     return fail(
       "install_dir_not_a_directory",
-      `${what}, so ${targetPath} can't be installed. Remove or rename ${anchor}, or point ` +
+      `${what}, so ${targetPath} can't be installed. Remove or rename ${anchor.path}, or point ` +
         `GUSTO_INSTALL_DIR at a different directory. Nothing was changed.`,
       ExitCode.Validation,
     );
   }
 
   try {
-    await access(anchor, FS_CONST.W_OK | FS_CONST.X_OK);
+    await access(anchor.path, FS_CONST.W_OK | FS_CONST.X_OK);
   } catch {
-    const because = anchor === dir ? `cannot write to ${dir}` : `cannot create ${dir}: ${anchor} is not writable`;
+    const because =
+      anchor.path === dir ? `cannot write to ${dir}` : `cannot create ${dir}: ${anchor.path} is not writable`;
     return fail(
       "install_dir_not_writable",
       `${because}, so ${targetPath} can't be replaced. Nothing was changed.`,

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   readFileSync,
   mkdirSync,
@@ -352,22 +353,26 @@ describe("upgradeHandler", () => {
   // agent-mode case returning this instead of `confirmation_required` is what proves the refusal
   // lands before the gate.
   test.each([
-    ["--dry-run", { dryRun: true }],
-    ["agent mode without --confirm", {}],
-  ])("refuses a file sitting where the install dir belongs: %s", async (_label, opts) => {
+    ["a file, --dry-run", { dryRun: true }, "file"],
+    ["a file, agent mode without --confirm", {}, "file"],
+    ["a dangling symlink, --dry-run", { dryRun: true }, "dangling"],
+    ["a dangling symlink, agent mode without --confirm", {}, "dangling"],
+  ] as const)("refuses what can never be an install dir: %s", async (_label, opts, kind) => {
     fixture = startFixture();
     const stray = path.join(fixture.installDir, "stray");
-    writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
+    if (kind === "dangling") symlinkSync(path.join(fixture.installDir, "never-existed"), stray);
+    else writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
 
     const { result } = await runUpgrade(fixture, opts, { env: { GUSTO_INSTALL_DIR: stray } });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
+      // Not `confirmation_required`, which is what proves the refusal lands before the gate.
       expect(result.error.code).toBe("install_dir_not_a_directory");
       expect(result.exitCode).toBe(ExitCode.Validation);
     }
     expect(fixture.requests).toEqual([]);
-    expect(statSync(stray).isFile()).toBe(true);
+    expect(lstatSync(stray).isSymbolicLink()).toBe(kind === "dangling");
   });
 
   // The pre-gate check reads permissions off the nearest existing ancestor, so an install dir that

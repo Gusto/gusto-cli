@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -381,12 +382,19 @@ describe("preflightInstallDir", () => {
   // from `mkdir` after the gate - which is the shape a botched install leaves behind when it writes
   // the binary to ~/.gusto/bin instead of ~/.gusto/bin/gusto.
   test.each([
-    ["the install dir itself is a file", (stray: string) => stray],
-    ["the install dir is nested under a file", (stray: string) => path.join(stray, "deeper")],
-  ])("refuses a non-directory in the path: %s", async (_label, installDir) => {
+    ["the install dir itself is a file", "file", (stray: string) => stray],
+    ["the install dir is nested under a file", "file", (stray: string) => path.join(stray, "deeper")],
+    // `access` follows symlinks, so a dangling one reads as absent and the walk steps straight past
+    // it to the healthy grandparent - which is a directory, so every check downstream passed and the
+    // failure landed below the gate as EEXIST from `mkdir`. A dotfiles setup pointing ~/.gusto/bin at
+    // an unmounted volume is the realistic way in.
+    ["the install dir is a dangling symlink", "dangling", (stray: string) => stray],
+    ["the install dir is nested under a dangling symlink", "dangling", (stray: string) => path.join(stray, "deeper")],
+  ])("refuses a non-directory in the path: %s", async (_label, kind, installDir) => {
     const root = tmpDir("gusto-cli-upgrade-notdir-");
     const stray = path.join(root, "bin");
-    writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
+    if (kind === "dangling") symlinkSync(path.join(root, "never-existed"), stray);
+    else writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
 
     const result = await preflightInstallDir(path.join(installDir(stray), "gusto"));
     expect(result.ok).toBe(false);
@@ -397,12 +405,14 @@ describe("preflightInstallDir", () => {
       expect(failure(result).exitCode).toBe(ExitCode.Validation);
       expect(failure(result).error.message).toContain(stray);
     }
-    // Still a file, and no directory was conjured next to it.
-    expect(statSync(stray).isFile()).toBe(true);
+    // Untouched, and no directory was conjured in its place.
+    expect(lstatSync(stray).isSymbolicLink()).toBe(kind === "dangling");
+    expect(existsSync(path.join(stray, "deeper"))).toBe(false);
   });
 
-  // `stat`, not `lstat`, is a deliberate choice: `mkdir -p` is perfectly happy with a symlinked
-  // install dir, so rejecting one would refuse a working setup.
+  // The other half of the lstat/stat split. The walk must use `lstat` so a *dangling* link stops it,
+  // but the type check must follow links so a *working* one is accepted. Collapsing the two into a
+  // single call breaks one shape or the other, so both directions are pinned.
   test("accepts a symlink pointing at a real directory", async () => {
     const root = tmpDir("gusto-cli-upgrade-dirsym-");
     const real = path.join(root, "real-bin");
@@ -507,10 +517,12 @@ describe("preflightStagingPath", () => {
 describe("performUpgrade ordering", () => {
   /** Runs against a path whose install dir is a regular file, with a gate and a fetch that both
    * record being reached. Neither should be. */
-  async function runAgainstStrayFile(opts: { dryRun?: boolean }) {
+  async function runAgainstStrayFile(opts: { dryRun?: boolean }, kind: "file" | "dangling" = "file") {
     const root = tmpDir("gusto-cli-upgrade-order-");
     const stray = path.join(root, "bin");
-    writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
+    // A fresh root per call: reusing one across cases lets an earlier run's mkdir mask a later one.
+    if (kind === "dangling") symlinkSync(path.join(root, "never-existed"), stray);
+    else writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
 
     let gateCalled = false;
     let fetched = false;
@@ -536,10 +548,12 @@ describe("performUpgrade ordering", () => {
   // The load-bearing assertion is `gateCalled`. An upgrade that cannot possibly succeed must not ask
   // an operator to approve it - that is exactly the pointless confirmation the gate exists to avoid.
   test.each([
-    ["--dry-run", { dryRun: true }],
-    ["agent mode without --confirm", {}],
-  ])("refuses an impossible install dir before the gate: %s", async (_label, opts) => {
-    const { result, gateCalled, fetched } = await runAgainstStrayFile(opts);
+    ["--dry-run, a file in the way", { dryRun: true }, "file"],
+    ["agent mode without --confirm, a file in the way", {}, "file"],
+    ["--dry-run, a dangling symlink in the way", { dryRun: true }, "dangling"],
+    ["agent mode without --confirm, a dangling symlink in the way", {}, "dangling"],
+  ] as const)("refuses an impossible install dir before the gate: %s", async (_label, opts, kind) => {
+    const { result, gateCalled, fetched } = await runAgainstStrayFile(opts, kind);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
