@@ -373,7 +373,9 @@ export async function preflightStagingPath(staged: string): Promise<{ ok: true }
  *
  * Both halves are needed. `nlink` alone still reads as ours after a successful `rename` (the file
  * is simply at its new name), and the `lstat` alone is the inode-reuse trap. Together: our file is
- * still linked, and the staging path is still where it's linked.
+ * still linked, and the staging path is still where it's linked. The identity is `(dev, ino)`, not
+ * `ino` alone - the same pair the create-time check compares, since an inode number only identifies
+ * a file within its filesystem.
  *
  * The descriptor must be read-only. Linux refuses to execute a file that anyone holds open for
  * writing (`ETXTBSY`), so keeping the write handle open across the exec-check would break every
@@ -383,7 +385,8 @@ async function stagingStillOurs(handle: Awaited<ReturnType<typeof open>>, staged
   try {
     const ours = await handle.stat();
     if (ours.nlink === 0) return false;
-    return (await lstat(staged)).ino === ours.ino;
+    const atPath = await lstat(staged);
+    return atPath.ino === ours.ino && atPath.dev === ours.dev;
   } catch {
     return false;
   }
