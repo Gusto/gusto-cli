@@ -11,9 +11,18 @@ function errorExtras(err: { body: unknown; requestId?: string }): { details?: un
   };
 }
 
-/** Pull a scope name out of a 403 body when the server names one (RFC 6750 `scope`). */
+/** Pull a scope name out of a 403 body when the server names one: RFC 6750's top-level `scope`
+ * first, falling back to the `missing_scope_name` Gusto's own `missing_oauth_scopes` error entry
+ * carries in its metadata (absent on older API responses). */
 function scopeFromBody(body: unknown): string | undefined {
-  return isObject(body) && typeof body.scope === "string" ? body.scope : undefined;
+  if (!isObject(body)) return undefined;
+  if (typeof body.scope === "string") return body.scope;
+  if (!Array.isArray(body.errors)) return undefined;
+  const scopeError = body.errors.find((e) => isObject(e) && e.category === "missing_oauth_scopes");
+  if (!isObject(scopeError) || !isObject(scopeError.metadata)) return undefined;
+  return typeof scopeError.metadata.missing_scope_name === "string"
+    ? scopeError.metadata.missing_scope_name
+    : undefined;
 }
 
 /** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
@@ -27,6 +36,35 @@ function isInsufficientScope(body: unknown): boolean {
     return true;
   }
   return body.error === "insufficient_scope";
+}
+
+/** Collect the human-readable messages out of an API error body, recursing into the nested
+ * `errors[].errors[]` shape the API uses for record-level errors. The API owns the wording -
+ * this only lifts it somewhere the caller will read, since `ApiError.message` is just the
+ * request line. Returns `[]` for bodies that explain nothing. */
+function serverMessages(body: unknown): string[] {
+  const found: string[] = [];
+  const visit = (node: unknown): void => {
+    if (!isObject(node)) return;
+    let text: string | undefined;
+    if (typeof node.message === "string") text = node.message;
+    else if (typeof node.error === "string") text = node.error;
+    if (text !== undefined) {
+      // Keep `error_key`: it names the offending field, and the API reuses one message across
+      // fields, so dropping it collapses a multi-field 422 to "can't be blank; can't be blank".
+      found.push(typeof node.error_key === "string" ? `${node.error_key}: ${text}` : text);
+    }
+    if (!Array.isArray(node.errors)) return;
+    for (const nested of node.errors) {
+      // A bare string entry is the message itself. Only honored inside `errors` - a
+      // whole-body string is an unparsed response (an HTML error page from a proxy,
+      // say) and does not belong in `message`.
+      if (typeof nested === "string") found.push(nested);
+      else visit(nested);
+    }
+  };
+  visit(body);
+  return Array.from(new Set(found));
 }
 
 export function toResult(err: unknown): CommandResult<never> {
@@ -44,12 +82,16 @@ export function toResult(err: unknown): CommandResult<never> {
         },
       };
     }
+    // Lead with what the API said and keep the request line as a suffix. Unprefixed,
+    // `err.message` is only "GET <url> -> 422", which buries the one actionable sentence
+    // two levels deep in `details` where callers branching on the envelope won't see it.
+    const explained = serverMessages(err.body);
     return {
       ok: false,
       exitCode: err.exitCode,
       error: {
         code: err.status >= 500 ? "api_server_error" : "api_client_error",
-        message: err.message,
+        message: explained.length > 0 ? `${explained.join("; ")} (${err.message})` : err.message,
         ...errorExtras(err),
       },
     };

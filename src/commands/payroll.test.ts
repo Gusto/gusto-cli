@@ -259,6 +259,16 @@ describe("buildPayrollListQuery", () => {
     });
   });
 
+  // The API's range rules are measured against defaults this layer can't see (an absent
+  // end_date becomes today) and the thresholds belong to the API, so a well-formed range
+  // is passed through even when the API will reject it. Re-adding the checks here means
+  // guessing those thresholds and blocking requests the API would have accepted.
+  test("passes well-formed dates through without mirroring the API's range rules", () => {
+    expect(buildPayrollListQuery({ startDate: "2020-01-01", endDate: "2026-07-16" }).ok).toBe(true);
+    expect(buildPayrollListQuery({ startDate: "2020-01-01" }).ok).toBe(true);
+    expect(buildPayrollListQuery({ endDate: "2099-01-01" }).ok).toBe(true);
+  });
+
   test("accepts every valid enum value (incl. external payroll type and index-only includes)", () => {
     const result = buildPayrollListQuery({
       processingStatus: "processed,unprocessed",
