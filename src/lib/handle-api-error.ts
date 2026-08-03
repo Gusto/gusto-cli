@@ -11,9 +11,18 @@ function errorExtras(err: { body: unknown; requestId?: string }): { details?: un
   };
 }
 
-/** Pull a scope name out of a 403 body when the server names one (RFC 6750 `scope`). */
+/** Pull a scope name out of a 403 body when the server names one: RFC 6750's top-level `scope`
+ * first, falling back to the `missing_scope_name` Gusto's own `missing_oauth_scopes` error entry
+ * carries in its metadata (absent on older API responses). */
 function scopeFromBody(body: unknown): string | undefined {
-  return isObject(body) && typeof body.scope === "string" ? body.scope : undefined;
+  if (!isObject(body)) return undefined;
+  if (typeof body.scope === "string") return body.scope;
+  if (!Array.isArray(body.errors)) return undefined;
+  const scopeError = body.errors.find((e) => isObject(e) && e.category === "missing_oauth_scopes");
+  if (!isObject(scopeError) || !isObject(scopeError.metadata)) return undefined;
+  return typeof scopeError.metadata.missing_scope_name === "string"
+    ? scopeError.metadata.missing_scope_name
+    : undefined;
 }
 
 /** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
