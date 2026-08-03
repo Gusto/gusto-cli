@@ -19,6 +19,7 @@ import {
   assetBaseUrl,
   ensureInstallDir,
   parseSha256Sums,
+  performUpgrade,
   platformAsset,
   preflightInstallDir,
   preflightStagingPath,
@@ -375,6 +376,43 @@ describe("preflightInstallDir", () => {
     expect(existsSync(path.dirname(dir))).toBe(false);
   });
 
+  // `access` ignores file type, so a regular file with mode 0755 satisfies W_OK|X_OK exactly as a
+  // directory does. Without a type check it clears the pre-gate refusal and fails as a bare ENOTDIR
+  // from `mkdir` after the gate - which is the shape a botched install leaves behind when it writes
+  // the binary to ~/.gusto/bin instead of ~/.gusto/bin/gusto.
+  test.each([
+    ["the install dir itself is a file", (stray: string) => stray],
+    ["the install dir is nested under a file", (stray: string) => path.join(stray, "deeper")],
+  ])("refuses a non-directory in the path: %s", async (_label, installDir) => {
+    const root = tmpDir("gusto-cli-upgrade-notdir-");
+    const stray = path.join(root, "bin");
+    writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
+
+    const result = await preflightInstallDir(path.join(installDir(stray), "gusto"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(failure(result).error.code).toBe("install_dir_not_a_directory");
+      // Validation, not Blocked: exit 8 reads as a precondition that might later be met on its own,
+      // and a stray file never removes itself.
+      expect(failure(result).exitCode).toBe(ExitCode.Validation);
+      expect(failure(result).error.message).toContain(stray);
+    }
+    // Still a file, and no directory was conjured next to it.
+    expect(statSync(stray).isFile()).toBe(true);
+  });
+
+  // `stat`, not `lstat`, is a deliberate choice: `mkdir -p` is perfectly happy with a symlinked
+  // install dir, so rejecting one would refuse a working setup.
+  test("accepts a symlink pointing at a real directory", async () => {
+    const root = tmpDir("gusto-cli-upgrade-dirsym-");
+    const real = path.join(root, "real-bin");
+    mkdirSync(real);
+    const link = path.join(root, "bin");
+    symlinkSync(real, link);
+
+    expect((await preflightInstallDir(path.join(link, "gusto"))).ok).toBe(true);
+  });
+
   // Permissions are read off the nearest ancestor that exists, so an uncreatable dir is still
   // refused up front - the early refusal survives the split, without the mutation.
   test.skipIf(process.getuid?.() === 0)("refuses a dir whose nearest existing ancestor is read-only", async () => {
@@ -463,5 +501,52 @@ describe("preflightStagingPath", () => {
     if (!result.ok) expect(failure(result).error.code).toBe("staging_path_blocked");
     expect(readFileSync(victim, "utf8")).toBe("private");
     expect(statSync(victim).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("performUpgrade ordering", () => {
+  /** Runs against a path whose install dir is a regular file, with a gate and a fetch that both
+   * record being reached. Neither should be. */
+  async function runAgainstStrayFile(opts: { dryRun?: boolean }) {
+    const root = tmpDir("gusto-cli-upgrade-order-");
+    const stray = path.join(root, "bin");
+    writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
+
+    let gateCalled = false;
+    let fetched = false;
+    const result = await performUpgrade(opts, {
+      gate: () => {
+        gateCalled = true;
+        return { ok: false, exitCode: ExitCode.Blocked, error: { code: "confirmation_required", message: "gate" } };
+      },
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: stray, GUSTO_CLI_VERSION: "v0.2.0", GUSTO_CLI_BASE_URL: "http://127.0.0.1:1" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      versionOf: async () => null,
+      fetchImpl: stubFetch(async () => {
+        fetched = true;
+        throw new Error("should not fetch");
+      }),
+    });
+    return { result, gateCalled, fetched };
+  }
+
+  // The load-bearing assertion is `gateCalled`. An upgrade that cannot possibly succeed must not ask
+  // an operator to approve it - that is exactly the pointless confirmation the gate exists to avoid.
+  test.each([
+    ["--dry-run", { dryRun: true }],
+    ["agent mode without --confirm", {}],
+  ])("refuses an impossible install dir before the gate: %s", async (_label, opts) => {
+    const { result, gateCalled, fetched } = await runAgainstStrayFile(opts);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("install_dir_not_a_directory");
+      expect(result.exitCode).toBe(ExitCode.Validation);
+    }
+    expect(gateCalled).toBe(false);
+    expect(fetched).toBe(false);
   });
 });

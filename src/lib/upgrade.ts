@@ -1,5 +1,5 @@
 import { constants as FS_CONST, realpathSync } from "node:fs";
-import { access, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { EnvSource } from "./env.ts";
@@ -193,10 +193,14 @@ export function parseSha256Sums(text: string, asset: string): string | null {
   return null;
 }
 
-/** The closest ancestor of `dir` that exists - `dir` itself when it already does. That's where a
- * `mkdir -p` would land its first new component, so its permissions are what decide whether the
- * install can happen, and reading them mutates nothing. */
-async function nearestExistingDir(dir: string): Promise<string> {
+/** The closest existing ancestor of `dir` - `dir` itself when it already exists. That's where a
+ * `mkdir -p` would land its first new component, so it decides whether the install can happen, and
+ * reading it mutates nothing.
+ *
+ * "Existing" deliberately means any file type, not just a directory. A regular file sitting where a
+ * directory belongs is a reason to refuse, not a reason to keep walking past it to some grandparent
+ * that happens to be writable - the caller checks the type. */
+async function nearestExistingPath(dir: string): Promise<string> {
   let current = dir;
   for (;;) {
     try {
@@ -229,7 +233,38 @@ export async function preflightInstallDir(targetPath: string): Promise<{ ok: tru
       ExitCode.Blocked,
     );
   }
-  const anchor = await nearestExistingDir(dir);
+  const anchor = await nearestExistingPath(dir);
+
+  // Type before permissions, because `access` ignores file type: a regular file with mode 0755
+  // satisfies W_OK|X_OK just as a directory does, and would sail through the check below to fail as
+  // a bare ENOTDIR from `mkdir` after the gate. `stat`, not `lstat`, on purpose - a symlink to a
+  // real directory is a perfectly good install dir and `mkdir -p` is happy with it.
+  let anchorType: Awaited<ReturnType<typeof stat>>;
+  try {
+    anchorType = await stat(anchor);
+  } catch {
+    // Vanished between the walk and here. Report it as the permission problem it looks like from
+    // out here rather than crashing; the confirmed run would fail at `mkdir` anyway.
+    return fail(
+      "install_dir_not_writable",
+      `cannot use ${dir} as the install directory, so ${targetPath} can't be replaced. Nothing was changed.`,
+      ExitCode.Blocked,
+      REINSTALL_HINT,
+    );
+  }
+  if (!anchorType.isDirectory()) {
+    // Validation, not Blocked: exit 8 tells an agent the precondition might later be met on its own,
+    // and a file sitting where a directory belongs never will. Someone has to remove it.
+    const what =
+      anchor === dir ? `${dir} is not a directory` : `${anchor} is not a directory, so ${dir} can't be created`;
+    return fail(
+      "install_dir_not_a_directory",
+      `${what}, so ${targetPath} can't be installed. Remove or rename ${anchor}, or point ` +
+        `GUSTO_INSTALL_DIR at a different directory. Nothing was changed.`,
+      ExitCode.Validation,
+    );
+  }
+
   try {
     await access(anchor, FS_CONST.W_OK | FS_CONST.X_OK);
   } catch {

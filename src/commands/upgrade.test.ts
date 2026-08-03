@@ -347,6 +347,29 @@ describe("upgradeHandler", () => {
     expect(fixture.requests).toEqual([]);
   });
 
+  // A stray file where the install dir belongs can never become a directory on its own, so both a
+  // preview and a gated run must say so rather than promising an upgrade that can't happen. The
+  // agent-mode case returning this instead of `confirmation_required` is what proves the refusal
+  // lands before the gate.
+  test.each([
+    ["--dry-run", { dryRun: true }],
+    ["agent mode without --confirm", {}],
+  ])("refuses a file sitting where the install dir belongs: %s", async (_label, opts) => {
+    fixture = startFixture();
+    const stray = path.join(fixture.installDir, "stray");
+    writeFileSync(stray, "#!/bin/sh\n", { mode: 0o755 });
+
+    const { result } = await runUpgrade(fixture, opts, { env: { GUSTO_INSTALL_DIR: stray } });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("install_dir_not_a_directory");
+      expect(result.exitCode).toBe(ExitCode.Validation);
+    }
+    expect(fixture.requests).toEqual([]);
+    expect(statSync(stray).isFile()).toBe(true);
+  });
+
   // The pre-gate check reads permissions off the nearest existing ancestor, so an install dir that
   // can never be created is refused before the gate - and without creating anything on the way.
   test.skipIf(process.getuid?.() === 0)("refuses an install dir whose parent is not writable", async () => {

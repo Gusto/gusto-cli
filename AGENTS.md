@@ -24,7 +24,7 @@ gusto upgrade --confirm   # replace the binary (agent mode needs --confirm)
 
 Downloads the matching release asset, verifies it against that release's `SHA256SUMS`, checks the new binary runs, then atomically replaces the installed one. Already being up to date is a success (exit `0`, `status: "up_to_date"`), not an error. A checksum mismatch or a binary that won't run leaves the current install untouched.
 
-If a command's behavior doesn't match this file or `--help`, check `gusto --version` against `gusto upgrade --dry-run` before digging further - a stale binary explains a lot. An install managed by a package manager (Homebrew, Nix) is refused with `managed_install`; use the package manager for those. A read-only install dir returns `install_dir_not_writable` without downloading anything.
+If a command's behavior doesn't match this file or `--help`, check `gusto --version` against `gusto upgrade --dry-run` before digging further - a stale binary explains a lot. An install managed by a package manager (Homebrew, Nix) is refused with `managed_install`; use the package manager for those. A read-only install dir returns `install_dir_not_writable` without downloading anything. A file sitting where the install dir should be returns `install_dir_not_a_directory` (exit `7`, not `8` - retrying won't help until someone removes it). All three are decided before the download and before the `--confirm` gate, so `--dry-run` reports them too rather than previewing an upgrade that can't happen.
 
 ## Windows
 
