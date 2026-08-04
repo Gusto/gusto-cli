@@ -30,9 +30,10 @@ export async function ensureClientCreds(
 
 /** Why the stored session couldn't produce a usable token, or the token if it could. The three
  * failure kinds are distinct on purpose: "nothing on file" and "on file but the refresh was
- * rejected" call for opposite actions, and collapsing them into a single "no token" was what sent
- * agents into a re-login loop that rotated the very refresh token they needed. Callers
- * map each kind to its own error code; only `absent` should ever suggest `gusto auth login`. */
+ * rejected" call for opposite actions. Collapse them and a caller told to log in after a refresh
+ * failure mints a new pair over the refresh token that was still good, so each retry destroys more
+ * state than the last. Callers map each kind to its own error code; only `absent` may ever suggest
+ * `gusto auth login`. */
 export type SessionOutcome =
   | { kind: "ok"; token: string }
   /** No credential slot for this environment, or a slot with no access token in it. */
@@ -40,7 +41,8 @@ export type SessionOutcome =
   /** Access token expired and no refresh is possible locally - no refresh token, or no client
    * creds to authenticate the refresh with. `expiresAt` is echoed so the message can date it. */
   | { kind: "expired"; expiresAt: number }
-  /** A refresh ran and the server rejected it. The stored refresh token is left untouched. */
+  /** A refresh ran and the server rejected it. The stored refresh token is left in place: it may
+   * still be good (a transient failure), and it is the only way back in that doesn't need a login. */
   | { kind: "refresh_failed"; cause: OAuthError };
 
 /** Resolve the stored session for `env` into a usable token or a reason it isn't one.

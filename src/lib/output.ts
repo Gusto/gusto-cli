@@ -33,8 +33,8 @@ export interface EnvelopeError {
   /** Which environment the failing call was made against. Set on auth/company failures, where the
    * answer decides what to do next and is otherwise invisible: `--env` defaults to production and
    * each environment keeps its own credential slot, so a healthy session in the other one looks
-   * from the outside exactly like a broken credential model. A typed field rather than
-   * prose, so an agent branching on the envelope doesn't have to parse the message. */
+   * from the outside exactly like a broken credential model. A typed field rather than prose, so an
+   * agent branching on the envelope doesn't have to parse the message. */
   environment?: Environment;
 }
 

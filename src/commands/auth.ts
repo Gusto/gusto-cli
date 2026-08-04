@@ -386,9 +386,9 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
       ok: true,
       data: {
         ...result.data,
-        // Which environment answered was previously unavailable anywhere in the CLI, so an agent
-        // that had run one command with `--env sandbox` and the next without it had no way to tell
-        // the two identities apart.
+        // The only place the active environment is reported. Without it, a caller that ran one
+        // command with `--env sandbox` and the next without it has no way to tell the two
+        // identities apart - and each environment has its own credential slot and its own company.
         environment: defaultEnv(globals.env),
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
         capabilities: summarizeGrantedScopes(granted),

@@ -248,9 +248,9 @@ describe("resolveApiContext - stored session fallback", () => {
   });
 
   test("a rejected token refresh is token_refresh_failed, not no_access_token", async () => {
-    // The bug this ticket exists for: a refresh token is on file and only the *refresh* failed, so
-    // telling the caller "no access token, run auth login" makes them rotate the refresh token and
-    // lose the recoverable state. The message must steer toward a retry instead.
+    // A refresh token is on file and only the *refresh* failed, so this must not report absence:
+    // "no access token, run auth login" would make the caller rotate the refresh token and lose the
+    // one credential that could still recover. The message has to steer toward a retry instead.
     const result = await resolveApiContext(flags, {
       requireCompany: false,
       store: memoryStore({ production: expiredSlot() }),
@@ -315,7 +315,7 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.result.error.message).toContain(new Date(5_000).toISOString());
   });
 
-  test("an absent session still reports no_access_token, now naming the environment it read", async () => {
+  test("an absent session reports no_access_token and names the environment it read", async () => {
     const result = await resolveApiContext(flags, { requireCompany: false, ...noSession() });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -337,9 +337,9 @@ describe("resolveApiContext - stored session fallback", () => {
     ).rejects.toThrow("unreadable");
   });
 
-  // The real-world state this covers: a machine sat in this exact shape for over a week. Production was
-  // expired while sandbox had been refreshed minutes earlier, and nothing in the output connected
-  // the production failure to the healthy session one slot over.
+  // A machine can sit in this shape indefinitely without anyone noticing: production expired while
+  // sandbox is fresh, one command away from working. What makes it worth a regression test is that
+  // the failing environment and the healthy one are invisible to each other unless we say so.
   describe("expired production alongside a valid sandbox session", () => {
     const bothEnvs = () =>
       memoryStore({

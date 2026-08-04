@@ -129,11 +129,12 @@ function slotDescription(env: Environment): string {
 
 /** Turn a non-`ok` session outcome into the auth failure for it.
  *
- * The three codes exist because the three states need opposite responses, and the old single
- * `no_access_token` sent agents into a loop: told to log in again after a *refresh* failure, they
- * minted a new pair and overwrote the refresh token that was still on file, so every retry made
- * the state worse. Only `no_access_token` suggests `gusto auth login`. All three carry
- * the same exit code (`Auth`) - the code is what changed, not the contract. */
+ * The three codes are not interchangeable, because the states they describe need opposite
+ * responses. A caller told to log in after a *refresh* failure mints a new token pair over the
+ * refresh token that was still on file, turning a recoverable state into an unrecoverable one and
+ * making each retry worse than the last. So only `no_access_token` may suggest `gusto auth login`;
+ * `refresh_failed` must steer toward a retry. All three share the `Auth` exit code - callers
+ * branch on the code, not the status. */
 async function sessionFailure(
   outcome: Exclude<SessionOutcome, { kind: "ok" }>,
   env: Environment,
@@ -170,11 +171,11 @@ async function sessionFailure(
 
 /** When the requested environment has no usable session, say so about the *other* one.
  *
- * Logging into sandbox then dropping `--env` walks into a production wall with nothing connecting
- * the failure to the environment - the exact sequence a beta user's agent hit. Only reads the other
- * slot; never refreshes it, so surfacing the hint can't rotate a token the user didn't ask us to
- * touch. Best-effort, like the stranded-session warning in `authLogoutHandler`: a failed read of
- * the other slot must not change the error we already have to report. */
+ * Logging into sandbox and then dropping `--env` walks into a production wall with nothing
+ * connecting the failure to the environment, which is the likeliest reason to be here at all. Only
+ * reads the other slot; never refreshes it, so producing a hint can't rotate a token nobody asked
+ * us to touch. Best-effort, like the stranded-session warning in `authLogoutHandler`: a failed read
+ * of the other slot must not change the error we already have to report. */
 async function otherEnvHint(env: Environment, opts: AuthOpts): Promise<string | undefined> {
   const other: Environment = env === "production" ? "sandbox" : "production";
   try {
