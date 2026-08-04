@@ -854,7 +854,7 @@ describe("the pulled employee/contractor write surface is gone", () => {
   });
 });
 
-// The state a beta user's machine sat in for over a week (AINT-830): an unusable production slot
+// The state a beta user's machine sat in for over a week: an unusable production slot
 // next to a separate sandbox slot, with nothing in the output tying the failure to the environment.
 // Driven through the compiled binary with its own isolated XDG_CONFIG_HOME - the shared
 // ISOLATED_CONFIG above must stay session-free, since most tests here assert no_access_token.

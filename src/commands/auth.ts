@@ -40,7 +40,7 @@ interface LoginOpts {
 /** `--env` is a program-level option, so commander never lists it on a subcommand's help - yet it
  * is the flag that decides which credential slot these three commands read or write, and it
  * defaults to production. Spelling that out here is the difference between "my session vanished"
- * and "I signed into the other environment" (AINT-830). */
+ * and "I signed into the other environment". */
 const ENV_HELP = `
 Environment:
   --env <sandbox|production>   Which environment to act on. Defaults to production;
@@ -388,7 +388,7 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
         ...result.data,
         // Which environment answered was previously unavailable anywhere in the CLI, so an agent
         // that had run one command with `--env sandbox` and the next without it had no way to tell
-        // the two identities apart (AINT-830).
+        // the two identities apart.
         environment: defaultEnv(globals.env),
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
         capabilities: summarizeGrantedScopes(granted),

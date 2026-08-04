@@ -132,7 +132,7 @@ function slotDescription(env: Environment): string {
  * The three codes exist because the three states need opposite responses, and the old single
  * `no_access_token` sent agents into a loop: told to log in again after a *refresh* failure, they
  * minted a new pair and overwrote the refresh token that was still on file, so every retry made
- * the state worse (AINT-830). Only `no_access_token` suggests `gusto auth login`. All three carry
+ * the state worse. Only `no_access_token` suggests `gusto auth login`. All three carry
  * the same exit code (`Auth`) - the code is what changed, not the contract. */
 async function sessionFailure(
   outcome: Exclude<SessionOutcome, { kind: "ok" }>,

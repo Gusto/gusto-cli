@@ -781,7 +781,7 @@ describe("authWhoamiHandler", () => {
 
   test("reports the environment it is talking to", async () => {
     // Previously absent from whoami entirely, which left an agent no way to ask the CLI which of
-    // the two credential slots it was using (AINT-830). TEST_GLOBALS pins sandbox.
+    // the two credential slots it was using. TEST_GLOBALS pins sandbox.
     const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
     restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
     const result = await authWhoamiHandler({})(ctx);

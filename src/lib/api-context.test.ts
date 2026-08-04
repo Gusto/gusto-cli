@@ -337,7 +337,7 @@ describe("resolveApiContext - stored session fallback", () => {
     ).rejects.toThrow("unreadable");
   });
 
-  // AINT-830's real-world state: a machine sat in this exact shape for over a week. Production was
+  // The real-world state this covers: a machine sat in this exact shape for over a week. Production was
   // expired while sandbox had been refreshed minutes earlier, and nothing in the output connected
   // the production failure to the healthy session one slot over.
   describe("expired production alongside a valid sandbox session", () => {

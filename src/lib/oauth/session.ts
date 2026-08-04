@@ -31,7 +31,7 @@ export async function ensureClientCreds(
 /** Why the stored session couldn't produce a usable token, or the token if it could. The three
  * failure kinds are distinct on purpose: "nothing on file" and "on file but the refresh was
  * rejected" call for opposite actions, and collapsing them into a single "no token" was what sent
- * agents into a re-login loop that rotated the very refresh token they needed (AINT-830). Callers
+ * agents into a re-login loop that rotated the very refresh token they needed. Callers
  * map each kind to its own error code; only `absent` should ever suggest `gusto auth login`. */
 export type SessionOutcome =
   | { kind: "ok"; token: string }
