@@ -37,6 +37,21 @@ interface LoginOpts {
   target?: string;
 }
 
+/** `--env` is a program-level option, so commander never lists it on a subcommand's help - yet it
+ * is the flag that decides which credential slot these three commands read or write, and it
+ * defaults to production. Spelling that out here is the difference between "my session vanished"
+ * and "I signed into the other environment" (AINT-830). */
+const ENV_HELP = `
+Environment:
+  --env <sandbox|production>   Which environment to act on. Defaults to production;
+                               also settable via GUSTO_ENVIRONMENT or
+                               \`gusto config set environment <env>\`.
+
+  Credentials are stored per environment, in separate slots of one file. Signing in
+  to one environment leaves the other's session untouched, and \`logout\` only clears
+  the environment you name. \`gusto auth whoami\` reports which one is active.
+`;
+
 export function registerAuthCommand(parent: Command): void {
   const cmd = parent.command("auth").description("OAuth identity (login, logout, whoami)");
 
@@ -55,6 +70,7 @@ export function registerAuthCommand(parent: Command): void {
       "--target <tools>",
       "Install bundled skills into specific agent tools instead of auto-detecting from what is on this machine. Comma-separated list of claude, cursor, codex, cline, windsurf (or `all`). Also settable via GUSTO_SKILLS_TARGET. Overrides detection and a persisted `never` for this run.",
     )
+    .addHelpText("after", ENV_HELP)
     .action((opts: LoginOpts) =>
       runCommand(
         "gusto auth login",
@@ -66,12 +82,14 @@ export function registerAuthCommand(parent: Command): void {
   cmd
     .command("logout")
     .description("Clear the locally stored OAuth session")
+    .addHelpText("after", ENV_HELP)
     .action(() => runCommand("gusto auth logout", readGlobalFlags(parent.opts()), authLogoutHandler()));
 
   cmd
     .command("whoami")
     .description("Show token identity + granted scopes via /v1/token_info")
     .option(...TOKEN_STDIN_OPT)
+    .addHelpText("after", ENV_HELP)
     .action((opts: AuthOpts) =>
       runReadCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
     );
@@ -368,6 +386,10 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
       ok: true,
       data: {
         ...result.data,
+        // Which environment answered was previously unavailable anywhere in the CLI, so an agent
+        // that had run one command with `--env sandbox` and the next without it had no way to tell
+        // the two identities apart (AINT-830).
+        environment: defaultEnv(globals.env),
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
         capabilities: summarizeGrantedScopes(granted),
         ...(missing.length > 0 ? { missing_scopes: missing } : {}),

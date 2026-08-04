@@ -54,7 +54,25 @@ echo "$TOKEN" | gusto employee list --token-stdin --company-uuid <uuid>
 
 Token resolution order: `--token-stdin` (piped) > `GUSTO_ACCESS_TOKEN` > stored login session (`gusto auth login`). An explicit token always wins so a typo'd secret surfaces the real auth error instead of silently running as the logged-in identity.
 
+### Environments and credential slots
+
 `--env production` (default) hits `https://api.gusto.com`. `--env sandbox` hits `https://api.gusto-demo.com`. `GUSTO_API_BASE_URL` overrides both for testing.
+
+Environment resolution, highest precedence first: `--env` > `GUSTO_ENVIRONMENT` > `gusto config set environment <env>` > production.
+
+Each environment keeps its **own** credential slot, both in one `credentials.toml` under your config directory. Signing in to sandbox leaves your production session untouched and vice versa, and `gusto auth logout` only clears the environment you name. `gusto auth whoami` reports the active `environment` alongside the credential source, so you can always ask the CLI which one it is talking to.
+
+### When auth fails
+
+Auth failures all exit `3` and name the environment (`error.environment`) and the credential slot they read:
+
+| code | what it means | what to do |
+| --- | --- | --- |
+| `no_access_token` | no credentials at all for that environment | `gusto auth login`, set `GUSTO_ACCESS_TOKEN`, or pipe one via `--token-stdin` |
+| `session_expired` | the access token expired and there's no refresh token (or no client credentials) to renew it | `gusto auth login --env <env>` |
+| `token_refresh_failed` | a refresh was attempted and the server rejected it; the stored refresh token is untouched | retry the command first - only log in again if the retry also fails, since logging in replaces that refresh token |
+
+When the environment you asked for has no usable session but the other one does, the error carries a `hint` naming it. That's usually the real problem: a session that works under `--env sandbox` looks like a broken credential model the moment you drop the flag.
 
 ## Quickstart
 

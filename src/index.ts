@@ -17,8 +17,9 @@ import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { registerUpgradeCommand } from "./commands/upgrade.ts";
 import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
+import { readConfig } from "./lib/config.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
-import type { GlobalFlags } from "./lib/global-flags.ts";
+import { type GlobalFlags, setConfiguredEnvironment } from "./lib/global-flags.ts";
 import { emit, outputOptionsFrom } from "./lib/output.ts";
 import { VERSION } from "./lib/version.ts";
 
@@ -41,7 +42,10 @@ function buildProgram(): Command {
     .addOption(new Option("--human", "Emit human-readable output (default when stdout is a TTY)"))
     .addOption(new Option("--json", "Alias for --agent with JSON pinned"))
     .addOption(
-      new Option("--env <env>", "Override environment for this invocation (default: production)")
+      new Option(
+        "--env <env>",
+        "Override environment for this invocation. Outranks GUSTO_ENVIRONMENT and `gusto config set environment`; production when none of the three is set. Credentials are stored per environment.",
+      )
         .choices(["sandbox", "production"])
         .env("GUSTO_ENVIRONMENT"),
     )
@@ -122,8 +126,28 @@ function usageFlags(argv: string[]): GlobalFlags {
   };
 }
 
+/** Load the persisted `environment` default before commander parses, so `readGlobalFlags` (which is
+ * synchronous, and runs inside every command's action) can consult it without going async.
+ *
+ * A corrupt config file warns and is ignored rather than aborting the run: failing hard here would
+ * also block `gusto config reset`, the one command that fixes it. The warning says the defaults were
+ * dropped, so a user whose `environment = "sandbox"` is being ignored finds out from us instead of
+ * from a production 401. */
+async function applyConfigDefaults(): Promise<void> {
+  try {
+    const cfg = await readConfig();
+    setConfiguredEnvironment(cfg.environment);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `warning: ignoring user config, so its defaults (including environment) are not applied: ${message}\n`,
+    );
+  }
+}
+
 async function main(argv: string[]): Promise<void> {
   installSignalHandlers();
+  await applyConfigDefaults();
   const program = buildProgram();
 
   try {

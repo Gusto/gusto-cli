@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
@@ -851,5 +851,84 @@ describe("the pulled employee/contractor write surface is gone", () => {
       expect(result.exitCode).toBe(3);
       expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
     }
+  });
+});
+
+// The state a beta user's machine sat in for over a week (AINT-830): an unusable production slot
+// next to a separate sandbox slot, with nothing in the output tying the failure to the environment.
+// Driven through the compiled binary with its own isolated XDG_CONFIG_HOME - the shared
+// ISOLATED_CONFIG above must stay session-free, since most tests here assert no_access_token.
+//
+// Both slots are deliberately expired *without* a refresh token, so every assertion below is
+// reachable with zero network calls: nothing has a refresh to attempt or a token worth spending.
+describe("per-environment credential slots", () => {
+  let configHome: string;
+
+  const writeCredentials = (): void => {
+    mkdirSync(path.join(configHome, "gusto"), { recursive: true });
+    writeFileSync(
+      path.join(configHome, "gusto", "credentials.toml"),
+      [
+        "[production]",
+        'accessToken = "prod-tok"',
+        "expiresAt = 1000",
+        "",
+        "[sandbox]",
+        'accessToken = "sandbox-tok"',
+        "expiresAt = 1000",
+        "",
+      ].join("\n"),
+    );
+  };
+
+  const whoami = async (
+    args: string[] = [],
+    env: Record<string, string> = {},
+  ): Promise<Record<string, string | undefined>> => {
+    const result = await run(["auth", "whoami", "--json", ...args], { XDG_CONFIG_HOME: configHome, ...env });
+    expect(result.exitCode).toBe(3);
+    return JSON.parse(result.stdout.trim()).error;
+  };
+
+  beforeEach(() => {
+    configHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-envslot-"));
+    writeCredentials();
+  });
+
+  afterEach(() => rmSync(configHome, { recursive: true, force: true }));
+
+  test("an expired session is session_expired, names production, and points at the sandbox slot", async () => {
+    const error = await whoami();
+    expect(error.code).toBe("session_expired");
+    expect(error.environment).toBe("production");
+    expect(error.message).toContain("credentials.toml");
+    expect(error.hint).toContain("--env sandbox");
+  });
+
+  test("--env sandbox reads the other slot and says so", async () => {
+    const error = await whoami(["--env", "sandbox"]);
+    expect(error.environment).toBe("sandbox");
+    expect(error.hint).toContain("--env production");
+  });
+
+  test("`config set environment` changes which slot a bare command reads", async () => {
+    // The recovery the cross-environment hint recommends, so it has to actually work.
+    const set = await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: configHome });
+    expect(set.exitCode).toBe(0);
+    expect((await whoami()).environment).toBe("sandbox");
+  });
+
+  test("GUSTO_ENVIRONMENT outranks the config file, and --env outranks both", async () => {
+    await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: configHome });
+    expect((await whoami([], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("production");
+    expect((await whoami(["--env", "sandbox"], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("sandbox");
+  });
+
+  test("auth login --help documents --env, its default, and the per-environment slots", async () => {
+    const result = await run(["auth", "login", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("--env <sandbox|production>");
+    expect(result.stdout).toContain("Defaults to production");
+    expect(result.stdout).toContain("stored per environment");
   });
 });

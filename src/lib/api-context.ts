@@ -2,12 +2,14 @@ import { ApiClient, stderrRequestObserver } from "./api-client.ts";
 import { confirmationGate } from "./confirm.ts";
 import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp } from "./oauth/context.ts";
-import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
-import { getValidUserToken } from "./oauth/session.ts";
-import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
+import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
+import { type SessionOutcome, resolveSessionToken } from "./oauth/session.ts";
+import { type TokenStore, credentialsFile, resolveStore } from "./oauth/token-store.ts";
+import type { EnvelopeError } from "./output.ts";
+import { isObject } from "./predicates.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
 
@@ -94,6 +96,7 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
           code: "no_access_token",
           message:
             "--token-stdin was passed but no token arrived on stdin. Pipe one (e.g. `echo $TOKEN | gusto ...`) or drop --token-stdin to fall back to GUSTO_ACCESS_TOKEN / the stored session.",
+          environment: defaultEnv(globals.env),
         },
       },
     };
@@ -101,20 +104,89 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
   const envToken = getAccessToken();
   if (envToken) return { ok: true, token: envToken, source: "env" };
 
-  const session = await sessionToken(globals, opts);
-  if (session) return { ok: true, token: session, source: "session" };
+  const env = defaultEnv(globals.env);
+  const outcome = await sessionOutcome(globals, opts, env);
+  if (outcome.kind === "ok") return { ok: true, token: outcome.token, source: "session" };
 
-  return {
+  return { ok: false, result: await sessionFailure(outcome, env, opts) };
+}
+
+/** Why the token endpoint refused, as it described it. `OAuthError.message` is only the request line
+ * ("/v1/mcp/oauth/token -> 400"), which names a status but not a cause; RFC 6749 puts the cause in
+ * the body. Lifted into the message because that is what a caller reads first - `details` still
+ * carries the whole body. */
+function oauthReason(err: OAuthError): string {
+  if (!isObject(err.body)) return err.message;
+  const { error, error_description: description } = err.body;
+  const parts = [error, description].filter((p): p is string => typeof p === "string" && p.length > 0);
+  return parts.length > 0 ? `${parts.join(": ")} - ${err.message}` : err.message;
+}
+
+/** Where the failing lookup read from, named so an agent doesn't have to infer it. */
+function slotDescription(env: Environment): string {
+  return `the [${env}] slot of ${credentialsFile()}`;
+}
+
+/** Turn a non-`ok` session outcome into the auth failure for it.
+ *
+ * The three codes exist because the three states need opposite responses, and the old single
+ * `no_access_token` sent agents into a loop: told to log in again after a *refresh* failure, they
+ * minted a new pair and overwrote the refresh token that was still on file, so every retry made
+ * the state worse (AINT-830). Only `no_access_token` suggests `gusto auth login`. All three carry
+ * the same exit code (`Auth`) - the code is what changed, not the contract. */
+async function sessionFailure(
+  outcome: Exclude<SessionOutcome, { kind: "ok" }>,
+  env: Environment,
+  opts: AuthOpts,
+): Promise<CommandResult<never>> {
+  const slot = slotDescription(env);
+  const hint = await otherEnvHint(env, opts);
+  const withContext = (error: EnvelopeError): CommandResult<never> => ({
     ok: false,
-    result: {
-      ok: false,
-      exitCode: ExitCode.Auth,
-      error: {
+    exitCode: ExitCode.Auth,
+    error: { ...error, environment: env, ...(hint ? { hint } : {}) },
+  });
+
+  switch (outcome.kind) {
+    case "absent":
+      return withContext({
         code: "no_access_token",
-        message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
-      },
-    },
-  };
+        message: `no access token for the ${env} environment (read ${slot}). Run \`gusto auth login\`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.`,
+      });
+    case "expired":
+      return withContext({
+        code: "session_expired",
+        message: `the ${env} access token expired at ${new Date(outcome.expiresAt).toISOString()} and cannot be refreshed - no refresh token or client credentials in ${slot}. Run \`gusto auth login --env ${env}\` to sign in again.`,
+      });
+    case "refresh_failed":
+      return withContext({
+        code: "token_refresh_failed",
+        message: `refreshing the ${env} session failed (${oauthReason(outcome.cause)}). The refresh token in ${slot} is still on file and was not replaced - retry the command first. Only run \`gusto auth login --env ${env}\` if the retry fails too, since logging in replaces that refresh token.`,
+        ...(outcome.cause.body !== undefined && outcome.cause.body !== null ? { details: outcome.cause.body } : {}),
+        ...(outcome.cause.requestId ? { request_id: outcome.cause.requestId } : {}),
+      });
+  }
+}
+
+/** When the requested environment has no usable session, say so about the *other* one.
+ *
+ * Logging into sandbox then dropping `--env` walks into a production wall with nothing connecting
+ * the failure to the environment - the exact sequence a beta user's agent hit. Only reads the other
+ * slot; never refreshes it, so surfacing the hint can't rotate a token the user didn't ask us to
+ * touch. Best-effort, like the stranded-session warning in `authLogoutHandler`: a failed read of
+ * the other slot must not change the error we already have to report. */
+async function otherEnvHint(env: Environment, opts: AuthOpts): Promise<string | undefined> {
+  const other: Environment = env === "production" ? "sandbox" : "production";
+  try {
+    const store = opts.store ?? resolveStore();
+    const session = await store.load(other);
+    if (!session?.accessToken) return undefined;
+    // The file is already named in the message this hint accompanies, so name only the slot.
+    return `a ${other} session is stored in the [${other}] slot of the same file. If you meant that environment, retry with \`--env ${other}\`, or make it the default with \`gusto config set environment ${other}\`.`;
+  } catch {
+    // the other-environment hint is best-effort; ignore read failures
+    return undefined;
+  }
 }
 
 export function resolveApiContext(
@@ -151,6 +223,9 @@ export async function resolveApiContext(
           code: "no_company_uuid",
           message:
             "no company UUID. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via `gusto auth whoami`.",
+          // A company is stored per credential slot, so which environment answered decides whether
+          // one was available at all.
+          environment: defaultEnv(globals.env),
         },
       },
     };
@@ -159,18 +234,12 @@ export async function resolveApiContext(
   return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: true, companyUuid } };
 }
 
-/** The token from the stored login session, refreshed on near-expiry; null if none. */
-async function sessionToken(globals: GlobalFlags, opts: AuthOpts): Promise<string | null> {
+/** The stored login session resolved to a token, or the reason it couldn't be. An unreadable or
+ * corrupt credentials file is a real error rather than a credential state, so it surfaces. */
+async function sessionOutcome(globals: GlobalFlags, opts: AuthOpts, env: Environment): Promise<SessionOutcome> {
   const store = opts.store ?? resolveStore();
   const http = opts.http ?? oauthHttp(globals);
-  try {
-    return await getValidUserToken(store, defaultEnv(globals.env), http, opts.now);
-  } catch (err) {
-    // A failed token refresh means re-login - report "no token". Anything else
-    // (unreadable/corrupt session file, etc.) is a real error; let it surface.
-    if (err instanceof OAuthError) return null;
-    throw err;
-  }
+  return resolveSessionToken(store, env, http, opts.now);
 }
 
 /** Company fallback after --company-uuid/env: the companyUuid persisted from a

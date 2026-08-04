@@ -1,5 +1,5 @@
 import { ApiError } from "../api-client.ts";
-import type { OAuthHttpOptions } from "./endpoints.ts";
+import { OAuthError, type OAuthHttpOptions } from "./endpoints.ts";
 import { registerCliClient } from "./dcr.ts";
 import { refreshToken } from "./pkce.ts";
 import type { TokenStore } from "./token-store.ts";
@@ -28,27 +28,69 @@ export async function ensureClientCreds(
   return creds;
 }
 
+/** Why the stored session couldn't produce a usable token, or the token if it could. The three
+ * failure kinds are distinct on purpose: "nothing on file" and "on file but the refresh was
+ * rejected" call for opposite actions, and collapsing them into a single "no token" was what sent
+ * agents into a re-login loop that rotated the very refresh token they needed (AINT-830). Callers
+ * map each kind to its own error code; only `absent` should ever suggest `gusto auth login`. */
+export type SessionOutcome =
+  | { kind: "ok"; token: string }
+  /** No credential slot for this environment, or a slot with no access token in it. */
+  | { kind: "absent" }
+  /** Access token expired and no refresh is possible locally - no refresh token, or no client
+   * creds to authenticate the refresh with. `expiresAt` is echoed so the message can date it. */
+  | { kind: "expired"; expiresAt: number }
+  /** A refresh ran and the server rejected it. The stored refresh token is left untouched. */
+  | { kind: "refresh_failed"; cause: OAuthError };
+
+/** Resolve the stored session for `env` into a usable token or a reason it isn't one.
+ *
+ * An absent `expiresAt` means "unknown", not "expired": the token passes through and a 401 from
+ * the API is the only thing that can disprove it. A refresh that fails inside the skew window
+ * while the token is still genuinely valid also passes through - the failure isn't actionable yet.
+ * Non-OAuth failures (unreadable or corrupt credentials file) propagate; they aren't a credential
+ * state, they're a broken machine. */
+export async function resolveSessionToken(
+  store: TokenStore,
+  env: "sandbox" | "production",
+  http: OAuthHttpOptions,
+  now: () => number = Date.now,
+): Promise<SessionOutcome> {
+  const session = await store.load(env);
+  if (!session?.accessToken) return { kind: "absent" };
+
+  const nearExpiry = session.expiresAt != null && now() + REFRESH_SKEW_MS >= session.expiresAt;
+  if (nearExpiry && session.refreshToken && hasClientCreds(session)) {
+    try {
+      return { kind: "ok", token: await refreshAndStore(store, env, http, session, session.refreshToken, now()) };
+    } catch (err) {
+      // Proactive (within-skew) refresh failed. If the current token hasn't
+      // actually expired, use it - the 401 path refreshes later if needed.
+      if (session.expiresAt != null && now() < session.expiresAt) return { kind: "ok", token: session.accessToken };
+      if (err instanceof OAuthError) return { kind: "refresh_failed", cause: err };
+      throw err;
+    }
+  }
+  // Past expiry with no way to refresh: sending this token would only buy a 401 whose message
+  // says nothing about why. Name the state instead.
+  if (session.expiresAt != null && now() >= session.expiresAt) {
+    return { kind: "expired", expiresAt: session.expiresAt };
+  }
+  return { kind: "ok", token: session.accessToken };
+}
+
+/** The session's token, refreshed on near-expiry; null when the session can't produce one for any
+ * reason. Callers that need to tell those reasons apart want `resolveSessionToken` instead. */
 export async function getValidUserToken(
   store: TokenStore,
   env: "sandbox" | "production",
   http: OAuthHttpOptions,
   now: () => number = Date.now,
 ): Promise<string | null> {
-  const session = await store.load(env);
-  if (!session?.accessToken) return null;
-
-  const nearExpiry = session.expiresAt != null && now() + REFRESH_SKEW_MS >= session.expiresAt;
-  if (nearExpiry && session.refreshToken && hasClientCreds(session)) {
-    try {
-      return await refreshAndStore(store, env, http, session, session.refreshToken, now());
-    } catch (err) {
-      // Proactive (within-skew) refresh failed. If the current token hasn't
-      // actually expired, use it - the 401 path refreshes later if needed.
-      if (session.expiresAt != null && now() < session.expiresAt) return session.accessToken;
-      throw err;
-    }
-  }
-  return session.accessToken;
+  const outcome = await resolveSessionToken(store, env, http, now);
+  if (outcome.kind === "ok") return outcome.token;
+  if (outcome.kind === "refresh_failed") throw outcome.cause;
+  return null;
 }
 
 export async function withUserToken<T>(

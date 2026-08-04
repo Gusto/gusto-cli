@@ -779,6 +779,26 @@ describe("authWhoamiHandler", () => {
     expect((result.data as Record<string, unknown>).credential_source).toBe("GUSTO_ACCESS_TOKEN");
   });
 
+  test("reports the environment it is talking to", async () => {
+    // Previously absent from whoami entirely, which left an agent no way to ask the CLI which of
+    // the two credential slots it was using (AINT-830). TEST_GLOBALS pins sandbox.
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).environment).toBe("sandbox");
+  });
+
+  test("reports production when no environment was selected, matching the flag's default", async () => {
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})({ ...ctx, globals: { ...ctx.globals, env: undefined } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).environment).toBe("production");
+  });
+
   test("labels --token-stdin as the credential source when a token is piped", async () => {
     const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
     restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
