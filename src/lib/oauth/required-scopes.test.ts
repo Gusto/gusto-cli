@@ -39,6 +39,18 @@ describe("REQUIRED_SCOPES", () => {
     expect(entry?.usedBy).toContain("employee cancel-termination");
   });
 
+  test("employees:manage is required for employee update (re-grant: previously dropped as unused)", () => {
+    expect(DROPPED_SCOPES).not.toContain("employees:manage");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "employees:manage");
+    expect(entry?.usedBy).toContain("employee update");
+  });
+
+  test("company_tax_requirements:read is required for the employee update compliance nudge", () => {
+    expect(DROPPED_SCOPES).not.toContain("company_tax_requirements:read");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "company_tax_requirements:read");
+    expect(entry?.usedBy).toContain("employee update");
+  });
+
   test("company forms, signatories, and federal-tax reads carry their read scopes", () => {
     for (const scope of ["company_forms:read", "signatories:read", "company_federal_taxes:read"]) {
       expect(DROPPED_SCOPES).not.toContain(scope);

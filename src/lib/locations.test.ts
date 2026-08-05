@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fetchCompanyLocations, type LocationRec, pickPrimaryLocation } from "./locations.ts";
+import { fetchCompanyLocations, findLocationForState, type LocationRec, pickPrimaryLocation } from "./locations.ts";
 import { stubApiClient } from "./test-support.ts";
 
 describe("pickPrimaryLocation", () => {
@@ -20,6 +20,31 @@ describe("pickPrimaryLocation", () => {
   test("falls back to the first record when neither flag is set", () => {
     const locs: LocationRec[] = [{ uuid: "a" }, { uuid: "b" }];
     expect(pickPrimaryLocation(locs)?.uuid).toBe("a");
+  });
+});
+
+describe("findLocationForState", () => {
+  test("finds an active location matching the state, case-insensitively", () => {
+    const locs: LocationRec[] = [
+      { uuid: "a", state: "CA", active: true },
+      { uuid: "b", state: "MD", active: true },
+    ];
+    expect(findLocationForState(locs, "md")?.uuid).toBe("b");
+  });
+
+  test("skips an inactive location even if the state matches", () => {
+    const locs: LocationRec[] = [{ uuid: "a", state: "MD", active: false }];
+    expect(findLocationForState(locs, "MD")).toBeUndefined();
+  });
+
+  test("treats a missing active flag as active", () => {
+    const locs: LocationRec[] = [{ uuid: "a", state: "MD" }];
+    expect(findLocationForState(locs, "MD")?.uuid).toBe("a");
+  });
+
+  test("returns undefined when no location matches the state", () => {
+    const locs: LocationRec[] = [{ uuid: "a", state: "CA", active: true }];
+    expect(findLocationForState(locs, "MD")).toBeUndefined();
   });
 });
 

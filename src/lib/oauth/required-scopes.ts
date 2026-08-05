@@ -6,12 +6,14 @@
  * this set in the same change so the audit trail stays accurate.
  *
  * The set is intentionally narrow. The writes are the per-cycle payroll flow
- * (timesheets, payroll prepare/calculate, pay schedules, reports) plus the
- * employee-offboarding path (`employments:write`, for terminate/cancel-termination);
- * other employee and contractor data stays read-only on this surface. Scopes
- * dropped from the original 50+ grant (`company_bank_accounts:write`,
- * `signatories:manage`, and the bulk employee/contractor write scopes) have no
- * in-surface consumer and are listed in `DROPPED_SCOPES` below for audit history.
+ * (timesheets, payroll prepare/calculate, pay schedules, reports), the
+ * employee-offboarding path (`employments:write`, for terminate/cancel-termination), and
+ * the employee work-state path (`employees:manage`, for `employee update`); other employee
+ * and contractor data stays read-only on this surface. Scopes dropped from the original
+ * 50+ grant (`company_bank_accounts:write`, `signatories:manage`, and the bulk
+ * employee/contractor write scopes) have no in-surface consumer and are listed in
+ * `DROPPED_SCOPES` below for audit history. `employees:manage` was one of those dropped
+ * scopes until `employee update` needed it back - a live re-grant, not a hypothetical one.
  *
  * This list enumerates scopes that individual CLI commands exercise. Two
  * categories are deliberately NOT listed and remain granted: baseline auth
@@ -50,8 +52,9 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   },
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
   { scope: "company_reports:read", usedBy: ["ledger show"] },
+  { scope: "company_tax_requirements:read", usedBy: ["employee update"] },
 
-  // Writes: the per-cycle payroll flow, plus the employee-offboarding path.
+  // Writes: the per-cycle payroll flow, plus the employee-offboarding and work-state paths.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
@@ -59,6 +62,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
   { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
+  { scope: "employees:manage", usedBy: ["employee update"] },
 ] as const;
 
 /** Scopes the original OAuth app grant included but no in-surface command needs.
@@ -76,7 +80,6 @@ export const DROPPED_SCOPES: readonly string[] = [
   "employee_payment_methods:read",
   "employee_payment_methods:write",
   "employees:write",
-  "employees:manage",
   "contractors:write",
   "contractors:manage",
   "jobs:write",
