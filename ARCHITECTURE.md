@@ -42,6 +42,7 @@ user CLI invocation
 
 - **`lib/api-client.ts`** — `fetch`-based HTTP client. Adds `Authorization`, `X-Gusto-API-Version`, `User-Agent`. Retries 5xx and network errors on `GET`/`DELETE` only (POST/PUT are not retried to avoid double-creates). `AbortSignal.timeout` enforces a per-attempt timeout.
 - **`lib/version.ts`** — the one place the CLI's version is declared. Exports `VERSION` (read from `package.json`, what `gusto --version` prints) and `USER_AGENT`.
+- **`lib/upgrade.ts`** — the self-update path behind `gusto upgrade` (`commands/upgrade.ts` is just commander wiring). Re-implements `install.sh`'s contract in TypeScript: same `gusto-$os-$arch` asset names, same `SHA256SUMS` verification, same `GUSTO_CLI_VERSION` / `GUSTO_CLI_REPO` / `GUSTO_CLI_BASE_URL` / `GUSTO_INSTALL_DIR` overrides, including `mkdir -p` on the install dir and the refusal to follow a redirect off https. Resolves the target version from GitHub's `/releases/latest` redirect rather than `api.github.com`, so the lookup needs no auth and has no rate limit. Everything that can fail cheaply (path resolution, dir writability, version lookup, whether the staging path is usable) runs before the first byte is fetched; the download is checksummed before it is written at all, then staged inside the install dir under an `O_EXCL` create, exec-checked, and swapped in with a single `rename(2)`. Every wait has a deadline, so a stalled connection or a build that hangs on init can't leave the command hanging with no envelope.
 - **`lib/handle-api-error.ts`** — converts thrown `ApiError`/`NetworkError` into a `CommandResult` with the right exit code and, for API errors, surfaces the raw response body in `error.details` and the request id in `error.request_id`.
 - **`lib/output.ts`** — `AgentEnvelope` shape (`{ ok, data?, error? }`) and the agent-vs-human emit logic. The `--agent` / `--human` / `--json` flags resolve to a single `OutputMode`.
 - **`lib/runner.ts`** — wraps every command handler so exceptions can't leak past the envelope. Centralizes exit code propagation.
@@ -62,9 +63,12 @@ Every command produces an `AgentEnvelope`:
     blocked_on?: { field, reason }[];   // missing/invalid inputs the agent can retry
     details?: unknown;                    // raw upstream API body
     request_id?: string;                  // upstream X-Request-Id for support
+    hint?: string;                        // recovery pointer: the way out of *this* failure
   };
 }
 ```
+
+`hint` is a recovery path, not a general remark, and it is per-failure rather than per-command: `lib/upgrade.ts` offers the installer only for the failures it would actually route around, and something else for the ones it wouldn't. A hint that can't work costs more than no hint, since an agent will follow it - so attach one only where you know it resolves the failure at hand.
 
 - Agent mode prints one JSON object per command, terminated by `\n`. No banners, no progress bars.
 - Human mode prints data with `JSON.stringify(..., 2)` or a string when scalar, and errors to stderr.

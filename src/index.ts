@@ -15,6 +15,7 @@ import { registerPayrollCommand } from "./commands/payroll.ts";
 import { registerReportCommand } from "./commands/report.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
+import { registerUpgradeCommand } from "./commands/upgrade.ts";
 import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
 import type { GlobalFlags } from "./lib/global-flags.ts";
@@ -72,6 +73,7 @@ function buildProgram(): Command {
   registerAuthCommand(program);
   registerSkillCommand(program);
   registerConfigCommand(program);
+  registerUpgradeCommand(program);
   registerApiCommand(program);
   registerFeedbackCommand(program);
 
