@@ -64,6 +64,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
     scope: "payrolls:read",
     usedBy: [
       "payroll list",
+      "payroll show",
       "ledger show",
       "pay-schedule periods",
       "pay-schedule termination-periods",
@@ -71,16 +72,19 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
     ],
   },
   { scope: "time_sheet:read", usedBy: ["timesheet show", "timesheet list"] },
-  { scope: "company_reports:read", usedBy: ["ledger show"] },
+  { scope: "company_reports:read", usedBy: ["ledger show", "report get", "report run (poll)"] },
   { scope: "company_tax_requirements:read", usedBy: ["employee update"] },
 
   // Writes: the per-cycle payroll flow, plus the employee-offboarding and work-state paths and address updates.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
   { scope: "payrolls:write", usedBy: ["payroll prepare"] },
-  { scope: "payrolls:run", usedBy: ["payroll calculate"] },
+  // `payroll blockers` reads, but the API files its action under the run scope rather than
+  // payrolls:read - a grant narrowed to reads 403s on it, which is worth knowing before
+  // anyone trims this list on the assumption that read commands only need read scopes.
+  { scope: "payrolls:run", usedBy: ["payroll calculate", "payroll blockers"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
-  { scope: "company_reports:write", usedBy: ["ledger show (report generate)"] },
+  { scope: "company_reports:write", usedBy: ["ledger show (report generate)", "report run"] },
   { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
   // Employee address updates. The home and work update actions map to different scopes in the
   // API's OAuth scope configuration: employees:write for home, employees:manage for work.
