@@ -81,8 +81,10 @@ export async function resolveSessionToken(
   return { kind: "ok", token: session.accessToken };
 }
 
-/** The session's token, refreshed on near-expiry; null when the session can't produce one for any
- * reason. Callers that need to tell those reasons apart want `resolveSessionToken` instead. */
+/** The session's token, refreshed on near-expiry. Null when nothing is on file or the token expired
+ * with no way to renew it; throws the `OAuthError` when a refresh ran and the server rejected it,
+ * since a caller reduced to null can't tell that state from absence and would answer a still-usable
+ * refresh token with a login. Callers that need all three apart want `resolveSessionToken`. */
 export async function getValidUserToken(
   store: TokenStore,
   env: "sandbox" | "production",

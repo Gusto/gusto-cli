@@ -130,13 +130,17 @@ function slotDescription(env: Environment): string {
 /** Turn a non-`ok` session outcome into the auth failure for it.
  *
  * The three codes are not interchangeable, because the cheapest action that can work differs by
- * state. `refresh_failed` means a usable credential is still on file, so a plain retry costs nothing
- * and often succeeds; `login` is the expensive answer to that - it needs a human at a browser, which
- * is exactly what an agent on a headless box can't produce, so pointing there turns a recoverable
- * state into a dead end. A successful login does mint a new grant and invalidate the refresh token
- * it replaces, which matters to anything else holding that credential. So only `no_access_token` and
- * `session_expired` may suggest `gusto auth login`; `refresh_failed` must steer toward a retry.
- * All three share the `Auth` exit code - callers branch on the code, not the status. */
+ * state. `token_refresh_failed` means a usable credential is still on file, so a plain retry costs
+ * nothing and often succeeds; `login` is the expensive answer to that - it needs a human at a
+ * browser, which is exactly what an agent on a headless box can't produce, so pointing there turns a
+ * recoverable state into a dead end. A successful login does mint a new grant and invalidate the
+ * refresh token it replaces, which matters to anything else holding that credential. So only
+ * `no_access_token` and `session_expired` may suggest `gusto auth login`; `token_refresh_failed`
+ * must steer toward a retry.
+ * All three share the `Auth` exit code - callers branch on the code, not the status.
+ *
+ * Codes named here are the ones that go over the wire; the `outcome.kind` values switched on below
+ * are internal and deliberately spelled differently (`refresh_failed` -> `token_refresh_failed`). */
 async function sessionFailure(
   outcome: Exclude<SessionOutcome, { kind: "ok" }>,
   env: Environment,
@@ -217,6 +221,10 @@ export async function resolveApiContext(
   const fallbackCompany = tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
   const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
+    // A company is stored per credential slot, so which environment answered decides whether one was
+    // available at all. Named in the message as well as the field: human-mode output prints the
+    // message and the hint, never `environment`, so a field alone would hide it from half the callers.
+    const env = defaultEnv(globals.env);
     return {
       ok: false,
       result: {
@@ -224,11 +232,8 @@ export async function resolveApiContext(
         exitCode: ExitCode.Validation,
         error: {
           code: "no_company_uuid",
-          message:
-            "no company UUID. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via `gusto auth whoami`.",
-          // A company is stored per credential slot, so which environment answered decides whether
-          // one was available at all.
-          environment: defaultEnv(globals.env),
+          message: `no company UUID for the ${env} environment. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via \`gusto auth whoami\`.`,
+          environment: env,
         },
       },
     };

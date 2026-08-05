@@ -103,6 +103,17 @@ describe("resolveApiContext", () => {
     expect(result.result.error.code).toBe("no_company_uuid");
   });
 
+  test("the missing-company failure names the environment in the message, not only the field", async () => {
+    // A company hangs off the credential slot, so the environment decides whether one was findable.
+    // Human-mode output prints the message and never `environment`, so the field alone hides it.
+    const result = await resolveApiContext(flags, { ...stdinAuth() });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.environment).toBe("production");
+    expect(result.result.error.message).toContain("production");
+  });
+
   test("companyOverride passes through to the resolved context", async () => {
     const result = await resolveApiContext(flags, { ...stdinAuth(), companyOverride: "co-123" });
     expect(result.ok).toBe(true);
