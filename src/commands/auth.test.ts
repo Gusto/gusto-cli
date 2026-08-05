@@ -760,11 +760,16 @@ describe("authWhoamiHandler", () => {
   });
 
   test("propagates a token_info error and skips the capabilities summary", async () => {
+    // A 401 on token_info means the credential itself was refused, so it reports as the auth failure
+    // it is rather than an ordinary 4xx. TEST_GLOBALS pins sandbox and the ambient GUSTO_ACCESS_TOKEN
+    // is the resolved source, so the envelope names both.
     restore = stubGlobalFetch([{ status: 401, body: { error: "invalid_token" } }]).restore;
     const result = await authWhoamiHandler({})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("api_client_error");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("GUSTO_ACCESS_TOKEN");
     expect("data" in result).toBe(false);
   });
 

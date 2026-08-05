@@ -524,6 +524,66 @@ describe("company-resource write confirmation gate", () => {
   });
 });
 
+// The wiring that makes `credential_rejected` able to name a credential at all: `resolveApiContext`
+// hands the resolved source and environment to the client, which stamps them on any error it throws.
+// Unit-testing `toResult` with a hand-built ApiError can't catch this coming unplugged.
+describe("a 401 from a resolved client", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const unauthorized = () => {
+    const s = stubGlobalFetch(() => ({ status: 401, body: { error: "unauthorized" } }));
+    restore = s.restore;
+  };
+
+  test("names the stored session and the environment it was resolved for", async () => {
+    unauthorized();
+    const result = await fetchResource(
+      { ...flags, env: "sandbox" },
+      {
+        store: memoryStore({ sandbox: { accessToken: "tok", expiresAt: 10_000_000 } }),
+        http: mockHttp({ status: 200 }),
+        now: () => 1_000,
+      },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+  });
+
+  test("names --token-stdin when that is what was rejected, and offers no login", async () => {
+    unauthorized();
+    const result = await fetchResource(flags, { ...stdinAuth() }, () => "/v1/me");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.message).toContain("--token-stdin");
+    expect(result.error.message).not.toContain("gusto auth login");
+  });
+
+  test("company-scoped writes report it the same way, not as a failed write", async () => {
+    unauthorized();
+    const result = await createCompanyResource(
+      flags,
+      "employees",
+      { first_name: "A" },
+      {
+        confirm: true,
+        companyUuid: "c-1",
+        ...stdinAuth(),
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+  });
+});
+
 describe("writeResource", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());

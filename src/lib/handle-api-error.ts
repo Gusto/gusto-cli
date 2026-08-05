@@ -1,4 +1,4 @@
-import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
+import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import { isObject } from "./predicates.ts";
@@ -67,8 +67,52 @@ function serverMessages(body: unknown): string[] {
   return Array.from(new Set(found));
 }
 
+/** What to do about a credential the API refused, and nothing else.
+ *
+ * A 401 is an authentication failure however the credential arrived, so it exits `Auth` like the 403
+ * scope case rather than landing in the ordinary 4xx bucket - `AGENTS.md` promises agents that every
+ * auth failure exits 3 and carries `environment`, and a rejected token is one. The recovery differs
+ * by source: a stored session can be signed in again, while a token the caller supplied explicitly
+ * is theirs to fix and must not be answered with `auth login`, which would rotate a session the
+ * failing command wasn't even using. Nothing re-authenticates a rejected token on its own, so no
+ * wording here may suggest a bare retry - unlike `token_refresh_failed`, where a retry is the point.
+ * The request line stays as a suffix because a 401 can land mid-command (a paginated walk, a poll),
+ * where which call failed is the first thing worth knowing. */
+function credentialRejected(err: ApiError): CommandResult<never> {
+  const { auth } = err;
+  return {
+    ok: false,
+    exitCode: ExitCode.Auth,
+    error: {
+      code: "credential_rejected",
+      message: `${rejectedCredential(auth)} (${err.message})`,
+      ...(auth ? { environment: auth.environment } : {}),
+      ...errorExtras(err),
+    },
+  };
+}
+
+/** Names the refused credential and its one recovery. A client built without a resolved context
+ * leaves the source unknown, so that wording covers all three rather than sending the caller at the
+ * wrong one. */
+function rejectedCredential(auth: AuthContext | undefined): string {
+  if (auth === undefined) {
+    return "the credential this command used was rejected by the API. If it came from `gusto auth login`, sign in again; if it came from GUSTO_ACCESS_TOKEN or --token-stdin, that token is invalid or expired.";
+  }
+  const env = auth.environment;
+  switch (auth.tokenSource) {
+    case "session":
+      return `the stored ${env} session was rejected by the API - its access token is stale or was revoked. Run \`gusto auth login --env ${env}\` to sign in again.`;
+    case "env":
+      return `the token in GUSTO_ACCESS_TOKEN was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
+    case "stdin":
+      return `the token piped via --token-stdin was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
+  }
+}
+
 export function toResult(err: unknown): CommandResult<never> {
   if (err instanceof ApiError) {
+    if (err.status === 401) return credentialRejected(err);
     if (err.status === 403 && isInsufficientScope(err.body)) {
       const scope = scopeFromBody(err.body);
       const needs = scope ? ` (${scope})` : "";

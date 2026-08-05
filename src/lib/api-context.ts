@@ -1,4 +1,4 @@
-import { ApiClient, stderrRequestObserver } from "./api-client.ts";
+import { ApiClient, type AuthContext, type TokenSource, stderrRequestObserver } from "./api-client.ts";
 import { confirmationGate } from "./confirm.ts";
 import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
@@ -16,8 +16,8 @@ import { readTokenFromStdin } from "./stdin.ts";
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
 
-/** Which credential supplied the resolved access token, in precedence order. */
-export type TokenSource = "stdin" | "env" | "session";
+/** Defined with `ApiError`, which carries it, and re-exported here where callers expect it. */
+export type { TokenSource };
 
 interface ApiContextBase {
   client: ApiClient;
@@ -51,18 +51,23 @@ export interface ApiContextOpts extends AuthOpts {
  * surfaces can't drift on which client options they attach. `stderr` is injectable so tests
  * capture the log stream instead of writing to the real process stderr.
  *
+ * `auth` is forwarded so the client can stamp it on any `ApiError` it throws, which is what lets a
+ * 401 name the credential that was refused. A client built without it still classifies a 401 as an
+ * auth failure, just without naming the source.
+ *
  * Not routed through: `oauthApiClient` in `oauth/context.ts` (its own bearer client for
  * `token_info` during login) - so `auth login --verbose` won't emit the token_info line. Tracked
  * as a follow-up. */
 export function buildApiClient(
   globals: GlobalFlags,
-  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream },
+  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream; auth?: AuthContext },
 ): ApiClient {
   return new ApiClient({
     baseUrl: opts.baseUrl,
     token: opts.token,
     apiVersion: resolveApiVersion(),
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
+    auth: opts.auth,
   });
 }
 
@@ -210,7 +215,8 @@ export async function resolveApiContext(
   const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
-  const client = buildApiClient(globals, { baseUrl, token });
+  const environment = defaultEnv(globals.env);
+  const client = buildApiClient(globals, { baseUrl, token, auth: { tokenSource, environment } });
 
   if (opts.requireCompany === false) {
     return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };
@@ -224,7 +230,6 @@ export async function resolveApiContext(
     // A company is stored per credential slot, so which environment answered decides whether one was
     // available at all. Named in the message as well as the field: human-mode output prints the
     // message and the hint, never `environment`, so a field alone would hide it from half the callers.
-    const env = defaultEnv(globals.env);
     return {
       ok: false,
       result: {
@@ -232,8 +237,8 @@ export async function resolveApiContext(
         exitCode: ExitCode.Validation,
         error: {
           code: "no_company_uuid",
-          message: `no company UUID for the ${env} environment. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via \`gusto auth whoami\`.`,
-          environment: env,
+          message: `no company UUID for the ${environment} environment. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via \`gusto auth whoami\`.`,
+          environment,
         },
       },
     };

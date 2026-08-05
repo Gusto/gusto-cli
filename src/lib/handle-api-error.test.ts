@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
+import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { partialFailure, toResult } from "./handle-api-error.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
@@ -173,6 +173,77 @@ describe("toResult", () => {
       exitCode: ExitCode.General,
       error: { code: "internal_error", message: "just a string" },
     });
+  });
+});
+
+// A 401 means the credential was sent and refused, so it belongs to the auth family (exit 3) rather
+// than the ordinary 4xx bucket - and the only useful wording names *which* credential, which is why
+// the client stamps its `AuthContext` onto the error.
+describe("toResult 401 handling", () => {
+  const unauthorized = (auth?: AuthContext) =>
+    new ApiError(401, { error: "unauthorized" }, ExitCode.ApiClient, "GET /v1/me -> 401", "req-9", auth);
+
+  test("exits Auth, not ApiClient, so one branch catches every credential problem", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "production" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+  });
+
+  test("carries the environment, the body, and the request id", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.details).toEqual({ error: "unauthorized" });
+    expect(result.error.request_id).toBe("req-9");
+  });
+
+  test("a rejected session is told to sign in again, for the environment that failed", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+    // The request line survives: a 401 can land mid-walk, and which call failed is worth knowing.
+    expect(result.error.message).toContain("GET /v1/me -> 401");
+  });
+
+  test.each([
+    ["env" as const, "GUSTO_ACCESS_TOKEN"],
+    ["stdin" as const, "--token-stdin"],
+  ])("a rejected %s token names it and does not suggest logging in", (tokenSource, named) => {
+    // `auth login` would rotate a stored session the failing command never used, so an explicitly
+    // supplied token has to be reported as the caller's to fix.
+    const result = toResult(unauthorized({ tokenSource, environment: "production" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain(named);
+    expect(result.error.message).not.toContain("gusto auth login");
+  });
+
+  test("no wording suggests a bare retry, since nothing re-authenticates on its own", () => {
+    for (const tokenSource of ["session", "env", "stdin"] as const) {
+      const result = toResult(unauthorized({ tokenSource, environment: "production" }));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).not.toContain("retry");
+    }
+  });
+
+  test("still classifies as an auth failure when the client carried no context", () => {
+    // Covers a 401 from a client built without one: the code and exit stay put, and the message has
+    // to describe all three sources rather than send the caller at the wrong one.
+    const result = toResult(unauthorized());
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect("environment" in result.error).toBe(false);
+    expect(result.error.message).toContain("GUSTO_ACCESS_TOKEN");
+    expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test("a 403 without a scope reason stays an ordinary 4xx", () => {
+    // Guards the boundary: only 401 moves to the auth family, not every 4xx near it.
+    const result = toResult(new ApiError(403, { error: "forbidden" }, ExitCode.ApiClient, "GET /x -> 403"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("api_client_error");
   });
 });
 

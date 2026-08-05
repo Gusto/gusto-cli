@@ -275,14 +275,19 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
 });
 
 describe("callMcpTool — HTTP-level failures (via ApiClient → toResult)", () => {
-  test("HTTP 401 from the MCP gateway flows through ApiClient to an api_client_error envelope", async () => {
+  // A rejected credential is an auth failure wherever it surfaces, so the MCP gateway reports it the
+  // same way a REST command does - and names the piped token, since telling this caller to log in
+  // would point at a session it never used.
+  test("HTTP 401 from the MCP gateway is a credential_rejected auth failure naming the credential", async () => {
     const { restore } = stubGlobalFetch(() => ({ status: 401, body: { error: "unauthorized" } }));
     try {
       const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
-      expect(result.exitCode).toBe(ExitCode.ApiClient);
-      expect(result.error.code).toBe("api_client_error");
+      expect(result.exitCode).toBe(ExitCode.Auth);
+      expect(result.error.code).toBe("credential_rejected");
+      expect(result.error.environment).toBe("sandbox");
+      expect(result.error.message).toContain("--token-stdin");
     } finally {
       restore();
     }
