@@ -8,7 +8,12 @@ import { readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { readString } from "../lib/read-string.ts";
 import { type CommandHandler, type CommandResult, runCommand } from "../lib/runner.ts";
-import { getAndInjectVersion } from "../lib/versioning.ts";
+import {
+  clarifyVersionConflict,
+  clarifyVersionReadFailure,
+  getAndInjectVersion,
+  versionUnresolvedError,
+} from "../lib/versioning.ts";
 
 const SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 type Method = (typeof SUPPORTED_METHODS)[number];
@@ -49,6 +54,8 @@ A literal {company_uuid} in the path is replaced with the bound company UUID
 (from --company-uuid, GUSTO_COMPANY_UUID, or a company-scoped login).
 
 --auto-version grabs the resource's latest version and injects it into PUT/PATCH update requests (a version you pass in --data always wins).
+It reads a top-level 'version' from a GET of the same path, so it does not fit a payroll, whose tokens are per employee at
+employee_compensations[].version - pass those in --data instead, or use 'gusto payroll update'.
 
 Examples:
   $ gusto api request GET /v1/me
@@ -141,29 +148,25 @@ export function apiRequestHandler(
     });
 
     // Send (real request): substitute is already done; auto-version GETs finalPath for its version.
-    // The whole thing is in the try so a failing version GET maps through toResult too (a clean
-    // api_client_error envelope), rather than escaping as an unhandled internal_error.
+    // Each leg has its own catch so a failing version GET still maps through toResult rather than
+    // escaping as an unhandled internal_error, and a lost version race on the write stays
+    // distinguishable from a rejected payload. Same helpers as putResourceWithVersion.
     const send = async (client: ApiClient, finalPath: string): Promise<CommandResult> => {
-      try {
-        let finalBody = body;
-        if (autoVersionPending) {
+      let finalBody = body;
+      if (autoVersionPending) {
+        try {
           const resolved = await getAndInjectVersion(client, finalPath, (body ?? {}) as Record<string, unknown>);
-          if (!resolved.ok) {
-            return {
-              ok: false,
-              exitCode: ExitCode.Validation,
-              error: {
-                code: "version_unresolved",
-                message: `no \`version\` field in the GET ${finalPath} response; pass it explicitly in --data`,
-              },
-            };
-          }
+          if (!resolved.ok) return versionUnresolvedError(finalPath, "pass it explicitly in --data");
           finalBody = resolved.body;
+        } catch (err) {
+          return clarifyVersionReadFailure(toResult(err), finalPath);
         }
+      }
+      try {
         const response = await client.request(method as Method, finalPath, finalBody);
         return { ok: true, data: response.body };
       } catch (err) {
-        return toResult(err);
+        return clarifyVersionConflict(toResult(err));
       }
     };
 
