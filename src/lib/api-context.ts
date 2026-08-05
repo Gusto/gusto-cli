@@ -129,12 +129,14 @@ function slotDescription(env: Environment): string {
 
 /** Turn a non-`ok` session outcome into the auth failure for it.
  *
- * The three codes are not interchangeable, because the states they describe need opposite
- * responses. A caller told to log in after a *refresh* failure mints a new token pair over the
- * refresh token that was still on file, turning a recoverable state into an unrecoverable one and
- * making each retry worse than the last. So only `no_access_token` may suggest `gusto auth login`;
- * `refresh_failed` must steer toward a retry. All three share the `Auth` exit code - callers
- * branch on the code, not the status. */
+ * The three codes are not interchangeable, because the cheapest action that can work differs by
+ * state. `refresh_failed` means a usable credential is still on file, so a plain retry costs nothing
+ * and often succeeds; `login` is the expensive answer to that - it needs a human at a browser, which
+ * is exactly what an agent on a headless box can't produce, so pointing there turns a recoverable
+ * state into a dead end. A successful login does mint a new grant and invalidate the refresh token
+ * it replaces, which matters to anything else holding that credential. So only `no_access_token` and
+ * `session_expired` may suggest `gusto auth login`; `refresh_failed` must steer toward a retry.
+ * All three share the `Auth` exit code - callers branch on the code, not the status. */
 async function sessionFailure(
   outcome: Exclude<SessionOutcome, { kind: "ok" }>,
   env: Environment,

@@ -30,10 +30,10 @@ export async function ensureClientCreds(
 
 /** Why the stored session couldn't produce a usable token, or the token if it could. The three
  * failure kinds are distinct on purpose: "nothing on file" and "on file but the refresh was
- * rejected" call for opposite actions. Collapse them and a caller told to log in after a refresh
- * failure mints a new pair over the refresh token that was still good, so each retry destroys more
- * state than the last. Callers map each kind to its own error code; only `absent` may ever suggest
- * `gusto auth login`. */
+ * rejected" call for opposite actions - the second still has a credential worth retrying against,
+ * and answering it with an interactive login is both needlessly expensive and impossible where no
+ * browser exists. Callers map each kind to its own error code, and `refresh_failed` must point at a
+ * retry rather than at `gusto auth login`. */
 export type SessionOutcome =
   | { kind: "ok"; token: string }
   /** No credential slot for this environment, or a slot with no access token in it. */

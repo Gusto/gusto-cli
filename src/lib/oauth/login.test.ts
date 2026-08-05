@@ -359,6 +359,43 @@ describe("login", () => {
     expect(cleared).toBe(true);
   });
 
+  test("a failed login leaves an existing session's tokens untouched", async () => {
+    // What makes it safe to tell a caller with a `token_refresh_failed` error to retry instead of
+    // logging in: an abandoned or failed login is not destructive, so the credential it would have
+    // replaced is still there afterward. `store.save` runs only after the exchange and token_info
+    // both succeed; keep it that way, or a login that dies halfway takes the session with it.
+    const store = memoryStore({
+      sandbox: {
+        clientId: "cid",
+        clientSecret: "sec",
+        accessToken: "existing-at",
+        refreshToken: "existing-rt",
+        expiresAt: 5_000,
+        companyUuid: "comp-1",
+      },
+    });
+    const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
+
+    await expect(
+      login("sandbox", {
+        store,
+        http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+        browserAvailable: () => true,
+        openBrowser: driveCallback().openBrowser,
+        print: () => {},
+      }),
+    ).rejects.toThrow();
+
+    expect(store.data.sandbox).toEqual({
+      clientId: "cid",
+      clientSecret: "sec",
+      accessToken: "existing-at",
+      refreshToken: "existing-rt",
+      expiresAt: 5_000,
+      companyUuid: "comp-1",
+    });
+  });
+
   test("browser tab shows a failure page when the token exchange returns non-200", async () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
     const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
