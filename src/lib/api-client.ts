@@ -6,9 +6,9 @@ import { USER_AGENT } from "./version.ts";
 /** Which credential supplied the resolved access token, in precedence order. */
 export type TokenSource = "stdin" | "env" | "session";
 
-/** Which credential a request carried and which environment it was aimed at. Lives here, with the
- * error that reports it, because a 401 means the credential itself was refused - and the only wording
- * that can help names *which* one, so it has to travel with the failure. */
+/** Which credential a request carried and which environment it was aimed at. A 401 means the
+ * credential itself was refused, and the only wording that helps names *which* one - so it travels
+ * with the failure rather than being reconstructed from it. */
 export interface AuthContext {
   tokenSource: TokenSource;
   environment: Environment;
@@ -19,9 +19,9 @@ export class ApiError extends Error {
   readonly body: unknown;
   readonly exitCode: ExitCodeValue;
   readonly requestId?: string;
-  /** The credential this request carried, when the client was built with one. Stamped here rather
-   * than threaded through call sites: every `toResult` caller then reports a 401 the same way,
-   * including the ones several frames from a resolved context. */
+  /** The credential this request carried, when the client was built with one. Riding on the error is
+   * what lets every `toResult` caller report a 401 the same way, including the ones several frames
+   * from a resolved context, which could not otherwise name what was refused. */
   readonly auth?: AuthContext;
 
   constructor(

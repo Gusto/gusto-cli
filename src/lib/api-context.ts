@@ -16,7 +16,7 @@ import { readTokenFromStdin } from "./stdin.ts";
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
 
-/** Defined with `ApiError`, which carries it, and re-exported here where callers expect it. */
+/** Declared alongside `ApiError`, which carries it; re-exported for the auth-facing callers here. */
 export type { TokenSource };
 
 interface ApiContextBase {

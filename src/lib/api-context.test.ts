@@ -524,9 +524,9 @@ describe("company-resource write confirmation gate", () => {
   });
 });
 
-// The wiring that makes `credential_rejected` able to name a credential at all: `resolveApiContext`
-// hands the resolved source and environment to the client, which stamps them on any error it throws.
-// Unit-testing `toResult` with a hand-built ApiError can't catch this coming unplugged.
+// The wiring that lets `credential_rejected` name a credential at all: `resolveApiContext` hands the
+// resolved source and environment to the client, which stamps them onto any error it throws. Asserted
+// end to end because a hand-built `ApiError` satisfies `toResult` whether or not that wiring holds.
 describe("a 401 from a resolved client", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());

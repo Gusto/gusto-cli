@@ -67,17 +67,17 @@ export async function resolveSessionToken(
       return { kind: "ok", token: await refreshAndStore(store, env, http, session, session.refreshToken, now()) };
     } catch (err) {
       // Proactive (within-skew) refresh failed while the token is still genuinely valid, so the
-      // failure isn't actionable yet - use it. Nothing refreshes reactively: no production caller
-      // reaches `withUserToken`, so if this token turns out to be dead the request comes back 401 and
-      // is reported as `credential_rejected` rather than retried with a fresh one.
+      // failure isn't actionable yet - use it. There is no reactive refresh: a token that turns out
+      // to be dead comes back 401 and is reported as `credential_rejected`, not swapped for a fresh
+      // one. This is the last chance to refresh, so passing it through bets on the token's clock.
       if (session.expiresAt != null && now() < session.expiresAt) return { kind: "ok", token: session.accessToken };
       if (err instanceof OAuthError) return { kind: "refresh_failed", cause: err };
       throw err;
     }
   }
-  // Past expiry with no way to refresh. Sending it would come back 401, which is reported clearly
-  // enough now - but we already know the answer, and only the local state can date the expiry and
-  // name the slot it sits in. Name it here instead of spending a round trip to be told.
+  // Past expiry with no way to refresh. Sending it buys a 401 saying the credential was refused;
+  // the local state also dates the expiry and names the slot it sits in, so reporting from here beats
+  // a round trip that comes back knowing less.
   if (session.expiresAt != null && now() >= session.expiresAt) {
     return { kind: "expired", expiresAt: session.expiresAt };
   }
