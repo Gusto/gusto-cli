@@ -6,7 +6,9 @@ import { OAuthError } from "./oauth/endpoints.ts";
 
 describe("toResult", () => {
   test("4xx ApiError maps to api_client_error and carries body + request_id", () => {
-    const err = new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "Unprocessable", "req-123");
+    const err = new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "Unprocessable", {
+      requestId: "req-123",
+    });
     const result = toResult(err);
     expect(result).toEqual({
       ok: false,
@@ -181,7 +183,7 @@ describe("toResult", () => {
 // the client stamps its `AuthContext` onto the error.
 describe("toResult 401 handling", () => {
   const unauthorized = (auth?: AuthContext) =>
-    new ApiError(401, { error: "unauthorized" }, ExitCode.ApiClient, "GET /v1/me -> 401", "req-9", auth);
+    new ApiError(401, { error: "unauthorized" }, ExitCode.ApiClient, "GET /v1/me -> 401", { requestId: "req-9", auth });
 
   test("exits Auth, not ApiClient, so one branch catches every credential problem", () => {
     const result = toResult(unauthorized({ tokenSource: "session", environment: "production" }));

@@ -24,21 +24,23 @@ export class ApiError extends Error {
    * from a resolved context, which could not otherwise name what was refused. */
   readonly auth?: AuthContext;
 
+  /** The optional context rides in one object rather than as trailing positional params: both are
+   * `string | undefined`-ish at the call site, and the four required args are already the limit of
+   * what reads unlabeled. */
   constructor(
     status: number,
     body: unknown,
     exitCode: ExitCodeValue,
     message: string,
-    requestId?: string,
-    auth?: AuthContext,
+    context: { requestId?: string; auth?: AuthContext } = {},
   ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
     this.exitCode = exitCode;
-    this.requestId = requestId;
-    this.auth = auth;
+    this.requestId = context.requestId;
+    this.auth = context.auth;
   }
 }
 
@@ -416,14 +418,10 @@ export class ApiClient {
     }
 
     const exitCode = response.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient;
-    throw new ApiError(
-      response.status,
-      parsed,
-      exitCode,
-      `${method} ${url} -> ${response.status}`,
+    throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`, {
       requestId,
-      this.auth,
-    );
+      auth: this.auth,
+    });
   }
 
   private emit(method: string, path: string, status: number, requestId: string | undefined, start: number): void {
