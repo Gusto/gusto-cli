@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { readGlobalFlags, setConfiguredEnvironment } from "./global-flags.ts";
+import { describe, expect, test } from "bun:test";
+import { readGlobalFlags } from "./global-flags.ts";
 
 describe("readGlobalFlags", () => {
   test("coerces missing flags to false", () => {
@@ -49,22 +49,6 @@ describe("readGlobalFlags", () => {
   });
 });
 
-describe("readGlobalFlags - environment precedence", () => {
-  // The config default is module state installed once per process, so each test restores it.
-  afterEach(() => setConfiguredEnvironment(undefined));
-
-  test("the config default applies when no flag or env var was given", () => {
-    setConfiguredEnvironment("sandbox");
-    expect(readGlobalFlags({}).env).toBe("sandbox");
-  });
-
-  test("an explicit env beats the config default", () => {
-    // Commander folds GUSTO_ENVIRONMENT into opts.env, so this one case covers both higher tiers.
-    setConfiguredEnvironment("sandbox");
-    expect(readGlobalFlags({ env: "production" }).env).toBe("production");
-  });
-
-  test("env stays undefined when nothing is configured, leaving the production default to defaultEnv", () => {
-    expect(readGlobalFlags({}).env).toBeUndefined();
-  });
-});
+// The precedence chain itself (`--env` > GUSTO_ENVIRONMENT > config > production) is commander's,
+// installed in `buildProgram`, and is covered end to end through the compiled binary in
+// tests/smoke.test.ts - `readGlobalFlags` only passes the resolved value through.
