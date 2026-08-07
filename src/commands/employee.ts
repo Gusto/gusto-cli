@@ -1,16 +1,38 @@
 import type { Command } from "commander";
+import type { ApiResponse } from "../lib/api-client.ts";
 import {
   fetchAtPath,
   fetchResource,
+  putResourceWithVersion,
   resolveApiContext,
   withCompanyContext,
   writeResource,
 } from "../lib/api-context.ts";
-import { ALL_OPT, CONFIRM_OPT, CURSOR_OPT, DRY_RUN_OPT, EXAMPLE_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import {
+  ALL_OPT,
+  CONFIRM_OPT,
+  CURSOR_OPT,
+  DRY_RUN_OPT,
+  EXAMPLE_OPT,
+  TOKEN_STDIN_OPT,
+  withContextOptions,
+} from "../lib/cli-options.ts";
+import { confirmationGate } from "../lib/confirm.ts";
+import {
+  buildHomeAddressUpdate,
+  buildWorkAddressUpdate,
+  type HomeAddressBody,
+  type HomeAddressUpdateOpts,
+  type WorkAddressBody,
+  type WorkAddressUpdateOpts,
+} from "../lib/employee-address.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
+import { partialFailure } from "../lib/handle-api-error.ts";
+import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
-import { isValidIsoDate } from "../lib/parse.ts";
+import { isValidIsoDate, isValidStateCode } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import {
   type CommandHandler,
@@ -33,6 +55,17 @@ interface EmployeeListOpts {
 interface EmployeeShowOpts {
   tokenStdin?: boolean;
 }
+
+/** Auth + write-gate flags every address update command shares. */
+interface AddressWriteOpts {
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+}
+
+type HomeAddressUpdateCmdOpts = HomeAddressUpdateOpts & AddressWriteOpts;
+type WorkAddressUpdateCmdOpts = WorkAddressUpdateOpts & AddressWriteOpts;
 
 export function registerEmployeeCommand(parent: Command): void {
   const cmd = parent.command("employee").description("List and inspect W-2 employees");
@@ -184,11 +217,120 @@ Examples:
     );
 
   cmd
+    .command("update-home-address <address_uuid>")
+    .description("Update an employee's home address (partial; only the flags you pass change)")
+    .option("--street-1 <street>", "Street line 1")
+    .option("--street-2 <street>", "Street line 2")
+    .option("--city <city>", "City")
+    .option("--state <state>", "Two-letter state code (e.g. CO)")
+    .option("--zip <zip>", "ZIP code")
+    .option("--effective-date <date>", "Date the address takes effect (YYYY-MM-DD)")
+    .option("--courtesy-withholding <bool>", "Courtesy withholding: true or false")
+    .option("--record-version <token>", "Resource version; skips the auto-fetch (a value you pass always wins)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Address UUIDs come from \`gusto employee addresses <employee_uuid>\`. This is a partial update:
+only the fields you pass are changed. The optimistic-concurrency \`version\` is read from the
+current record automatically; pass --record-version to supply it yourself and skip that read.
+If the record changes before the write, nothing is saved and you get a \`version_conflict\`
+(exit 8). On the automatic read, re-running picks up the current version. If you passed
+--record-version, re-running re-sends the same stale token: read the record again with
+\`gusto employee home-address <address_uuid>\` and pass its new \`version\`.
+
+Empty flag values are rejected, so \`--street-2 ""\` won't clear an existing line 2: it returns
+\`blocked_on\` (exit 7). There is no clear flag yet; \`gusto api request PUT\` can do it, without
+the automatic version read.
+
+Examples:
+  $ gusto employee update-home-address <address_uuid> --street-1 "123 Main St" --city Denver --state CO --zip 80202
+  $ gusto employee update-home-address <address_uuid> --zip 80203 --dry-run
+`,
+    )
+    .action((addressUuid: string, opts: HomeAddressUpdateCmdOpts) =>
+      runCommand(
+        "gusto employee update-home-address",
+        readGlobalFlags(parent.opts()),
+        updateHomeAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("update-work-address <address_uuid>")
+    .description("Update an employee's work address (partial; only the flags you pass change)")
+    .option("--location-uuid <uuid>", "Company location the work address points at")
+    .option("--effective-date <date>", "Date the address takes effect (YYYY-MM-DD)")
+    .option("--record-version <token>", "Resource version; skips the auto-fetch (a value you pass always wins)")
+    .option(...TOKEN_STDIN_OPT)
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+A work address points at one of the company's locations; set it via --location-uuid (list them
+with \`gusto company locations\`). Address UUIDs come from \`gusto employee addresses <employee_uuid>\`.
+The \`version\` is read from the current record automatically; pass --record-version to skip that read.
+If the record changes before the write, nothing is saved and you get a \`version_conflict\`
+(exit 8). On the automatic read, re-running picks up the current version. If you passed
+--record-version, re-running re-sends the same stale token: read the record again with
+\`gusto employee work-address <address_uuid>\` and pass its new \`version\`.
+
+Examples:
+  $ gusto employee update-work-address <address_uuid> --location-uuid <company_location_uuid>
+  $ gusto employee update-work-address <address_uuid> --effective-date 2026-08-01 --dry-run
+`,
+    )
+    .action((addressUuid: string, opts: WorkAddressUpdateCmdOpts) =>
+      runCommand(
+        "gusto employee update-work-address",
+        readGlobalFlags(parent.opts()),
+        updateWorkAddressHandler(addressUuid, opts),
+      ),
+    );
+
+  cmd
     .command("jobs <employee_uuid>")
     .description("Read an employee's jobs")
     .option(...TOKEN_STDIN_OPT)
     .action((employeeUuid: string, opts: EmployeeShowOpts) =>
       runReadCommand("gusto employee jobs", readGlobalFlags(parent.opts()), employeeJobsHandler(employeeUuid, opts)),
+    );
+
+  withContextOptions(
+    cmd
+      .command("update <employee_uuid>")
+      .description("Update an employee's work state (write path); flags the new state's tax requirements"),
+  )
+    .option("--work-state <state>", "New work-state 2-letter code (e.g. MD)")
+    .option("--effective-date <date>", "The date the work-state change takes effect (YYYY-MM-DD)")
+    .option(...DRY_RUN_OPT)
+    .option(...CONFIRM_OPT)
+    .option(...EXAMPLE_OPT)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ gusto employee update <uuid> --work-state MD
+  $ gusto employee update <uuid> --work-state MD --effective-date 2026-08-01
+
+Resolves --work-state to one of the company's existing locations in that state (see
+\`gusto company locations\`) and points the employee's active work address at it - create
+the location first if none exists yet. On success the response includes a \`compliance\`
+block naming that state's outstanding tax requirements, so a silent PA-to-MD move doesn't
+turn into months of missed filings. Already working from --work-state is a no-op
+(\`changed: false\`); no location lookup or write is attempted.
+
+Mirrors PUT /v1/work_addresses/{work_address_uuid}. In agent mode this write is gated:
+preview it with --dry-run, then re-run with --confirm once the operator approves.
+`,
+    )
+    .action((employeeUuid: string, opts: EmployeeUpdateOpts) =>
+      runCommand("gusto employee update", readGlobalFlags(parent.opts()), employeeUpdateHandler(employeeUuid, opts)),
     );
 
   cmd
@@ -382,6 +524,58 @@ export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeSho
   };
 }
 
+export function updateHomeAddressHandler(addressUuid: string, opts: HomeAddressUpdateCmdOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/home_addresses/{home_address_uuid}",
+          body: {
+            street_1: "123 Main St",
+            street_2: "Apt 4",
+            city: "Denver",
+            state: "CO",
+            zip: "80202",
+          } satisfies HomeAddressBody,
+          note: "example: a partial update - pass only the fields you change; version is read from the current record unless you pass --record-version",
+        },
+      };
+    }
+    const validated = buildHomeAddressUpdate(opts);
+    if (!validated.ok) return validationFailure(validated.message, validated.blocked);
+    return putResourceWithVersion(globals, `/v1/home_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
+      tokenStdin: opts.tokenStdin,
+      dryRun: opts.dryRun,
+      confirm: opts.confirm,
+    });
+  };
+}
+
+export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressUpdateCmdOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/work_addresses/{work_address_uuid}",
+          body: { location_uuid: "<company_location_uuid>", effective_date: "2026-08-01" } satisfies WorkAddressBody,
+          note: "example: a work address points at a company location; version is read from the current record unless you pass --record-version",
+        },
+      };
+    }
+    const validated = buildWorkAddressUpdate(opts);
+    if (!validated.ok) return validationFailure(validated.message, validated.blocked);
+    return putResourceWithVersion(globals, `/v1/work_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
+      tokenStdin: opts.tokenStdin,
+      dryRun: opts.dryRun,
+      confirm: opts.confirm,
+    });
+  };
+}
+
 export function employeeHistoryHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) =>
     fetchResource(
@@ -420,6 +614,171 @@ export function employeeJobsHandler(employeeUuid: string, opts: EmployeeShowOpts
       return malformedResponse(`/v1/employees/${employeeUuid}/jobs returned a non-array body`);
     }
     return res;
+  };
+}
+
+interface EmployeeUpdateOpts {
+  workState?: string;
+  effectiveDate?: string;
+  companyUuid?: string;
+  tokenStdin?: boolean;
+  dryRun?: boolean;
+  confirm?: boolean;
+  example?: boolean;
+}
+
+interface WorkAddressRecord {
+  uuid: string;
+  version: string;
+  active?: boolean;
+  state?: string;
+  location_uuid?: string;
+  [key: string]: unknown;
+}
+
+/** The work-address PUT body. `location_uuid` always points at the resolved --work-state
+ * company location; `effective_date` is only sent when the operator gave one, matching the
+ * API's own optionality (see the terminate body's opposite convention, where every field
+ * is always sent - here that would invent a date semantics the API doesn't document). */
+interface WorkAddressUpdateBody {
+  version: string;
+  location_uuid: string;
+  effective_date?: string;
+}
+
+const workAddressPath = (workAddressUuid: string): string =>
+  `/v1/work_addresses/${encodeURIComponent(workAddressUuid)}`;
+
+/** Update an employee's work state: resolve --work-state to one of the company's
+ * locations, then PUT the employee's active work address to point at it - the write
+ * `terminate`'s single-request helpers don't fit, since building the body needs two prior
+ * reads (the active work address, the target location). Gated like any write: the
+ * confirmation check runs before any network call, against the write's shape rather than
+ * the specific work-address uuid (not known yet). On success, a best-effort GET of the new
+ * state's tax_requirements is shaped into a `compliance` nudge (see buildComplianceNudge);
+ * its failure doesn't undo or fail the already-successful write. Already being in
+ * --work-state is a no-op - no location lookup, no write, no nudge. */
+export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdateOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (opts.example) {
+      return {
+        ok: true,
+        data: {
+          method: "PUT",
+          path: "/v1/work_addresses/{work_address_uuid}",
+          body: {
+            version: "<current version>",
+            location_uuid: "<company location uuid in the target state>",
+            effective_date: "2026-08-01",
+          } satisfies WorkAddressUpdateBody,
+          note:
+            "example: --work-state resolves to an existing company location in that state (see `gusto company " +
+            "locations`), then PUTs the employee's active work address to point at it. A `compliance` block " +
+            "naming the new state's outstanding tax requirements is included on success.",
+        },
+      };
+    }
+    if (!opts.workState) {
+      return missingArgs([{ field: "work-state", reason: "required (2-letter US state code, e.g. MD)" }]);
+    }
+    if (!isValidStateCode(opts.workState)) {
+      return validationFailure("invalid --work-state", [
+        { field: "work-state", reason: "must be a 2-letter state code" },
+      ]);
+    }
+    if (opts.effectiveDate !== undefined && !isValidIsoDate(opts.effectiveDate)) {
+      return validationFailure("invalid --effective-date", [
+        { field: "effective-date", reason: "must be a valid date in YYYY-MM-DD format" },
+      ]);
+    }
+    const workState = opts.workState.toUpperCase();
+
+    // Gate on the write's shape before any reads - the work-address uuid isn't known yet.
+    const gate = confirmationGate(globals, "PUT", "/v1/work_addresses/{work_address_uuid}", {
+      confirm: opts.confirm,
+      dryRun: opts.dryRun,
+    });
+    if (gate) return gate;
+
+    return withCompanyContext(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      async (companyCtx) => {
+        const addressesPath = `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`;
+        const addressesRes = await fetchAtPath<WorkAddressRecord[]>(companyCtx.client, addressesPath);
+        if (!addressesRes.ok) return addressesRes;
+        if (!Array.isArray(addressesRes.data)) {
+          return malformedResponse(`${addressesPath} returned a non-array body`);
+        }
+        // Strict `=== true`, unlike findLocationForState's permissive `!== false` - picking
+        // the wrong address to overwrite is worse than failing to find one.
+        const active = addressesRes.data.find((a) => a.active === true);
+        if (!active) {
+          return {
+            ok: false,
+            exitCode: ExitCode.ApiClient,
+            error: {
+              code: "no_active_work_address",
+              message: `employee ${employeeUuid} has no active work address to update`,
+            },
+          };
+        }
+        if (active.state?.toUpperCase() === workState) {
+          return {
+            ok: true,
+            data: {
+              changed: false,
+              work_address: active,
+              note: `already working from ${workState}; nothing to update`,
+            },
+          };
+        }
+
+        const locationsRes = await fetchCompanyLocations(companyCtx.client, companyCtx.companyUuid);
+        if (!locationsRes.ok) return locationsRes;
+        const location = findLocationForState(locationsRes.data, workState);
+        if (!location) {
+          return {
+            ok: false,
+            exitCode: ExitCode.ApiClient,
+            error: {
+              code: "no_company_location_for_state",
+              message:
+                `no active company location in ${workState} - create one first (see \`gusto company locations\`) ` +
+                "before moving an employee's work state there",
+            },
+          };
+        }
+
+        const body: WorkAddressUpdateBody = { version: active.version, location_uuid: location.uuid };
+        if (opts.effectiveDate !== undefined) body.effective_date = opts.effectiveDate;
+
+        const path = workAddressPath(active.uuid);
+        if (opts.dryRun) return { ok: true, data: { method: "PUT", path, body } };
+
+        const response = await companyCtx.client.request<WorkAddressRecord>("PUT", path, body);
+
+        let nudgeResponse: ApiResponse<TaxRequirementsStateResponse>;
+        try {
+          nudgeResponse = await companyCtx.client.get<TaxRequirementsStateResponse>(
+            `/v1/companies/${companyCtx.companyUuid}/tax_requirements/${encodeURIComponent(workState)}`,
+          );
+        } catch (err) {
+          // A failed nudge fetch after a successful write is exactly what partialFailure models -
+          // ok: false (not a data-level flag `--fields` could drop) so the failure can't go unseen.
+          return partialFailure({
+            code: "compliance_nudge_fetch_failed",
+            message: `wrote the work-state change to ${workState}, but couldn't fetch its tax requirements`,
+            err,
+            completed: { work_address: response.body },
+            failedDomain: "tax_requirements",
+          });
+        }
+
+        const compliance = buildComplianceNudge(workState, nudgeResponse.body);
+        return { ok: true, data: { changed: true, work_address: response.body, compliance } };
+      },
+    );
   };
 }
 
@@ -527,6 +886,47 @@ export function employeeTerminateCancelHandler(
         confirm: opts.confirm,
       }),
     );
+}
+
+interface TaxRequirement {
+  key: string;
+  label?: string;
+  value?: unknown;
+  editable?: boolean;
+  payroll_blocking?: boolean;
+}
+
+interface TaxRequirementSet {
+  key: string;
+  requirements?: TaxRequirement[];
+}
+
+export interface TaxRequirementsStateResponse {
+  state?: string;
+  requirement_sets?: TaxRequirementSet[];
+}
+
+export interface ComplianceOutstandingItem {
+  key: string;
+  label?: string;
+  payroll_blocking: boolean;
+}
+
+export interface ComplianceNudge {
+  state: string;
+  outstanding: ComplianceOutstandingItem[];
+  payroll_blocking: boolean;
+}
+
+/** Shape a `tax_requirements/{state}` response into the "what still needs attention"
+ * nudge shown after a work-state change: every editable requirement with no value yet
+ * (`null`, `undefined`, or `""`), flagging whether any of them block payroll. */
+export function buildComplianceNudge(state: string, response: TaxRequirementsStateResponse): ComplianceNudge {
+  const outstanding = (response.requirement_sets ?? [])
+    .flatMap((set) => set.requirements ?? [])
+    .filter((r) => r.editable === true && (r.value === null || r.value === undefined || r.value === ""))
+    .map((r) => ({ key: r.key, label: r.label, payroll_blocking: r.payroll_blocking === true }));
+  return { state, outstanding, payroll_blocking: outstanding.some((r) => r.payroll_blocking) };
 }
 
 export function employeeListHandler(opts: EmployeeListOpts): CommandHandler {

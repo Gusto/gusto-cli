@@ -11,6 +11,7 @@ import {
   employeeTerminateCancelHandler,
   employeeTerminateHandler,
   employeeTerminationsHandler,
+  employeeUpdateHandler,
   homeAddressHandler,
   workAddressHandler,
 } from "./employee.ts";
@@ -397,6 +398,274 @@ describe("employeeTerminateHandler", () => {
     // The raw `/`, `?`, `#` must be percent-encoded so they can't retarget the write.
     expect(post?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/terminations");
     expect(post?.url).not.toContain("a/b?c");
+  });
+});
+
+describe("employeeUpdateHandler", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const activeAddress = { uuid: "wa-1", version: "v1", active: true, state: "PA" };
+  const mdLocation = { uuid: "loc-md", state: "MD", active: true };
+
+  function happyPathRoutes(overrides: Partial<Record<string, { status: number; body?: unknown }>> = {}) {
+    return routeFetch([
+      {
+        match: "/v1/employees/emp-1/work_addresses",
+        status: 200,
+        body: [activeAddress],
+        ...overrides.addresses,
+      },
+      { match: "/v1/companies/co-1/locations", status: 200, body: [mdLocation], ...overrides.locations },
+      {
+        match: "/v1/work_addresses/wa-1",
+        status: 200,
+        body: { ...activeAddress, state: "MD", location_uuid: "loc-md", version: "v2" },
+        ...overrides.put,
+      },
+      {
+        match: "/v1/companies/co-1/tax_requirements/MD",
+        status: 200,
+        body: {
+          state: "MD",
+          requirement_sets: [
+            { key: "registrations", requirements: [{ key: "withholding_number", editable: true, value: null }] },
+          ],
+        },
+        ...overrides.tax,
+      },
+    ]);
+  }
+
+  test("--example prints a canned PUT payload without calling the API", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, example: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/work_addresses/{work_address_uuid}");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("a missing --work-state is refused pre-flight with a blocked_on list, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["work-state"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an invalid --work-state format is refused pre-flight, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "Maryland" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["work-state"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an invalid --effective-date is refused pre-flight, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", {
+      ...auth,
+      workState: "MD",
+      effectiveDate: "08-01-2026",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["effective-date"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an agent-mode update without --confirm is blocked and sends nothing", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("no active work address on file returns a domain error", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, active: false }] },
+    ]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("no_active_work_address");
+  });
+
+  test("already working from the target state is a no-op and never queries locations or tax requirements", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, workState: "PA", confirm: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("--dry-run against an already-matching state still returns the no-op result, not a fake preview", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, workState: "PA", dryRun: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(d.method).toBeUndefined();
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("a lowercase --work-state matching the current (uppercase) state is still a no-op", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, workState: "pa", confirm: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("no active company location in the target state returns a domain error and never PUTs", async () => {
+    const s = routeFetch([
+      { match: "/v1/employees/emp-1/work_addresses", status: 200, body: [activeAddress] },
+      { match: "/v1/companies/co-1/locations", status: 200, body: [{ uuid: "loc-ca", state: "CA", active: true }] },
+    ]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("no_company_location_for_state");
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("dry-run resolves the location and builds the PUT body without sending it or fetching the tax nudge", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", dryRun: true })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual({
+      method: "PUT",
+      path: "/v1/work_addresses/wa-1",
+      body: { version: "v1", location_uuid: "loc-md" },
+    });
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(s.calls.some((c) => c.url.includes("tax_requirements"))).toBe(false);
+  });
+
+  test("--effective-date is included in the dry-run body when given", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", {
+      ...auth,
+      workState: "MD",
+      effectiveDate: "2026-08-01",
+      dryRun: true,
+    })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as { body: Record<string, unknown> }).body).toMatchObject({ effective_date: "2026-08-01" });
+  });
+
+  test("--confirm PUTs the resolved work address and includes the compliance nudge", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx));
+    expect(d.changed).toBe(true);
+    expect((d.work_address as Record<string, unknown>).state).toBe("MD");
+    expect(d.compliance).toMatchObject({
+      state: "MD",
+      outstanding: [{ key: "withholding_number", label: undefined, payroll_blocking: false }],
+    });
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/v1/work_addresses/wa-1");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("picks the matching location out of several, not just the first in the list", async () => {
+    const s = happyPathRoutes({
+      locations: {
+        status: 200,
+        body: [
+          { uuid: "loc-ca", state: "CA", active: true },
+          { uuid: "loc-md", state: "MD", active: true },
+          { uuid: "loc-ny", state: "NY", active: true },
+        ],
+      },
+    });
+    restore = s.restore;
+    await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("a lowercase --work-state resolves to the matching location and the uppercased nudge path", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    await employeeUpdateHandler("emp-1", { ...auth, workState: "md", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+    expect(s.calls.some((c) => c.url.includes("tax_requirements/MD"))).toBe(true);
+  });
+
+  test("matches a location whose stored state is lowercase", async () => {
+    const s = happyPathRoutes({ locations: { status: 200, body: [{ uuid: "loc-md", state: "md", active: true }] } });
+    restore = s.restore;
+    await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("a non-array work_addresses body is rejected as malformed, no locations/PUT/nudge calls", async () => {
+    const s = routeFetch([{ match: "/v1/employees/emp-1/work_addresses", status: 200, body: { not: "an array" } }]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("a rejected PUT (e.g. a stale version) fails the command instead of reporting a phantom success", async () => {
+    const s = happyPathRoutes({ put: { status: 422, body: { errors: [{ message: "stale version" }] } } });
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(s.calls.some((c) => c.url.includes("tax_requirements"))).toBe(false);
+  });
+
+  test("a failed tax-requirements nudge fetch fails the command as a partial failure, not a phantom success", async () => {
+    const s = happyPathRoutes({ tax: { status: 404, body: { errors: [{ message: "not found" }] } } });
+    restore = s.restore;
+    const result = await employeeUpdateHandler("emp-1", { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("compliance_nudge_fetch_failed");
+    const details = result.error.details as Record<string, unknown>;
+    expect(details.completed).toEqual(["work_address"]);
+    expect((details.work_address as Record<string, unknown>).state).toBe("MD");
+    expect((details.failed as Record<string, unknown>).domain).toBe("tax_requirements");
+  });
+
+  test("encodes an employee uuid with URL-significant characters into a single path segment", async () => {
+    const s = routeFetch([{ match: "/v1/employees/a%2Fb%3Fc%23d/work_addresses", status: 200, body: [activeAddress] }]);
+    restore = s.restore;
+    await employeeUpdateHandler("a/b?c#d", { ...auth, workState: "PA", confirm: true })(ctx);
+    expect(s.calls[0]?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/work_addresses");
+    expect(s.calls[0]?.url).not.toContain("a/b?c");
   });
 });
 

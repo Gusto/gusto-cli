@@ -1,5 +1,71 @@
 import { describe, expect, test } from "bun:test";
-import { bucketEmployees, buildEmployeeList, type EmployeeListSummary, parseStatus } from "./employee.ts";
+import {
+  buildComplianceNudge,
+  bucketEmployees,
+  buildEmployeeList,
+  type EmployeeListSummary,
+  parseStatus,
+} from "./employee.ts";
+
+describe("buildComplianceNudge", () => {
+  test("lists unanswered editable requirements as outstanding", () => {
+    const nudge = buildComplianceNudge("MD", {
+      requirement_sets: [
+        {
+          key: "registrations",
+          requirements: [
+            { key: "withholding_number", label: "Withholding Number", editable: true, value: null },
+            { key: "already_set", label: "Already Set", editable: true, value: "123" },
+          ],
+        },
+      ],
+    });
+    expect(nudge.state).toBe("MD");
+    expect(nudge.outstanding).toEqual([
+      { key: "withholding_number", label: "Withholding Number", payroll_blocking: false },
+    ]);
+  });
+
+  test("a non-editable or blank-string requirement is excluded/included correctly", () => {
+    const nudge = buildComplianceNudge("MD", {
+      requirement_sets: [
+        {
+          key: "registrations",
+          requirements: [
+            { key: "readonly_field", label: "Readonly", editable: false, value: null },
+            { key: "blank_field", label: "Blank", editable: true, value: "" },
+          ],
+        },
+      ],
+    });
+    expect(nudge.outstanding.map((r) => r.key)).toEqual(["blank_field"]);
+  });
+
+  test("payroll_blocking is true when any outstanding requirement blocks payroll", () => {
+    const nudge = buildComplianceNudge("MD", {
+      requirement_sets: [
+        {
+          key: "registrations",
+          requirements: [{ key: "withholding_number", editable: true, value: null, payroll_blocking: true }],
+        },
+      ],
+    });
+    expect(nudge.payroll_blocking).toBe(true);
+    expect(nudge.outstanding[0]).toEqual({ key: "withholding_number", label: undefined, payroll_blocking: true });
+  });
+
+  test("no outstanding requirements yields an empty list and payroll_blocking: false", () => {
+    const nudge = buildComplianceNudge("MD", {
+      requirement_sets: [{ key: "registrations", requirements: [{ key: "done", editable: true, value: "yes" }] }],
+    });
+    expect(nudge.outstanding).toEqual([]);
+    expect(nudge.payroll_blocking).toBe(false);
+  });
+
+  test("a missing requirement_sets/requirements is treated as no outstanding items", () => {
+    expect(buildComplianceNudge("MD", {}).outstanding).toEqual([]);
+  });
+});
 
 describe("parseStatus", () => {
   test("undefined defaults to active", () => {

@@ -64,6 +64,14 @@ export function isValidIso8601(value: string): boolean {
   return !Number.isNaN(new Date(value).getTime());
 }
 
+const STATE_CODE = /^[a-zA-Z]{2}$/;
+
+/** True for a two-letter code (e.g. `MD`). Format-level check only - whether it's a real
+ * US state/territory is the API's job, so this doesn't hardcode an enumerable list. */
+export function isValidStateCode(value: string): boolean {
+  return STATE_CODE.test(value);
+}
+
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry
  * for any unrecognized token (or null if all are valid). `multi` splits the
  * value on commas for the comma-separated multi-value params; empty tokens

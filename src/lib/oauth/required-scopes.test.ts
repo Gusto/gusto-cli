@@ -26,6 +26,29 @@ describe("REQUIRED_SCOPES", () => {
     expect(entry?.usedBy).toContain("payroll calculate");
   });
 
+  test("employee address updates require the verified write scopes, moved out of DROPPED", () => {
+    const write = REQUIRED_SCOPES.find((r) => r.scope === "employees:write");
+    expect(write?.usedBy).toContain("employee update-home-address");
+    expect(DROPPED_SCOPES).not.toContain("employees:write");
+
+    const manage = REQUIRED_SCOPES.find((r) => r.scope === "employees:manage");
+    expect(manage?.usedBy).toContain("employee update-work-address");
+    expect(DROPPED_SCOPES).not.toContain("employees:manage");
+  });
+
+  test("employees:read covers the address reads as well as the updates' auto-version GET", () => {
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "employees:read");
+    expect(entry?.usedBy).toEqual(
+      expect.arrayContaining([
+        "employee addresses",
+        "employee home-address",
+        "employee work-address",
+        "employee update-home-address",
+        "employee update-work-address",
+      ]),
+    );
+  });
+
   test("departments:read is required for the department read commands", () => {
     expect(DROPPED_SCOPES).not.toContain("departments:read");
     const entry = REQUIRED_SCOPES.find((r) => r.scope === "departments:read");
@@ -37,6 +60,18 @@ describe("REQUIRED_SCOPES", () => {
     const entry = REQUIRED_SCOPES.find((r) => r.scope === "employments:write");
     expect(entry?.usedBy).toContain("employee terminate");
     expect(entry?.usedBy).toContain("employee cancel-termination");
+  });
+
+  test("employees:manage is required for employee update (re-grant: previously dropped as unused)", () => {
+    expect(DROPPED_SCOPES).not.toContain("employees:manage");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "employees:manage");
+    expect(entry?.usedBy).toContain("employee update");
+  });
+
+  test("company_tax_requirements:read is required for the employee update compliance nudge", () => {
+    expect(DROPPED_SCOPES).not.toContain("company_tax_requirements:read");
+    const entry = REQUIRED_SCOPES.find((r) => r.scope === "company_tax_requirements:read");
+    expect(entry?.usedBy).toContain("employee update");
   });
 
   test("company forms, signatories, and federal-tax reads carry their read scopes", () => {
