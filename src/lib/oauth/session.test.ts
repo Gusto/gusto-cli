@@ -1,56 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "../api-client.ts";
 import { ExitCode } from "../exit-codes.ts";
-import { NoSessionError, ensureClientCreds, getValidUserToken, resolveSessionToken, withUserToken } from "./session.ts";
+import { NoSessionError, ensureClientCreds, resolveSessionToken, withUserToken } from "./session.ts";
 import { memoryStore, mockHttp as http } from "./test-support.ts";
-
-describe("getValidUserToken", () => {
-  test("returns the stored token when not near expiry", async () => {
-    const store = memoryStore({ sandbox: { accessToken: "at", expiresAt: 10_000_000 } });
-    expect(await getValidUserToken(store, "sandbox", http({ status: 200 }), () => 1_000)).toBe("at");
-  });
-
-  test("returns null when there is no session", async () => {
-    expect(await getValidUserToken(memoryStore(), "sandbox", http({ status: 200 }), () => 1_000)).toBeNull();
-  });
-
-  test("refreshes + persists when near expiry", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
-    });
-    const token = await getValidUserToken(
-      store,
-      "sandbox",
-      http({ status: 200, body: { access_token: "new", refresh_token: "rt2", expires_in: 3600 } }),
-      () => 1_990, // within the 60s skew of expiresAt
-    );
-    expect(token).toBe("new");
-    expect(store.data.sandbox?.accessToken).toBe("new");
-    expect(store.data.sandbox?.refreshToken).toBe("rt2");
-  });
-
-  test("falls back to the current token when proactive refresh fails but it isn't expired yet", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
-    });
-    // now=1_990: within skew (refresh attempted) but not past expiry; refresh 400s.
-    const token = await getValidUserToken(
-      store,
-      "sandbox",
-      http({ status: 400, body: { error: "invalid_grant" } }),
-      () => 1_990,
-    );
-    expect(token).toBe("old");
-  });
-
-  test("rethrows when refresh fails and the token is already expired", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 1_980 },
-    });
-    // now=1_990 is past expiry, so the stale token can't be used.
-    await expect(getValidUserToken(store, "sandbox", http({ status: 400 }), () => 1_990)).rejects.toBeDefined();
-  });
-});
 
 describe("resolveSessionToken", () => {
   const creds = { clientId: "c", clientSecret: "s" };
@@ -72,6 +24,19 @@ describe("resolveSessionToken", () => {
     const store = memoryStore({ sandbox: { accessToken: "at", expiresAt: 10_000_000 } });
     const outcome = await resolveSessionToken(store, "sandbox", http({ status: 200 }), () => 1_000);
     expect(outcome).toEqual({ kind: "ok", token: "at" });
+  });
+
+  test("ok, with the refreshed token persisted, when a within-skew refresh succeeds", async () => {
+    const store = memoryStore({ sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 2_000 } });
+    const outcome = await resolveSessionToken(
+      store,
+      "sandbox",
+      http({ status: 200, body: { access_token: "new", refresh_token: "rt2", expires_in: 3600 } }),
+      () => 1_990, // within the 60s skew of expiresAt
+    );
+    expect(outcome).toEqual({ kind: "ok", token: "new" });
+    expect(store.data.sandbox?.accessToken).toBe("new");
+    expect(store.data.sandbox?.refreshToken).toBe("rt2");
   });
 
   test("expired when past expiry with no refresh token", async () => {

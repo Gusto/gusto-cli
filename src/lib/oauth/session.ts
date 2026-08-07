@@ -28,12 +28,16 @@ export async function ensureClientCreds(
   return creds;
 }
 
-/** Why the stored session couldn't produce a usable token, or the token if it could. The three
- * failure kinds are distinct on purpose: "nothing on file" and "on file but the refresh was
- * rejected" call for opposite actions - the second still has a credential worth retrying against,
- * and answering it with an interactive login is both needlessly expensive and impossible where no
- * browser exists. Callers map each kind to its own error code, and `refresh_failed` must point at a
- * retry rather than at `gusto auth login`. */
+/** Why the stored session couldn't produce a usable token, or the token if it could.
+ *
+ * The failure kinds are distinct because the cheapest action that can work differs by kind, and this
+ * is the one place that rule is stated: `gusto auth login` is the expensive answer - it needs a human
+ * at a browser an agent on a headless box can't produce, and a successful one mints a new grant that
+ * invalidates the refresh token it replaces, breaking anything else holding that credential. So it is
+ * the recovery only where nothing cheaper exists. "Nothing on file" and "on file but the refresh was
+ * rejected" are therefore opposite states, not shades of one, and callers map each kind to its own
+ * error code rather than collapsing them. `cause` decides which recovery a `refresh_failed` gets - see
+ * `refreshFailureMessage` in `api-context.ts`. */
 export type SessionOutcome =
   | { kind: "ok"; token: string }
   /** No credential slot for this environment, or a slot with no access token in it. */
@@ -41,8 +45,10 @@ export type SessionOutcome =
   /** Access token expired and no refresh is possible locally - no refresh token, or no client
    * creds to authenticate the refresh with. `expiresAt` is echoed so the message can date it. */
   | { kind: "expired"; expiresAt: number }
-  /** A refresh ran and the server rejected it. The stored refresh token is left in place: it may
-   * still be good (a transient failure), and it is the only way back in that doesn't need a login. */
+  /** A refresh ran and the server rejected it. The stored refresh token is left in place either way:
+   * whether it is still good depends on `cause` (a transient failure leaves it usable, an
+   * `invalid_grant` does not), and that is a question for the caller reporting the failure, not for
+   * the code that discovered it. */
   | { kind: "refresh_failed"; cause: OAuthError };
 
 /** Resolve the stored session for `env` into a usable token or a reason it isn't one.
@@ -84,22 +90,14 @@ export async function resolveSessionToken(
   return { kind: "ok", token: session.accessToken };
 }
 
-/** The session's token, refreshed on near-expiry. Null when nothing is on file or the token expired
- * with no way to renew it; throws the `OAuthError` when a refresh ran and the server rejected it,
- * since a caller reduced to null can't tell that state from absence and would answer a still-usable
- * refresh token with a login. Callers that need all three apart want `resolveSessionToken`. */
-export async function getValidUserToken(
-  store: TokenStore,
-  env: "sandbox" | "production",
-  http: OAuthHttpOptions,
-  now: () => number = Date.now,
-): Promise<string | null> {
-  const outcome = await resolveSessionToken(store, env, http, now);
-  if (outcome.kind === "ok") return outcome.token;
-  if (outcome.kind === "refresh_failed") throw outcome.cause;
-  return null;
-}
-
+/** Run `fn` with the session's token, refreshing on near-expiry and once more if the call comes back
+ * 401. `NoSessionError` for the two states that need a login (nothing on file, expired with no way to
+ * renew); the `OAuthError` itself when a refresh ran and the server rejected it, since a caller that
+ * can't tell that state from absence would answer a still-usable refresh token with a login.
+ *
+ * No production caller yet - reactive refresh belongs per-request inside `ApiClient`, not around a
+ * whole operation, which would replay a paginated walk or a poll. Commands resolve their token
+ * through `resolveSessionToken` instead, which reports the three failure states apart. */
 export async function withUserToken<T>(
   store: TokenStore,
   env: "sandbox" | "production",
@@ -107,8 +105,10 @@ export async function withUserToken<T>(
   fn: (token: string) => Promise<T>,
   now: () => number = Date.now,
 ): Promise<T> {
-  const token = await getValidUserToken(store, env, http, now);
-  if (token == null) throw new NoSessionError();
+  const outcome = await resolveSessionToken(store, env, http, now);
+  if (outcome.kind === "refresh_failed") throw outcome.cause;
+  if (outcome.kind !== "ok") throw new NoSessionError();
+  const token = outcome.token;
   try {
     return await fn(token);
   } catch (err) {
