@@ -94,7 +94,15 @@ function credentialRejected(err: ApiError): CommandResult<never> {
 
 /** Names the refused credential and its one recovery. A client built without a resolved context
  * leaves the source unknown, so that wording covers all three rather than sending the caller at the
- * wrong one. */
+ * wrong one.
+ *
+ * The stored-session case names what the login costs. A 401 here reaches a slot whose refresh token
+ * may still be perfectly good - notably one with no recorded `expiresAt`, where nothing refreshed
+ * proactively because nothing knew to - and `auth login` replaces that token. Nothing today can spend
+ * it instead: a rerun takes the same path and re-sends the same rejected access token, since
+ * `resolveSessionToken` only refreshes on a *recorded* near-expiry, and refreshing a rejected
+ * credential in place is `withUserToken`'s still-unwired job. So the action stays `auth login`; saying
+ * what it replaces is the part a caller can act on. */
 function rejectedCredential(auth: AuthContext | undefined): string {
   if (auth === undefined) {
     return "the credential this command used was rejected by the API. If it came from `gusto auth login`, sign in again; if it came from GUSTO_ACCESS_TOKEN or --token-stdin, that token is invalid or expired.";
@@ -102,7 +110,7 @@ function rejectedCredential(auth: AuthContext | undefined): string {
   const env = auth.environment;
   switch (auth.tokenSource) {
     case "session":
-      return `the stored ${env} session was rejected by the API - its access token is stale or was revoked. Run \`gusto auth login --env ${env}\` to sign in again.`;
+      return `the stored ${env} session was rejected by the API - its access token is stale or was revoked. Run \`gusto auth login --env ${env}\` to sign in again; that mints a new grant and replaces the refresh token in that slot.`;
     case "env":
       return `the token in GUSTO_ACCESS_TOKEN was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
     case "stdin":

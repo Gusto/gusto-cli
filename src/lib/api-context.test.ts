@@ -260,8 +260,8 @@ describe("resolveApiContext - stored session fallback", () => {
 
   test("a rejected token refresh is token_refresh_failed, not no_access_token", async () => {
     // A refresh token is on file and only the *refresh* failed, so this must not report absence:
-    // "no access token, run auth login" would make the caller rotate the refresh token and lose the
-    // one credential that could still recover. The message has to steer toward a retry instead.
+    // "no access token, run auth login" reads as "nothing here", when what is here decides the
+    // recovery.
     const result = await resolveApiContext(flags, {
       requireCompany: false,
       store: memoryStore({ production: expiredSlot() }),
@@ -294,6 +294,53 @@ describe("resolveApiContext - stored session fallback", () => {
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
     expect(result.result.error.message).toContain("invalid_grant: refresh token is invalid");
+  });
+
+  // The retry advice is what makes `token_refresh_failed` worth its own code, and it is only sound
+  // when the server rejected the *attempt*. `invalid_grant` rejects the token, so the same retry
+  // fails identically - and it is the reason a dead refresh token actually comes back with.
+  test("a transient refresh failure says retry first and warns what a login would replace", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 503, body: { error: "temporarily_unavailable" } }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("retry the command first");
+    expect(result.result.error.message).toContain("still on file");
+  });
+
+  test("an invalid_grant refresh failure sends the caller to login instead of a doomed retry", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    // Still the same code: what changed is the recovery, not the state a caller branches on.
+    expect(result.result.error.code).toBe("token_refresh_failed");
+    expect(result.result.error.message).toContain("gusto auth login --env production");
+    expect(result.result.error.message).toContain("a retry fails the same way");
+    expect(result.result.error.message).not.toContain("retry the command first");
+  });
+
+  test("the refresh token stays on file even when the server calls it invalid", async () => {
+    // The login is now recommended, but nothing here performs one, so the credential is still there
+    // for an operator who wants to look at it.
+    const store = memoryStore({ production: expiredSlot() });
+    await resolveApiContext(flags, {
+      requireCompany: false,
+      store,
+      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+      now: () => 10_000,
+    });
+    expect(store.data.production?.refreshToken).toBe("refresh-tok");
   });
 
   test("a refresh failure with an unparseable body falls back to the request line", async () => {

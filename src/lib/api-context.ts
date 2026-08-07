@@ -132,17 +132,37 @@ function slotDescription(env: Environment): string {
   return `the [${env}] slot of ${credentialsFile()}`;
 }
 
+/** True when the server said the refresh token itself is no good. RFC 6749 reserves `invalid_grant`
+ * for a grant that is invalid, expired, or revoked - a verdict on the credential, not on this
+ * attempt, so it answers a retry the same way every time. Every other reason (`server_error`,
+ * `temporarily_unavailable`, a 5xx, a fetch fault) says nothing about the token. */
+function refreshTokenRejected(err: OAuthError): boolean {
+  return isObject(err.body) && err.body.error === "invalid_grant";
+}
+
+/** What to do about a refresh the server turned down, which depends on whether it turned down the
+ * *token* or just this attempt.
+ *
+ * The retry advice is the whole reason this state is split out from `session_expired` - it is free,
+ * and `gusto auth login` is not: it needs a human at a browser an agent on a headless box can't
+ * produce, and a successful one mints a new grant that invalidates the refresh token it replaces,
+ * which breaks anything else holding that credential. But `invalid_grant` means the refresh token is
+ * already dead, so there is nothing left for a retry to succeed with and nothing left for a login to
+ * cost. Pointing that case at a retry would just spend a round trip to learn what the body said. */
+function refreshFailureMessage(err: OAuthError, env: Environment, slot: string): string {
+  const preamble = `refreshing the ${env} session failed (${oauthReason(err)}).`;
+  if (refreshTokenRejected(err)) {
+    return `${preamble} The server rejected the refresh token in ${slot} as invalid, expired, or revoked, so a retry fails the same way. Run \`gusto auth login --env ${env}\` to sign in again - that replaces the refresh token, which is already dead.`;
+  }
+  return `${preamble} The refresh token in ${slot} is still on file and was not replaced - retry the command first. Only run \`gusto auth login --env ${env}\` if the retry fails too, since logging in replaces that refresh token.`;
+}
+
 /** Turn a non-`ok` session outcome into the auth failure for it.
  *
  * The three codes are not interchangeable, because the cheapest action that can work differs by
- * state. `token_refresh_failed` means a usable credential is still on file, so a plain retry costs
- * nothing and often succeeds; `login` is the expensive answer to that - it needs a human at a
- * browser, which is exactly what an agent on a headless box can't produce, so pointing there turns a
- * recoverable state into a dead end. A successful login does mint a new grant and invalidate the
- * refresh token it replaces, which matters to anything else holding that credential. So only
- * `no_access_token` and `session_expired` may suggest `gusto auth login`; `token_refresh_failed`
- * must steer toward a retry.
- * All three share the `Auth` exit code - callers branch on the code, not the status.
+ * state - see `SessionOutcome` for why, and `refreshFailureMessage` for the one case where a
+ * `refresh_failed` still has to point at a login. All three share the `Auth` exit code; callers
+ * branch on the code, not the status.
  *
  * Codes named here are the ones that go over the wire; the `outcome.kind` values switched on below
  * are internal and deliberately spelled differently (`refresh_failed` -> `token_refresh_failed`). */
@@ -173,7 +193,7 @@ async function sessionFailure(
     case "refresh_failed":
       return withContext({
         code: "token_refresh_failed",
-        message: `refreshing the ${env} session failed (${oauthReason(outcome.cause)}). The refresh token in ${slot} is still on file and was not replaced - retry the command first. Only run \`gusto auth login --env ${env}\` if the retry fails too, since logging in replaces that refresh token.`,
+        message: refreshFailureMessage(outcome.cause, env, slot),
         ...(outcome.cause.body !== undefined && outcome.cause.body !== null ? { details: outcome.cause.body } : {}),
         ...(outcome.cause.requestId ? { request_id: outcome.cause.requestId } : {}),
       });
