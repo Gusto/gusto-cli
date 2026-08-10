@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   isValidIso8601,
   isValidIsoDate,
+  isValidStateCode,
   parseNonNegativeNumber,
   parsePositiveNumber,
   resolveTimeoutMs,
@@ -119,6 +120,27 @@ describe("isValidIsoDate", () => {
 
   test("rejects junk", () => {
     expect(isValidIsoDate("not-a-date")).toBe(false);
+  });
+});
+
+describe("isValidStateCode", () => {
+  test("accepts a two-letter code regardless of case", () => {
+    expect(isValidStateCode("MD")).toBe(true);
+    expect(isValidStateCode("md")).toBe(true);
+  });
+
+  test("rejects a full state name", () => {
+    expect(isValidStateCode("Maryland")).toBe(false);
+  });
+
+  test("rejects a one-letter or three-letter value", () => {
+    expect(isValidStateCode("M")).toBe(false);
+    expect(isValidStateCode("MDD")).toBe(false);
+  });
+
+  test("rejects digits or symbols", () => {
+    expect(isValidStateCode("M1")).toBe(false);
+    expect(isValidStateCode("--")).toBe(false);
   });
 });
 
