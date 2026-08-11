@@ -6,7 +6,7 @@ import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp } from "./oauth/context.ts";
 import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
-import { type SessionOutcome, resolveSessionToken } from "./oauth/session.ts";
+import { type SessionOutcome, resolveSessionToken, sessionUsable } from "./oauth/session.ts";
 import { type TokenStore, credentialsFile, resolveStore } from "./oauth/token-store.ts";
 import type { EnvelopeError } from "./output.ts";
 import { isObject } from "./predicates.ts";
@@ -210,16 +210,19 @@ async function sessionFailure(
 /** When the requested environment has no usable session, say so about the *other* one.
  *
  * Logging into sandbox and then dropping `--env` walks into a production wall with nothing
- * connecting the failure to the environment, which is the likeliest reason to be here at all. Only
- * reads the other slot; never refreshes it, so producing a hint can't rotate a token nobody asked
- * us to touch. Best-effort, like the stranded-session warning in `authLogoutHandler`: a failed read
- * of the other slot must not change the error we already have to report. */
+ * connecting the failure to the environment, which is the likeliest reason to be here at all.
+ *
+ * `sessionUsable` decides, rather than a truthy access token: a stored slot carries whatever the file
+ * says, so a token that expired weeks ago reads as present, and hinting at it would send the caller
+ * to a second wall. It only reads the slot - never refreshes it - so producing a hint can't rotate a
+ * token nobody asked us to touch. Best-effort, like the stranded-session warning in
+ * `authLogoutHandler`: a failed read of the other slot must not change the error we already have to
+ * report. */
 async function otherEnvHint(env: Environment, opts: AuthOpts): Promise<string | undefined> {
   const other: Environment = env === "production" ? "sandbox" : "production";
   try {
     const store = opts.store ?? resolveStore();
-    const session = await store.load(other);
-    if (!session?.accessToken) return undefined;
+    if (!(await sessionUsable(store, other, opts.now))) return undefined;
     // The file is already named in the message this hint accompanies, so name only the slot.
     return `a ${other} session is stored in the [${other}] slot of the same file. If you meant that environment, retry with \`--env ${other}\`, or make it the default with \`gusto config set environment ${other}\`.`;
   } catch {

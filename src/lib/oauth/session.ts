@@ -51,43 +51,75 @@ export type SessionOutcome =
    * the code that discovered it. */
   | { kind: "refresh_failed"; cause: OAuthError };
 
+/** What a stored slot is, judged from the file alone. Everything `SessionOutcome` has except
+ * `refresh_failed`, which only a request can produce, plus the state that needs one: `refreshable`,
+ * an access token at or near expiry with the refresh token and client creds to renew it.
+ *
+ * Split out so a caller that must not touch the network - `otherEnvHint`, deciding whether the other
+ * environment is worth pointing at - can read the same verdict `resolveSessionToken` acts on, instead
+ * of re-deriving "usable" from a truthy access token that may have expired weeks ago. */
+export type SessionState =
+  | Exclude<SessionOutcome, { kind: "refresh_failed" }>
+  | { kind: "refreshable"; session: StoredSession & ClientCreds; refreshToken: string; token: string };
+
+/** Classify a loaded slot without renewing anything.
+ *
+ * An absent `expiresAt` means "unknown", not "expired": the token passes through and a 401 from the
+ * API is the only thing that can disprove it. */
+export function classifySession(session: StoredSession | null, now: number): SessionState {
+  if (!session?.accessToken) return { kind: "absent" };
+
+  const nearExpiry = session.expiresAt != null && now + REFRESH_SKEW_MS >= session.expiresAt;
+  if (nearExpiry && session.refreshToken && hasClientCreds(session)) {
+    return { kind: "refreshable", session, refreshToken: session.refreshToken, token: session.accessToken };
+  }
+  // Past expiry with no way to refresh. Sending it buys a 401 saying the credential was refused;
+  // the local state also dates the expiry and names the slot it sits in, so reporting from here beats
+  // a round trip that comes back knowing less.
+  if (session.expiresAt != null && now >= session.expiresAt) {
+    return { kind: "expired", expiresAt: session.expiresAt };
+  }
+  return { kind: "ok", token: session.accessToken };
+}
+
+/** Whether `env`'s slot could serve a request, without spending a round trip to find out. A
+ * `refreshable` slot counts: the renewal it needs happens on the next command that uses it. Reading
+ * only, so asking can't rotate a credential nobody asked us to touch. */
+export async function sessionUsable(
+  store: TokenStore,
+  env: "sandbox" | "production",
+  now: () => number = Date.now,
+): Promise<boolean> {
+  const state = classifySession(await store.load(env), now());
+  return state.kind === "ok" || state.kind === "refreshable";
+}
+
 /** Resolve the stored session for `env` into a usable token or a reason it isn't one.
  *
- * An absent `expiresAt` means "unknown", not "expired": the token passes through and a 401 from
- * the API is the only thing that can disprove it. A refresh that fails inside the skew window
- * while the token is still genuinely valid also passes through - the failure isn't actionable yet.
- * Non-OAuth failures (unreadable or corrupt credentials file) propagate; they aren't a credential
- * state, they're a broken machine. */
+ * A refresh that fails inside the skew window while the token is still genuinely valid passes
+ * through - the failure isn't actionable yet. Non-OAuth failures (unreadable or corrupt credentials
+ * file) propagate; they aren't a credential state, they're a broken machine. */
 export async function resolveSessionToken(
   store: TokenStore,
   env: "sandbox" | "production",
   http: OAuthHttpOptions,
   now: () => number = Date.now,
 ): Promise<SessionOutcome> {
-  const session = await store.load(env);
-  if (!session?.accessToken) return { kind: "absent" };
+  const state = classifySession(await store.load(env), now());
+  if (state.kind !== "refreshable") return state;
 
-  const nearExpiry = session.expiresAt != null && now() + REFRESH_SKEW_MS >= session.expiresAt;
-  if (nearExpiry && session.refreshToken && hasClientCreds(session)) {
-    try {
-      return { kind: "ok", token: await refreshAndStore(store, env, http, session, session.refreshToken, now()) };
-    } catch (err) {
-      // Proactive (within-skew) refresh failed while the token is still genuinely valid, so the
-      // failure isn't actionable yet - use it. There is no reactive refresh: a token that turns out
-      // to be dead comes back 401 and is reported as `credential_rejected`, not swapped for a fresh
-      // one. This is the last chance to refresh, so passing it through bets on the token's clock.
-      if (session.expiresAt != null && now() < session.expiresAt) return { kind: "ok", token: session.accessToken };
-      if (err instanceof OAuthError) return { kind: "refresh_failed", cause: err };
-      throw err;
-    }
+  try {
+    return { kind: "ok", token: await refreshAndStore(store, env, http, state.session, state.refreshToken, now()) };
+  } catch (err) {
+    // Proactive (within-skew) refresh failed while the token is still genuinely valid, so the
+    // failure isn't actionable yet - use it. There is no reactive refresh: a token that turns out
+    // to be dead comes back 401 and is reported as `credential_rejected`, not swapped for a fresh
+    // one. This is the last chance to refresh, so passing it through bets on the token's clock.
+    const expiresAt = state.session.expiresAt;
+    if (expiresAt != null && now() < expiresAt) return { kind: "ok", token: state.token };
+    if (err instanceof OAuthError) return { kind: "refresh_failed", cause: err };
+    throw err;
   }
-  // Past expiry with no way to refresh. Sending it buys a 401 saying the credential was refused;
-  // the local state also dates the expiry and names the slot it sits in, so reporting from here beats
-  // a round trip that comes back knowing less.
-  if (session.expiresAt != null && now() >= session.expiresAt) {
-    return { kind: "expired", expiresAt: session.expiresAt };
-  }
-  return { kind: "ok", token: session.accessToken };
 }
 
 /** Run `fn` with the session's token, refreshing on near-expiry and once more if the call comes back

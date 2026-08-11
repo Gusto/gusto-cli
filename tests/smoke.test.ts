@@ -859,23 +859,28 @@ describe("the pulled employee/contractor write surface is gone", () => {
 // Driven through the compiled binary with its own isolated XDG_CONFIG_HOME - the shared
 // ISOLATED_CONFIG above must stay session-free, since most tests here assert no_access_token.
 //
-// Both slots are deliberately expired *without* a refresh token, so every assertion below is
-// reachable with zero network calls: nothing has a refresh to attempt or a token worth spending.
+// Both slots are expired *without* a refresh token by default, so every assertion below is
+// reachable with zero network calls: nothing has a refresh to attempt or a token worth spending. The
+// hint tests move one slot's expiry into the future - which only ever changes the *other* slot's
+// error, so still no request goes out.
 describe("per-environment credential slots", () => {
   let configHome: string;
 
-  const writeCredentials = (): void => {
+  // Year 2100, i.e. unexpired for the life of this test.
+  const UNEXPIRED = 4_102_444_800_000;
+
+  const writeCredentials = (expiry: { production?: number; sandbox?: number } = {}): void => {
     mkdirSync(path.join(configHome, "gusto"), { recursive: true });
     writeFileSync(
       path.join(configHome, "gusto", "credentials.toml"),
       [
         "[production]",
         'accessToken = "prod-tok"',
-        "expiresAt = 1000",
+        `expiresAt = ${expiry.production ?? 1000}`,
         "",
         "[sandbox]",
         'accessToken = "sandbox-tok"',
-        "expiresAt = 1000",
+        `expiresAt = ${expiry.sandbox ?? 1000}`,
         "",
       ].join("\n"),
     );
@@ -897,15 +902,25 @@ describe("per-environment credential slots", () => {
 
   afterEach(() => rmSync(configHome, { recursive: true, force: true }));
 
-  test("an expired session is session_expired, names production, and points at the sandbox slot", async () => {
+  test("an expired session is session_expired and names production", async () => {
     const error = await whoami();
     expect(error.code).toBe("session_expired");
     expect(error.environment).toBe("production");
     expect(error.message).toContain("credentials.toml");
+    // Sandbox is expired too, so there is nothing to point at - a hint here would send the caller
+    // from one wall to the next.
+    expect(error.hint).toBeUndefined();
+  });
+
+  test("an expired production session points at a sandbox slot that would work", async () => {
+    writeCredentials({ sandbox: UNEXPIRED });
+    const error = await whoami();
+    expect(error.code).toBe("session_expired");
     expect(error.hint).toContain("--env sandbox");
   });
 
   test("--env sandbox reads the other slot and says so", async () => {
+    writeCredentials({ production: UNEXPIRED });
     const error = await whoami(["--env", "sandbox"]);
     expect(error.environment).toBe("sandbox");
     expect(error.hint).toContain("--env production");

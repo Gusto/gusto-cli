@@ -442,6 +442,38 @@ describe("resolveApiContext - stored session fallback", () => {
       expect(result.ok).toBe(true);
     });
 
+    test("no hint when the other slot holds an unusable session", async () => {
+      // A stored slot reads back whatever the file says, so an access token that expired weeks ago is
+      // still present. Hinting at it would send the caller to a second wall.
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({
+          production: expiredSlot(),
+          sandbox: { accessToken: "stale-sandbox-tok", expiresAt: 5_000 },
+        }),
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.hint).toBeUndefined();
+    });
+
+    test("hints at an expired other slot that can still refresh itself", async () => {
+      // Expired but renewable is usable: `--env sandbox` refreshes it on the way through.
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot(), sandbox: expiredSlot() }),
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.hint).toContain("--env sandbox");
+    });
+
     test("no hint when the other slot is empty", async () => {
       const result = await resolveApiContext(flags, {
         requireCompany: false,
