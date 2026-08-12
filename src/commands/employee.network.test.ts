@@ -176,7 +176,7 @@ describe("employee lifecycle reads", () => {
 });
 
 describe("employeeAddressesHandler", () => {
-  const EMP_UUID = "3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c3d6f";
+  const EMP_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
 
   test("combines work and home addresses under stable keys", async () => {
     const fetchStub = routeFetch([

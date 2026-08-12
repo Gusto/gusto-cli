@@ -186,7 +186,7 @@ describe("resolveTimeoutMs", () => {
 });
 
 describe("isValidUuid", () => {
-  const VALID = "3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c3d6f";
+  const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
 
   test("a canonical uuid passes", () => {
     expect(isValidUuid(VALID)).toBe(true);
@@ -201,8 +201,8 @@ describe("isValidUuid", () => {
   });
 
   test("uuids of any version pass", () => {
-    expect(isValidUuid("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")).toBe(true); // v1
-    expect(isValidUuid("018f3a2b-7c4d-7e9f-8a1b-2c3d4e5f6a7b")).toBe(true); // v7
+    expect(isValidUuid("1a2b3c4d-0000-1111-2222-333344445555")).toBe(true); // v1
+    expect(isValidUuid("9b8c7d6e-0000-7111-2222-333344445555")).toBe(true); // v7
   });
 
   test("the nil uuid is rejected", () => {
@@ -224,8 +224,8 @@ describe("isValidUuid", () => {
   });
 
   test("wrong segment lengths are rejected", () => {
-    expect(isValidUuid("3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c3d6")).toBe(false);
-    expect(isValidUuid("3f2a8c1d9b4e4f7a8c2d1e5b7a9c3d6f")).toBe(false);
+    expect(isValidUuid("3f2a8c1d-0000-4111-2222-33334444555")).toBe(false);
+    expect(isValidUuid("3f2a8c1d000041112222333344445555")).toBe(false);
   });
 
   test("an invalid character is rejected in a well-formed uuid", () => {
@@ -233,7 +233,7 @@ describe("isValidUuid", () => {
   });
 
   test("internal whitespace is rejected", () => {
-    expect(isValidUuid("3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c 3d6f")).toBe(false);
+    expect(isValidUuid("3f2a8c1d-0000-4111-2222-33334444 5555")).toBe(false);
   });
 });
 

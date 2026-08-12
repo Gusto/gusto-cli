@@ -105,7 +105,7 @@ describe("auth required commands without a token", () => {
     ["history", ["employee", "history", "emp-123"]],
     ["terminations", ["employee", "terminations", "emp-123"]],
     ["rehire", ["employee", "rehire", "emp-123"]],
-    ["addresses", ["employee", "addresses", "3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c3d6f"]],
+    ["addresses", ["employee", "addresses", "3f2a8c1d-0000-4111-2222-333344445555"]],
     ["work-address", ["employee", "work-address", "wa-123"]],
     ["home-address", ["employee", "home-address", "ha-123"]],
   ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
