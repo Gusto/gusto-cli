@@ -59,7 +59,7 @@ describe("parsePositiveNumber", () => {
   });
 
   test("rejects non-finite values that overflow to Infinity", () => {
-    // Number("1e1000") === Infinity, which passes a bare `> 0` check but is not a VALID amount.
+    // Number("1e1000") === Infinity, which passes a bare `> 0` check but is not a real amount.
     const result = parsePositiveNumber("1e1000");
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -103,7 +103,7 @@ describe("parseNonNegativeNumber", () => {
 });
 
 describe("isValidIsoDate", () => {
-  test("accepts a VALID YYYY-MM-DD date", () => {
+  test("accepts a real YYYY-MM-DD date", () => {
     expect(isValidIsoDate("2026-06-01")).toBe(true);
   });
 
@@ -268,7 +268,7 @@ describe("validateEnum", () => {
     expect(entry?.reason).toContain("'bad'");
   });
 
-  test("multi: a comma/whitespace-only value has no VALID tokens, so nothing is rejected", () => {
+  test("multi: a comma/whitespace-only value has no real tokens, so nothing is rejected", () => {
     expect(validateEnum("payroll-types", ",", ALLOWED, true)).toBeNull();
     expect(validateEnum("payroll-types", " ", ALLOWED, true)).toBeNull();
   });
