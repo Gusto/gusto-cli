@@ -3,6 +3,7 @@ import {
   isValidIso8601,
   isValidIsoDate,
   isValidStateCode,
+  isValidUuid,
   parseNonNegativeNumber,
   parsePositiveNumber,
   resolveTimeoutMs,
@@ -58,7 +59,7 @@ describe("parsePositiveNumber", () => {
   });
 
   test("rejects non-finite values that overflow to Infinity", () => {
-    // Number("1e1000") === Infinity, which passes a bare `> 0` check but is not a real amount.
+    // Number("1e1000") === Infinity, which passes a bare `> 0` check but is not a VALID amount.
     const result = parsePositiveNumber("1e1000");
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -102,7 +103,7 @@ describe("parseNonNegativeNumber", () => {
 });
 
 describe("isValidIsoDate", () => {
-  test("accepts a real YYYY-MM-DD date", () => {
+  test("accepts a VALID YYYY-MM-DD date", () => {
     expect(isValidIsoDate("2026-06-01")).toBe(true);
   });
 
@@ -184,6 +185,60 @@ describe("resolveTimeoutMs", () => {
   });
 });
 
+describe("isValidUuid", () => {
+  const VALID = "3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c3d6f";
+
+  test("a canonical uuid passes", () => {
+    expect(isValidUuid(VALID)).toBe(true);
+  });
+
+  test("uppercase hex passes (the format is case-insensitive)", () => {
+    expect(isValidUuid(VALID.toUpperCase())).toBe(true);
+  });
+
+  // Not trimmed: callers send the value as given, so accepting a padded one here would bless a
+  // string that reaches the url with its whitespace still attached.
+  test("surrounding whitespace is rejected", () => {
+    expect(isValidUuid(`  ${VALID}\n`)).toBe(false);
+  });
+
+  test("uuids of any version pass", () => {
+    expect(isValidUuid("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")).toBe(true); // v1
+    expect(isValidUuid("018f3a2b-7c4d-7e9f-8a1b-2c3d4e5f6a7b")).toBe(true); // v7
+  });
+
+  test("the nil uuid is rejected", () => {
+    expect(isValidUuid("00000000-0000-0000-0000-000000000000")).toBe(false);
+  });
+
+  test("a short slug is rejected", () => {
+    expect(isValidUuid("emp-1")).toBe(false);
+  });
+
+  test("an unsubstituted template token is rejected", () => {
+    expect(isValidUuid("<employee_uuid>")).toBe(false);
+    expect(isValidUuid("{employee_uuid}")).toBe(false);
+  });
+
+  test("empty and whitespace-only values are rejected", () => {
+    expect(isValidUuid("")).toBe(false);
+    expect(isValidUuid("   ")).toBe(false);
+  });
+
+  test("wrong segment lengths are rejected", () => {
+    expect(isValidUuid("3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c3d6")).toBe(false);
+    expect(isValidUuid("3f2a8c1d9b4e4f7a8c2d1e5b7a9c3d6f")).toBe(false);
+  });
+
+  test("an invalid character is rejected in a well-formed uuid", () => {
+    expect(isValidUuid(VALID.replace("3f2a8c1d-", "3f2a8c1z-"))).toBe(false);
+  });
+
+  test("internal whitespace is rejected (only the ends are trimmed)", () => {
+    expect(isValidUuid("3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c 3d6f")).toBe(false);
+  });
+});
+
 describe("validateEnum", () => {
   const ALLOWED = ["regular", "transition"] as const;
 
@@ -213,7 +268,7 @@ describe("validateEnum", () => {
     expect(entry?.reason).toContain("'bad'");
   });
 
-  test("multi: a comma/whitespace-only value has no real tokens, so nothing is rejected", () => {
+  test("multi: a comma/whitespace-only value has no VALID tokens, so nothing is rejected", () => {
     expect(validateEnum("payroll-types", ",", ALLOWED, true)).toBeNull();
     expect(validateEnum("payroll-types", " ", ALLOWED, true)).toBeNull();
   });

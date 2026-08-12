@@ -32,16 +32,22 @@ import { partialFailure } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
-import { isValidIsoDate, isValidStateCode } from "../lib/parse.ts";
+import { isValidIsoDate, isValidStateCode, isValidUuid } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import {
   type CommandHandler,
   type CommandResult,
+  invalidUuid,
   missingArgs,
   runCommand,
   runReadCommand,
   validationFailure,
 } from "../lib/runner.ts";
+
+/** Where a caller goes to get a real employee uuid when the one they passed can't name a record.
+ * Named here rather than inline so every handler taking an employee uuid quotes the same command -
+ * an agent following the hint should land in the same place each time. */
+const EMPLOYEE_LOOKUP = "gusto employee list";
 
 interface EmployeeListOpts {
   status?: string;
@@ -486,6 +492,7 @@ export function homeAddressHandler(addressUuid: string, opts: EmployeeShowOpts):
 // (and --fields discovery over it) stays honest.
 export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
     if (!resolved.ok) return resolved.result;
 
