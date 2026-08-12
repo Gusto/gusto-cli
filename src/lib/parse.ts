@@ -79,7 +79,7 @@ const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 /** True for a canonical UUID of any version, excluding the nil UUID. */
 export function isValidUuid(value: string): boolean {
-  return UUID.test(value) && value.toLowerCase() !== NIL_UUID;
+  return UUID.test(value) && value !== NIL_UUID;
 }
 
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry

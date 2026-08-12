@@ -177,12 +177,16 @@ export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
   return validationFailure("missing required arguments", blocked);
 }
 
+/** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
+const ECHOED_VALUE_MAX_LENGTH = 60;
+
 /** Standard validation failure for an identifier argument that isn't a usable UUID. `resolveWith`
  * names the command that produces a real one, surfaced as the hint. */
 export function invalidUuid(field: string, value: string, resolveWith: string): CommandResult<never> {
+  const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
   return validationFailure(
     "invalid arguments",
-    [{ field, reason: `must be a valid UUID, got: ${JSON.stringify(value)}` }],
+    [{ field, reason: `must be a valid UUID, got: ${JSON.stringify(echoed)}` }],
     `run \`${resolveWith}\` to get a real ${field}`,
   );
 }

@@ -196,8 +196,6 @@ describe("isValidUuid", () => {
     expect(isValidUuid(VALID.toUpperCase())).toBe(true);
   });
 
-  // Not trimmed: callers send the value as given, so accepting a padded one here would bless a
-  // string that reaches the url with its whitespace still attached.
   test("surrounding whitespace is rejected", () => {
     expect(isValidUuid(`  ${VALID}\n`)).toBe(false);
   });
@@ -234,7 +232,7 @@ describe("isValidUuid", () => {
     expect(isValidUuid(VALID.replace("3f2a8c1d-", "3f2a8c1z-"))).toBe(false);
   });
 
-  test("internal whitespace is rejected (only the ends are trimmed)", () => {
+  test("internal whitespace is rejected", () => {
     expect(isValidUuid("3f2a8c1d-9b4e-4f7a-8c2d-1e5b7a9c 3d6f")).toBe(false);
   });
 });
