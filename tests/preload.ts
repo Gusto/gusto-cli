@@ -14,5 +14,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Drop every ambient GUSTO_* var first. Developers commonly export variables from their shell profile.
+// This is the in-process counterpart to stripGustoEnv in tests/smoke.test.ts, which does this for the spawned
+// binary. Runs before the assignments below so the two vars the suite does rely on survive.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("GUSTO_")) delete process.env[key];
+}
+
 process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "gusto-cli-unit-"));
 process.env.GUSTO_ACCESS_TOKEN = "unit-test-token";
