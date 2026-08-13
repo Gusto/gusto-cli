@@ -14,11 +14,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Drop every ambient GUSTO_* var first. A developer who uses the CLI for real commonly exports
-// GUSTO_COMPANY_UUID / GUSTO_ENVIRONMENT from their shell profile, and those otherwise reach the
-// code under test: a set company uuid turns the "no company is resolvable" cases into ones where
-// a company resolves and a request goes out, so they fail locally and pass in CI. Stripping is the
-// in-process counterpart to stripGustoEnv in tests/smoke.test.ts, which does this for the spawned
+// Drop every ambient GUSTO_* var first. Developers commonly export variables from their shell profile.
+// This is the in-process counterpart to stripGustoEnv in tests/smoke.test.ts, which does this for the spawned
 // binary. Runs before the assignments below so the two vars the suite does rely on survive.
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("GUSTO_")) delete process.env[key];
