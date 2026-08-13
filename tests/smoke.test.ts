@@ -99,17 +99,33 @@ describe("auth required commands without a token", () => {
 
   // The six new employee reads dispatch their handlers (reaching the auth check, exit 3) rather than
   // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
+  // `addresses` validates its uuid before resolving auth, so its row needs a real-shaped one to
+  // reach the auth check at all; the rest have no such check yet and keep their short fixtures.
   test.each([
     ["history", ["employee", "history", "emp-123"]],
     ["terminations", ["employee", "terminations", "emp-123"]],
     ["rehire", ["employee", "rehire", "emp-123"]],
-    ["addresses", ["employee", "addresses", "emp-123"]],
+    ["addresses", ["employee", "addresses", "3f2a8c1d-0000-4111-2222-333344445555"]],
     ["work-address", ["employee", "work-address", "wa-123"]],
     ["home-address", ["employee", "home-address", "ha-123"]],
   ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  // Exit 7 rather than the exit 3 above: the uuid is rejected before auth is even resolved, which
+  // is the point - a value that can't name a record needs no credentials to be turned away.
+  test("employee addresses with the all-zeros uuid is rejected as invalid (exit 7)", async () => {
+    const result = await run(["employee", "addresses", "00000000-0000-0000-0000-000000000000"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toEqual([
+      { field: "employee_uuid", reason: expect.stringContaining("must be a valid UUID") },
+    ]);
+    expect(envelope.error.hint).toContain("gusto employee list");
   });
 
   test("pay-schedule list dispatches its handler instead of erroring", async () => {

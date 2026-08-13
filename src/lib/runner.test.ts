@@ -3,6 +3,7 @@ import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import {
   type CommandHandler,
+  invalidUuid,
   missingArgs,
   notImplementedHandler,
   runCommand,
@@ -286,6 +287,12 @@ describe("validationFailure", () => {
       error: { code: "validation", message: "missing or invalid arguments", blocked_on: blocked },
     });
   });
+
+  test("carries a hint through when one is given", () => {
+    const result = validationFailure("nope", [], "do this instead");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toBe("do this instead");
+  });
 });
 
 describe("missingArgs", () => {
@@ -297,6 +304,35 @@ describe("missingArgs", () => {
       exitCode: ExitCode.Validation,
       error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
     });
+  });
+});
+
+describe("invalidUuid", () => {
+  test("names the field, echoes the value, and points at the command that yields a real one", () => {
+    const result = invalidUuid("employee_uuid", "emp-1", "gusto employee list");
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: {
+        code: "validation",
+        message: "invalid arguments",
+        blocked_on: [{ field: "employee_uuid", reason: 'must be a valid UUID, got: "emp-1"' }],
+        hint: "run `gusto employee list` to get a real employee_uuid",
+      },
+    });
+  });
+
+  test("truncates a value past the cap, keeping the first 60 characters", () => {
+    const result = invalidUuid("employee_uuid", "x".repeat(100), "gusto employee list");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${"x".repeat(60)}..."`);
+  });
+
+  test("leaves a value exactly at the cap untouched", () => {
+    const atCap = "x".repeat(60);
+    const result = invalidUuid("employee_uuid", atCap, "gusto employee list");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${atCap}"`);
   });
 });
 
