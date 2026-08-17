@@ -32,16 +32,23 @@ import { partialFailure } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
-import { isValidIsoDate, isValidStateCode } from "../lib/parse.ts";
+import { isValidIsoDate, isValidStateCode, isValidUuid } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import {
   type CommandHandler,
   type CommandResult,
+  invalidUuid,
   missingArgs,
   runCommand,
   runReadCommand,
   validationFailure,
 } from "../lib/runner.ts";
+
+/** Where a caller goes to get a real identifier when the one they passed can't name a record. Named
+ * here rather than inline so every handler taking the same identifier quotes the same command - an
+ * agent following the hint should land in the same place each time. */
+const EMPLOYEE_LOOKUP = "gusto employee list";
+const ADDRESS_LOOKUP = "gusto employee addresses <employee_uuid>";
 
 interface EmployeeListOpts {
   status?: string;
@@ -438,44 +445,58 @@ preview with --dry-run, then re-run with --confirm once the operator approves.
 }
 
 function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/employees/${encodeURIComponent(employeeUuid)}`);
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/employees/${encodeURIComponent(employeeUuid)}`,
+    );
+  };
 }
 
 export function employeeCustomFieldsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/employees/${encodeURIComponent(employeeUuid)}/custom_fields`,
     );
+  };
 }
 
 function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/employees/${encodeURIComponent(employeeUuid)}/onboarding_status`,
     );
+  };
 }
 
 export function workAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(addressUuid)) return invalidUuid("address_uuid", addressUuid, ADDRESS_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/work_addresses/${encodeURIComponent(addressUuid)}`,
     );
+  };
 }
 
 export function homeAddressHandler(addressUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(addressUuid)) return invalidUuid("address_uuid", addressUuid, ADDRESS_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/home_addresses/${encodeURIComponent(addressUuid)}`,
     );
+  };
 }
 
 // Two independent GETs on the employee-scoped (no company) path, run in parallel
@@ -486,6 +507,7 @@ export function homeAddressHandler(addressUuid: string, opts: EmployeeShowOpts):
 // (and --fields discovery over it) stays honest.
 export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
     if (!resolved.ok) return resolved.result;
 
@@ -543,6 +565,7 @@ export function updateHomeAddressHandler(addressUuid: string, opts: HomeAddressU
         },
       };
     }
+    if (!isValidUuid(addressUuid)) return invalidUuid("address_uuid", addressUuid, ADDRESS_LOOKUP);
     const validated = buildHomeAddressUpdate(opts);
     if (!validated.ok) return validationFailure(validated.message, validated.blocked);
     return putResourceWithVersion(globals, `/v1/home_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
@@ -566,6 +589,7 @@ export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressU
         },
       };
     }
+    if (!isValidUuid(addressUuid)) return invalidUuid("address_uuid", addressUuid, ADDRESS_LOOKUP);
     const validated = buildWorkAddressUpdate(opts);
     if (!validated.ok) return validationFailure(validated.message, validated.blocked);
     return putResourceWithVersion(globals, `/v1/work_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
@@ -577,34 +601,41 @@ export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressU
 }
 
 export function employeeHistoryHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/employees/${encodeURIComponent(employeeUuid)}/employment_history`,
     );
+  };
 }
 
 export function employeeTerminationsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/employees/${encodeURIComponent(employeeUuid)}/terminations`,
     );
+  };
 }
 
 export function employeeRehireHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
       () => `/v1/employees/${encodeURIComponent(employeeUuid)}/rehire`,
     );
+  };
 }
 
 export function employeeJobsHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     const res = await fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
@@ -678,6 +709,7 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
         },
       };
     }
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     if (!opts.workState) {
       return missingArgs([{ field: "work-state", reason: "required (2-letter US state code, e.g. MD)" }]);
     }
@@ -825,6 +857,7 @@ export function employeeTerminateHandler(employeeUuid: string, opts: EmployeeTer
         },
       };
     }
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     if (!opts.effectiveDate) {
       return missingArgs([
         { field: "effective-date", reason: "required (YYYY-MM-DD, the employee's last day of work)" },
@@ -878,14 +911,16 @@ export function employeeTerminateCancelHandler(
   employeeUuid: string,
   opts: EmployeeTerminateCancelOpts,
 ): CommandHandler {
-  return async ({ globals }) =>
-    surfaceCancelNotFound(
+  return async ({ globals }) => {
+    if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
+    return surfaceCancelNotFound(
       await writeResource(globals, "DELETE", terminationsPath(employeeUuid), undefined, {
         tokenStdin: opts.tokenStdin,
         dryRun: opts.dryRun,
         confirm: opts.confirm,
       }),
     );
+  };
 }
 
 interface TaxRequirement {

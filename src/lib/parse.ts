@@ -72,6 +72,16 @@ export function isValidStateCode(value: string): boolean {
   return STATE_CODE.test(value);
 }
 
+// Canonical 8-4-4-4-12 hex, not version-pinned
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+/** True for a canonical UUID of any version, excluding the nil UUID. */
+export function isValidUuid(value: string): boolean {
+  return UUID.test(value) && value !== NIL_UUID;
+}
+
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry
  * for any unrecognized token (or null if all are valid). `multi` splits the
  * value on commas for the comma-separated multi-value params; empty tokens
