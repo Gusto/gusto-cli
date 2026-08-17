@@ -229,7 +229,7 @@ describe("auth required commands without a token", () => {
   // (exit 2) that would stop it. company + pay-schedule are covered above; the rest here.
   test.each([
     ["employee", ["employee", "get", EMPLOYEE_UUID]],
-    ["contractor", ["contractor", "get", "contractor-uuid-123"]],
+    ["contractor", ["contractor", "get", CONTRACTOR_UUID]],
     ["department", ["department", "get", "department-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
