@@ -100,8 +100,14 @@ export function registerContractorCommand(parent: Command): void {
 }
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/contractors/${contractorUuid}`);
+  return async ({ globals }) => {
+    if (!isValidUuid(contractorUuid)) return invalidUuid("contractor_uuid", contractorUuid, CONTRACTOR_LOOKUP);
+    return fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/contractors/${encodeURIComponent(contractorUuid)}`,
+    );
+  };
 }
 
 export function contractorPaymentsHandler(contractorUuid: string, opts: ContractorPaymentsOpts): CommandHandler {
