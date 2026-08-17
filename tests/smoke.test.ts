@@ -960,6 +960,18 @@ describe("per-environment credential slots", () => {
     expect((await whoami(["--env", "sandbox"], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("sandbox");
   });
 
+  test("a corrupt config warns on stderr and falls back, leaving stdout a clean envelope", async () => {
+    // The warning has to reach a human without corrupting the one stream an agent parses, and the run
+    // has to continue: aborting here would also block `config reset`, the command that fixes it.
+    // `environment = "sandbox"` would have redirected the run had the file parsed, so the fallback to
+    // production is what proves the whole config was dropped rather than partially applied.
+    writeFileSync(path.join(configHome, "gusto", "config.toml"), 'environment = "sandbox"\n[[[broken\n');
+    const result = await run(["auth", "whoami", "--json"], { XDG_CONFIG_HOME: configHome });
+    expect(result.exitCode).toBe(3);
+    expect(result.stderr).toContain("warning: ignoring user config");
+    expect(JSON.parse(result.stdout.trim()).error.environment).toBe("production");
+  });
+
   test("auth login --help documents --env, its default, and the per-environment slots", async () => {
     const result = await run(["auth", "login", "--help"]);
     expect(result.exitCode).toBe(0);

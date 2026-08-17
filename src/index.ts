@@ -20,7 +20,7 @@ import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
 import { readConfig } from "./lib/config.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
 import type { Environment, GlobalFlags } from "./lib/global-flags.ts";
-import { emit, outputOptionsFrom } from "./lib/output.ts";
+import { type StreamSinks, defaultSinks, emit, outputOptionsFrom } from "./lib/output.ts";
 import { VERSION } from "./lib/version.ts";
 
 const HELP_FOOTER = `
@@ -139,12 +139,15 @@ function usageFlags(argv: string[]): GlobalFlags {
  * also block `gusto config reset`, the one command that fixes it. The warning says the defaults were
  * dropped, so a user whose `environment = "sandbox"` is being ignored finds out from us instead of
  * from a production 401. */
-async function configuredEnvironment(): Promise<Environment | undefined> {
+async function configuredEnvironment(sinks: StreamSinks = defaultSinks): Promise<Environment | undefined> {
   try {
     return (await readConfig()).environment;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(
+    // stderr, like every other diagnostic the CLI writes: stdout carries the envelope and nothing
+    // else, so a warning there would corrupt the one stream an agent parses. Through the sinks rather
+    // than `process.stderr` directly, matching the rest of the writers.
+    sinks.stderr.write(
       `warning: ignoring user config, so its defaults (including environment) are not applied: ${message}\n`,
     );
     return undefined;
