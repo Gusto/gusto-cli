@@ -331,6 +331,33 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.result.error.message).not.toContain("retry the command first");
   });
 
+  // A refresh presents two credentials - the refresh token as the grant, and the DCR client
+  // registration as Basic auth - and RFC 6749 §5.2 rejects them with different errors. Both are
+  // terminal, so neither may say "retry the command first", but only one is fixed by a plain login.
+  test.each([["invalid_client"], ["unauthorized_client"]])(
+    "%s is terminal and routes through logout, since a login reuses the same registration",
+    async (reason) => {
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot() }),
+        http: mockHttp({ status: 401, body: { error: reason } }),
+        now: () => 10_000,
+      });
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.code).toBe("token_refresh_failed");
+      expect(result.result.error.message).toContain("a retry fails the same way");
+      expect(result.result.error.message).not.toContain("retry the command first");
+      // `ensureClientCreds` reuses a stored registration rather than re-registering, so the slot has
+      // to be cleared first or the login fails exactly as the refresh just did.
+      expect(result.result.error.message).toContain("gusto auth logout --env production");
+      expect(result.result.error.message).toContain("gusto auth login --env production");
+      // Must not blame the refresh token: it may be perfectly good, and saying otherwise sends an
+      // operator looking at the wrong credential.
+      expect(result.result.error.message).not.toContain("rejected the refresh token");
+    },
+  );
+
   test("the refresh token stays on file even when the server calls it invalid", async () => {
     // The login is now recommended, but nothing here performs one, so the credential is still there
     // for an operator who wants to look at it.
