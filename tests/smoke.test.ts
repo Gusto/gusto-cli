@@ -11,6 +11,9 @@ const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 // reach the auth check needs a well-formed uuid rather than a short slug.
 const EMPLOYEE_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
 const ADDRESS_UUID = "9b8c7d6e-0000-4111-2222-333344445555";
+const CONTRACTOR_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
+const CONTRACTOR_PAYMENT_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
+const CONTRACTOR_PAYMENT_GROUP_UUID = "9c0d1e2f-0000-4111-2222-333344445555";
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -52,6 +55,8 @@ describe("compiled binary", () => {
       "company",
       "employee",
       "contractor",
+      "contractor-payment",
+      "contractor-payment-group",
       "department",
       "job",
       "compensation",
@@ -131,6 +136,47 @@ describe("auth required commands without a token", () => {
       { field: "employee_uuid", reason: expect.stringContaining("must be a valid UUID") },
     ]);
     expect(envelope.error.hint).toContain("gusto employee list");
+  });
+
+  // The contractor-payment reads validate their identifier (and, for `contractor-payment list`,
+  // its required --start-date/--end-date) before resolving auth - same as the employee rows
+  // above - so these need well-formed values to reach the auth check at all.
+  test.each([
+    ["contractor payments <uuid>", ["contractor", "payments", CONTRACTOR_UUID]],
+    ["contractor-payment show <uuid>", ["contractor-payment", "show", CONTRACTOR_PAYMENT_UUID]],
+    [
+      "contractor-payment list",
+      ["contractor-payment", "list", "--start-date", "2026-01-01", "--end-date", "2026-12-31"],
+    ],
+    ["contractor-payment-group show <uuid>", ["contractor-payment-group", "show", CONTRACTOR_PAYMENT_GROUP_UUID]],
+    ["contractor-payment-group list", ["contractor-payment-group", "list"]],
+  ])("%s without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("contractor-payment list without --start-date/--end-date is rejected as invalid (exit 7)", async () => {
+    const result = await run(["contractor-payment", "list"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+  });
+
+  test.each([
+    ["contractor payments <uuid>", ["contractor", "payments", "00000000-0000-0000-0000-000000000000"]],
+    ["contractor-payment show <uuid>", ["contractor-payment", "show", "00000000-0000-0000-0000-000000000000"]],
+    [
+      "contractor-payment-group show <uuid>",
+      ["contractor-payment-group", "show", "00000000-0000-0000-0000-000000000000"],
+    ],
+  ])("%s with the all-zeros uuid is rejected as invalid (exit 7)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
   });
 
   test("pay-schedule list dispatches its handler instead of erroring", async () => {
