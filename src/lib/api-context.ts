@@ -1,4 +1,4 @@
-import { ApiClient, type AuthContext, type TokenSource, stderrRequestObserver } from "./api-client.ts";
+import { ApiClient, type AuthContext, type ResolvedTokenSource, stderrRequestObserver } from "./api-client.ts";
 import { confirmationGate } from "./confirm.ts";
 import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
@@ -24,12 +24,12 @@ import {
 export type StdinReader = () => Promise<string | null>;
 
 /** Declared alongside `ApiError`, which carries it; re-exported for the auth-facing callers here. */
-export type { TokenSource };
+export type { ResolvedTokenSource };
 
 interface ApiContextBase {
   client: ApiClient;
   baseUrl: string;
-  tokenSource: TokenSource;
+  tokenSource: ResolvedTokenSource;
 }
 
 export type ApiContext =
@@ -81,7 +81,7 @@ export function buildApiClient(
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
 
 export type ResolvedToken =
-  | { ok: true; token: string; source: TokenSource }
+  | { ok: true; token: string; source: ResolvedTokenSource }
   | { ok: false; result: CommandResult<never> };
 
 /** Resolve the access token using the precedence every CLI converges on - an

@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { createInterface } from "node:readline/promises";
-import { type StdinReader, type TokenSource, fetchAtPath, resolveApiContext } from "../lib/api-context.ts";
+import { type ResolvedTokenSource, type StdinReader, fetchAtPath, resolveApiContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { type ConfigPaths, readConfig, type SkillsAutoInstall, writeConfig } from "../lib/config.ts";
 import { defaultEnv, getAccessToken } from "../lib/env.ts";
@@ -362,7 +362,7 @@ export function authLogoutHandler(deps: { store?: TokenStore } = {}): CommandHan
  * Exported so the label table itself is unit-testable - whoami's integration test
  * can't easily reach the `session` branch without a real session file, and the
  * concern is "label typo slipped through", which a direct const-map test catches. */
-export const CREDENTIAL_SOURCE_LABEL: Record<TokenSource, string> = {
+export const CREDENTIAL_SOURCE_LABEL: Record<ResolvedTokenSource, string> = {
   stdin: "--token-stdin",
   env: "GUSTO_ACCESS_TOKEN",
   session: "stored session",
