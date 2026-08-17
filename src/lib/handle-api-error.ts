@@ -115,6 +115,15 @@ function rejectedCredential(auth: AuthContext | undefined): string {
       return `the token in GUSTO_ACCESS_TOKEN was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
     case "stdin":
       return `the token piped via --token-stdin was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
+    // The one case where the credential is seconds old and ours: the login exchange returned a token
+    // and the immediate `token_info` read on it came back 401, so the server refused what it had just
+    // issued. None of the advice above applies - there is no stored session yet (the save happens
+    // after this read) and no caller-supplied token to go fix. Rerunning the login is the only action,
+    // and unlike a rejected stored session it costs nothing, since no credential was persisted to
+    // replace. Naming the endpoint matters here: a 401 from a *scoped* command in the same session
+    // means something else entirely.
+    case "login":
+      return `the ${env} token just minted by \`gusto auth login\` was rejected by the API when reading /v1/token_info. The server refused a credential it minted moments earlier, so the sign-in did not complete and nothing was stored - run \`gusto auth login --env ${env}\` again.`;
   }
 }
 
@@ -130,6 +139,11 @@ export function toResult(err: unknown): CommandResult<never> {
         error: {
           code: "insufficient_scope",
           message: `your token is missing the OAuth scope${needs} this command needs. Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`,
+          // Carried for the same reason every other auth failure carries it: scopes are granted per
+          // credential, and the credential is per environment, so "which scopes do I have" has no
+          // answer that isn't scoped to one. This case is older than the codes below and predates the
+          // field, so it read as the exception to a rule it actually belongs to.
+          ...(err.auth ? { environment: err.auth.environment } : {}),
           ...errorExtras(err),
         },
       };

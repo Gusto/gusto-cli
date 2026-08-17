@@ -220,6 +220,22 @@ describe("toResult 401 handling", () => {
     expect(result.error.message).not.toContain("gusto auth login");
   });
 
+  test("a rejected just-minted login token names the sign-in, not a stored credential", () => {
+    // The `token_info` read inside `auth login` is the one 401 whose credential is seconds old and
+    // ours. None of the other three recoveries apply: nothing is stored yet (the save happens after
+    // this read) and there is no caller-supplied value to go fix.
+    const result = toResult(unauthorized({ tokenSource: "login", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("/v1/token_info");
+    expect(result.error.message).toContain("nothing was stored");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+    // Must not read as a rejected stored session, whose login costs a live refresh token.
+    expect(result.error.message).not.toContain("stored sandbox session");
+  });
+
   test("no wording suggests a bare retry, since nothing re-authenticates on its own", () => {
     for (const tokenSource of ["session", "env", "stdin"] as const) {
       const result = toResult(unauthorized({ tokenSource, environment: "production" }));
@@ -250,6 +266,37 @@ describe("toResult 401 handling", () => {
 });
 
 describe("toResult 403 scope handling", () => {
+  // Scopes are granted per credential and a credential is per environment, so this failure is no
+  // less environment-specific than the 401 above. It predates the field, which is the only reason it
+  // ever read as the exception.
+  test("insufficient_scope carries the environment when the client had a context", () => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+      { auth: { tokenSource: "session", environment: "sandbox" } },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.environment).toBe("sandbox");
+  });
+
+  test("insufficient_scope omits the environment when the client carried no context", () => {
+    // Absent rather than guessed: a wrong environment is worse than none for a caller branching on it.
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect("environment" in result.error).toBe(false);
+  });
+
   test("insufficient_scope 403 maps to a scope remediation message", () => {
     const err = new ApiError(
       403,
