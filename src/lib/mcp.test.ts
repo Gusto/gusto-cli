@@ -241,6 +241,39 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
     }
   });
 
+  // The two exit-3 codes here are JSON-RPC, so they never pass through an `ApiError` and can't pick
+  // up the context the client stamps - they have to be handed the environment directly or they become
+  // the auth failures that can't say which environment they're about.
+  test.each([
+    [-32601, "mcp_tool_not_found"],
+    [-32000, "mcp_unauthorized"],
+  ])("code %i (%s) carries the environment, like every other exit-3 failure", async (code, expected) => {
+    const { restore } = stubGlobalFetch(() => ({ status: 200, body: errorEnvelope(code, "x", "details-here") }));
+    try {
+      const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe(expected);
+      expect(result.error.environment).toBe("sandbox");
+    } finally {
+      restore();
+    }
+  });
+
+  test("an unauthorized error with nothing to display still says what happened", async () => {
+    // The gateway's `display` string is its own and can be empty. An exit-3 envelope with an empty
+    // message is the one outcome this taxonomy exists to prevent, so there has to be a fallback.
+    const { restore } = stubGlobalFetch(() => ({ status: 200, body: errorEnvelope(-32000, "", "") }));
+    try {
+      const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("mcp_unauthorized");
+      expect(result.error.message).toContain("sandbox credential was refused");
+      expect(result.error.message).toContain("gusto auth login --env sandbox");
+    } finally {
+      restore();
+    }
+  });
+
   test("empty-string `details` falls back to the higher-level `message` instead of being swallowed", async () => {
     const { restore } = stubGlobalFetch(() => ({
       status: 200,

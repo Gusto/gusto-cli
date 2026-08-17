@@ -1,7 +1,7 @@
 import { type AuthOpts, buildApiClient, resolveAuthToken } from "./api-context.ts";
 import { defaultEnv, resolveMcpBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import type { CommandResult } from "./runner.ts";
 
@@ -37,10 +37,11 @@ export async function callMcpTool(
   const resolved = await resolveAuthToken(globals, opts);
   if (!resolved.ok) return resolved.result;
 
+  const environment = defaultEnv(globals.env);
   const client = buildApiClient(globals, {
     baseUrl: resolveMcpBaseUrl(globals.env),
     token: resolved.token,
-    auth: { tokenSource: resolved.source, environment: defaultEnv(globals.env) },
+    auth: { tokenSource: resolved.source, environment },
   });
 
   const body = {
@@ -52,14 +53,14 @@ export async function callMcpTool(
 
   try {
     const response = await client.post<unknown>("/", body);
-    return interpretJsonRpc(response.body, toolName);
+    return interpretJsonRpc(response.body, toolName, environment);
   } catch (err) {
     return toResult(err);
   }
 }
 
-function interpretJsonRpc(body: unknown, toolName: string): CommandResult {
-  if (isJsonRpcError(body)) return mapRpcError(body, toolName);
+function interpretJsonRpc(body: unknown, toolName: string, environment: Environment): CommandResult {
+  if (isJsonRpcError(body)) return mapRpcError(body, toolName, environment);
   if (isJsonRpcSuccess(body)) return unwrapResult(body);
   return {
     ok: false,
@@ -105,7 +106,12 @@ function unwrapResult(rpc: JsonRpcSuccess): CommandResult {
   return { ok: true, data: textBlocks.map((b) => parseTextBlock(b.text)) };
 }
 
-function mapRpcError(rpc: JsonRpcError, toolName: string): CommandResult<never> {
+/** `environment` is only attached to the two auth-family codes below. A scope is granted per
+ * credential and a credential is per environment, so those two are as environment-specific as any
+ * other exit-3 failure - and being JSON-RPC rather than HTTP, they never pass through an `ApiError`,
+ * so the context the client stamps can't reach them. The rest are not credential failures and get
+ * nothing they wouldn't use. */
+function mapRpcError(rpc: JsonRpcError, toolName: string, environment: Environment): CommandResult<never> {
   const { code, message, data } = rpc.error;
   // `||` (not `??`) so an empty-string `details` falls back to `message` instead of swallowing it.
   const display = (data?.details || message) ?? "";
@@ -117,13 +123,27 @@ function mapRpcError(rpc: JsonRpcError, toolName: string): CommandResult<never> 
         exitCode: ExitCode.Auth,
         error: {
           code: "mcp_tool_not_found",
-          message: `'${toolName}' is not available to this token. This usually means the token is missing the required OAuth scope. Re-run \`gusto auth login\` and grant the scope, or run \`gusto auth whoami\` to inspect what you have.${display ? ` Details: ${display}` : ""}`,
+          message: `'${toolName}' is not available to this ${environment} token. This usually means the token is missing the required OAuth scope. Re-run \`gusto auth login --env ${environment}\` and grant the scope, or run \`gusto auth whoami\` to inspect what you have.${display ? ` Details: ${display}` : ""}`,
+          environment,
         },
       };
     case RPC_INVALID_PARAMS:
       return { ok: false, exitCode: ExitCode.ApiClient, error: { code: "mcp_invalid_params", message: display } };
     case RPC_AUTH:
-      return { ok: false, exitCode: ExitCode.Auth, error: { code: "mcp_unauthorized", message: display } };
+      // `display` is the gateway's own string and can be empty, which would leave an exit-3 failure
+      // with no message at all - the one outcome this taxonomy exists to prevent. Fall back to
+      // wording that at least names the credential and the environment it was aimed at.
+      return {
+        ok: false,
+        exitCode: ExitCode.Auth,
+        error: {
+          code: "mcp_unauthorized",
+          message:
+            display ||
+            `the ${environment} credential was refused by the MCP gateway. Re-run \`gusto auth login --env ${environment}\` to sign in again, or run \`gusto auth whoami\` to check which credential is active.`,
+          environment,
+        },
+      };
     case RPC_NOT_FOUND:
       return { ok: false, exitCode: ExitCode.ApiClient, error: { code: "mcp_not_found", message: display } };
     case RPC_BAD_REQUEST:
