@@ -287,11 +287,7 @@ describe("runCommand", () => {
 
   test("does not mutate the caller's globals object (command lands only on a fresh copy)", async () => {
     const original: GlobalFlags = { ...flags };
-    await runWithExitCapture(
-      "gusto employee list",
-      async () => ({ ok: true, data: undefined }),
-      original,
-    );
+    await runWithExitCapture("gusto employee list", async () => ({ ok: true, data: undefined }), original);
     expect(original.command).toBeUndefined();
   });
 });
