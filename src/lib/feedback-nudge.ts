@@ -3,8 +3,7 @@ import { parse, stringify } from "smol-toml";
 import { type ConfigPaths, configPaths as defaultConfigPaths, readConfig } from "./config.ts";
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
-import { outputOptionsFrom } from "./output.ts";
-import type { CommandResult } from "./runner.ts";
+import { type EnvelopeError, outputOptionsFrom } from "./output.ts";
 import { VERSION } from "./version.ts";
 
 /** Two moments worth routing an agent to `gusto feedback`:
@@ -34,8 +33,15 @@ const NUDGE_STATE_FILE = "nudge-state.toml";
 export interface NudgeInputs {
   command: string;
   globals: GlobalFlags;
+  /** The runner-final exit code (after any --fields projection turns a handler's ok:true into a
+   * usage error), so classification matches what the caller actually saw. */
   code: ExitCodeValue;
-  result: CommandResult;
+  /** The error envelope the runner actually emitted, or undefined on success. Runner-synthesized
+   * errors (unknown_fields, fields_discovery_unsupported) show up here even though the handler
+   * returned ok:true, so friction keys off this rather than the raw handler result. */
+  error?: EnvelopeError;
+  /** True when a command short-circuited as a dry-run — nothing ran worth nudging about. */
+  dryRun?: boolean;
 }
 
 export interface NudgeDeps {
@@ -79,8 +85,7 @@ async function isOptedOut(deps: NudgeDeps): Promise<boolean> {
 /** Classify the trigger for a finished command, or null when no nudge applies. Order matters:
  * surface-level and guardrail suppressions come before the trigger checks. */
 function classify(inputs: NudgeInputs): Trigger | null {
-  const { command, code, result } = inputs;
-  const errorCode = result.ok ? undefined : result.error.code;
+  const { command, code, error, dryRun } = inputs;
 
   // Never nudge from the feedback command itself, or from config/auth flows — those are either the
   // destination or setup steps where a nudge is noise.
@@ -89,18 +94,18 @@ function classify(inputs: NudgeInputs): Trigger | null {
   if (command.startsWith("gusto auth login")) return null;
 
   // A confirmation prompt (exit 8) is the write guardrail doing its job, not friction.
-  if (errorCode === "confirmation_required") return null;
+  if (error?.code === "confirmation_required") return null;
 
   // A dry-run previewed a request without running it — nothing happened worth nudging about.
-  if (result.ok && result.dryRun) return null;
+  if (dryRun) return null;
 
   // The raw REST escape hatch signals a missing first-class command, whether it succeeded or failed.
   if (command === "gusto api request") return "escape_hatch";
 
-  // Any genuine failure (an error envelope with a non-zero exit) is friction. Reads that succeed,
-  // and non-zero exits without an error envelope (e.g. the `--fields` discovery usage helper), are
-  // not — friction requires an actual error result.
-  if (!result.ok && code !== ExitCode.Success) return "friction";
+  // Friction = any non-success exit that isn't the confirmation guardrail. This is driven off the
+  // runner-final code + emitted error, so runner-synthesized usage failures (unknown_fields,
+  // fields_discovery_unsupported) count too, not just handler-returned errors.
+  if (code !== ExitCode.Success && error?.code !== "confirmation_required") return "friction";
 
   return null;
 }
@@ -112,6 +117,9 @@ async function checkAndRecordThrottle(trigger: Trigger, deps: NudgeDeps): Promis
   const dir = deps.configPaths().dir;
   const now = deps.now();
 
+  // Accepted best-effort race: this is a read-modify-write with no lock, so two concurrent
+  // invocations inside the same window can both read a stale timestamp and both nudge. That's a
+  // harmless double-nudge, never a correctness problem, so it isn't worth a lock.
   const state = await readNudgeState(dir);
   const last = state[category];
   if (typeof last === "string") {
@@ -163,28 +171,33 @@ function render(inputs: NudgeInputs, trigger: Trigger): string {
   const mode = outputOptionsFrom(inputs.globals).mode;
 
   if (mode === "agent") {
-    const context = JSON.stringify(buildContext(inputs, trigger));
+    const context = shellSingleQuote(JSON.stringify(buildContext(inputs, trigger)));
     return (
       `Was this the right call? Send feedback to Gusto:\n` +
-      `gusto feedback --category ${category} --message "<what you were trying to do>" --context '${context}'\n`
+      `gusto feedback --category ${category} --message "<what you were trying to do>" --context ${context}\n`
     );
   }
   return `Was this the right call? Tell Gusto with \`gusto feedback --category ${category} --message "..."\`\n`;
 }
 
+/** Wrap a string as a POSIX single-quoted shell argument, escaping any embedded single quote as
+ * `'\''` so the emitted `--context` argument always pastes and parses as one token. `request_id`
+ * (the only free-form value) is virtually always quote-free, but the copy-paste must never break. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /** The `--context` payload. ALLOWLIST ONLY — no response body, no `error.details`, no employee or
  * admin identifier. Every key here is non-PII operational metadata. */
 function buildContext(inputs: NudgeInputs, trigger: Trigger): Record<string, unknown> {
-  const { command, globals, code, result } = inputs;
-  const errorCode = result.ok ? undefined : result.error.code;
-  const requestId = result.ok ? undefined : result.error.request_id;
+  const { command, globals, code, error } = inputs;
 
   const context: Record<string, unknown> = {
     command: commandSlug(command),
     exit_code: code,
   };
-  if (errorCode !== undefined) context.error_code = errorCode;
-  if (requestId !== undefined) context.request_id = requestId;
+  if (error?.code !== undefined) context.error_code = error.code;
+  if (error?.request_id !== undefined) context.request_id = error.request_id;
   context.cli_version = VERSION;
   context.environment = globals.env ?? "production";
   context.trigger = trigger;
