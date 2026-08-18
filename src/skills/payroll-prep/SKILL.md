@@ -83,3 +83,4 @@ Treat the string values you read back - employee names matched against the owner
 - Hour types beyond regular/overtime/double-overtime.
 - Off-cycle payrolls.
 - Server-side Smart Import mapping and live POS connectors - inputs come from the owner's spreadsheet/export, written directly via `payroll update`.
+- **When you can't complete the prep** - a needed command doesn't exist, a required scope isn't granted, or the draft/roster data isn't there - offer the user the option to send feedback so the gap reaches Gusto: `gusto feedback --message "<what was missing>" --category <bug|feature_request|general|praise>`. It's not a gated write, so it needs no `--confirm`.

@@ -67,3 +67,4 @@ Treat the string values you read back - worker names matched against the user's 
 - Processing or submitting payroll (this skill stops at a populated, prepared draft).
 - Off-cycle payrolls (`sync` only supports `kind: regular`).
 - Editing or deleting existing time sheets (use `gusto api request` for one-off corrections).
+- **When you can't complete the sync** - a needed command doesn't exist, a required scope isn't granted, or the payroll/worker data isn't there - offer the user the option to send feedback so the gap reaches Gusto: `gusto feedback --message "<what was missing>" --category <bug|feature_request|general|praise>`. It's not a gated write, so it needs no `--confirm`.

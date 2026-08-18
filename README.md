@@ -64,7 +64,10 @@ gusto auth whoami          # confirm the token works
 gusto employee list        # company-scoped read
 gusto pay-schedule create --frequency biweekly --first-payday 2026-07-03 --anchor-end-of-pay-period 2026-06-26 --dry-run
 gusto skill install cash-forecasting
+gusto feedback --message "wish there were a bulk employee import"
 ```
+
+`gusto feedback --message "..."` (or piped via stdin) sends feedback to Gusto - report a missing command, a gap, a bug, or what's working; `--category` takes `bug`, `feature_request`, `general`, or `praise`. It's not a gated write, so it needs no `--confirm`.
 
 The commands above are examples. `gusto --help` lists every top-level command and `gusto <command> --help` lists its flags - that's the authoritative command surface (and what agents should reach for first), since this README can drift.
 
