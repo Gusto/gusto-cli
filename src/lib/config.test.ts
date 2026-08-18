@@ -29,6 +29,7 @@ describe("validateKey", () => {
     expect(validateKey("environment")).toBe("environment");
     expect(validateKey("format")).toBe("format");
     expect(validateKey("skills_auto_install")).toBe("skills_auto_install");
+    expect(validateKey("feedback_nudge")).toBe("feedback_nudge");
   });
   test("rejects unknown keys", () => {
     expect(validateKey("token")).toBeNull();
@@ -83,6 +84,12 @@ describe("normalizeValue", () => {
     expect(validateValue("skills_auto_install", "never")).toBeNull();
     expect(validateValue("skills_auto_install", "sometimes")).not.toBeNull();
   });
+  test("feedback_nudge must be ask, always, or never", () => {
+    expect(validateValue("feedback_nudge", "ask")).toBeNull();
+    expect(validateValue("feedback_nudge", "always")).toBeNull();
+    expect(validateValue("feedback_nudge", "never")).toBeNull();
+    expect(validateValue("feedback_nudge", "sometimes")).not.toBeNull();
+  });
 });
 
 describe("read/write/reset", () => {
@@ -99,6 +106,13 @@ describe("read/write/reset", () => {
     await writeConfig({ skills_auto_install: "always" }, paths);
     expect(await readConfig(paths)).toEqual({ skills_auto_install: "always" });
     await Bun.write(paths.file, `skills_auto_install = "sometimes"\n`);
+    expect(await readConfig(paths)).toEqual({});
+  });
+
+  test("feedback_nudge round-trips and rejects invalid values from disk", async () => {
+    await writeConfig({ feedback_nudge: "never" }, paths);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "never" });
+    await Bun.write(paths.file, `feedback_nudge = "sometimes"\n`);
     expect(await readConfig(paths)).toEqual({});
   });
 

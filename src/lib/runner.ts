@@ -1,4 +1,6 @@
+import { configPaths } from "./config.ts";
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
+import { feedbackNudge } from "./feedback-nudge.ts";
 import { availableFields, partitionFields, selectFields } from "./field-filter.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import {
@@ -22,6 +24,10 @@ export type CommandResult<T = unknown> =
       ok: true;
       data: T;
       next?: string;
+      /** Set by a command's `--dry-run` short-circuit branch so the runner can tell a previewed
+       * request from a real one — used to suppress the feedback nudge on dry-runs (nothing happened
+       * worth nudging about). Agent/JSON output ignores it; it never reaches the envelope. */
+      dryRun?: boolean;
       /** Optional renderer for `--human` output, as a thunk over this result's data. Applied only
        * when stdout is human mode and no `--fields` projection is in play (a projection changes the
        * data shape the renderer expects). Agent/JSON output ignores it entirely. A thunk keeps this
@@ -43,6 +49,8 @@ export type ValidationResult<T> = { ok: true; body: T } | { ok: false; message: 
 export interface RunnerDeps {
   exit: (code: number) => never;
   sinks?: StreamSinks;
+  /** Injected clock for the feedback-nudge throttle; tests advance it to cross the 24h window. */
+  now?: () => number;
 }
 
 const defaultDeps: RunnerDeps = {
@@ -81,84 +89,92 @@ async function run<T>(
 ): Promise<never> {
   const output = outputOptionsFrom(globals);
   const selection = globals.fields;
+  const sinks: StreamSinks = deps.sinks ?? defaultSinks;
+
+  let code: ExitCodeValue;
+  // The error envelope actually emitted (runner-final), and whether the command short-circuited as a
+  // dry-run. Both captured so the feedback nudge classifies off what the caller really saw — a
+  // `--fields` projection can turn an ok:true handler result into a usage error, and a thrown handler
+  // into an internal_error, neither of which is visible on the raw handler result.
+  let emittedError: EnvelopeError | undefined;
+  let dryRun = false;
 
   // Discovery (bare `--fields`) is a read-only usage helper. On a mutating command it would
   // otherwise run the handler — performing the write — just to introspect the result's shape,
   // then exit non-zero, which an agent reads as failure and retries (duplicating the record).
-  // Reject it before the handler executes; `--fields <list>` is unaffected and still runs.
+  // Reject it before the handler executes; `--fields <list>` is unaffected and still runs. Routed
+  // through the shared nudge-then-exit tail below (not an early return) so this usage error nudges
+  // like any other.
   if (selection?.mode === "discover" && !readOnly) {
-    emit(
-      output,
-      {
-        ok: false,
-        error: {
-          code: "fields_discovery_unsupported",
-          message: `\`--fields\` with no value lists output fields and is only available on read commands; \`${command}\` is not one. Pass an explicit list, e.g. \`--fields uuid,email\`.`,
-        },
-      },
-      deps.sinks,
-    );
-    return deps.exit(ExitCode.CliUsage);
-  }
-
-  const sinks: StreamSinks = deps.sinks ?? defaultSinks;
-
-  let code: ExitCodeValue;
-  try {
-    const result = await handler({ command, globals, sinks });
-    if (!result.ok) {
-      emit(output, { ok: false, error: result.error }, deps.sinks);
-      code = result.exitCode;
-    } else if (selection?.mode === "discover") {
-      // gh convention: a bare `--fields` is a usage error — list the available top-level fields
-      // on stderr, leave stdout empty, and exit non-zero. Only reached on success; an errored
-      // command falls through to the error branch and surfaces its own failure instead.
-      writeFieldsHint(availableFields(result.data), deps);
-      code = ExitCode.General;
-    } else if (selection?.mode === "select") {
-      // A requested key that matches nothing in the data is almost always a typo. Surface it as a
-      // structured `unknown_fields` envelope (machine-readable like every other runner error) so
-      // an agent can recover, rather than silently projecting to an empty result that reads as
-      // success. A key in only *some* array rows stays valid, and a genuinely empty result (no
-      // fields to validate against) filters cleanly instead of erroring — see partitionFields.
-      const { available, unknown } = partitionFields(result.data, selection.keys);
-      if (unknown.length > 0) {
-        emit(
-          output,
-          {
-            ok: false,
-            error: {
-              code: "unknown_fields",
-              message: `Unknown \`--fields\` value(s): ${unknown.join(", ")}. Available: ${available.join(", ")}.`,
-              details: { unknown, available },
-            },
-          },
-          deps.sinks,
-        );
-        code = ExitCode.CliUsage;
+    emittedError = {
+      code: "fields_discovery_unsupported",
+      message: `\`--fields\` with no value lists output fields and is only available on read commands; \`${command}\` is not one. Pass an explicit list, e.g. \`--fields uuid,email\`.`,
+    };
+    emit(output, { ok: false, error: emittedError }, deps.sinks);
+    code = ExitCode.CliUsage;
+  } else {
+    try {
+      const result = await handler({ command, globals, sinks });
+      if (result.ok && result.dryRun === true) dryRun = true;
+      if (!result.ok) {
+        emittedError = result.error;
+        emit(output, { ok: false, error: result.error }, deps.sinks);
+        code = result.exitCode;
+      } else if (selection?.mode === "discover") {
+        // gh convention: a bare `--fields` is a usage error — list the available top-level fields
+        // on stderr, leave stdout empty, and exit non-zero. Only reached on success; an errored
+        // command falls through to the error branch and surfaces its own failure instead.
+        writeFieldsHint(availableFields(result.data), deps);
+        code = ExitCode.General;
+      } else if (selection?.mode === "select") {
+        // A requested key that matches nothing in the data is almost always a typo. Surface it as a
+        // structured `unknown_fields` envelope (machine-readable like every other runner error) so
+        // an agent can recover, rather than silently projecting to an empty result that reads as
+        // success. A key in only *some* array rows stays valid, and a genuinely empty result (no
+        // fields to validate against) filters cleanly instead of erroring — see partitionFields.
+        const { available, unknown } = partitionFields(result.data, selection.keys);
+        if (unknown.length > 0) {
+          emittedError = {
+            code: "unknown_fields",
+            message: `Unknown \`--fields\` value(s): ${unknown.join(", ")}. Available: ${available.join(", ")}.`,
+            details: { unknown, available },
+          };
+          emit(output, { ok: false, error: emittedError }, deps.sinks);
+          code = ExitCode.CliUsage;
+        } else {
+          emit(output, { ok: true, data: selectFields(result.data, selection.keys), next: result.next }, deps.sinks);
+          code = ExitCode.Success;
+        }
       } else {
-        emit(output, { ok: true, data: selectFields(result.data, selection.keys), next: result.next }, deps.sinks);
+        // Without `--fields`, successful data passes through untouched. A handler-supplied human
+        // renderer is forwarded here only — the projection branches above reshape the data, so the
+        // renderer (which expects the full shape) would no longer apply.
+        emit(output, { ok: true, data: result.data, next: result.next }, deps.sinks, result.human);
         code = ExitCode.Success;
       }
-    } else {
-      // Without `--fields`, successful data passes through untouched. A handler-supplied human
-      // renderer is forwarded here only — the projection branches above reshape the data, so the
-      // renderer (which expects the full shape) would no longer apply.
-      emit(output, { ok: true, data: result.data, next: result.next }, deps.sinks, result.human);
-      code = ExitCode.Success;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      emittedError = { code: "internal_error", message };
+      emit(output, { ok: false, error: emittedError }, deps.sinks);
+      code = ExitCode.General;
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    emit(
-      output,
-      {
-        ok: false,
-        error: { code: "internal_error", message },
-      },
-      deps.sinks,
-    );
-    code = ExitCode.General;
   }
+
+  // Route agents to `gusto feedback` at two high-signal moments (escape-hatch use, genuine failure).
+  // Every exit — including the early fields-discovery rejection above — funnels through this single
+  // tail, so the nudge is computed in one place off the runner-final code + emitted error. Stderr
+  // only: stdout stays the byte-identical JSON envelope. Best-effort: any failure computing or
+  // writing the nudge is swallowed rather than allowed to affect the command.
+  try {
+    const nudge = await feedbackNudge(
+      { command, globals, code, error: emittedError, dryRun },
+      { now: deps.now ?? Date.now, configPaths },
+    );
+    if (nudge) sinks.stderr.write(nudge);
+  } catch {
+    // never fail a command over its feedback nudge
+  }
+
   return deps.exit(code);
 }
 
