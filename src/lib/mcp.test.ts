@@ -16,6 +16,11 @@ const stdinAuth = (tok: string | null = "tok") => ({
   readStdin: () => Promise.resolve(tok),
 });
 
+const sessionAuth = () => ({
+  store: memoryStore({ sandbox: { accessToken: "session-tok", expiresAt: 4_102_444_800_000 } }),
+  http: mockHttp({ status: 200 }),
+});
+
 const ENV_KEYS = ["GUSTO_ACCESS_TOKEN", "GUSTO_API_BASE_URL", "GUSTO_API_VERSION", "GUSTO_MCP_BASE_URL"];
 let saved: Record<string, string | undefined>;
 
@@ -241,6 +246,21 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
     }
   });
 
+  test("tool-not-found for a piped token tells the caller to replace that token, not log in", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: errorEnvelope(-32601, "Method not found", "Tool not found: list_time_records"),
+    }));
+    try {
+      const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", {});
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toContain("--token-stdin");
+      expect(result.error.message).not.toContain("gusto auth login");
+    } finally {
+      restore();
+    }
+  });
+
   // The two exit-3 codes here are JSON-RPC, so they never pass through an `ApiError` and can't pick
   // up the context the client stamps - they have to be handed the environment directly or they become
   // the auth failures that can't say which environment they're about.
@@ -264,11 +284,24 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
     // message is the one outcome this taxonomy exists to prevent, so there has to be a fallback.
     const { restore } = stubGlobalFetch(() => ({ status: 200, body: errorEnvelope(-32000, "", "") }));
     try {
-      const result = await callMcpTool(sandbox, stdinAuth(), "list_time_records", { start_date: "x", end_date: "y" });
+      const result = await callMcpTool(sandbox, sessionAuth(), "list_time_records", { start_date: "x", end_date: "y" });
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("mcp_unauthorized");
-      expect(result.error.message).toContain("sandbox credential was refused");
+      expect(result.error.message).toContain("stored sandbox session was refused");
       expect(result.error.message).toContain("gusto auth login --env sandbox");
+    } finally {
+      restore();
+    }
+  });
+
+  test("an unauthorized environment token tells the caller to replace it, not log in", async () => {
+    process.env.GUSTO_ACCESS_TOKEN = "env-tok";
+    const { restore } = stubGlobalFetch(() => ({ status: 200, body: errorEnvelope(-32000, "", "") }));
+    try {
+      const result = await callMcpTool(sandbox, noSession(), "list_time_records", {});
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toContain("GUSTO_ACCESS_TOKEN");
+      expect(result.error.message).not.toContain("gusto auth login");
     } finally {
       restore();
     }

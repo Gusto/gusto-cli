@@ -358,6 +358,39 @@ describe("resolveApiContext - stored session fallback", () => {
     },
   );
 
+  test.each([["invalid_request"], ["unsupported_grant_type"], ["invalid_scope"]])(
+    "%s does not recommend repeating a refresh request the server rejected",
+    async (reason) => {
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot() }),
+        http: mockHttp({ status: 400, body: { error: reason } }),
+        now: () => 10_000,
+      });
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.code).toBe("token_refresh_failed");
+      expect(result.result.error.message).toContain(reason);
+      expect(result.result.error.message).toContain("same request will fail the same way");
+      expect(result.result.error.message).not.toContain("retry the command first");
+      expect(result.result.error.message).not.toContain("gusto auth login");
+    },
+  );
+
+  test("an unknown OAuth 4xx does not invent retry or login guidance", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 400, body: { error: "unrecognized_error" } }),
+      now: () => 10_000,
+    });
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("did not identify a recovery");
+    expect(result.result.error.message).not.toContain("retry the command first");
+    expect(result.result.error.message).not.toContain("gusto auth login");
+  });
+
   test("the refresh token stays on file even when the server calls it invalid", async () => {
     // The login is now recommended, but nothing here performs one, so the credential is still there
     // for an operator who wants to look at it.

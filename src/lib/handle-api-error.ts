@@ -127,18 +127,37 @@ function rejectedCredential(auth: AuthContext | undefined): string {
   }
 }
 
+/** Scope recovery follows the credential source for the same reason a rejected credential does:
+ * logging in can replace a stored session, but it cannot change an explicit token that will keep
+ * winning on the next command. */
+function insufficientScopeMessage(scope: string | undefined, auth: AuthContext | undefined): string {
+  const needs = scope ? ` (${scope})` : "";
+  const preamble = `your token is missing the OAuth scope${needs} this command needs.`;
+  if (auth === undefined) {
+    return `${preamble} Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`;
+  }
+  switch (auth.tokenSource) {
+    case "session":
+    case "login":
+      return `${preamble} Re-run \`gusto auth login --env ${auth.environment}\` and grant it; run \`gusto auth whoami --env ${auth.environment}\` to see what you have.`;
+    case "env":
+      return `${preamble} Replace GUSTO_ACCESS_TOKEN with a token that grants it; run \`gusto auth whoami --env ${auth.environment}\` to inspect the active token.`;
+    case "stdin":
+      return `${preamble} Pipe a token that grants it via --token-stdin; pipe the same token to \`gusto auth whoami --token-stdin --env ${auth.environment}\` to inspect it.`;
+  }
+}
+
 export function toResult(err: unknown): CommandResult<never> {
   if (err instanceof ApiError) {
     if (err.status === 401) return credentialRejected(err);
     if (err.status === 403 && isInsufficientScope(err.body)) {
       const scope = scopeFromBody(err.body);
-      const needs = scope ? ` (${scope})` : "";
       return {
         ok: false,
         exitCode: ExitCode.Auth,
         error: {
           code: "insufficient_scope",
-          message: `your token is missing the OAuth scope${needs} this command needs. Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`,
+          message: insufficientScopeMessage(scope, err.auth),
           // Carried for the same reason every other auth failure carries it: scopes are granted per
           // credential, and the credential is per environment, so "which scopes do I have" has no
           // answer that isn't scoped to one. This case is older than the codes below and predates the
@@ -253,6 +272,7 @@ export function partialFailure(spec: {
     error: {
       code: spec.code,
       message: `${spec.message}: ${base.error.message}`,
+      ...(base.error.environment !== undefined ? { environment: base.error.environment } : {}),
       details: {
         ...spec.completed,
         completed: Object.keys(spec.completed),

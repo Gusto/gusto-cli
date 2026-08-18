@@ -147,24 +147,33 @@ function slotDescription(env: Environment): string {
  *
  * - `grant_rejected` (§5.2 `invalid_grant`): the refresh token is invalid, expired, or revoked.
  * - `client_rejected` (§5.2 `invalid_client`, `unauthorized_client`): the registration is no good.
- * - `transient`: everything else (`server_error`, `temporarily_unavailable`, a 5xx, a fetch fault)
- *   says nothing about either credential.
+ * - `request_rejected`: the request is invalid or unsupported, so repeating it cannot help.
+ * - `transient`: `server_error`, `temporarily_unavailable`, a 5xx, or a fetch fault.
+ * - `unknown`: a non-retryable response that does not identify a safe recovery.
  *
  * Both rejections are verdicts on a credential rather than on this attempt, so they answer a retry
  * the same way every time - the distinction that matters for `transient` is that a retry is free. */
-type RefreshFailureReason = "transient" | "grant_rejected" | "client_rejected";
+type RefreshFailureReason = "transient" | "grant_rejected" | "client_rejected" | "request_rejected" | "unknown";
 
 function refreshFailureReason(err: OAuthError): RefreshFailureReason {
-  if (!isObject(err.body)) return "transient";
-  switch (err.body.error) {
-    case "invalid_grant":
-      return "grant_rejected";
-    case "invalid_client":
-    case "unauthorized_client":
-      return "client_rejected";
-    default:
-      return "transient";
+  if (isObject(err.body)) {
+    switch (err.body.error) {
+      case "invalid_grant":
+        return "grant_rejected";
+      case "invalid_client":
+      case "unauthorized_client":
+        return "client_rejected";
+      case "invalid_request":
+      case "unsupported_grant_type":
+      case "invalid_scope":
+        return "request_rejected";
+      case "server_error":
+      case "temporarily_unavailable":
+        return "transient";
+    }
   }
+  if (err.status === 0 || err.status >= 500) return "transient";
+  return "unknown";
 }
 
 /** What to do about a refresh the server turned down, which depends on *what* it turned down.
@@ -188,8 +197,12 @@ function refreshFailureMessage(err: OAuthError, env: Environment, slot: string):
       return `${preamble} The server rejected the refresh token in ${slot} as invalid, expired, or revoked, so a retry fails the same way. Run \`gusto auth login --env ${env}\` to sign in again - that replaces the refresh token, which is already dead.`;
     case "client_rejected":
       return `${preamble} The server rejected this CLI's client registration in ${slot}, not the refresh token, so a retry fails the same way. \`gusto auth login\` reuses that registration and would fail too - clear the slot first with \`gusto auth logout --env ${env}\`, then \`gusto auth login --env ${env}\` to register again. Nothing usable is lost: the credentials in that slot are what just got refused.`;
+    case "request_rejected":
+      return `${preamble} The token endpoint rejected the refresh request as invalid or unsupported, so the same request will fail the same way. The credentials in ${slot} are still on file; check \`gusto upgrade --dry-run\`, and report this error if the CLI is current.`;
     case "transient":
       return `${preamble} The refresh token in ${slot} is still on file and was not replaced - retry the command first. Only run \`gusto auth login --env ${env}\` if the retry fails too, since logging in replaces that refresh token.`;
+    case "unknown":
+      return `${preamble} The token endpoint did not identify a recovery, so the CLI will not guess that a retry or login can fix it. The credentials in ${slot} are still on file; check \`gusto upgrade --dry-run\`, and report this error if the CLI is current.`;
   }
 }
 

@@ -313,6 +313,25 @@ describe("toResult 403 scope handling", () => {
     expect(result.error.message).toContain("gusto auth login");
   });
 
+  test.each([
+    ["env" as const, "GUSTO_ACCESS_TOKEN"],
+    ["stdin" as const, "--token-stdin"],
+  ])("insufficient_scope for an explicit %s token tells the caller to replace that token", (tokenSource, named) => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "employees:manage" },
+      ExitCode.ApiClient,
+      "POST /v1/companies/x/employees -> 403",
+      { auth: { tokenSource, environment: "sandbox" } },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain(named);
+    expect(result.error.message).toContain("employees:manage");
+    // A stored login cannot repair an explicit token, which wins on every subsequent command.
+    expect(result.error.message).not.toContain("gusto auth login");
+  });
+
   test("the real Gusto missing_oauth_scopes 403 body maps to insufficient_scope", () => {
     // Actual demo-API body shape, captured from a scope-narrowed `employee add`.
     const err = new ApiError(
@@ -499,6 +518,26 @@ describe("partialFailure", () => {
     });
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
+  });
+
+  test.each([
+    [401, { error: "unauthorized" }, "credential_rejected"],
+    [403, { error: "insufficient_scope" }, "insufficient_scope"],
+  ])("an auth failure at HTTP %i keeps environment on the outer partial-failure envelope", (status, body, code) => {
+    const err = new ApiError(status, body, ExitCode.ApiClient, `GET /follow-up -> ${status}`, {
+      auth: { tokenSource: "session", environment: "sandbox" },
+    });
+    const result = partialFailure({
+      code: "compliance_nudge_fetch_failed",
+      message: "work address changed but tax requirements failed",
+      err,
+      completed: { work_address: { uuid: "wa-1" } },
+      failedDomain: "tax_requirements",
+    });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.environment).toBe("sandbox");
+    expect((result.error.details as { failed: { error: { code: string } } }).failed.error.code).toBe(code);
   });
 
   test("lists every completed domain and echoes its data", () => {
