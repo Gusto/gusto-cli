@@ -972,11 +972,24 @@ describe("per-environment credential slots", () => {
     expect(JSON.parse(result.stdout.trim()).error.environment).toBe("production");
   });
 
-  test("auth login --help documents --env, its default, and the per-environment slots", async () => {
-    const result = await run(["auth", "login", "--help"]);
+  test("auth login --help documents the built-in production default when no environment is configured", async () => {
+    const result = await run(["auth", "login", "--help"], { XDG_CONFIG_HOME: configHome });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("--env <sandbox|production>");
-    expect(result.stdout).toContain("Defaults to production");
+    expect(result.stdout).toContain("Defaults to production when no override is set");
     expect(result.stdout).toContain("stored per environment");
   });
+
+  test.each(["sandbox", "production"] as const)(
+    "auth login --help reports the configured %s default",
+    async (environment) => {
+      const set = await run(["config", "set", "environment", environment], { XDG_CONFIG_HOME: configHome });
+      expect(set.exitCode).toBe(0);
+
+      const result = await run(["auth", "login", "--help"], { XDG_CONFIG_HOME: configHome });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`Your configured default is ${environment}`);
+      expect(result.stdout).toContain("--env and GUSTO_ENVIRONMENT override it");
+    },
+  );
 });

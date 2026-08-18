@@ -81,7 +81,7 @@ function buildProgram(configuredEnvironment?: Environment): Command {
   registerLedgerCommand(program);
   registerReportCommand(program);
   registerTimesheetCommand(program);
-  registerAuthCommand(program);
+  registerAuthCommand(program, configuredEnvironment);
   registerSkillCommand(program);
   registerConfigCommand(program);
   registerUpgradeCommand(program);

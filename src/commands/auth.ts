@@ -38,22 +38,31 @@ interface LoginOpts {
 }
 
 /** `--env` is a program-level option, so commander never lists it on a subcommand's help - yet it
- * is the flag that decides which credential slot these three commands read or write, and it
- * defaults to production. Spelling that out here is the difference between "my session vanished"
- * and "I signed into the other environment". */
-const ENV_HELP = `
-Environment:
-  --env <sandbox|production>   Which environment to act on. Defaults to production;
+ * is the flag that decides which credential slot these three commands read or write. The persisted
+ * environment is already loaded before commands are registered, so report it instead of claiming
+ * every user still has the built-in production default. */
+function environmentHelp(configuredEnvironment?: Environment): string {
+  const defaultDescription = configuredEnvironment
+    ? `Your configured default is ${configuredEnvironment};
+                               --env and GUSTO_ENVIRONMENT override it. Change it with
+                               \`gusto config set environment <env>\`.`
+    : `Defaults to production when no override is set;
                                also settable via GUSTO_ENVIRONMENT or
-                               \`gusto config set environment <env>\`.
+                               \`gusto config set environment <env>\`.`;
+
+  return `
+Environment:
+  --env <sandbox|production>   Which environment to act on. ${defaultDescription}
 
   Credentials are stored per environment, in separate slots of one file. Signing in
   to one environment leaves the other's session untouched, and \`logout\` only clears
   the environment you name. \`gusto auth whoami\` reports which one is active.
 `;
+}
 
-export function registerAuthCommand(parent: Command): void {
+export function registerAuthCommand(parent: Command, configuredEnvironment?: Environment): void {
   const cmd = parent.command("auth").description("OAuth identity (login, logout, whoami)");
+  const envHelp = environmentHelp(configuredEnvironment);
 
   cmd
     .command("login")
@@ -70,7 +79,7 @@ export function registerAuthCommand(parent: Command): void {
       "--target <tools>",
       "Install bundled skills into specific agent tools instead of auto-detecting from what is on this machine. Comma-separated list of claude, cursor, codex, cline, windsurf (or `all`). Also settable via GUSTO_SKILLS_TARGET. Overrides detection and a persisted `never` for this run.",
     )
-    .addHelpText("after", ENV_HELP)
+    .addHelpText("after", envHelp)
     .action((opts: LoginOpts) =>
       runCommand(
         "gusto auth login",
@@ -82,14 +91,14 @@ export function registerAuthCommand(parent: Command): void {
   cmd
     .command("logout")
     .description("Clear the locally stored OAuth session")
-    .addHelpText("after", ENV_HELP)
+    .addHelpText("after", envHelp)
     .action(() => runCommand("gusto auth logout", readGlobalFlags(parent.opts()), authLogoutHandler()));
 
   cmd
     .command("whoami")
     .description("Show token identity + granted scopes via /v1/token_info")
     .option(...TOKEN_STDIN_OPT)
-    .addHelpText("after", ENV_HELP)
+    .addHelpText("after", envHelp)
     .action((opts: AuthOpts) =>
       runReadCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
     );
