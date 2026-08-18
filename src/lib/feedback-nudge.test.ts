@@ -7,7 +7,7 @@ import { ExitCode } from "./exit-codes.ts";
 import { NUDGE_THROTTLE_MS, type NudgeInputs, feedbackNudge } from "./feedback-nudge.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import type { EnvelopeError } from "./output.ts";
-import { type CommandHandler, runCommand } from "./runner.ts";
+import { type CommandHandler, runCommand, runReadCommand } from "./runner.ts";
 import { captureSinks } from "./test-support.ts";
 import { VERSION } from "./version.ts";
 
@@ -354,5 +354,27 @@ describe("feedbackNudge via runCommand — stderr-only side channel", () => {
     const ctx = contextFrom(stderr);
     expect(ctx.trigger).toBe("friction");
     expect(ctx.error_code).toBe("fields_discovery_unsupported");
+  });
+
+  test("does NOT nudge on a bare --fields discovery hint (read command: usage helper, no error envelope)", async () => {
+    const { sinks, stdout, stderr } = captureSinks();
+    const exit = ((_code: number) => {
+      throw new Error("__exit");
+    }) as (code: number) => never;
+    const handler: CommandHandler = async () => ({ ok: true, data: { uuid: "u1", email: "a@b.com" } });
+    try {
+      await runReadCommand("gusto employee list", { ...agentFlags, fields: { mode: "discover" } }, handler, {
+        exit,
+        sinks,
+        now: () => NOW,
+      });
+    } catch (err) {
+      if (!(err instanceof Error) || err.message !== "__exit") throw err;
+    }
+    // The discovery hint lists available fields on stderr (gh convention) but must NOT append a nudge:
+    // it's a successful usage helper, not friction.
+    expect(stdout.buffer).toBe("");
+    expect(stderr.buffer).toContain("uuid");
+    expect(stderr.buffer).not.toContain("gusto feedback");
   });
 });

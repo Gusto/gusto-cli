@@ -1,7 +1,7 @@
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import { type ConfigPaths, configPaths as defaultConfigPaths, readConfig } from "./config.ts";
-import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
+import type { ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { type EnvelopeError, outputOptionsFrom } from "./output.ts";
 import { VERSION } from "./version.ts";
@@ -85,7 +85,7 @@ async function isOptedOut(deps: NudgeDeps): Promise<boolean> {
 /** Classify the trigger for a finished command, or null when no nudge applies. Order matters:
  * surface-level and guardrail suppressions come before the trigger checks. */
 function classify(inputs: NudgeInputs): Trigger | null {
-  const { command, code, error, dryRun } = inputs;
+  const { command, error, dryRun } = inputs;
 
   // Never nudge from the feedback command itself, or from config/auth flows — those are either the
   // destination or setup steps where a nudge is noise.
@@ -102,10 +102,13 @@ function classify(inputs: NudgeInputs): Trigger | null {
   // The raw REST escape hatch signals a missing first-class command, whether it succeeded or failed.
   if (command === "gusto api request") return "escape_hatch";
 
-  // Friction = any non-success exit that isn't the confirmation guardrail. This is driven off the
-  // runner-final code + emitted error, so runner-synthesized usage failures (unknown_fields,
-  // fields_discovery_unsupported) count too, not just handler-returned errors.
-  if (code !== ExitCode.Success && error?.code !== "confirmation_required") return "friction";
+  // Friction = an actually-emitted error envelope that isn't the confirmation guardrail. Keying off
+  // the presence of `error` (which the runner sets for handler failures AND for its own synthesized
+  // usage errors, unknown_fields / fields_discovery_unsupported) rather than a bare non-zero exit
+  // excludes the bare-`--fields` discovery hint: that's a successful usage helper (non-zero exit, no
+  // error envelope), i.e. discovery, not friction. A non-Success exit is implied whenever `error` is
+  // set, so it doesn't need a separate check.
+  if (error !== undefined && error.code !== "confirmation_required") return "friction";
 
   return null;
 }
