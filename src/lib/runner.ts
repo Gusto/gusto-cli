@@ -103,9 +103,13 @@ async function run<T>(
 
   const sinks: StreamSinks = deps.sinks ?? defaultSinks;
 
+  // Carry the dispatched command name on globals so the API client can stamp it as a per-command
+  // request header. A fresh object rather than a mutation, so the caller's globals stay untouched.
+  const globalsWithCommand: GlobalFlags = { ...globals, command };
+
   let code: ExitCodeValue;
   try {
-    const result = await handler({ command, globals, sinks });
+    const result = await handler({ command, globals: globalsWithCommand, sinks });
     if (!result.ok) {
       emit(output, { ok: false, error: result.error }, deps.sinks);
       code = result.exitCode;

@@ -68,7 +68,20 @@ export function buildApiClient(
     token: opts.token,
     apiVersion: resolveApiVersion(),
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
+    command: globals.command ? commandSlug(globals.command) : undefined,
   });
+}
+
+/** Turn a full command path into the compact slug sent as `X-Gusto-CLI-Command`: strip a leading
+ * `"gusto "`, trim, lowercase, and collapse internal whitespace runs to a single `-`. So
+ * `"gusto employee list"` → `"employee-list"` and `"gusto api request"` → `"api-request"`. Keeps
+ * server-side request-log breakdowns grouping cleanly by command. */
+export function commandSlug(command: string): string {
+  return command
+    .replace(/^gusto /, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
 }
 
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };

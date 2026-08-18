@@ -113,6 +113,10 @@ export interface ApiClientOptions {
   /** Optional per-request observer; called once per attempt on success and failure. When set,
    * powers `--verbose` stderr logging. */
   observer?: RequestObserver;
+  /** Slug of the CLI command driving these requests (e.g. `employee-list`). When set, sent as the
+   * `X-Gusto-CLI-Command` header on every request so server-side observability can break CLI
+   * traffic down by command. Absent for surfaces with no command context (e.g. OAuth login). */
+  command?: string;
 }
 
 /** One HTTP attempt as seen by the client. `status` is `0` for a pre-response network fault
@@ -148,6 +152,7 @@ export class ApiClient {
   private readonly maxRetries: number;
   private readonly retrySleepMs: (attempt: number) => number;
   private readonly observer?: RequestObserver;
+  private readonly command?: string;
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
@@ -159,6 +164,7 @@ export class ApiClient {
     // Exponential backoff: 1s, 2s, 4s, 8s. Tests override to skip waits.
     this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
     this.observer = opts.observer;
+    this.command = opts.command;
   }
 
   get<T = unknown>(path: string, opts?: RequestOptions): Promise<ApiResponse<T>> {
@@ -352,6 +358,7 @@ export class ApiClient {
       "X-Gusto-API-Version": this.apiVersion,
       "User-Agent": USER_AGENT,
     };
+    if (this.command) headers["X-Gusto-CLI-Command"] = this.command;
     let init: RequestInit = { method, headers, signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
