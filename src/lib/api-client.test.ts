@@ -112,6 +112,34 @@ describe("ApiClient basics", () => {
     }
   });
 
+  test("sets X-Gusto-CLI-Command when a command slug is configured", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }), { command: "employee-list" });
+    await client.get("/v1/things");
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("employee-list");
+  });
+
+  test("omits X-Gusto-CLI-Command when no command is configured", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 200, body: {} }));
+    await client.get("/v1/things");
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBeUndefined();
+  });
+
+  // The header rides on every attempt (a retried GET, a failed request), not just the first read,
+  // so server-side breakdowns attribute all of a command's traffic - including a 404'd api request.
+  test("the command header rides even on a 404 response", async () => {
+    const captured: { url?: string; init?: RequestInit } = {};
+    const client = makeClient(mockFetch(captured, { status: 404, body: { error: "nope" } }), {
+      command: "api-request",
+    });
+    await expect(client.get("/v1/missing")).rejects.toBeInstanceOf(ApiError);
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("api-request");
+  });
+
   test("same-origin absolute URLs are passed through", async () => {
     const captured: { url?: string; init?: RequestInit } = {};
     const client = makeClient(mockFetch(captured, { status: 200, body: {} }));

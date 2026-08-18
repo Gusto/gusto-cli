@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ApiClient, ApiError } from "./api-client.ts";
 import {
   buildApiClient,
+  commandSlug,
   createCompanyResource,
   fetchCompanyResource,
   fetchResource,
@@ -775,5 +776,59 @@ describe("buildApiClient --verbose wiring", () => {
   test("verbose=false attaches no observer and produces no stderr output", async () => {
     const chunks = await callAndCaptureStderr(false);
     expect(chunks).toEqual([]);
+  });
+});
+
+describe("commandSlug", () => {
+  test("strips the leading `gusto ` and hyphenates the rest", () => {
+    expect(commandSlug("gusto api request")).toBe("api-request");
+    expect(commandSlug("gusto employee list")).toBe("employee-list");
+  });
+
+  test("lowercases and collapses runs of whitespace to a single hyphen", () => {
+    expect(commandSlug("gusto  Employee   List")).toBe("employee-list");
+  });
+
+  test("a single-word command with no `gusto ` prefix passes through", () => {
+    expect(commandSlug("upgrade")).toBe("upgrade");
+  });
+});
+
+describe("buildApiClient command header wiring", () => {
+  // Capture the request headers the client actually sends by stubbing global fetch before
+  // buildApiClient constructs the client (which captures `fetch` at construction).
+  async function callAndCaptureHeaders(globals: GlobalFlags): Promise<Record<string, string>> {
+    let headers: Record<string, string> = {};
+    const captureFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      headers = (init?.headers as Record<string, string>) ?? {};
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const original = globalThis.fetch;
+    globalThis.fetch = captureFetch;
+    try {
+      const client = buildApiClient(globals, { baseUrl: "https://api.example.test", token: "t" });
+      await client.get("/v1/me");
+    } finally {
+      globalThis.fetch = original;
+    }
+    return headers;
+  }
+
+  test("a structured command carries its slug as X-Gusto-CLI-Command", async () => {
+    const headers = await callAndCaptureHeaders({ ...flags, command: "gusto employee list" });
+    expect(headers["X-Gusto-CLI-Command"]).toBe("employee-list");
+  });
+
+  test("the `gusto api request` escape hatch carries its own slug", async () => {
+    const headers = await callAndCaptureHeaders({ ...flags, command: "gusto api request" });
+    expect(headers["X-Gusto-CLI-Command"]).toBe("api-request");
+  });
+
+  test("no command on globals sends no X-Gusto-CLI-Command header", async () => {
+    const headers = await callAndCaptureHeaders(flags);
+    expect(headers["X-Gusto-CLI-Command"]).toBeUndefined();
   });
 });
