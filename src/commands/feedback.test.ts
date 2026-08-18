@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { feedbackHandler } from "./feedback.ts";
+import { Command } from "commander";
+import { feedbackHandler, registerFeedbackCommand } from "./feedback.ts";
 import { TEST_CONTEXT as ctx, blockedFields, okData, stubGlobalFetch, successEnvelope } from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
@@ -139,5 +140,43 @@ describe("feedbackHandler", () => {
       arguments: { message: "hi", context: { os: "darwin", version: "1.0" } },
     });
     expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test("dry-run marks the result as a dry-run (so the feedback nudge stays suppressed)", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const result = await feedbackHandler({ message: "hi", dryRun: true }, noStdin)(ctx);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.dryRun).toBe(true);
+  });
+});
+
+describe("registerFeedbackCommand --category discoverability", () => {
+  function buildProgram(): Command {
+    const program = new Command();
+    registerFeedbackCommand(program);
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+    for (const sub of program.commands) {
+      sub.exitOverride();
+      sub.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+    }
+    return program;
+  }
+
+  test("rejects an invalid --category value at parse time", async () => {
+    const program = buildProgram();
+    await expect(
+      program.parseAsync(["feedback", "--message", "hi", "--category", "bogus"], { from: "user" }),
+    ).rejects.toThrow(/category|choose|choices|allowed/i);
+  });
+
+  test("--help lists all four category choices", () => {
+    const program = buildProgram();
+    const feedback = program.commands.find((c) => c.name() === "feedback");
+    const help = feedback?.helpInformation() ?? "";
+    for (const choice of ["bug", "feature_request", "general", "praise"]) {
+      expect(help).toContain(choice);
+    }
   });
 });

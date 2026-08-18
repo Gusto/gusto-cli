@@ -4,21 +4,29 @@ import { parse, stringify } from "smol-toml";
 import type { Environment } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
-export type ConfigKey = "environment" | "format" | "skills_auto_install";
+export type ConfigKey = "environment" | "format" | "skills_auto_install" | "feedback_nudge";
 
-export const CONFIG_KEYS: readonly ConfigKey[] = ["environment", "format", "skills_auto_install"] as const;
+export const CONFIG_KEYS: readonly ConfigKey[] = [
+  "environment",
+  "format",
+  "skills_auto_install",
+  "feedback_nudge",
+] as const;
 
 export type SkillsAutoInstall = "ask" | "always" | "never";
+export type FeedbackNudge = "ask" | "always" | "never";
 
 export interface UserConfig {
   environment?: Environment;
   format?: OutputMode;
   skills_auto_install?: SkillsAutoInstall;
+  feedback_nudge?: FeedbackNudge;
 }
 
 const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
+const FEEDBACK_NUDGE_VALUES: readonly FeedbackNudge[] = ["ask", "always", "never"] as const;
 
 // `json` is the advertised alias for `agent` (see the `--json` / `--agent` global flags).
 // Accept it as a `format` value and persist it as `agent` so the config mirrors the flags.
@@ -84,6 +92,10 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       return (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(value)
         ? null
         : `skills_auto_install must be one of: ${SKILLS_AUTO_INSTALL_VALUES.join(", ")}`;
+    case "feedback_nudge":
+      return (FEEDBACK_NUDGE_VALUES as readonly string[]).includes(value)
+        ? null
+        : `feedback_nudge must be one of: ${FEEDBACK_NUDGE_VALUES.join(", ")}`;
     default: {
       // Exhaustiveness guard: adding a ConfigKey without a case here is a compile error,
       // not a silent validation bypass.
@@ -112,6 +124,12 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
     (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(raw.skills_auto_install)
   ) {
     out.skills_auto_install = raw.skills_auto_install as SkillsAutoInstall;
+  }
+  if (
+    typeof raw.feedback_nudge === "string" &&
+    (FEEDBACK_NUDGE_VALUES as readonly string[]).includes(raw.feedback_nudge)
+  ) {
+    out.feedback_nudge = raw.feedback_nudge as FeedbackNudge;
   }
   return out;
 }

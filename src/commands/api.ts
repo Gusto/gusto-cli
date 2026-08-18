@@ -142,6 +142,7 @@ export function apiRequestHandler(
     // send time (matching the setup/add commands) rather than firing the version GET now.
     const dryRunResult = (finalPath: string): CommandResult => ({
       ok: true,
+      dryRun: true,
       data: autoVersionPending
         ? { method, path: finalPath, body, note: "dry-run: version is read from the current resource at send time" }
         : { method, path: finalPath, body },
@@ -192,7 +193,7 @@ export function apiRequestHandler(
     });
     if (!ctx.ok) {
       if (opts.dryRun) {
-        return { ok: true, data: { method, path, body, note: "dry-run: token/company not required" } };
+        return { ok: true, dryRun: true, data: { method, path, body, note: "dry-run: token/company not required" } };
       }
       return ctx.result;
     }

@@ -1,4 +1,6 @@
+import { configPaths } from "./config.ts";
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
+import { feedbackNudge } from "./feedback-nudge.ts";
 import { availableFields, partitionFields, selectFields } from "./field-filter.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import {
@@ -22,6 +24,10 @@ export type CommandResult<T = unknown> =
       ok: true;
       data: T;
       next?: string;
+      /** Set by a command's `--dry-run` short-circuit branch so the runner can tell a previewed
+       * request from a real one — used to suppress the feedback nudge on dry-runs (nothing happened
+       * worth nudging about). Agent/JSON output ignores it; it never reaches the envelope. */
+      dryRun?: boolean;
       /** Optional renderer for `--human` output, as a thunk over this result's data. Applied only
        * when stdout is human mode and no `--fields` projection is in play (a projection changes the
        * data shape the renderer expects). Agent/JSON output ignores it entirely. A thunk keeps this
@@ -43,6 +49,8 @@ export type ValidationResult<T> = { ok: true; body: T } | { ok: false; message: 
 export interface RunnerDeps {
   exit: (code: number) => never;
   sinks?: StreamSinks;
+  /** Injected clock for the feedback-nudge throttle; tests advance it to cross the 24h window. */
+  now?: () => number;
 }
 
 const defaultDeps: RunnerDeps = {
@@ -104,8 +112,11 @@ async function run<T>(
   const sinks: StreamSinks = deps.sinks ?? defaultSinks;
 
   let code: ExitCodeValue;
+  // Captured for the feedback nudge below, which needs the finished result to classify the outcome.
+  // A thrown handler is recorded here as the same internal_error envelope that gets emitted.
+  let result: CommandResult<T>;
   try {
-    const result = await handler({ command, globals, sinks });
+    result = await handler({ command, globals, sinks });
     if (!result.ok) {
       emit(output, { ok: false, error: result.error }, deps.sinks);
       code = result.exitCode;
@@ -149,16 +160,21 @@ async function run<T>(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    emit(
-      output,
-      {
-        ok: false,
-        error: { code: "internal_error", message },
-      },
-      deps.sinks,
-    );
+    result = { ok: false, exitCode: ExitCode.General, error: { code: "internal_error", message } };
+    emit(output, { ok: false, error: result.error }, deps.sinks);
     code = ExitCode.General;
   }
+
+  // Route agents to `gusto feedback` at two high-signal moments (escape-hatch use, genuine failure).
+  // Stderr only — stdout stays the byte-identical JSON envelope. Best-effort: the nudge is a nicety,
+  // so any failure computing or writing it is swallowed rather than allowed to affect the command.
+  try {
+    const nudge = await feedbackNudge({ command, globals, code, result }, { now: deps.now ?? Date.now, configPaths });
+    if (nudge) sinks.stderr.write(nudge);
+  } catch {
+    // never fail a command over its feedback nudge
+  }
+
   return deps.exit(code);
 }
 
