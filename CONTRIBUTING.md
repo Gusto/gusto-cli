@@ -93,10 +93,12 @@ bun run build:all        # macOS arm64 + macOS x86_64 + Linux x86_64
 
 `bun build --compile` produces a single-file binary with the Bun runtime bundled. No Node install required on the host.
 
+Before naming a branch or posting repository content, read ["This repo is public"](AGENTS.md#this-repo-is-public) for what must stay out of this public repository.
+
 ## Commit style
 
 - Single-line summary, 20-80 chars, imperative mood
-- Reference the related GitHub issue when there is one; an internal ticket key belongs in the PR description, not the branch name, the commit subject, the PR title, or the issue you reference
+- Reference the related GitHub issue when there is one; an internal ticket key belongs in the PR description, not the branch name, the commit subject, the PR title, or any issue
 - Body explains why if non-obvious; otherwise leave it terse
 - Sign off every commit (see [Developer Certificate of Origin](#developer-certificate-of-origin))
 
