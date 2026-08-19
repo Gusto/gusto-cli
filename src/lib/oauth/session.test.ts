@@ -66,6 +66,33 @@ describe("resolveSessionToken", () => {
     expect(outcome.cause.body).toEqual({ error: "invalid_grant" });
   });
 
+  test("uses a session another process refreshed while this refresh was rejected", async () => {
+    const store = memoryStore({
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 1_980 },
+    });
+    const fetchImpl = (async (): Promise<Response> => {
+      await store.save("sandbox", {
+        ...creds,
+        accessToken: "new",
+        refreshToken: "rt2",
+        expiresAt: 3_600_000,
+      });
+      return new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const outcome = await resolveSessionToken(
+      store,
+      "sandbox",
+      { baseUrl: "https://api.test", fetchImpl },
+      () => 1_990,
+    );
+
+    expect(outcome).toEqual({ kind: "ok", token: "new" });
+  });
+
   test("leaves the stored refresh token in place when the refresh is rejected", async () => {
     // The whole point of distinguishing this state: the refresh token is still the way back in, so
     // nothing here may discard it.

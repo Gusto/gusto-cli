@@ -105,6 +105,16 @@ export async function resolveSessionToken(
   http: OAuthHttpOptions,
   now: () => number = Date.now,
 ): Promise<SessionOutcome> {
+  return resolveSessionTokenAttempt(store, env, http, now, true);
+}
+
+async function resolveSessionTokenAttempt(
+  store: TokenStore,
+  env: "sandbox" | "production",
+  http: OAuthHttpOptions,
+  now: () => number,
+  reconcileConcurrentRefresh: boolean,
+): Promise<SessionOutcome> {
   const state = classifySession(await store.load(env), now());
   if (state.kind !== "refreshable") return state;
 
@@ -117,9 +127,38 @@ export async function resolveSessionToken(
     // one. This is the last chance to refresh, so passing it through bets on the token's clock.
     const expiresAt = state.session.expiresAt;
     if (expiresAt != null && now() < expiresAt) return { kind: "ok", token: state.token };
-    if (err instanceof OAuthError) return { kind: "refresh_failed", cause: err };
+    if (err instanceof OAuthError) {
+      if (reconcileConcurrentRefresh) {
+        let latest: StoredSession | null;
+        try {
+          latest = await store.load(env);
+        } catch {
+          // Keep the refresh failure we can explain rather than replacing it with a best-effort
+          // reconciliation read failure.
+          return { kind: "refresh_failed", cause: err };
+        }
+        if (!sameAuthState(state.session, latest)) {
+          return resolveSessionTokenAttempt(store, env, http, now, false);
+        }
+      }
+      return { kind: "refresh_failed", cause: err };
+    }
     throw err;
   }
+}
+
+/** Whether another process changed the values that determine token resolution while this process
+ * was refreshing. Company metadata is deliberately excluded: it cannot make a rejected refresh
+ * succeed, while any token, expiry, or client-registration change can. */
+function sameAuthState(previous: StoredSession, latest: StoredSession | null): boolean {
+  return (
+    latest !== null &&
+    latest.clientId === previous.clientId &&
+    latest.clientSecret === previous.clientSecret &&
+    latest.accessToken === previous.accessToken &&
+    latest.refreshToken === previous.refreshToken &&
+    latest.expiresAt === previous.expiresAt
+  );
 }
 
 /** Run `fn` with the session's token, refreshing on near-expiry and once more if the call comes back

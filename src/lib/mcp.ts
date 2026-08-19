@@ -135,15 +135,15 @@ function mapRpcError(rpc: JsonRpcError, toolName: string, auth: ResolvedAuthCont
     case RPC_INVALID_PARAMS:
       return { ok: false, exitCode: ExitCode.ApiClient, error: { code: "mcp_invalid_params", message: display } };
     case RPC_AUTH:
-      // `display` is the gateway's own string and can be empty, which would leave an exit-3 failure
-      // with no message at all - the one outcome this taxonomy exists to prevent. Fall back to
-      // wording that at least names the credential and the environment it was aimed at.
+      // `display` is useful gateway context, but it cannot replace the local recovery: only this
+      // process knows which credential source won and therefore whether login, an environment-token
+      // replacement, or a new piped token can fix the failure.
       return {
         ok: false,
         exitCode: ExitCode.Auth,
         error: {
           code: "mcp_unauthorized",
-          message: display || mcpRejectedCredential(auth),
+          message: `${display ? `${display}. ` : ""}${mcpRejectedCredential(auth)}`,
           environment,
         },
       };

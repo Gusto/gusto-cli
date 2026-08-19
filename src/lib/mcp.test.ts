@@ -294,6 +294,22 @@ describe("callMcpTool — JSON-RPC error mapping", () => {
     }
   });
 
+  test("an unauthorized error keeps gateway context and still names the credential recovery", async () => {
+    const { restore } = stubGlobalFetch(() => ({
+      status: 200,
+      body: errorEnvelope(-32000, "Unauthorized", "gateway rejected the request"),
+    }));
+    try {
+      const result = await callMcpTool(sandbox, sessionAuth(), "list_time_records", {});
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toContain("gateway rejected the request");
+      expect(result.error.message).toContain("stored sandbox session was refused");
+      expect(result.error.message).toContain("gusto auth login --env sandbox");
+    } finally {
+      restore();
+    }
+  });
+
   test("an unauthorized environment token tells the caller to replace it, not log in", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
     const { restore } = stubGlobalFetch(() => ({ status: 200, body: errorEnvelope(-32000, "", "") }));
