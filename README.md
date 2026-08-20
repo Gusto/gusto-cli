@@ -67,7 +67,7 @@ gusto skill install cash-forecasting
 gusto feedback --message "wish there were a bulk employee import"
 ```
 
-`gusto feedback --message "..."` (or piped via stdin) sends feedback to Gusto - report a missing command, a gap, a bug, or what's working; `--category` takes `bug`, `feature_request`, `general`, or `praise`. It's not a gated write, so it needs no `--confirm` - keep sensitive data (PII, secrets, raw API bodies) out of the message.
+`gusto feedback --message "..."` (or piped via stdin) sends feedback to Gusto - report a missing command, a gap, a bug, or what's working; `--category` takes `bug`, `feature_request`, `general`, or `praise`. It's not a gated write, so it needs no `--confirm` - keep sensitive data (PII, secrets, raw API bodies) out of the message. Messages cap at 5000 characters: `--message` over the limit returns `blocked_on` (exit 7), while piped stdin is truncated at that length, so keep piped messages short.
 
 The commands above are examples. `gusto --help` lists every top-level command and `gusto <command> --help` lists its flags - that's the authoritative command surface (and what agents should reach for first), since this README can drift.
 
