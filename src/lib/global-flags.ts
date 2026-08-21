@@ -31,6 +31,9 @@ export function readGlobalFlags(opts: OptionValues): GlobalFlags {
     human: opts.human === true,
     json: opts.json === true,
     verbose: opts.verbose === true,
+    // Already resolved by commander: `--env` > GUSTO_ENVIRONMENT (via `.env()`) > the config-file
+    // default (via `.default()`, installed in `buildProgram`). Undefined when none was set, which
+    // `defaultEnv` reads as production.
     env: opts.env as Environment | undefined,
     fields: readFieldSelection(opts.fields),
   };
