@@ -5,6 +5,8 @@ import { registerCompanyCommand } from "./commands/company.ts";
 import { registerCompensationCommand } from "./commands/compensation.ts";
 import { registerConfigCommand } from "./commands/config.ts";
 import { registerContractorCommand } from "./commands/contractor.ts";
+import { registerContractorPaymentCommand } from "./commands/contractor-payment.ts";
+import { registerContractorPaymentGroupCommand } from "./commands/contractor-payment-group.ts";
 import { registerDepartmentCommand } from "./commands/department.ts";
 import { registerEmployeeCommand } from "./commands/employee.ts";
 import { registerFeedbackCommand } from "./commands/feedback.ts";
@@ -73,6 +75,8 @@ function buildProgram(configuredEnvironment?: Environment): Command {
   registerCompanyCommand(program);
   registerEmployeeCommand(program);
   registerContractorCommand(program);
+  registerContractorPaymentCommand(program);
+  registerContractorPaymentGroupCommand(program);
   registerDepartmentCommand(program);
   registerJobCommand(program);
   registerCompensationCommand(program);
