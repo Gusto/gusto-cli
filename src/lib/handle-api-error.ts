@@ -67,17 +67,7 @@ function serverMessages(body: unknown): string[] {
   return Array.from(new Set(found));
 }
 
-/** What to do about a credential the API refused, and nothing else.
- *
- * A 401 is an authentication failure however the credential arrived, so it exits `Auth` like the 403
- * scope case rather than landing in the ordinary 4xx bucket - `AGENTS.md` promises agents that every
- * auth failure exits 3 and carries `environment`, and a rejected token is one. The recovery differs
- * by source: a stored session can be signed in again, while a token the caller supplied explicitly
- * is theirs to fix and must not be answered with `auth login`, which would rotate a session the
- * failing command wasn't even using. Nothing re-authenticates a rejected token on its own, so no
- * wording here may suggest a bare retry - unlike `token_refresh_failed`, where a retry is the point.
- * The request line stays as a suffix because a 401 can land mid-command (a paginated walk, a poll),
- * where which call failed is the first thing worth knowing. */
+/** Report a 401 as authentication failure, with recovery based on the credential source. */
 function credentialRejected(err: ApiError): CommandResult<never> {
   const { auth } = err;
   return {
@@ -92,17 +82,7 @@ function credentialRejected(err: ApiError): CommandResult<never> {
   };
 }
 
-/** Names the refused credential and its one recovery. A client built without a resolved context
- * leaves the source unknown, so that wording covers all three rather than sending the caller at the
- * wrong one.
- *
- * The stored-session case names what the login costs. A 401 here reaches a slot whose refresh token
- * may still be perfectly good - notably one with no recorded `expiresAt`, where nothing refreshed
- * proactively because nothing knew to - and `auth login` replaces that token. Nothing today can spend
- * it instead: a rerun takes the same path and re-sends the same rejected access token, since
- * `resolveSessionToken` only refreshes on a *recorded* near-expiry, and refreshing a rejected
- * credential in place is `withUserToken`'s still-unwired job. So the action stays `auth login`; saying
- * what it replaces is the part a caller can act on. */
+/** Name the refused credential and the recovery available for that source. */
 function rejectedCredential(auth: AuthContext | undefined): string {
   if (auth === undefined) {
     return "the credential this command used was rejected by the API. If it came from `gusto auth login`, sign in again; if it came from GUSTO_ACCESS_TOKEN or --token-stdin, that token is invalid or expired.";

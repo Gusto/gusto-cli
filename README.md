@@ -64,23 +64,23 @@ Each environment keeps its **own** credential slot, both in one `credentials.tom
 
 ### When auth fails
 
-Auth failures all exit `3` and name the environment (`error.environment`). The first three are decided before any request goes out and also name the credential slot they read; the last is the API's verdict on a credential that looked usable:
+Auth failures exit `3` and name the environment (`error.environment`). Stored-session failures also name the credential slot they read:
 
 | code                   | what it means                                                                                                   | what to do                                                                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `no_access_token`      | no credentials at all for that environment                                                                      | `gusto auth login`, set `GUSTO_ACCESS_TOKEN`, or pipe one via `--token-stdin`                                                                                                        |
+| `no_access_token`      | no access token is available for that environment                                                                | `gusto auth login --env <env>`, set `GUSTO_ACCESS_TOKEN`, or pipe one via `--token-stdin`                                                                                             |
 | `session_expired`      | the access token expired and there's no refresh token (or no client credentials) to renew it                    | `gusto auth login --env <env>`                                                                                                                                                       |
 | `token_refresh_failed` | a refresh was attempted and the server rejected it; the stored refresh token is untouched                       | read the message - it differs by reason (see below)                                                                                                                                  |
 | `credential_rejected`  | the API answered `401`: the credential was sent and refused, so it's stale, revoked, or for another environment | depends which credential was used, and the message names it - sign in again for a stored session, fix the value for `GUSTO_ACCESS_TOKEN` or `--token-stdin`. A bare retry won't help |
 
-`token_refresh_failed` carries the reason the token endpoint gave, and the recovery follows from it. A refresh presents two credentials - the refresh token, and the client registration this CLI made when it first signed in - and the endpoint can also reject the request itself:
+`token_refresh_failed` carries the server's reason, which determines the recovery:
 
-- **The attempt failed** (a 5xx, `temporarily_unavailable`): retry the command first. The refresh token is still good, and logging in would replace it for nothing.
-- **The refresh token was rejected** (`invalid_grant`, per RFC 6749 an invalid, expired, or revoked grant): the retry fails the same way, so the message points at `gusto auth login --env <env>`. The credential it would replace is already dead.
-- **The client registration was rejected** (`invalid_client`, `unauthorized_client`): a login reuses that registration, so it would fail too. Clear the slot with `gusto auth logout --env <env>` first, then log in to register again.
-- **The request was rejected** (`invalid_request`, `unsupported_grant_type`, `invalid_scope`): repeating it or logging in does not repair the request. Keep the stored credentials, check `gusto upgrade --dry-run`, and report the error if the CLI is current. An unrecognized 4xx gets the same conservative treatment without guessing at a recovery.
+- 5xx or `temporarily_unavailable`: retry the command.
+- `invalid_grant`: sign in again.
+- `invalid_client` or `unauthorized_client`: log out, then sign in again to replace the client registration.
+- Invalid, unsupported, or unknown requests: check for an upgrade, then report the error if current.
 
-When the first three codes hit an environment with no usable session and the *other* environment has one, the error carries a `hint` naming it. That's usually the real problem: a session that works under `--env sandbox` looks like a broken credential model the moment you drop the flag. (`credential_rejected` carries no such hint - it's raised after a request, from a layer that no longer has the credential store to consult.)
+When another environment has a potentially usable stored session, pre-request session failures carry a `hint` naming it.
 
 ## Quickstart
 

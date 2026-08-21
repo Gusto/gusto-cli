@@ -28,19 +28,10 @@ export async function ensureClientCreds(
   return creds;
 }
 
-/** Why the stored session couldn't produce a usable token, or the token if it could.
- *
- * The failure kinds are distinct because the cheapest action that can work differs by kind, and this
- * is the one place that rule is stated: `gusto auth login` is the expensive answer - it needs a human
- * at a browser an agent on a headless box can't produce, and a successful one mints a new grant that
- * invalidates the refresh token it replaces, breaking anything else holding that credential. So it is
- * the recovery only where nothing cheaper exists. "Nothing on file" and "on file but the refresh was
- * rejected" are therefore opposite states, not shades of one, and callers map each kind to its own
- * error code rather than collapsing them. `cause` decides which recovery a `refresh_failed` gets - see
- * `refreshFailureMessage` in `api-context.ts`. */
+/** A usable stored token or the reason one could not be produced. */
 export type SessionOutcome =
   | { kind: "ok"; token: string }
-  /** No credential slot for this environment, or a slot with no access token in it. */
+  /** No access token is stored for this environment. Client registration may still be present. */
   | { kind: "absent" }
   /** Access token expired and no refresh is possible locally - no refresh token, or no client
    * creds to authenticate the refresh with. `expiresAt` is echoed so the message can date it. */
@@ -51,13 +42,7 @@ export type SessionOutcome =
    * the code that discovered it. */
   | { kind: "refresh_failed"; cause: OAuthError };
 
-/** What a stored slot is, judged from the file alone. Everything `SessionOutcome` has except
- * `refresh_failed`, which only a request can produce, plus the state that needs one: `refreshable`,
- * an access token at or near expiry with the refresh token and client creds to renew it.
- *
- * Split out so a caller that must not touch the network - `otherEnvHint`, deciding whether the other
- * environment is worth pointing at - can read the same verdict `resolveSessionToken` acts on, instead
- * of re-deriving "usable" from a truthy access token that may have expired weeks ago. */
+/** File-only session state. `refreshable` needs a request before it becomes an outcome. */
 export type SessionState =
   | Exclude<SessionOutcome, { kind: "refresh_failed" }>
   | { kind: "refreshable"; session: StoredSession & ClientCreds; refreshToken: string; token: string };

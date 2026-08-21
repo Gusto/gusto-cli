@@ -139,20 +139,8 @@ function slotDescription(env: Environment): string {
   return `the [${env}] slot of ${credentialsFile()}`;
 }
 
-/** Which of the refresh's two credentials the server turned down, or neither.
- *
- * A refresh presents two: the refresh token as the grant, and the DCR client registration as HTTP
- * Basic auth (see `refreshToken` in `oauth/pkce.ts`). RFC 6749 answers them with different errors, and
- * they need different recoveries, so a single "is this terminal" boolean can't carry the verdict.
- *
- * - `grant_rejected` (§5.2 `invalid_grant`): the refresh token is invalid, expired, or revoked.
- * - `client_rejected` (§5.2 `invalid_client`, `unauthorized_client`): the registration is no good.
- * - `request_rejected`: the request is invalid or unsupported, so repeating it cannot help.
- * - `transient`: `server_error`, `temporarily_unavailable`, a 5xx, or a fetch fault.
- * - `unknown`: a non-retryable response that does not identify a safe recovery.
- *
- * Both rejections are verdicts on a credential rather than on this attempt, so they answer a retry
- * the same way every time - the distinction that matters for `transient` is that a retry is free. */
+/** Classify refresh failures by recovery: retry, replace the grant, replace the client
+ * registration, fix the request, or avoid guessing. */
 type RefreshFailureReason = "transient" | "grant_rejected" | "client_rejected" | "request_rejected" | "unknown";
 
 function refreshFailureReason(err: OAuthError): RefreshFailureReason {
@@ -176,20 +164,8 @@ function refreshFailureReason(err: OAuthError): RefreshFailureReason {
   return "unknown";
 }
 
-/** What to do about a refresh the server turned down, which depends on *what* it turned down.
- *
- * The retry advice is the whole reason this state is split out from `session_expired` - it is free,
- * and `gusto auth login` is not: it needs a human at a browser an agent on a headless box can't
- * produce, and a successful one mints a new grant that invalidates the refresh token it replaces,
- * which breaks anything else holding that credential. So a retry is recommended wherever it could
- * work, and only the reasons that rule it out point elsewhere.
- *
- * `client_rejected` is the case a login alone can't fix, and the reason this isn't two branches:
- * `ensureClientCreds` reuses a stored registration rather than re-registering, and both the code
- * exchange and the refresh authenticate with it - so a login against dead client creds fails exactly
- * as the refresh just did. Clearing the slot is what forces re-registration on the next login, which
- * makes `auth logout` a prerequisite here and nowhere else in this taxonomy. It costs nothing extra:
- * whatever is in that slot is already unusable. */
+/** Recommend the least expensive recovery supported by the server's reason. A rejected client
+ * registration requires logout before login because login otherwise reuses the stored registration. */
 function refreshFailureMessage(err: OAuthError, env: Environment, slot: string): string {
   const preamble = `refreshing the ${env} session failed (${oauthReason(err)}).`;
   switch (refreshFailureReason(err)) {
@@ -206,15 +182,7 @@ function refreshFailureMessage(err: OAuthError, env: Environment, slot: string):
   }
 }
 
-/** Turn a non-`ok` session outcome into the auth failure for it.
- *
- * The three codes are not interchangeable, because the cheapest action that can work differs by
- * state - see `SessionOutcome` for why, and `refreshFailureMessage` for the one case where a
- * `refresh_failed` still has to point at a login. All three share the `Auth` exit code; callers
- * branch on the code, not the status.
- *
- * Codes named here are the ones that go over the wire; the `outcome.kind` values switched on below
- * are internal and deliberately spelled differently (`refresh_failed` -> `token_refresh_failed`). */
+/** Map stored-session outcomes to stable auth error codes and recovery guidance. */
 async function sessionFailure(
   outcome: Exclude<SessionOutcome, { kind: "ok" }>,
   env: Environment,
@@ -232,7 +200,7 @@ async function sessionFailure(
     case "absent":
       return withContext({
         code: "no_access_token",
-        message: `no access token for the ${env} environment (read ${slot}). Run \`gusto auth login\`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.`,
+        message: `no access token for the ${env} environment (read ${slot}). Run \`gusto auth login --env ${env}\`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.`,
       });
     case "expired":
       return withContext({

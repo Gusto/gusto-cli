@@ -444,6 +444,14 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.result.error.message).toContain("[production]");
   });
 
+  test("an absent explicit sandbox session keeps sandbox in the login recovery command", async () => {
+    const result = await resolveApiContext({ ...flags, env: "sandbox" }, { requireCompany: false, ...noSession() });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("gusto auth login --env sandbox");
+  });
+
   test("an OAuthError from loading the store is not mistaken for a refresh failure", async () => {
     // Only a refresh that the server rejected is `token_refresh_failed`. A store that can't be read
     // is a broken machine, not a credential state, and must not be reported as either.

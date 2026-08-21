@@ -3,22 +3,13 @@ import type { Environment } from "./global-flags.ts";
 import { detectNext, encodeCursor, withPageParams } from "./pagination.ts";
 import { USER_AGENT } from "./version.ts";
 
-/** Which credential supplied the token a request carried. The first three are the resolved-token
- * sources, in precedence order. `login` is not one of them: it is the token `auth login` has just
- * minted and not yet stored, which only the `token_info` read inside that flow ever carries. It is
- * here because a 401 has to name what was refused, and "a credential we minted a moment ago" is a
- * different thing to be told than any of the three a command resolves. */
+/** Which credential supplied the token carried by a request. */
 export type TokenSource = "stdin" | "env" | "session" | "login";
 
-/** The sources a command can actually resolve a token *from*, which is every one except `login` -
- * that token exists only inside the login flow and is never what a command runs on. Split out so the
- * distinction is enforced rather than commented: `ApiContext` and `auth whoami`'s label table are
- * keyed on this, so neither has to invent a meaning for a state it can't be handed. */
+/** Token sources available to ordinary commands; `login` exists only during the OAuth flow. */
 export type ResolvedTokenSource = Exclude<TokenSource, "login">;
 
-/** Which credential a request carried and which environment it was aimed at. A 401 means the
- * credential itself was refused, and the only wording that helps names *which* one - so it travels
- * with the failure rather than being reconstructed from it. */
+/** Context needed to identify and recover a rejected credential. */
 export interface AuthContext {
   tokenSource: TokenSource;
   environment: Environment;
