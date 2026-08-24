@@ -322,6 +322,12 @@ describe("invalidUuid", () => {
     });
   });
 
+  test("surfaces a prose recovery as-is, without wrapping it in run `...`", () => {
+    const result = invalidUuid("address_uuid", "emp-1", { hint: "two hops: list, then addresses" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toBe("two hops: list, then addresses");
+  });
+
   test("truncates a value past the cap, keeping the first 60 characters", () => {
     const result = invalidUuid("employee_uuid", "x".repeat(100), "gusto employee list");
     if (result.ok) throw new Error("unreachable");

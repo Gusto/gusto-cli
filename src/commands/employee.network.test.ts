@@ -8,6 +8,8 @@ import {
   employeeJobsHandler,
   employeeListHandler,
   employeeRehireHandler,
+  employeeShowHandler,
+  employeeStatusHandler,
   employeeTerminateCancelHandler,
   employeeTerminateHandler,
   employeeTerminationsHandler,
@@ -763,30 +765,47 @@ describe("employeeCustomFieldsHandler", () => {
 // with the guard in front, such a value no longer gets that far - hence the no-request assertion
 // rather than an encoding one. Empty opts is enough to reach every guard: it sits after the
 // `--example` short-circuit but before the required-flag checks and the confirmation gate.
+//
+// Each row names the field it expects back. Exit code and request count alone don't pin the guard
+// on a write: the required-flag check behind it also fails validation and also sends nothing, so
+// only the field name tells the two apart.
 describe("identifier validation", () => {
   const BAD = "a/b?c#d";
 
   test.each([
-    ["custom-fields", (u: string) => employeeCustomFieldsHandler(u, {})],
-    ["addresses", (u: string) => employeeAddressesHandler(u, {})],
-    ["history", (u: string) => employeeHistoryHandler(u, {})],
-    ["terminations", (u: string) => employeeTerminationsHandler(u, {})],
-    ["rehire", (u: string) => employeeRehireHandler(u, {})],
-    ["jobs", (u: string) => employeeJobsHandler(u, {})],
-    ["work-address", (u: string) => workAddressHandler(u, {})],
-    ["home-address", (u: string) => homeAddressHandler(u, {})],
-    ["update-home-address", (u: string) => updateHomeAddressHandler(u, {})],
-    ["update-work-address", (u: string) => updateWorkAddressHandler(u, {})],
-    ["update", (u: string) => employeeUpdateHandler(u, {})],
-    ["terminate", (u: string) => employeeTerminateHandler(u, {})],
-    ["cancel-termination", (u: string) => employeeTerminateCancelHandler(u, {})],
-  ])("%s rejects a malformed identifier without sending a request", async (_name, build) => {
+    ["show", (u: string) => employeeShowHandler(u, {}), "employee_uuid"],
+    ["status", (u: string) => employeeStatusHandler(u, {}), "employee_uuid"],
+    ["custom-fields", (u: string) => employeeCustomFieldsHandler(u, {}), "employee_uuid"],
+    ["addresses", (u: string) => employeeAddressesHandler(u, {}), "employee_uuid"],
+    ["history", (u: string) => employeeHistoryHandler(u, {}), "employee_uuid"],
+    ["terminations", (u: string) => employeeTerminationsHandler(u, {}), "employee_uuid"],
+    ["rehire", (u: string) => employeeRehireHandler(u, {}), "employee_uuid"],
+    ["jobs", (u: string) => employeeJobsHandler(u, {}), "employee_uuid"],
+    ["work-address", (u: string) => workAddressHandler(u, {}), "address_uuid"],
+    ["home-address", (u: string) => homeAddressHandler(u, {}), "address_uuid"],
+    ["update-home-address", (u: string) => updateHomeAddressHandler(u, {}), "address_uuid"],
+    ["update-work-address", (u: string) => updateWorkAddressHandler(u, {}), "address_uuid"],
+    ["update", (u: string) => employeeUpdateHandler(u, {}), "employee_uuid"],
+    ["terminate", (u: string) => employeeTerminateHandler(u, {}), "employee_uuid"],
+    ["cancel-termination", (u: string) => employeeTerminateCancelHandler(u, {}), "employee_uuid"],
+  ])("%s rejects a malformed identifier without sending a request", async (_name, build, field) => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
     const result = await build(BAD)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual([field]);
     expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  // The guard sits behind the `--example` short-circuit on purpose: `--example` prints a canned
+  // payload without touching the network or the identifier, so it stays usable as documentation
+  // before the caller has a real uuid to pass. The templated path is the assertion that shows it -
+  // the identifier never reaches the output, which is what makes short-circuiting ahead of the
+  // guard safe. `okData` throws unless the result is ok, so it covers the guard staying quiet.
+  test("--example prints its payload without reaching the guard", async () => {
+    const d = okData(await updateHomeAddressHandler(BAD, { example: true })(ctx));
+    expect(d.path).toBe("/v1/home_addresses/{home_address_uuid}");
   });
 });

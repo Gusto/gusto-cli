@@ -48,7 +48,12 @@ import {
  * here rather than inline so every handler taking the same identifier quotes the same command - an
  * agent following the hint should land in the same place each time. */
 const EMPLOYEE_LOOKUP = "gusto employee list";
-const ADDRESS_LOOKUP = "gusto employee addresses <employee_uuid>";
+
+/** Address uuids take two hops, so this spells both out instead of naming one command: the single
+ * command form would have to hold an `<employee_uuid>` slot, which is itself a rejected input. */
+const ADDRESS_LOOKUP = {
+  hint: "address uuids come from `gusto employee addresses <employee_uuid>`; run `gusto employee list` first for the employee_uuid",
+};
 
 interface EmployeeListOpts {
   status?: string;
@@ -444,7 +449,7 @@ preview with --dry-run, then re-run with --confirm once the operator approves.
     );
 }
 
-function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+export function employeeShowHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) => {
     if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     return fetchResource(
@@ -466,7 +471,7 @@ export function employeeCustomFieldsHandler(employeeUuid: string, opts: Employee
   };
 }
 
-function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
+export function employeeStatusHandler(employeeUuid: string, opts: EmployeeShowOpts): CommandHandler {
   return async ({ globals }) => {
     if (!isValidUuid(employeeUuid)) return invalidUuid("employee_uuid", employeeUuid, EMPLOYEE_LOOKUP);
     return fetchResource(
