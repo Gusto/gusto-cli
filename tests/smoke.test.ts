@@ -7,6 +7,14 @@ import pkg from "../package.json" with { type: "json" };
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
+// Employee commands validate their identifier before resolving auth, so any row that expects to
+// reach the auth check needs a well-formed uuid rather than a short slug.
+const EMPLOYEE_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
+const ADDRESS_UUID = "9b8c7d6e-0000-4111-2222-333344445555";
+const CONTRACTOR_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
+const CONTRACTOR_PAYMENT_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
+const CONTRACTOR_PAYMENT_GROUP_UUID = "9c0d1e2f-0000-4111-2222-333344445555";
+
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
 const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
@@ -47,6 +55,8 @@ describe("compiled binary", () => {
       "company",
       "employee",
       "contractor",
+      "contractor-payment",
+      "contractor-payment-group",
       "department",
       "job",
       "compensation",
@@ -92,24 +102,81 @@ describe("auth required commands without a token", () => {
   });
 
   test("employee status <uuid> without a token returns no_access_token (exit 3)", async () => {
-    const result = await run(["employee", "status", "emp-123"]);
+    const result = await run(["employee", "status", EMPLOYEE_UUID]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
   // The six new employee reads dispatch their handlers (reaching the auth check, exit 3) rather than
   // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
+  // Every employee command validates its identifier before resolving auth, so these rows need
+  // well-formed uuids to reach the auth check at all.
   test.each([
-    ["history", ["employee", "history", "emp-123"]],
-    ["terminations", ["employee", "terminations", "emp-123"]],
-    ["rehire", ["employee", "rehire", "emp-123"]],
-    ["addresses", ["employee", "addresses", "emp-123"]],
-    ["work-address", ["employee", "work-address", "wa-123"]],
-    ["home-address", ["employee", "home-address", "ha-123"]],
+    ["history", ["employee", "history", EMPLOYEE_UUID]],
+    ["terminations", ["employee", "terminations", EMPLOYEE_UUID]],
+    ["rehire", ["employee", "rehire", EMPLOYEE_UUID]],
+    ["addresses", ["employee", "addresses", EMPLOYEE_UUID]],
+    ["work-address", ["employee", "work-address", ADDRESS_UUID]],
+    ["home-address", ["employee", "home-address", ADDRESS_UUID]],
   ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  // Exit 7 rather than the exit 3 above: the uuid is rejected before auth is even resolved, which
+  // is the point - a value that can't name a record needs no credentials to be turned away.
+  test("employee addresses with the all-zeros uuid is rejected as invalid (exit 7)", async () => {
+    const result = await run(["employee", "addresses", "00000000-0000-0000-0000-000000000000"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toEqual([
+      { field: "employee_uuid", reason: expect.stringContaining("must be a valid UUID") },
+    ]);
+    expect(envelope.error.hint).toContain("gusto employee list");
+  });
+
+  // The contractor-payment reads validate their identifier (and, for `contractor-payment list`,
+  // its required --start-date/--end-date) before resolving auth - same as the employee rows
+  // above - so these need well-formed values to reach the auth check at all.
+  test.each([
+    ["contractor payments <uuid>", ["contractor", "payments", CONTRACTOR_UUID]],
+    ["contractor-payment show <uuid>", ["contractor-payment", "show", CONTRACTOR_PAYMENT_UUID]],
+    [
+      "contractor-payment list",
+      ["contractor-payment", "list", "--start-date", "2026-01-01", "--end-date", "2026-12-31"],
+    ],
+    ["contractor-payment-group show <uuid>", ["contractor-payment-group", "show", CONTRACTOR_PAYMENT_GROUP_UUID]],
+    ["contractor-payment-group list", ["contractor-payment-group", "list"]],
+  ])("%s without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("contractor-payment list without --start-date/--end-date is rejected as invalid (exit 7)", async () => {
+    const result = await run(["contractor-payment", "list"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+  });
+
+  test.each([
+    ["contractor payments <uuid>", ["contractor", "payments", "00000000-0000-0000-0000-000000000000"]],
+    ["contractor-payment show <uuid>", ["contractor-payment", "show", "00000000-0000-0000-0000-000000000000"]],
+    [
+      "contractor-payment-group show <uuid>",
+      ["contractor-payment-group", "show", "00000000-0000-0000-0000-000000000000"],
+    ],
+  ])("%s with the all-zeros uuid is rejected as invalid (exit 7)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
   });
 
   test("pay-schedule list dispatches its handler instead of erroring", async () => {
@@ -161,8 +228,8 @@ describe("auth required commands without a token", () => {
   // guess dispatches the show handler (exit 3 without a token) instead of commander's unknown-command
   // (exit 2) that would stop it. company + pay-schedule are covered above; the rest here.
   test.each([
-    ["employee", ["employee", "get", "employee-uuid-123"]],
-    ["contractor", ["contractor", "get", "contractor-uuid-123"]],
+    ["employee", ["employee", "get", EMPLOYEE_UUID]],
+    ["contractor", ["contractor", "get", CONTRACTOR_UUID]],
     ["department", ["department", "get", "department-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
@@ -243,7 +310,7 @@ describe("auth required commands without a token", () => {
   });
 
   test("employee jobs <uuid> without a token returns no_access_token (exit 3)", async () => {
-    const result = await run(["employee", "jobs", "emp-123"]);
+    const result = await run(["employee", "jobs", EMPLOYEE_UUID]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
