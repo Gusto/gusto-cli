@@ -760,11 +760,16 @@ describe("authWhoamiHandler", () => {
   });
 
   test("propagates a token_info error and skips the capabilities summary", async () => {
+    // A 401 on token_info means the credential itself was refused, so it reports as the auth failure
+    // it is rather than an ordinary 4xx. TEST_GLOBALS pins sandbox and the ambient GUSTO_ACCESS_TOKEN
+    // is the resolved source, so the envelope names both.
     restore = stubGlobalFetch([{ status: 401, body: { error: "invalid_token" } }]).restore;
     const result = await authWhoamiHandler({})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("api_client_error");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("GUSTO_ACCESS_TOKEN");
     expect("data" in result).toBe(false);
   });
 
@@ -777,6 +782,26 @@ describe("authWhoamiHandler", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect((result.data as Record<string, unknown>).credential_source).toBe("GUSTO_ACCESS_TOKEN");
+  });
+
+  test("reports the environment it is talking to", async () => {
+    // whoami is the only way to ask the CLI which credential slot it is using, so this field is
+    // part of its contract. TEST_GLOBALS pins sandbox.
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).environment).toBe("sandbox");
+  });
+
+  test("reports production when no environment was selected, matching the flag's default", async () => {
+    const tokenInfo = { scope: "public", resource_owner: { type: "CompanyAdmin", uuid: "u-1" } };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})({ ...ctx, globals: { ...ctx.globals, env: undefined } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).environment).toBe("production");
   });
 
   test("labels --token-stdin as the credential source when a token is piped", async () => {

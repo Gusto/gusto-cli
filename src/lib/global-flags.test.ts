@@ -48,3 +48,7 @@ describe("readGlobalFlags", () => {
     expect(readGlobalFlags({}).fields).toBeUndefined();
   });
 });
+
+// The precedence chain itself (`--env` > GUSTO_ENVIRONMENT > config > production) is commander's,
+// installed in `buildProgram`, and is covered end to end through the compiled binary in
+// tests/smoke.test.ts - `readGlobalFlags` only passes the resolved value through.

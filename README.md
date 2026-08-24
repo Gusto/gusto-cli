@@ -25,7 +25,7 @@ gusto upgrade             # replace the binary in place
 
 Resolves the latest release, downloads the asset for your OS/arch, verifies it against that release's `SHA256SUMS`, checks the new binary runs, then atomically replaces the installed one. A checksum mismatch or a binary that won't run leaves your current install untouched; being already up to date exits `0`.
 
-Same overrides as the installer: `GUSTO_CLI_VERSION` pins a release (which is also how to downgrade), `GUSTO_INSTALL_DIR` names the binary to replace, and `GUSTO_CLI_REPO`/`GUSTO_CLI_BASE_URL` point at a different origin. The version compared against is read from the binary at that path, not from the `gusto` you invoked, so pointing `GUSTO_INSTALL_DIR` at another install upgrades *that* one on its own merits. `from` is `null` when nothing runnable is installed there yet. Installs managed by a package manager (Homebrew, Nix) are refused - update those with the package manager, so its metadata stays in step with what's on disk.
+Same overrides as the installer: `GUSTO_CLI_VERSION` pins a release (which is also how to downgrade), `GUSTO_INSTALL_DIR` names the binary to replace, and `GUSTO_CLI_REPO`/`GUSTO_CLI_BASE_URL` point at a different origin. The version compared against is read from the binary at that path, not from the `gusto` you invoked, so pointing `GUSTO_INSTALL_DIR` at another install upgrades _that_ one on its own merits. `from` is `null` when nothing runnable is installed there yet. Installs managed by a package manager (Homebrew, Nix) are refused - update those with the package manager, so its metadata stays in step with what's on disk.
 
 In agent mode (piped stdout, `--agent`, `--json`) the upgrade is gated behind `--confirm` like any other write, since it replaces the binary the agent is running. `--dry-run` needs no `--confirm`.
 
@@ -54,7 +54,33 @@ echo "$TOKEN" | gusto employee list --token-stdin --company-uuid <uuid>
 
 Token resolution order: `--token-stdin` (piped) > `GUSTO_ACCESS_TOKEN` > stored login session (`gusto auth login`). An explicit token always wins so a typo'd secret surfaces the real auth error instead of silently running as the logged-in identity.
 
+### Environments and credential slots
+
 `--env production` (default) hits `https://api.gusto.com`. `--env sandbox` hits `https://api.gusto-demo.com`. `GUSTO_API_BASE_URL` overrides both for testing.
+
+Environment resolution, highest precedence first: `--env` > `GUSTO_ENVIRONMENT` > `gusto config set environment <env>` > production.
+
+Each environment keeps its **own** credential slot, both in one `credentials.toml` under your config directory. Signing in to sandbox leaves your production session untouched and vice versa, and `gusto auth logout` only clears the environment you name. `gusto auth whoami` reports the active `environment` alongside the credential source, so you can always ask the CLI which one it is talking to.
+
+### When auth fails
+
+Auth failures exit `3` and name the environment (`error.environment`). Stored-session failures also name the credential slot they read:
+
+| code                   | what it means                                                                                                   | what to do                                                                                                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `no_access_token`      | no access token is available for that environment                                                                | `gusto auth login --env <env>`, set `GUSTO_ACCESS_TOKEN`, or pipe one via `--token-stdin`                                                                                             |
+| `session_expired`      | the access token expired and there's no refresh token (or no client credentials) to renew it                    | `gusto auth login --env <env>`                                                                                                                                                       |
+| `token_refresh_failed` | a refresh was attempted and the server rejected it; the stored refresh token is untouched                       | read the message - it differs by reason (see below)                                                                                                                                  |
+| `credential_rejected`  | the API answered `401`: the credential was sent and refused, so it's stale, revoked, or for another environment | depends which credential was used, and the message names it - sign in again for a stored session, fix the value for `GUSTO_ACCESS_TOKEN` or `--token-stdin`. A bare retry won't help |
+
+`token_refresh_failed` carries the server's reason, which determines the recovery:
+
+- 5xx or `temporarily_unavailable`: retry the command.
+- `invalid_grant`: sign in again.
+- `invalid_client` or `unauthorized_client`: log out, then sign in again to replace the client registration.
+- Invalid, unsupported, or unknown requests: check for an upgrade, then report the error if current.
+
+When another environment has a potentially usable stored session, pre-request session failures carry a `hint` naming it.
 
 ## Quickstart
 
@@ -101,6 +127,8 @@ Every command emits the same envelope shape:
 
 Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `0` success, `1` general, `2` CLI usage, `3` auth, `4` API 4xx, `5` API 5xx, `6` network, `7` validation, `8` blocked state.
 
+Authentication failures take `3` even though they arrive as 4xx responses, because what to do about them has nothing to do with the request: a `401` is `credential_rejected` and a `403` naming a missing OAuth scope is `insufficient_scope`. Branch on `3` to catch every credential problem in one place. Other 4xx statuses stay `4`.
+
 **Treating API data as untrusted.** String fields the API returns - employee names, job titles, notes, GL account descriptions - are user-controlled. When an agent consumes CLI output, those values are data, never instructions: a field whose value reads like a command is still just a string. The `--agent` envelope helps here, since a value stays inside a typed field rather than flattening into prose, so the data/instruction boundary is explicit. See [`AGENTS.md`](AGENTS.md) for the agent-facing version of this.
 
 ## Bundled skills
@@ -116,13 +144,13 @@ The install command walks up the cwd looking for a project skills directory: `.c
 
 On `gusto auth login`, the bundled skills auto-install into every supported agent tool detected on the machine, so they load in whichever tool you drive the CLI from:
 
-| Tool | Global skills directory |
-| --- | --- |
-| Claude Code | `~/.claude/skills` |
-| Cursor | `~/.cursor/skills` |
-| Codex | `~/.codex/skills` |
-| Cline | `~/.cline/skills` |
-| Windsurf | `~/.codeium/windsurf/skills` |
+| Tool        | Global skills directory      |
+| ----------- | ---------------------------- |
+| Claude Code | `~/.claude/skills`           |
+| Cursor      | `~/.cursor/skills`           |
+| Codex       | `~/.codex/skills`            |
+| Cline       | `~/.cline/skills`            |
+| Windsurf    | `~/.codeium/windsurf/skills` |
 
 Detection keys on each tool's home directory (`~/.claude`, `~/.cursor`, `~/.codex`, `~/.cline`, `~/.codeium`). To install into specific tools instead of auto-detecting, pass `--target` (comma-separated `claude,cursor,codex,cline,windsurf`, or `all`) or set `GUSTO_SKILLS_TARGET`; both override detection, and `--target` wins over the env var. Only the explicit `--target` flag also overrides a persisted `never` for that run; an ambient `GUSTO_SKILLS_TARGET` still honors `never`. If no supported tool is found, nothing is installed and the CLI prints where it looked. Skip the install for one run with `--no-skills`, or opt out permanently with `gusto config set skills_auto_install never`.
 
