@@ -1,20 +1,47 @@
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
+import type { Environment } from "./global-flags.ts";
 import { detectNext, encodeCursor, withPageParams } from "./pagination.ts";
 import { USER_AGENT } from "./version.ts";
+
+/** Which credential supplied the token carried by a request. */
+export type TokenSource = "stdin" | "env" | "session" | "login";
+
+/** Token sources available to ordinary commands; `login` exists only during the OAuth flow. */
+export type ResolvedTokenSource = Exclude<TokenSource, "login">;
+
+/** Context needed to identify and recover a rejected credential. */
+export interface AuthContext {
+  tokenSource: TokenSource;
+  environment: Environment;
+}
 
 export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
   readonly exitCode: ExitCodeValue;
   readonly requestId?: string;
+  /** The credential this request carried, when the client was built with one. Riding on the error is
+   * what lets every `toResult` caller report a 401 the same way, including the ones several frames
+   * from a resolved context, which could not otherwise name what was refused. */
+  readonly auth?: AuthContext;
 
-  constructor(status: number, body: unknown, exitCode: ExitCodeValue, message: string, requestId?: string) {
+  /** The optional context rides in one object rather than as trailing positional params: both are
+   * `string | undefined`-ish at the call site, and the four required args are already the limit of
+   * what reads unlabeled. */
+  constructor(
+    status: number,
+    body: unknown,
+    exitCode: ExitCodeValue,
+    message: string,
+    context: { requestId?: string; auth?: AuthContext } = {},
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
     this.exitCode = exitCode;
-    this.requestId = requestId;
+    this.requestId = context.requestId;
+    this.auth = context.auth;
   }
 }
 
@@ -113,6 +140,9 @@ export interface ApiClientOptions {
   /** Optional per-request observer; called once per attempt on success and failure. When set,
    * powers `--verbose` stderr logging. */
   observer?: RequestObserver;
+  /** The credential this client authenticates with, stamped onto any `ApiError` it throws so a 401
+   * can name what was refused. Omitted by clients built without a resolved context. */
+  auth?: AuthContext;
 }
 
 /** One HTTP attempt as seen by the client. `status` is `0` for a pre-response network fault
@@ -148,6 +178,7 @@ export class ApiClient {
   private readonly maxRetries: number;
   private readonly retrySleepMs: (attempt: number) => number;
   private readonly observer?: RequestObserver;
+  private readonly auth?: AuthContext;
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
@@ -159,6 +190,7 @@ export class ApiClient {
     // Exponential backoff: 1s, 2s, 4s, 8s. Tests override to skip waits.
     this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
     this.observer = opts.observer;
+    this.auth = opts.auth;
   }
 
   get<T = unknown>(path: string, opts?: RequestOptions): Promise<ApiResponse<T>> {
@@ -387,7 +419,10 @@ export class ApiClient {
     }
 
     const exitCode = response.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient;
-    throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`, requestId);
+    throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`, {
+      requestId,
+      auth: this.auth,
+    });
   }
 
   private emit(method: string, path: string, status: number, requestId: string | undefined, start: number): void {

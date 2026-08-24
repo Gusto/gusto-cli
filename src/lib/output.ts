@@ -1,4 +1,4 @@
-import type { GlobalFlags } from "./global-flags.ts";
+import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { isObject } from "./predicates.ts";
 
 export type OutputMode = "agent" | "human";
@@ -30,6 +30,12 @@ export interface EnvelopeError {
   did_you_mean?: string;
   /** Recovery pointer, e.g. the `gusto api request` escape hatch for reads without a command yet. */
   hint?: string;
+  /** Which environment the failing call was made against. Set on auth/company failures, where the
+   * answer decides what to do next and is otherwise invisible: `--env` defaults to production and
+   * each environment keeps its own credential slot, so a healthy session in the other one looks
+   * from the outside exactly like a broken credential model. A typed field rather than prose, so an
+   * agent branching on the envelope doesn't have to parse the message. */
+  environment?: Environment;
 }
 
 export type AgentEnvelope<T = unknown> = { ok: true; data?: T; next?: string } | { ok: false; error: EnvelopeError };
