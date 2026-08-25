@@ -768,6 +768,13 @@ describe("employeeCustomFieldsHandler", () => {
 describe("identifier validation", () => {
   const BAD = "a/b?c#d";
 
+  // Duplicated on purpose to catch regressions.
+  const HINTS: Record<string, string> = {
+    employee_uuid: "run `gusto employee list` to get a real employee_uuid",
+    address_uuid:
+      "address uuids come from the `employee addresses` command; run `gusto employee list` first to get the employee_uuid it needs",
+  };
+
   test.each([
     ["show", (u: string) => employeeShowHandler(u, {}), "employee_uuid"],
     ["status", (u: string) => employeeStatusHandler(u, {}), "employee_uuid"],
@@ -793,6 +800,8 @@ describe("identifier validation", () => {
     expect(result.exitCode).toBe(ExitCode.Validation);
     expect(blockedFields(result)).toEqual([field]);
     expect(fetchStub.calls).toHaveLength(0);
+    expect(result.error.hint).toBe(HINTS[field]);
+    expect(result.error.hint).not.toMatch(/<[a-z_]+>/);
   });
 
   test("--example prints its payload without reaching the guard", async () => {

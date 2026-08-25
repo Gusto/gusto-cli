@@ -51,7 +51,7 @@ const EMPLOYEE_UUID_HINT = "run `gusto employee list` to get a real employee_uui
 
 /** Address uuids take two hops, so this spells both out instead of naming one command. */
 const ADDRESS_UUID_HINT =
-  "address uuids come from `gusto employee addresses <employee_uuid>`; run `gusto employee list` first for the employee_uuid";
+  "address uuids come from the `employee addresses` command; run `gusto employee list` first to get the employee_uuid it needs";
 
 interface EmployeeListOpts {
   status?: string;
