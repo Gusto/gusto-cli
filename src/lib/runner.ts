@@ -180,21 +180,14 @@ export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
 /** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
 const ECHOED_VALUE_MAX_LENGTH = 60;
 
-/** How a caller gets a real identifier after passing a bad one. A bare string is a command that
- * runs as written, wrapped below into "run `...`". Pass `{ hint }` when the lookup takes more than
- * one step: the wrapped form would have to carry a placeholder for the input it still needs, and an
- * agent following that spends a hop passing the placeholder through - the very input the guard
- * rejects. Unquoted in a shell, `<...>` is a redirect, so the command never runs at all. The prose
- * form owns its own wording, keeping placeholders out of anything that reads as "run this". */
-export type UuidRecovery = string | { hint: string };
-
-/** Standard validation failure for an identifier argument that isn't a usable UUID. */
-export function invalidUuid(field: string, value: string, recovery: UuidRecovery): CommandResult<never> {
+/** Standard validation failure for an identifier argument that isn't a usable UUID.
+ * `hint` is printed verbatim, so any command in it must run as-is - no unfilled placeholders. */
+export function invalidUuid(field: string, value: string, hint: string): CommandResult<never> {
   const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
   return validationFailure(
     "invalid arguments",
     [{ field, reason: `must be a valid UUID, got: ${JSON.stringify(echoed)}` }],
-    typeof recovery === "string" ? `run \`${recovery}\` to get a real ${field}` : recovery.hint,
+    hint,
   );
 }
 

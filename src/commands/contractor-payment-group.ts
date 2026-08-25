@@ -8,7 +8,8 @@ import { type QueryParams, toQueryString } from "../lib/query.ts";
 import { type CommandHandler, invalidUuid, runReadCommand, validationFailure } from "../lib/runner.ts";
 
 /** Where a caller goes to get a real identifier when the one they passed can't name a record. */
-const CONTRACTOR_PAYMENT_GROUP_LOOKUP = "gusto contractor-payment-group list";
+const CONTRACTOR_PAYMENT_GROUP_UUID_HINT =
+  "run `gusto contractor-payment-group list` to get a real contractor_payment_group_uuid";
 
 interface ContractorPaymentGroupListOpts {
   startDate?: string;
@@ -66,7 +67,11 @@ export function contractorPaymentGroupShowHandler(
 ): CommandHandler {
   return async ({ globals }) => {
     if (!isValidUuid(contractorPaymentGroupUuid)) {
-      return invalidUuid("contractor_payment_group_uuid", contractorPaymentGroupUuid, CONTRACTOR_PAYMENT_GROUP_LOOKUP);
+      return invalidUuid(
+        "contractor_payment_group_uuid",
+        contractorPaymentGroupUuid,
+        CONTRACTOR_PAYMENT_GROUP_UUID_HINT,
+      );
     }
     return fetchResource(
       globals,

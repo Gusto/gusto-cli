@@ -765,10 +765,6 @@ describe("employeeCustomFieldsHandler", () => {
 // with the guard in front, such a value no longer gets that far - hence the no-request assertion
 // rather than an encoding one. Empty opts is enough to reach every guard: it sits after the
 // `--example` short-circuit but before the required-flag checks and the confirmation gate.
-//
-// Each row names the field it expects back. Exit code and request count alone don't pin the guard
-// on a write: the required-flag check behind it also fails validation and also sends nothing, so
-// only the field name tells the two apart.
 describe("identifier validation", () => {
   const BAD = "a/b?c#d";
 
@@ -799,11 +795,6 @@ describe("identifier validation", () => {
     expect(fetchStub.calls).toHaveLength(0);
   });
 
-  // The guard sits behind the `--example` short-circuit on purpose: `--example` prints a canned
-  // payload without touching the network or the identifier, so it stays usable as documentation
-  // before the caller has a real uuid to pass. The templated path is the assertion that shows it -
-  // the identifier never reaches the output, which is what makes short-circuiting ahead of the
-  // guard safe. `okData` throws unless the result is ok, so it covers the guard staying quiet.
   test("--example prints its payload without reaching the guard", async () => {
     const d = okData(await updateHomeAddressHandler(BAD, { example: true })(ctx));
     expect(d.path).toBe("/v1/home_addresses/{home_address_uuid}");

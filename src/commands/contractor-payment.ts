@@ -18,7 +18,7 @@ import {
 } from "../lib/runner.ts";
 
 /** Where a caller goes to get a real identifier when the one they passed can't name a record. */
-const CONTRACTOR_PAYMENT_LOOKUP = "gusto contractor-payment list";
+const CONTRACTOR_PAYMENT_UUID_HINT = "run `gusto contractor-payment list` to get a real contractor_payment_uuid";
 
 interface ContractorPaymentListOpts {
   startDate?: string;
@@ -92,7 +92,7 @@ export function contractorPaymentShowHandler(
 ): CommandHandler {
   return async ({ globals }) => {
     if (!isValidUuid(contractorPaymentUuid)) {
-      return invalidUuid("contractor_payment_uuid", contractorPaymentUuid, CONTRACTOR_PAYMENT_LOOKUP);
+      return invalidUuid("contractor_payment_uuid", contractorPaymentUuid, CONTRACTOR_PAYMENT_UUID_HINT);
     }
     return fetchCompanyResource(
       globals,
