@@ -9,7 +9,7 @@ import { toQueryString } from "../lib/query.ts";
 import { type CommandHandler, invalidUuid, runReadCommand, validationFailure } from "../lib/runner.ts";
 
 /** Where a caller goes to get a real identifier when the one they passed can't name a record. */
-const CONTRACTOR_LOOKUP = "gusto contractor list";
+const CONTRACTOR_UUID_HINT = "run `gusto contractor list` to get a real contractor_uuid";
 
 // The sort fields GET /v1/contractors/{uuid}/payments accepts, each optionally suffixed with
 // ":asc"/":desc". The API 422s on anything else; validating here turns a typo into a fast
@@ -101,7 +101,7 @@ export function registerContractorCommand(parent: Command): void {
 
 function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts): CommandHandler {
   return async ({ globals }) => {
-    if (!isValidUuid(contractorUuid)) return invalidUuid("contractor_uuid", contractorUuid, CONTRACTOR_LOOKUP);
+    if (!isValidUuid(contractorUuid)) return invalidUuid("contractor_uuid", contractorUuid, CONTRACTOR_UUID_HINT);
     return fetchResource(
       globals,
       { tokenStdin: opts.tokenStdin },
@@ -112,7 +112,7 @@ function contractorShowHandler(contractorUuid: string, opts: ContractorShowOpts)
 
 export function contractorPaymentsHandler(contractorUuid: string, opts: ContractorPaymentsOpts): CommandHandler {
   return async ({ globals }) => {
-    if (!isValidUuid(contractorUuid)) return invalidUuid("contractor_uuid", contractorUuid, CONTRACTOR_LOOKUP);
+    if (!isValidUuid(contractorUuid)) return invalidUuid("contractor_uuid", contractorUuid, CONTRACTOR_UUID_HINT);
     const sortByError = validateSortBy(opts.sortBy);
     if (sortByError) return validationFailure("invalid arguments", [sortByError]);
     const pg = parsePaginationFlags(opts);
