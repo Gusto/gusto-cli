@@ -804,8 +804,29 @@ describe("identifier validation", () => {
     expect(result.error.hint).not.toMatch(/<[a-z_]+>/);
   });
 
-  test("--example prints its payload without reaching the guard", async () => {
-    const d = okData(await updateHomeAddressHandler(BAD, { example: true })(ctx));
-    expect(d.path).toBe("/v1/home_addresses/{home_address_uuid}");
+  test.each([
+    [
+      "update-home-address",
+      (u: string) => updateHomeAddressHandler(u, { example: true }),
+      "/v1/home_addresses/{home_address_uuid}",
+    ],
+    [
+      "update-work-address",
+      (u: string) => updateWorkAddressHandler(u, { example: true }),
+      "/v1/work_addresses/{work_address_uuid}",
+    ],
+    [
+      "update",
+      (u: string) => employeeUpdateHandler(u, { ...auth, example: true }),
+      "/v1/work_addresses/{work_address_uuid}",
+    ],
+    [
+      "terminate",
+      (u: string) => employeeTerminateHandler(u, { ...auth, example: true }),
+      "/v1/employees/{employee_id}/terminations",
+    ],
+  ])("%s --example prints its payload without reaching the guard", async (_name, build, path) => {
+    const d = okData(await build(BAD)(ctx));
+    expect(d.path).toBe(path);
   });
 });
