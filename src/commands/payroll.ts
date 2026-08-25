@@ -138,6 +138,38 @@ export interface PayrollShowOpts {
   tokenStdin?: boolean;
 }
 
+export interface PayrollReceiptOpts {
+  page?: string;
+  per?: string;
+  tokenStdin?: boolean;
+}
+
+const POSITIVE_INT = /^\d+$/;
+
+function parsePositiveInt(field: string, raw: string | undefined): { blocked?: BlockedOn; value?: string } {
+  if (raw === undefined) return {};
+  if (!POSITIVE_INT.test(raw) || Number(raw) < 1) {
+    return { blocked: { field, reason: `must be a positive integer, got: ${raw}` } };
+  }
+  return { value: raw };
+}
+
+/** Validate `payroll receipt` flags. `page`/`per` are passed through verbatim to the API's own
+ * query params rather than routed through the list-endpoint pagination helpers: unlike a list
+ * endpoint's array-of-records response, this paginates one array (`employee_compensations`)
+ * embedded in a single receipt object, and omitting both loads every entry (the API's documented
+ * default) rather than the first page. */
+export function buildPayrollReceiptQuery(opts: PayrollReceiptOpts): PayrollQueryResult {
+  const page = parsePositiveInt("page", opts.page);
+  const per = parsePositiveInt("per", opts.per);
+  const blocked = [page.blocked, per.blocked].filter((b): b is BlockedOn => b !== undefined);
+  if (blocked.length > 0) return { ok: false, blocked };
+  const query: QueryParams = {};
+  if (page.value !== undefined) query.page = page.value;
+  if (per.value !== undefined) query.per = per.value;
+  return { ok: true, query };
+}
+
 /** Validate `payroll show` flags and map onto the show endpoint's query params. Only `include` is
  * supported; a valid value is passed through verbatim (see SHOW_INCLUDE_OPTIONS for the closed
  * enum and why it's validated client-side). */
@@ -801,6 +833,29 @@ Examples:
     );
 
   cmd
+    .command("receipt [payroll_uuid]")
+    .description("Get a payroll's payment receipt (licensee info, totals, taxes, employee compensations)")
+    .option("--page <n>", "Page of employee_compensations to return (omit to return every entry)")
+    .option("--per <n>", "Employee compensations per page (only meaningful together with --page)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Not company-scoped: reads /v1/payrolls/{payroll_uuid}/receipt directly (no --company-uuid). The
+receipt is a compliance document - licensee info, totals, taxes, and employee compensations -
+distinct from 'payroll show'. --page/--per only affect how much of the embedded
+employee_compensations array comes back; omitting both returns every entry.
+
+Examples:
+  $ gusto payroll receipt 1a2b3c4d-0000-1111-2222-333344445555
+  $ gusto payroll receipt 1a2b3c4d-0000-1111-2222-333344445555 --page 1 --per 25
+`,
+    )
+    .action((payrollUuid: string | undefined, opts: PayrollReceiptOpts) =>
+      runReadCommand("gusto payroll receipt", readGlobalFlags(parent.opts()), payrollReceiptHandler(payrollUuid, opts)),
+    );
+
+  cmd
     .command("blockers")
     .description("List the company's payroll blockers (issues that must be resolved before payroll can run)")
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
@@ -1261,5 +1316,21 @@ export function payrollShowHandler(payrollUuid: string | undefined, opts: Payrol
     );
     if (!result.ok) return result;
     return { ...result, human: () => renderPayrollShow(result.data) };
+  };
+}
+
+/** GET the payroll receipt. Unlike `payroll show`, the endpoint is a bare payroll-resource path
+ * (`/v1/payrolls/{uuid}/receipt`, not company-scoped), so this goes through `fetchResource` rather
+ * than `fetchCompanyResource`. */
+export function payrollReceiptHandler(payrollUuid: string | undefined, opts: PayrollReceiptOpts): CommandHandler {
+  return async ({ globals }) => {
+    if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
+    const parsed = buildPayrollReceiptQuery(opts);
+    if (!parsed.ok) return validationFailure("invalid arguments", parsed.blocked);
+    return fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/payrolls/${encodeURIComponent(payrollUuid)}/receipt${toQueryString(parsed.query)}`,
+    );
   };
 }

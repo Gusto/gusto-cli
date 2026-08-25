@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { type ApiClient, PollTimeoutError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { stubApiClient } from "../lib/test-support.ts";
+import { routeFetch, stubApiClient, stubGlobalFetch, TEST_CONTEXT } from "../lib/test-support.ts";
 import {
   buildPayrollListQuery,
+  buildPayrollReceiptQuery,
   buildPayrollShowQuery,
   buildPayrollUpdateFromCsv,
   employeesNeedingJobUuidInference,
@@ -11,9 +12,13 @@ import {
   inferMissingJobUuids,
   isPayrollCalculated,
   isPayrollCalculationFailed,
+  payrollReceiptHandler,
   type PayrollUpdateBody,
   renderPayrollShow,
 } from "./payroll.ts";
+
+let restore: () => void = () => {};
+afterEach(() => restore());
 
 describe("buildPayrollShowQuery", () => {
   test("no include yields an empty query", () => {
@@ -1097,5 +1102,83 @@ describe("payroll calculate poll predicates", () => {
     expect(isPayrollCalculationFailed({ processing_request: { status: "calculating" } })).toBe(false);
     expect(isPayrollCalculationFailed({ processing_request: null })).toBe(false);
     expect(isPayrollCalculationFailed({})).toBe(false);
+  });
+});
+
+describe("buildPayrollReceiptQuery", () => {
+  test("no page/per yields an empty query", () => {
+    expect(buildPayrollReceiptQuery({})).toEqual({ ok: true, query: {} });
+  });
+
+  test("passes valid page/per through as strings", () => {
+    expect(buildPayrollReceiptQuery({ page: "2", per: "25" })).toEqual({
+      ok: true,
+      query: { page: "2", per: "25" },
+    });
+  });
+
+  test("rejects a non-integer --page", () => {
+    const result = buildPayrollReceiptQuery({ page: "abc" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toEqual([{ field: "page", reason: "must be a positive integer, got: abc" }]);
+  });
+
+  test("rejects zero for --per", () => {
+    const result = buildPayrollReceiptQuery({ per: "0" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toEqual([{ field: "per", reason: "must be a positive integer, got: 0" }]);
+  });
+
+  test("collects blocked_on entries for both page and per when both are invalid", () => {
+    const result = buildPayrollReceiptQuery({ page: "-1", per: "1.5" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked.map((b) => b.field)).toEqual(["page", "per"]);
+  });
+});
+
+describe("payrollReceiptHandler", () => {
+  const PAYROLL_UUID = "1a2b3c4d-0000-1111-2222-333344445555";
+
+  test("hits the bare /v1/payrolls/{uuid}/receipt path (not company-scoped) and passes the body through", async () => {
+    const body = { payroll_uuid: PAYROLL_UUID, totals: { company_debit: "100.00" } };
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body }]);
+    restore = r;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual(body);
+    expect(calls[0]?.url).toContain(`/v1/payrolls/${PAYROLL_UUID}/receipt`);
+    expect(calls[0]?.url).not.toContain("/companies/");
+  });
+
+  test("forwards --page/--per as query params", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
+    restore = r;
+    await payrollReceiptHandler(PAYROLL_UUID, { page: "2", per: "10" })(TEST_CONTEXT);
+    expect(calls[0]?.url).toContain("page=2");
+    expect(calls[0]?.url).toContain("per=10");
+  });
+
+  test("missing payroll_uuid fails validation (exit 7) without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(undefined, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  test("an invalid --page fails validation (exit 7) without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, { page: "0" })(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(stub.calls).toHaveLength(0);
   });
 });

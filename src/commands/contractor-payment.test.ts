@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { routeFetch, stubGlobalFetch, TEST_AUTH, TEST_CONTEXT } from "../lib/test-support.ts";
-import { contractorPaymentListHandler, contractorPaymentShowHandler } from "./contractor-payment.ts";
+import {
+  contractorPaymentListHandler,
+  contractorPaymentReceiptHandler,
+  contractorPaymentShowHandler,
+} from "./contractor-payment.ts";
 
 const PAYMENT_UUID = "22222222-2222-2222-2222-222222222222";
 const DATE_RANGE = { startDate: "2026-01-01", endDate: "2026-12-31" };
@@ -127,6 +131,30 @@ describe("contractorPaymentShowHandler", () => {
     const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = stub.restore;
     const result = await contractorPaymentShowHandler("not-a-uuid", { ...TEST_AUTH })(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(stub.calls).toHaveLength(0);
+  });
+});
+
+describe("contractorPaymentReceiptHandler", () => {
+  test("hits the bare /v1/contractor_payments/{uuid}/receipt path (not company-scoped) and passes the body through", async () => {
+    const body = { contractor_payment_uuid: PAYMENT_UUID, totals: { company_debit: "50.00" } };
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body }]);
+    restore = r;
+    const result = await contractorPaymentReceiptHandler(PAYMENT_UUID, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual(body);
+    expect(calls[0]?.url).toContain(`/v1/contractor_payments/${PAYMENT_UUID}/receipt`);
+    expect(calls[0]?.url).not.toContain("/companies/");
+  });
+
+  test("rejects a malformed contractor_payment_uuid without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await contractorPaymentReceiptHandler("not-a-uuid", {})(TEST_CONTEXT);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(7);
