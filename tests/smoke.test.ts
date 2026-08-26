@@ -242,6 +242,46 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  // Covered here rather than in unit tests: those pass pre-parsed options, so they cannot catch a
+  // flag that was never registered with commander - which would exit 2 (unknown option), not 7.
+  test.each([
+    ["--pay-period-start", ["timesheet", "sync", "--pay-period-start", "2026-06-01"], "start-date"],
+    ["--pay-period-end", ["timesheet", "sync", "--pay-period-end", "2026-06-15"], "end-date"],
+    ["--start-date", ["timesheet", "sync", "--start-date", "2026-06-01"], "start-date"],
+    ["--end-date", ["timesheet", "sync", "--end-date", "2026-06-15"], "end-date"],
+  ])("timesheet sync %s is recognized and only the omitted flags block (exit 7)", async (_name, argv, satisfied) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).not.toContain(satisfied);
+  });
+
+  // The canonical names are asserted by the parity test below; this covers only their absence.
+  test("timesheet sync --help hides the deprecated aliases", async () => {
+    const result = await run(["timesheet", "sync", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("--pay-period-start");
+    expect(result.stdout).not.toContain("--pay-period-end");
+  });
+
+  // Pins both names and descriptions against future drift; only the names moved in this rename.
+  // Whitespace is collapsed because commander pads to the longest flag, which differs per command -
+  // and matching flag+description as one string catches them being paired with the wrong date.
+  test("timesheet sync and list keep the same date flag names and descriptions", async () => {
+    const [sync, list] = await Promise.all([
+      run(["timesheet", "sync", "--help"]),
+      run(["timesheet", "list", "--help"]),
+    ]);
+    for (const help of [sync.stdout, list.stdout]) {
+      const flat = help.replace(/\s+/g, " ");
+      expect(flat).toContain("--start-date <date> Pay period start (YYYY-MM-DD)");
+      expect(flat).toContain("--end-date <date> Pay period end (YYYY-MM-DD)");
+    }
+  });
+
   test("department list without a token returns no_access_token (exit 3)", async () => {
     // A brand-new non-alias subcommand: assert it dispatches (reaches the auth check, exit 3) rather
     // than commander's unknown-command (exit 2), proving it is wired into the compiled binary.
