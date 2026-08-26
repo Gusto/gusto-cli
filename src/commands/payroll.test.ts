@@ -1182,6 +1182,27 @@ describe("payrollReceiptHandler", () => {
     expect(stub.calls[1]?.url).toContain("page=2");
   });
 
+  test("a non-object body mid-walk is rejected as malformed", async () => {
+    let call = 0;
+    const stub = stubGlobalFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return {
+          status: 200,
+          headers: { "x-total-pages": "2" },
+          body: { payroll_uuid: PAYROLL_UUID, employee_compensations: [{ employee_uuid: "ee-1" }] },
+        };
+      }
+      return { status: 200, body: [] };
+    });
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(stub.calls).toHaveLength(2);
+  });
+
   test("--page/--per: sends exactly one request for that page instead of walking", async () => {
     const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
     restore = r;
