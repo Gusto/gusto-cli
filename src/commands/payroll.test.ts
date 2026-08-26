@@ -1137,6 +1137,14 @@ describe("buildPayrollReceiptQuery", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.blocked.map((b) => b.field)).toEqual(["page", "per"]);
   });
+
+  test("clamps an oversized --per to the endpoint's max instead of sending it verbatim", () => {
+    expect(buildPayrollReceiptQuery({ per: "100000" })).toEqual({ ok: true, query: { per: "100" } });
+  });
+
+  test("defaults --per to the endpoint's max when only --page is given", () => {
+    expect(buildPayrollReceiptQuery({ page: "3" })).toEqual({ ok: true, query: { page: "3", per: "100" } });
+  });
 });
 
 describe("payrollReceiptHandler", () => {
@@ -1210,6 +1218,35 @@ describe("payrollReceiptHandler", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain("page=2");
     expect(calls[0]?.url).toContain("per=10");
+  });
+
+  test("--page alone defaults --per to 100 so the slice size is deterministic", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
+    restore = r;
+    await payrollReceiptHandler(PAYROLL_UUID, { page: "3" })(TEST_CONTEXT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("page=3");
+    expect(calls[0]?.url).toContain("per=100");
+  });
+
+  test("an oversized --per is clamped rather than sent verbatim", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
+    restore = r;
+    await payrollReceiptHandler(PAYROLL_UUID, { per: "100000" })(TEST_CONTEXT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("per=100");
+    expect(calls[0]?.url).not.toContain("per=100000");
+  });
+
+  test("rejects a malformed payroll_uuid without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler("not-a-uuid", {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(result.error.hint).toBe("run `gusto payroll list` to get a real payroll_uuid");
+    expect(stub.calls).toHaveLength(0);
   });
 
   test("missing payroll_uuid fails validation (exit 7) without sending a request", async () => {
