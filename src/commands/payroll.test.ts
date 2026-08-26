@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { type ApiClient, PollTimeoutError } from "../lib/api-client.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { stubApiClient } from "../lib/test-support.ts";
+import { routeFetch, stubApiClient, stubGlobalFetch, TEST_CONTEXT } from "../lib/test-support.ts";
 import {
   buildPayrollListQuery,
+  buildPayrollReceiptQuery,
   buildPayrollShowQuery,
   buildPayrollUpdateFromCsv,
   employeesNeedingJobUuidInference,
@@ -11,9 +12,13 @@ import {
   inferMissingJobUuids,
   isPayrollCalculated,
   isPayrollCalculationFailed,
+  payrollReceiptHandler,
   type PayrollUpdateBody,
   renderPayrollShow,
 } from "./payroll.ts";
+
+let restore: () => void = () => {};
+afterEach(() => restore());
 
 describe("buildPayrollShowQuery", () => {
   test("no include yields an empty query", () => {
@@ -1097,5 +1102,170 @@ describe("payroll calculate poll predicates", () => {
     expect(isPayrollCalculationFailed({ processing_request: { status: "calculating" } })).toBe(false);
     expect(isPayrollCalculationFailed({ processing_request: null })).toBe(false);
     expect(isPayrollCalculationFailed({})).toBe(false);
+  });
+});
+
+describe("buildPayrollReceiptQuery", () => {
+  test("no page/per yields an empty query", () => {
+    expect(buildPayrollReceiptQuery({})).toEqual({ ok: true, query: {} });
+  });
+
+  test("passes valid page/per through as strings", () => {
+    expect(buildPayrollReceiptQuery({ page: "2", per: "25" })).toEqual({
+      ok: true,
+      query: { page: "2", per: "25" },
+    });
+  });
+
+  test("rejects a non-integer --page", () => {
+    const result = buildPayrollReceiptQuery({ page: "abc" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toEqual([{ field: "page", reason: "must be a positive integer, got: abc" }]);
+  });
+
+  test("rejects zero for --per", () => {
+    const result = buildPayrollReceiptQuery({ per: "0" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked).toEqual([{ field: "per", reason: "must be a positive integer, got: 0" }]);
+  });
+
+  test("collects blocked_on entries for both page and per when both are invalid", () => {
+    const result = buildPayrollReceiptQuery({ page: "-1", per: "1.5" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.blocked.map((b) => b.field)).toEqual(["page", "per"]);
+  });
+
+  test("clamps an oversized --per to the endpoint's max instead of sending it verbatim", () => {
+    expect(buildPayrollReceiptQuery({ per: "100000" })).toEqual({ ok: true, query: { per: "100" } });
+  });
+
+  test("defaults --per to the endpoint's max when only --page is given", () => {
+    expect(buildPayrollReceiptQuery({ page: "3" })).toEqual({ ok: true, query: { page: "3", per: "100" } });
+  });
+});
+
+describe("payrollReceiptHandler", () => {
+  const PAYROLL_UUID = "1a2b3c4d-0000-1111-2222-333344445555";
+
+  test("no --page/--per: a single response with no x-total-pages header is returned unchanged", async () => {
+    const body = {
+      payroll_uuid: PAYROLL_UUID,
+      totals: { company_debit: "100.00" },
+      employee_compensations: [{ employee_uuid: "ee-1" }],
+    };
+    const stub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual(body);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.url).toContain(`/v1/payrolls/${PAYROLL_UUID}/receipt`);
+    expect(stub.calls[0]?.url).not.toContain("/companies/");
+  });
+
+  test("no --page/--per: walks every page and merges employee_compensations when x-total-pages is present", async () => {
+    let call = 0;
+    const stub = stubGlobalFetch(() => {
+      call += 1;
+      const page = call === 1 ? [{ employee_uuid: "ee-1" }] : [{ employee_uuid: "ee-2" }];
+      return {
+        status: 200,
+        headers: { "x-total-pages": "2" },
+        body: { payroll_uuid: PAYROLL_UUID, totals: { company_debit: "100.00" }, employee_compensations: page },
+      };
+    });
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
+    if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    const data = result.data as { employee_compensations: unknown[]; totals: unknown };
+    expect(data.employee_compensations).toEqual([{ employee_uuid: "ee-1" }, { employee_uuid: "ee-2" }]);
+    expect(data.totals).toEqual({ company_debit: "100.00" });
+    expect(stub.calls).toHaveLength(2);
+    expect(stub.calls[0]?.url).toContain("page=1");
+    expect(stub.calls[0]?.url).toContain("per=100");
+    expect(stub.calls[1]?.url).toContain("page=2");
+  });
+
+  test("a non-object body mid-walk is rejected as malformed", async () => {
+    let call = 0;
+    const stub = stubGlobalFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return {
+          status: 200,
+          headers: { "x-total-pages": "2" },
+          body: { payroll_uuid: PAYROLL_UUID, employee_compensations: [{ employee_uuid: "ee-1" }] },
+        };
+      }
+      return { status: 200, body: [] };
+    });
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  test("--page/--per: sends exactly one request for that page instead of walking", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
+    restore = r;
+    await payrollReceiptHandler(PAYROLL_UUID, { page: "2", per: "10" })(TEST_CONTEXT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("page=2");
+    expect(calls[0]?.url).toContain("per=10");
+  });
+
+  test("--page alone defaults --per to 100 so the slice size is deterministic", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
+    restore = r;
+    await payrollReceiptHandler(PAYROLL_UUID, { page: "3" })(TEST_CONTEXT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("page=3");
+    expect(calls[0]?.url).toContain("per=100");
+  });
+
+  test("an oversized --per is clamped rather than sent verbatim", async () => {
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
+    restore = r;
+    await payrollReceiptHandler(PAYROLL_UUID, { per: "100000" })(TEST_CONTEXT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("per=100");
+    expect(calls[0]?.url).not.toContain("per=100000");
+  });
+
+  test("rejects a malformed payroll_uuid without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler("not-a-uuid", {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(result.error.hint).toBe("run `gusto payroll list` to get a real payroll_uuid");
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  test("missing payroll_uuid fails validation (exit 7) without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(undefined, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  test("an invalid --page fails validation (exit 7) without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, { page: "0" })(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(stub.calls).toHaveLength(0);
   });
 });

@@ -98,7 +98,7 @@ Before naming a branch or posting repository content, read ["This repo is public
 ## Commit style
 
 - Single-line summary, 20-80 chars, imperative mood
-- Reference the related GitHub issue when there is one; an internal ticket key belongs in the PR description, not the branch name, the commit subject, the PR title, or any issue
+- Reference the related GitHub issue when there is one; keep an internal ticket key out of the PR entirely - not the branch name, the commit subject, the PR title, the PR description, or any issue
 - Body explains why if non-obvious; otherwise leave it terse
 - Sign off every commit (see [Developer Certificate of Origin](#developer-certificate-of-origin))
 

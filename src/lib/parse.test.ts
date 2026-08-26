@@ -5,6 +5,7 @@ import {
   isValidStateCode,
   isValidUuid,
   parseNonNegativeNumber,
+  parsePositiveInt,
   parsePositiveNumber,
   resolveTimeoutMs,
   splitTokens,
@@ -64,6 +65,31 @@ describe("parsePositiveNumber", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toContain("1e1000");
+  });
+});
+
+describe("parsePositiveInt", () => {
+  test("accepts a positive integer", () => {
+    expect(parsePositiveInt("42")).toEqual({ ok: true, value: 42 });
+  });
+
+  test("rejects zero", () => {
+    expect(parsePositiveInt("0").ok).toBe(false);
+  });
+
+  test("rejects a decimal", () => {
+    expect(parsePositiveInt("1.5").ok).toBe(false);
+  });
+
+  test("rejects a negative number", () => {
+    expect(parsePositiveInt("-1").ok).toBe(false);
+  });
+
+  test("rejects a non-numeric string", () => {
+    const result = parsePositiveInt("abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("must be a positive integer, got: abc");
   });
 });
 

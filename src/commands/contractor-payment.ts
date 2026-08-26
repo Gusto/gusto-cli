@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import type { ApiClient } from "../lib/api-client.ts";
-import { fetchCompanyResource, withCompanyContext } from "../lib/api-context.ts";
+import { fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
 import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { malformedResponse } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
@@ -37,6 +37,10 @@ interface ContractorPaymentShowOpts {
   tokenStdin?: boolean;
 }
 
+interface ContractorPaymentReceiptOpts {
+  tokenStdin?: boolean;
+}
+
 export function registerContractorPaymentCommand(parent: Command): void {
   const cmd = parent.command("contractor-payment").description("List and inspect contractor payments");
 
@@ -52,6 +56,29 @@ export function registerContractorPaymentCommand(parent: Command): void {
         "gusto contractor-payment show",
         readGlobalFlags(parent.opts()),
         contractorPaymentShowHandler(contractorPaymentUuid, opts),
+      ),
+    );
+
+  cmd
+    .command("receipt <contractor_payment_uuid>")
+    .description("Get a contractor payment's payment receipt (available once paid by direct deposit and funded)")
+    .option(...TOKEN_STDIN_OPT)
+    .addHelpText(
+      "after",
+      `
+Not company-scoped: reads /v1/contractor_payments/{contractor_payment_uuid}/receipt directly (no
+--company-uuid). Only available once the payment has been made by direct deposit and funded; a
+check payment or an unfunded direct deposit returns 404.
+
+Examples:
+  $ gusto contractor-payment receipt 1a2b3c4d-0000-1111-2222-333344445555
+`,
+    )
+    .action((contractorPaymentUuid: string, opts: ContractorPaymentReceiptOpts) =>
+      runReadCommand(
+        "gusto contractor-payment receipt",
+        readGlobalFlags(parent.opts()),
+        contractorPaymentReceiptHandler(contractorPaymentUuid, opts),
       ),
     );
 
@@ -98,6 +125,25 @@ export function contractorPaymentShowHandler(
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       (ctx) => `/v1/companies/${ctx.companyUuid}/contractor_payments/${encodeURIComponent(contractorPaymentUuid)}`,
+    );
+  };
+}
+
+/** GET the contractor payment receipt. Unlike `contractor-payment show`, the endpoint is a bare
+ * resource path (`/v1/contractor_payments/{uuid}/receipt`, not company-scoped), so this goes
+ * through `fetchResource` rather than `fetchCompanyResource`. */
+export function contractorPaymentReceiptHandler(
+  contractorPaymentUuid: string,
+  opts: ContractorPaymentReceiptOpts,
+): CommandHandler {
+  return async ({ globals }) => {
+    if (!isValidUuid(contractorPaymentUuid)) {
+      return invalidUuid("contractor_payment_uuid", contractorPaymentUuid, CONTRACTOR_PAYMENT_UUID_HINT);
+    }
+    return fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/contractor_payments/${encodeURIComponent(contractorPaymentUuid)}/receipt`,
     );
   };
 }
