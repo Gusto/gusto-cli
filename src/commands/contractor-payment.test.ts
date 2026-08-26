@@ -159,6 +159,7 @@ describe("contractorPaymentReceiptHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(7);
+    expect(result.error.hint).toBe("run `gusto contractor-payment list` to get a real contractor_payment_uuid");
     expect(stub.calls).toHaveLength(0);
   });
 });

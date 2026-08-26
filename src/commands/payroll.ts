@@ -10,6 +10,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
 import type { BlockedOn } from "../lib/output.ts";
+import { withPageParams } from "../lib/pagination.ts";
 import { isValidIsoDate, parseNonNegativeNumber, resolveTimeoutMs, splitTokens, validateEnum } from "../lib/parse.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import {
@@ -154,11 +155,11 @@ function parsePositiveInt(field: string, raw: string | undefined): { blocked?: B
   return { value: raw };
 }
 
-/** Validate `payroll receipt` flags. `page`/`per` are passed through verbatim to the API's own
- * query params rather than routed through the list-endpoint pagination helpers: unlike a list
- * endpoint's array-of-records response, this paginates one array (`employee_compensations`)
- * embedded in a single receipt object, and omitting both loads every entry (the API's documented
- * default) rather than the first page. */
+/** Validate `payroll receipt` flags. An explicit `page`/`per` asks for one specific slice of
+ * `employee_compensations` and is sent as a single request (see `payrollReceiptHandler`); omitting
+ * both instead triggers `fetchFullPayrollReceipt`'s walk of every page, since API versions that
+ * force pagination on this field (2026-06-15+) would otherwise silently truncate a large payroll's
+ * receipt on a single unparameterized GET. */
 export function buildPayrollReceiptQuery(opts: PayrollReceiptOpts): PayrollQueryResult {
   const page = parsePositiveInt("page", opts.page);
   const per = parsePositiveInt("per", opts.per);
@@ -835,7 +836,7 @@ Examples:
   cmd
     .command("receipt [payroll_uuid]")
     .description("Get a payroll's payment receipt (licensee info, totals, taxes, employee compensations)")
-    .option("--page <n>", "Page of employee_compensations to return (omit to return every entry)")
+    .option("--page <n>", "Fetch only this page of employee_compensations (omit --page/--per to fetch every page)")
     .option("--per <n>", "Employee compensations per page (only meaningful together with --page)")
     .option(...TOKEN_STDIN_OPT)
     .addHelpText(
@@ -843,8 +844,11 @@ Examples:
       `
 Not company-scoped: reads /v1/payrolls/{payroll_uuid}/receipt directly (no --company-uuid). The
 receipt is a compliance document - licensee info, totals, taxes, and employee compensations -
-distinct from 'payroll show'. --page/--per only affect how much of the embedded
-employee_compensations array comes back; omitting both returns every entry.
+distinct from 'payroll show'. Passing --page and/or --per fetches exactly that one page in a
+single request. Omitting both walks every page and returns the complete employee_compensations
+array regardless of API version: some API versions return everything in one response and others
+force pagination on this field, and the walk adapts to whichever the account is on rather than
+guessing from a fetched-count heuristic.
 
 Examples:
   $ gusto payroll receipt 1a2b3c4d-0000-1111-2222-333344445555
@@ -1319,18 +1323,68 @@ export function payrollShowHandler(payrollUuid: string | undefined, opts: Payrol
   };
 }
 
+/** The endpoint's own documented cap on `employee_compensations` per request (see the payroll
+ * receipt reference docs), used when walking every page. */
+const RECEIPT_MAX_PER = 100;
+
+interface PayrollReceiptBody {
+  employee_compensations?: unknown;
+}
+
+/** Whether pagination headers name a further page to fetch. Deliberately narrower than
+ * `detectNext`'s list-endpoint heuristic: it never guesses "another page" from a fetched count
+ * that merely reaches `per`, because an API version that predates receipt pagination returns every
+ * employee_compensations entry in one response regardless of what page/per this walk sends. Under
+ * that version, guessing from the count would re-request forever, since each response is the same
+ * complete array again. Only an explicit x-total-pages header - the signal a version that force-
+ * paginates this field actually sends - continues the walk. */
+function nextReceiptPage(headers: Record<string, string>, currentPage: number): number | undefined {
+  const totalPages = Number(headers["x-total-pages"]);
+  if (!Number.isInteger(totalPages) || totalPages <= 0) return undefined;
+  return currentPage < totalPages ? currentPage + 1 : undefined;
+}
+
+/** Walk every page of a payroll receipt's `employee_compensations` and merge them into the first
+ * response's shape (the receipt's other fields - totals, taxes, licensee, etc. - are identical
+ * across pages). A version that returns everything in a single response and sends no
+ * `x-total-pages` header exits after that first request, via `nextReceiptPage`. */
+async function fetchFullPayrollReceipt(client: Pick<ApiClient, "get">, path: string): Promise<CommandResult> {
+  let page = 1;
+  let merged: Record<string, unknown> | undefined;
+  const employeeCompensations: unknown[] = [];
+  for (;;) {
+    const res = await client.get<PayrollReceiptBody>(withPageParams(path, page, RECEIPT_MAX_PER));
+    if (!isRecord(res.body)) return malformedResponse(`${path} returned a non-object body`);
+    merged ??= res.body;
+    if (Array.isArray(res.body.employee_compensations)) employeeCompensations.push(...res.body.employee_compensations);
+    const nextPage = nextReceiptPage(res.headers, page);
+    if (nextPage === undefined) break;
+    page = nextPage;
+  }
+  return { ok: true, data: { ...merged, employee_compensations: employeeCompensations } };
+}
+
 /** GET the payroll receipt. Unlike `payroll show`, the endpoint is a bare payroll-resource path
- * (`/v1/payrolls/{uuid}/receipt`, not company-scoped), so this goes through `fetchResource` rather
- * than `fetchCompanyResource`. */
+ * (`/v1/payrolls/{uuid}/receipt`, not company-scoped). An explicit --page/--per is sent as one
+ * request via `fetchResource`; omitting both resolves auth directly so `fetchFullPayrollReceipt`
+ * can walk every page on the resolved client (see its doc comment for why). */
 export function payrollReceiptHandler(payrollUuid: string | undefined, opts: PayrollReceiptOpts): CommandHandler {
   return async ({ globals }) => {
     if (!payrollUuid) return missingArgs([{ field: "payroll_uuid", reason: "required" }]);
     const parsed = buildPayrollReceiptQuery(opts);
     if (!parsed.ok) return validationFailure("invalid arguments", parsed.blocked);
-    return fetchResource(
-      globals,
-      { tokenStdin: opts.tokenStdin },
-      () => `/v1/payrolls/${encodeURIComponent(payrollUuid)}/receipt${toQueryString(parsed.query)}`,
-    );
+
+    const path = `/v1/payrolls/${encodeURIComponent(payrollUuid)}/receipt`;
+    if (opts.page !== undefined || opts.per !== undefined) {
+      return fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `${path}${toQueryString(parsed.query)}`);
+    }
+
+    const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
+    if (!resolved.ok) return resolved.result;
+    try {
+      return await fetchFullPayrollReceipt(resolved.ctx.client, path);
+    } catch (err) {
+      return toResult(err);
+    }
   };
 }

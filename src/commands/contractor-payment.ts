@@ -138,7 +138,7 @@ export function contractorPaymentReceiptHandler(
 ): CommandHandler {
   return async ({ globals }) => {
     if (!isValidUuid(contractorPaymentUuid)) {
-      return invalidUuid("contractor_payment_uuid", contractorPaymentUuid, CONTRACTOR_PAYMENT_LOOKUP);
+      return invalidUuid("contractor_payment_uuid", contractorPaymentUuid, CONTRACTOR_PAYMENT_UUID_HINT);
     }
     return fetchResource(
       globals,

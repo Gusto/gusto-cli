@@ -1142,22 +1142,51 @@ describe("buildPayrollReceiptQuery", () => {
 describe("payrollReceiptHandler", () => {
   const PAYROLL_UUID = "1a2b3c4d-0000-1111-2222-333344445555";
 
-  test("hits the bare /v1/payrolls/{uuid}/receipt path (not company-scoped) and passes the body through", async () => {
-    const body = { payroll_uuid: PAYROLL_UUID, totals: { company_debit: "100.00" } };
-    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body }]);
-    restore = r;
+  test("no --page/--per: a single response with no x-total-pages header is returned unchanged", async () => {
+    const body = {
+      payroll_uuid: PAYROLL_UUID,
+      totals: { company_debit: "100.00" },
+      employee_compensations: [{ employee_uuid: "ee-1" }],
+    };
+    const stub = stubGlobalFetch(() => ({ status: 200, body }));
+    restore = stub.restore;
     const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data).toEqual(body);
-    expect(calls[0]?.url).toContain(`/v1/payrolls/${PAYROLL_UUID}/receipt`);
-    expect(calls[0]?.url).not.toContain("/companies/");
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.url).toContain(`/v1/payrolls/${PAYROLL_UUID}/receipt`);
+    expect(stub.calls[0]?.url).not.toContain("/companies/");
   });
 
-  test("forwards --page/--per as query params", async () => {
+  test("no --page/--per: walks every page and merges employee_compensations when x-total-pages is present", async () => {
+    let call = 0;
+    const stub = stubGlobalFetch(() => {
+      call += 1;
+      const page = call === 1 ? [{ employee_uuid: "ee-1" }] : [{ employee_uuid: "ee-2" }];
+      return {
+        status: 200,
+        headers: { "x-total-pages": "2" },
+        body: { payroll_uuid: PAYROLL_UUID, totals: { company_debit: "100.00" }, employee_compensations: page },
+      };
+    });
+    restore = stub.restore;
+    const result = await payrollReceiptHandler(PAYROLL_UUID, {})(TEST_CONTEXT);
+    if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    const data = result.data as { employee_compensations: unknown[]; totals: unknown };
+    expect(data.employee_compensations).toEqual([{ employee_uuid: "ee-1" }, { employee_uuid: "ee-2" }]);
+    expect(data.totals).toEqual({ company_debit: "100.00" });
+    expect(stub.calls).toHaveLength(2);
+    expect(stub.calls[0]?.url).toContain("page=1");
+    expect(stub.calls[0]?.url).toContain("per=100");
+    expect(stub.calls[1]?.url).toContain("page=2");
+  });
+
+  test("--page/--per: sends exactly one request for that page instead of walking", async () => {
     const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body: {} }]);
     restore = r;
     await payrollReceiptHandler(PAYROLL_UUID, { page: "2", per: "10" })(TEST_CONTEXT);
+    expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain("page=2");
     expect(calls[0]?.url).toContain("per=10");
   });
