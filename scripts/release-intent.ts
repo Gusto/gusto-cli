@@ -101,21 +101,27 @@ function assertFirstParentDescendant(repo: string, base: string, head: string): 
   if (!commits.includes(base)) throw new Error("Head must be a first-parent descendant of base");
 }
 
+function assertDescendant(repo: string, base: string, head: string): void {
+  if (!isAncestor(repo, base, head)) throw new Error("Head must be a descendant of base");
+}
+
 function assertRefreshContext(repo: string, head: string, context: RefreshContext): void {
   if (context === "pr") return;
 
-  const candidates = ["refs/heads/main", "refs/remotes/origin/main"];
-  let foundMain = false;
-  for (const candidate of candidates) {
-    const lookup = git(repo, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], true);
-    if (lookup.exitCode === 1) continue;
-    if (lookup.exitCode !== 0) throw new Error(`Could not resolve ${candidate}`);
-    foundMain = true;
-    const main = decodeOutput(lookup.stdout).trim();
-    if (isAncestor(repo, head, main)) return;
+  const remote = git(repo, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"], true);
+  if (remote.exitCode === 0) {
+    if (isAncestor(repo, head, decodeOutput(remote.stdout).trim())) return;
+    throw new Error("Refresh head must be reachable from origin/main");
   }
-  if (!foundMain) throw new Error("Could not resolve main or origin/main");
-  throw new Error("Refresh head must be reachable from main or origin/main");
+  if (remote.exitCode !== 1) throw new Error("Could not resolve refs/remotes/origin/main");
+
+  const local = git(repo, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"], true);
+  if (local.exitCode === 0) {
+    if (isAncestor(repo, head, decodeOutput(local.stdout).trim())) return;
+    throw new Error("Refresh head must be reachable from main");
+  }
+  if (local.exitCode !== 1) throw new Error("Could not resolve refs/heads/main");
+  throw new Error("Could not resolve origin/main or main");
 }
 
 function readBlob(repo: string, sha: string, file: string): Uint8Array {
@@ -384,7 +390,7 @@ export function inspectRefreshIntent(
   if (context !== "post-merge" && context !== "pr") throw new Error(`Unknown refresh context: ${String(context)}`);
   const base = resolveCommit(repo, baseValue, "Base");
   const head = resolveCommit(repo, headValue, "Head");
-  assertFirstParentDescendant(repo, base, head);
+  assertDescendant(repo, base, head);
   assertRefreshContext(repo, head, context);
 
   const beforeManifest = parseManifest(repo, base);

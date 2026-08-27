@@ -269,6 +269,20 @@ describe("release intent", () => {
     );
   });
 
+  test("retains first-parent ancestry for a normal release", () => {
+    const { repo } = setupHistory();
+    git(repo, ["commit", "--allow-empty", "-m", "docs: advance target base"]);
+    const base = git(repo, ["rev-parse", "HEAD"]);
+    git(repo, ["switch", "-c", "release-side", "v1.0.0^{}"]);
+    git(repo, ["commit", "--allow-empty", "-m", "docs: start release side branch"]);
+    git(repo, ["merge", "--no-ff", "--no-commit", base]);
+    writePackage(repo, "1.1.0");
+    writeFileSync(path.join(repo, "CHANGELOG.md"), RELEASE_CHANGELOG);
+    const head = commitAll(repo, "chore: release 1.1.0");
+
+    expectFailure(() => inspectReleaseIntent(repo, base, head), /first-parent descendant/);
+  });
+
   test("rejects malformed JSON and CRLF or binary changelog data", () => {
     const malformed = prepareRelease();
     writeFileSync(path.join(malformed.repo, "package.json"), "{not json}\n");
@@ -296,10 +310,31 @@ describe("refresh intent", () => {
     });
   });
 
-  test("defaults to post-merge validation and rejects an arbitrary branch SHA", () => {
+  test("accepts a refresh PR when the target base is the merge commit's second parent", () => {
+    const release = prepareRelease();
+    git(release.repo, ["switch", "-c", "refresh-side", `${release.base}`]);
+    git(release.repo, ["commit", "--allow-empty", "-m", "docs: start refresh side branch"]);
+    git(release.repo, ["merge", "--no-ff", "--no-commit", release.head]);
+    writeFileSync(path.join(release.repo, "CHANGELOG.md"), REFRESHED_CHANGELOG);
+    const head = commitAll(release.repo, "chore: refresh release 1.1.0");
+
+    expect(git(release.repo, ["rev-parse", "HEAD^2"])).toBe(release.head);
+    expect(inspectRefreshIntent(release.repo, release.head, head, "1.1.0", "pr").kind).toBe("refresh");
+  });
+
+  test("falls back to local main for post-merge validation when origin/main is absent", () => {
     const merged = prepareRefresh("main");
     expect(inspectRefreshIntent(merged.repo, merged.base, merged.head, "1.1.0").kind).toBe("refresh");
+  });
 
+  test("prefers origin/main and rejects a contradictory local main", () => {
+    const merged = prepareRefresh("main");
+    git(merged.repo, ["update-ref", "refs/remotes/origin/main", merged.base]);
+
+    expectFailure(() => inspectRefreshIntent(merged.repo, merged.base, merged.head, "1.1.0"), /origin\/main/);
+  });
+
+  test("defaults to post-merge validation and rejects an arbitrary branch SHA", () => {
     const arbitrary = prepareRefresh("pr");
     expectFailure(
       () => inspectRefreshIntent(arbitrary.repo, arbitrary.base, arbitrary.head, "1.1.0"),
@@ -390,7 +425,7 @@ describe("refresh intent", () => {
     const unrelated = git(refresh.repo, ["commit-tree", `${refresh.base}^{tree}`, "-m", "chore: unrelated root"]);
     expectFailure(
       () => inspectRefreshIntent(refresh.repo, unrelated, refresh.head, "1.1.0", "pr"),
-      /first-parent descendant/,
+      /descendant of base/,
     );
   });
 });
