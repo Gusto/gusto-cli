@@ -231,8 +231,8 @@ export function warnDeprecatedSyncDateFlags(opts: TimesheetSyncInput, stderr: No
   if (used.length === 0) return;
   const renames = used.map((spec) => `--${spec.aliasField} is now --${spec.field}`).join("; ");
   stderr.write(
-    `warning: ${renames}. The old name still works for now. If it came from a bundled skill, ` +
-      "refresh it with `gusto skill install timesheet-sync`.\n",
+    `warning: ${renames}. The old name still works. Refresh an outdated ` +
+      "`timesheet-sync` skill with `gusto skill install timesheet-sync`.\n",
   );
 }
 
