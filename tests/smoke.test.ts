@@ -259,6 +259,16 @@ describe("auth required commands without a token", () => {
     expect(fields).not.toContain(satisfied);
   });
 
+  // Dates omitted on purpose: exit 7 means commander accepted the flag, exit 2 would mean it did not.
+  test("timesheet list --company-uuid is registered", async () => {
+    const result = await run(["timesheet", "list", "--company-uuid", "co-1"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).toEqual(["start-date", "end-date"]);
+  });
+
   test("timesheet sync and list use the same date flag names", async () => {
     const [sync, list] = await Promise.all([
       run(["timesheet", "sync", "--help"]),
@@ -270,6 +280,7 @@ describe("auth required commands without a token", () => {
       expect(help).not.toContain("--pay-period-start");
       expect(help).not.toContain("--pay-period-end");
     }
+    expect(list.stdout).toContain("--company-uuid <uuid>");
   });
 
   test("department list without a token returns no_access_token (exit 3)", async () => {
