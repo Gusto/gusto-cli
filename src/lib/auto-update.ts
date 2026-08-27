@@ -188,6 +188,7 @@ function defaultSpawnBackgroundCheck(): void {
 export interface TriggerDeps {
   cfg: { auto_update?: AutoUpdate };
   env?: EnvSource;
+  execPath?: string;
   stateFile?: string;
   /** Injectable for tests; defaults to the real, current time. */
   now?: string;
@@ -208,6 +209,11 @@ export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void
     if (deps.cfg.auto_update === "off") return;
     const env = deps.env ?? (process.env as EnvSource);
     if (isPinned(env)) return;
+    // Nothing to check without a resolvable target - most commonly `bun run dev` with no
+    // GUSTO_INSTALL_DIR override, where execPath is the developer's `bun`, not a `gusto` binary.
+    // `resolveTargetPath` already refuses that shape for `gusto upgrade`; reusing it here avoids
+    // spawning a background child that could only fail the same way once it got there.
+    if (!resolveTargetPath(env, deps.execPath ?? process.execPath).ok) return;
 
     const state = await readState(file);
     // A previous check already staged something that's just waiting on a swap (most likely one

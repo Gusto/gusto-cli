@@ -297,6 +297,7 @@ describe("maybeSpawnBackgroundCheck", () => {
     await maybeSpawnBackgroundCheck({
       cfg: {},
       env: { GUSTO_CLI_VERSION: "latest" },
+      execPath: "/usr/local/bin/gusto",
       stateFile,
       now: "2026-08-27T12:00:00.000Z",
       spawn: () => spawned++,
@@ -323,6 +324,26 @@ describe("maybeSpawnBackgroundCheck", () => {
     expect((await readState(stateFile)).last_checked).toBe("2020-01-01T00:00:00.000Z");
   });
 
+  // Under `bun run dev` with no GUSTO_INSTALL_DIR override, execPath is the developer's `bun`, not
+  // a `gusto` binary - resolveTargetPath already refuses this exact shape for `gusto upgrade`
+  // (upgrade.ts's "not_installed_binary"). Spawning anyway would fork a doomed child every 24h:
+  // `bun --internal-background-update` never reaches index.ts's flag check at all.
+  test("does not spawn when there is no resolvable install target (e.g. running from source)", async () => {
+    const { stateFile } = setup();
+    let spawned = 0;
+
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: {},
+      stateFile,
+      execPath: "/usr/local/bin/bun",
+      spawn: () => spawned++,
+    });
+
+    expect(spawned).toBe(0);
+    expect((await readState(stateFile)).last_checked).toBeUndefined();
+  });
+
   test("spawns and claims the check on a fresh (never-checked) state", async () => {
     const { stateFile } = setup();
     let spawned = 0;
@@ -330,6 +351,7 @@ describe("maybeSpawnBackgroundCheck", () => {
     await maybeSpawnBackgroundCheck({
       cfg: {},
       env: {},
+      execPath: "/usr/local/bin/gusto",
       stateFile,
       now: "2026-08-27T12:00:00.000Z",
       spawn: () => spawned++,
@@ -363,6 +385,7 @@ describe("maybeSpawnBackgroundCheck", () => {
     await maybeSpawnBackgroundCheck({
       cfg: {},
       env: {},
+      execPath: "/usr/local/bin/gusto",
       stateFile,
       now: "2026-08-27T12:00:00.000Z",
       spawn: () => spawned++,
