@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { cleanupTempDirs, git, ISOLATED, setupRepo } from "./helpers/git";
+import { cleanupTempDirs, git, ISOLATED, setupRepo, tempDir } from "./helpers/git";
 import { extractChangelogSection, inspectRefreshIntent, inspectReleaseIntent } from "../scripts/release-intent.ts";
 
 afterEach(cleanupTempDirs);
@@ -193,6 +193,42 @@ describe("release intent", () => {
       () => inspectReleaseIntent(regression.repo, regression.base, regression.head),
       /greater than 1\.0\.0/,
     );
+  });
+
+  test("accepts only exact stable release versions", () => {
+    for (const invalid of [
+      "v1.1.0",
+      "1.1.0-rc.1",
+      "1.1.0+build.1",
+      "01.1.0",
+      "9007199254740992.0.0",
+      "0.9007199254740992.0",
+      "0.0.9007199254740992",
+    ]) {
+      expectFailure(() => extractChangelogSection(RELEASE_CHANGELOG, invalid), /stable semantic version/);
+    }
+  });
+
+  test("filters malformed tags and sorts previous stable tags numerically", () => {
+    const changelog =
+      "# Changelog\n\n" +
+      "## [11.0.0](https://github.com/Gusto/gusto-cli/compare/v10.0.0...v11.0.0) (2026-08-27)\n\n" +
+      "### Features\n\n* add reports\n\n" +
+      HISTORY;
+    const release = prepareRelease({
+      changelog,
+      packageVersion: "11.0.0",
+      subject: "chore: release 11.0.0",
+    });
+    for (const tag of ["v2.100.0", "v10.0.0", "v999.0.0+build.1", "v01.0.0", "v2.0.0-rc.1"]) {
+      git(release.repo, ["tag", tag, release.base]);
+    }
+
+    expect(inspectReleaseIntent(release.repo, release.base, release.head)).toMatchObject({
+      kind: "release",
+      version: "11.0.0",
+      previousTag: "v10.0.0",
+    });
   });
 
   test("requires one leading section, the exact comparison link, and immutable history bytes", () => {
@@ -431,6 +467,23 @@ describe("refresh intent", () => {
 });
 
 describe("changelog extraction and CLI", () => {
+  test("a copied script starts without a package or node_modules tree", () => {
+    const clean = tempDir("release-intent-clean");
+    const copiedScript = path.join(clean, "release-intent.ts");
+    copyFileSync(INTENT_SCRIPT, copiedScript);
+
+    const result = Bun.spawnSync([process.execPath, copiedScript, "invalid-command"], {
+      cwd: clean,
+      env: { PATH: process.env.PATH ?? "", ...ISOLATED },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe("release-intent: Unknown command: invalid-command\n");
+  });
+
   test("extracts exactly one version section with one trailing newline", () => {
     expect(extractChangelogSection(RELEASE_CHANGELOG, "1.1.0")).toBe(RELEASE_SECTION);
     expectFailure(() => extractChangelogSection(RELEASE_CHANGELOG, "1.2.0"), /section 1\.2\.0/);

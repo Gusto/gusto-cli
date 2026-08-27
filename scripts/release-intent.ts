@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import semver from "semver";
 
 export type ReleaseIntentResult =
   | { kind: "none" }
@@ -51,6 +50,8 @@ interface ParsedIntentArgs {
   json: boolean;
   version?: string;
 }
+
+type StableVersion = readonly [major: number, minor: number, patch: number];
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -186,11 +187,23 @@ function withoutVersion(manifest: PackageManifest): Record<string, unknown> {
   return result;
 }
 
-function stableVersion(version: string, label: string): string {
-  const parsed = semver.parse(version);
-  if (parsed === null || version.startsWith("v") || parsed.prerelease.length > 0) {
-    throw new Error(`${label} must be a stable semantic version`);
+function parseStableVersion(version: string): StableVersion | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
+  if (match === null) return null;
+  const components: StableVersion = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (!components.every(Number.isSafeInteger)) return null;
+  return components;
+}
+
+function compareStableVersions(left: StableVersion, right: StableVersion): number {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]! !== right[index]!) return left[index]! - right[index]!;
   }
+  return 0;
+}
+
+function stableVersion(version: string, label: string): string {
+  if (parseStableVersion(version) === null) throw new Error(`${label} must be a stable semantic version`);
   return version;
 }
 
@@ -279,18 +292,16 @@ function assertTargetTagAbsent(repo: string, version: string): void {
 }
 
 function previousStableTag(repo: string, base: string, targetVersion: string): string {
+  const target = parseStableVersion(targetVersion)!;
   const candidates = gitText(repo, ["tag", "--list", "v*.*.*"])
     .split("\n")
     .filter(Boolean)
-    .map((tag) => ({ tag, version: tag.slice(1) }))
-    .filter(({ version }) => {
-      const parsed = semver.parse(version);
-      return parsed !== null && parsed.prerelease.length === 0;
-    })
-    .sort((left, right) => semver.rcompare(left.version, right.version));
+    .map((tag) => ({ tag, version: parseStableVersion(tag.slice(1)) }))
+    .filter((candidate): candidate is { tag: string; version: StableVersion } => candidate.version !== null)
+    .sort((left, right) => compareStableVersions(right.version, left.version));
   const previous = candidates[0];
   if (previous === undefined) throw new Error("No previous stable tag exists");
-  if (!semver.gt(targetVersion, previous.version)) {
+  if (compareStableVersions(target, previous.version) <= 0) {
     throw new Error(`Release version ${targetVersion} must be greater than previous stable tag ${previous.tag}`);
   }
   const tagCommit = gitText(repo, ["rev-parse", "--verify", `${previous.tag}^{commit}`]);
@@ -341,7 +352,9 @@ export function inspectReleaseIntent(repo: string, baseValue: string, headValue:
 
   const baseVersion = stableVersion(baseManifest.version, "Base package version");
   const version = stableVersion(headManifest.version, "Release version");
-  if (!semver.gt(version, baseVersion)) throw new Error(`Release version must be greater than ${baseVersion}`);
+  if (compareStableVersions(parseStableVersion(version)!, parseStableVersion(baseVersion)!) <= 0) {
+    throw new Error(`Release version must be greater than ${baseVersion}`);
+  }
   if (normalizedJson(withoutVersion(baseManifest)) !== normalizedJson(withoutVersion(headManifest))) {
     throw new Error("A release may change only package.json version");
   }
