@@ -721,6 +721,63 @@ describe("auto-update background wiring stays invisible on stdout", () => {
       rmSync(installDir, { recursive: true, force: true });
     }
   });
+
+  // The internal-child check matches the exact argv shape `defaultSpawnBackgroundCheck` spawns
+  // (one real argument, and it's the flag) rather than scanning for the string anywhere in argv.
+  // A normal command whose own argument value happens to equal that string must still run - not
+  // get swallowed by the background-check short-circuit and exit 0 without ever executing.
+  test("a command argument equal to the internal background-update flag still runs the command", async () => {
+    const result = await run(["config", "get", "--", "--internal-background-update"], {
+      XDG_CONFIG_HOME: scratchHome,
+    });
+
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("unknown_key");
+  });
+});
+
+describe("background check is suppressed for upgrade invocations", () => {
+  let scratchHome: string;
+
+  beforeEach(() => {
+    scratchHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-autoupdate-upgrade-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratchHome, { recursive: true, force: true });
+  });
+
+  function stateFile(): string {
+    return path.join(scratchHome, "gusto", "update-state.toml");
+  }
+
+  // GUSTO_CLI_VERSION unpinned (overriding run()'s hermetic default) so the trigger's own pin
+  // check isn't what's suppressing it here - only the preAction hook's upgrade check should be.
+  // GUSTO_INSTALL_DIR points at a Homebrew-shaped path so upgrade's own resolution fails fast on
+  // `managed_install`, before any network call - dry-run's exit code is irrelevant to this test,
+  // only whether the background check got claimed/spawned.
+  test("gusto upgrade --dry-run does not claim or spawn a background check", async () => {
+    const result = await run(["upgrade", "--dry-run"], {
+      XDG_CONFIG_HOME: scratchHome,
+      GUSTO_CLI_VERSION: "",
+      GUSTO_INSTALL_DIR: "/opt/homebrew/bin",
+    });
+
+    // Blocked on managed_install, as expected for a Homebrew-shaped install dir - upgrade's own
+    // outcome isn't what this test is about, only that it didn't also claim/spawn a check.
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("managed_install");
+    expect(existsSync(stateFile())).toBe(false);
+  });
+
+  test("a non-upgrade command still claims and spawns a background check", async () => {
+    const result = await run(["config", "get", "environment"], {
+      XDG_CONFIG_HOME: scratchHome,
+      GUSTO_CLI_VERSION: "",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(stateFile())).toBe(true);
+  });
 });
 
 describe("skill commands work without auth", () => {

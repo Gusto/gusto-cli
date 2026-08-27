@@ -29,6 +29,7 @@ import { readConfig, type UserConfig } from "./lib/config.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
 import type { Environment, GlobalFlags } from "./lib/global-flags.ts";
 import { type StreamSinks, defaultSinks, emit, outputOptionsFrom, resolveOutputMode } from "./lib/output.ts";
+import { SKIP_AUTO_UPDATE_ENV } from "./lib/upgrade.ts";
 import { VERSION } from "./lib/version.ts";
 
 const HELP_FOOTER = `
@@ -169,7 +170,14 @@ async function main(argv: string[]): Promise<void> {
   // The detached background-update child's entire job. Checked before anything else - no signal
   // handlers, no config read, no commander program - so its startup is as cheap as possible and
   // it can never recurse into spawning another one of itself.
-  if (argv.includes(BACKGROUND_UPDATE_FLAG)) {
+  //
+  // Matched against the exact argv shape `defaultSpawnBackgroundCheck` spawns - a single real
+  // argument, and that argument is the flag - rather than `argv.includes(...)`. A loose `includes`
+  // would also match a normal command whose own positional or option value happens to equal this
+  // string (e.g. `gusto employee create --note "--internal-background-update"`), running the
+  // updater and exiting instead of the command actually requested.
+  const realArgs = argv.slice(2);
+  if (realArgs.length === 1 && realArgs[0] === BACKGROUND_UPDATE_FLAG) {
     await runBackgroundCheck();
     process.exit(ExitCode.Success);
   }
@@ -177,12 +185,38 @@ async function main(argv: string[]): Promise<void> {
   installSignalHandlers();
   const cfg = await loadConfig();
 
-  // Both fail open internally (see their doc comments) and never throw, so a bug in either can
-  // never block or delay the command the caller actually ran.
-  await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
-  await maybeSpawnBackgroundCheck({ cfg });
+  // `defaultVersionOf` (lib/upgrade.ts) sets this on the child it spawns to exec-check a binary -
+  // that binary's own `main()` runs for real, and without this it would run its own copy of
+  // everything below against the same `update-state.toml` the outer call is still acting on. Skip
+  // straight to building the program - `--version` (what the exec-check actually asked for) still
+  // works normally from there.
+  const skipAutoUpdate = process.env[SKIP_AUTO_UPDATE_ENV] !== undefined;
+
+  if (!skipAutoUpdate) {
+    // Fails open internally (see its doc comment) and never throws, so a bug in it can never
+    // block or delay the command the caller actually ran.
+    await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
+  }
 
   const program = buildProgram(cfg.environment);
+
+  if (!skipAutoUpdate) {
+    // Every command handler calls `process.exit()` itself (see `lib/runner.ts`), so
+    // `program.parseAsync()` below never actually returns for a normal invocation - there is no
+    // "after parseAsync" to hook the background-check trigger onto. `preAction` is the one point
+    // that is both after commander has resolved which command matched and before that command's
+    // own handler (and its own `process.exit`) runs.
+    //
+    // Skipped specifically for `upgrade` (any flags, including `--dry-run`): it stages into the
+    // exact same fixed path `stageUpdate` uses, so spawning a background check for this same
+    // invocation would race the interactive upgrade for that path, and `--dry-run`'s "without
+    // downloading or replacing anything" promise would be broken by a background download it
+    // coincidentally triggered. `--help`/`--version`/an invalid command never reach this hook at
+    // all, which just means no check that invocation - the next real command retries it.
+    program.hook("preAction", async (_thisCommand, actionCommand) => {
+      if (actionCommand.name() !== "upgrade") await maybeSpawnBackgroundCheck({ cfg });
+    });
+  }
 
   try {
     await program.parseAsync(argv);
