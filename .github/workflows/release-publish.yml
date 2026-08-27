@@ -1,0 +1,322 @@
+name: Publish release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable release version without a v prefix
+        required: true
+        type: string
+      commit_sha:
+        description: Full lowercase commit SHA sealed by the candidate run
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful Release candidate workflow run ID
+        required: true
+        type: string
+      artifact_id:
+        description: Sealed candidate artifact ID from that run
+        required: true
+        type: string
+      artifact_digest:
+        description: Lowercase SHA-256 archive digest from the candidate upload
+        required: true
+        type: string
+      release_notes_sha256:
+        description: Lowercase SHA-256 digest of the sealed release notes
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-publish-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 1.3.14
+
+jobs:
+  publish:
+    name: Verify and publish exact candidate
+    runs-on:
+      group: gusto-ubuntu-default
+    steps:
+      - name: Validate sealed identity and candidate provenance
+        env:
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_SHA256: ${{ inputs.release_notes_sha256 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "version must be a stable semantic version without a v prefix" >&2
+            exit 1
+          fi
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "commit_sha must be a full lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "candidate_run_id must be a positive decimal workflow run ID" >&2
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "artifact_id must be a positive decimal artifact ID" >&2
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "artifact_digest must be a lowercase SHA-256 digest" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_NOTES_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "release_notes_sha256 must be a lowercase SHA-256 digest" >&2
+            exit 1
+          fi
+
+          default_branch=$(gh api "repos/$REPOSITORY" --jq .default_branch)
+          if [[ "$default_branch" != "main" ]]; then
+            echo "The repository default branch must be main" >&2
+            exit 1
+          fi
+          workflow_id=$(gh api "repos/$REPOSITORY/actions/workflows/release-candidate.yml" --jq .id)
+          run_json="$RUNNER_TEMP/candidate-run.json"
+          gh api "repos/$REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$run_json"
+          if ! jq -e \
+            --arg branch "$default_branch" \
+            --arg repository "$REPOSITORY" \
+            --arg run_id "$CANDIDATE_RUN_ID" \
+            --arg workflow_id "$workflow_id" '
+              (.id | tostring) == $run_id and
+              (.workflow_id | tostring) == $workflow_id and
+              .path == (".github/workflows/release-candidate.yml@" + $branch) and
+              .event == "workflow_dispatch" and
+              .status == "completed" and
+              .conclusion == "success" and
+              .head_branch == $branch and
+              .repository.full_name == $repository and
+              .head_repository.full_name == $repository
+            ' "$run_json" >/dev/null; then
+            echo "candidate_run_id is not a successful default-branch Release candidate run" >&2
+            exit 1
+          fi
+          run_sha=$(jq -r .head_sha "$run_json")
+          run_ancestry=$(gh api "repos/$REPOSITORY/compare/$run_sha...$default_branch" --jq .status)
+          if [[ "$run_ancestry" != "ahead" && "$run_ancestry" != "identical" ]]; then
+            echo "The candidate workflow revision is not reachable from main" >&2
+            exit 1
+          fi
+
+          artifacts_json="$RUNNER_TEMP/candidate-artifacts.json"
+          gh api "repos/$REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/artifacts" > "$artifacts_json"
+          expected_name="release-candidate-$RELEASE_VERSION-$COMMIT_SHA"
+          if ! jq -e \
+            --arg artifact_digest "sha256:$ARTIFACT_DIGEST" \
+            --arg artifact_id "$ARTIFACT_ID" \
+            --arg expected_name "$expected_name" \
+            --arg run_id "$CANDIDATE_RUN_ID" '
+              .total_count == 1 and
+              (.artifacts | length) == 1 and
+              (.artifacts[0].id | tostring) == $artifact_id and
+              .artifacts[0].name == $expected_name and
+              .artifacts[0].expired == false and
+              .artifacts[0].digest == $artifact_digest and
+              (.artifacts[0].workflow_run.id | tostring) == $run_id
+            ' "$artifacts_json" >/dev/null; then
+            echo "artifact_id is not the sole exact sealed artifact from candidate_run_id" >&2
+            exit 1
+          fi
+
+          artifact_json="$RUNNER_TEMP/candidate-artifact.json"
+          gh api "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$artifact_json"
+          if ! jq -e \
+            --arg artifact_digest "sha256:$ARTIFACT_DIGEST" \
+            --arg artifact_id "$ARTIFACT_ID" \
+            --arg expected_name "$expected_name" \
+            --arg run_id "$CANDIDATE_RUN_ID" \
+            --arg run_sha "$run_sha" '
+              (.id | tostring) == $artifact_id and
+              .name == $expected_name and
+              .expired == false and
+              .digest == $artifact_digest and
+              (.workflow_run.id | tostring) == $run_id and
+              .workflow_run.head_sha == $run_sha
+            ' "$artifact_json" >/dev/null; then
+            echo "artifact metadata does not match the sealed candidate identity" >&2
+            exit 1
+          fi
+
+          archive="$RUNNER_TEMP/release-candidate.zip"
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o "$archive" \
+            "https://api.github.com/repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip"
+          downloaded_digest=$(sha256sum "$archive")
+          downloaded_digest=${downloaded_digest%% *}
+          if [[ "$downloaded_digest" != "$ARTIFACT_DIGEST" ]]; then
+            echo "Downloaded artifact archive does not match artifact_digest" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4, pinned to the SHA on Gusto's org Actions allowlist
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2, pinned to the SHA on Gusto's org Actions allowlist
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Verify source and every sealed candidate byte
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          RELEASE_NOTES_SHA256: ${{ inputs.release_notes_sha256 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          checked_out=$(git rev-parse HEAD)
+          if [[ "$checked_out" != "$COMMIT_SHA" ]]; then
+            echo "Checkout did not resolve to commit_sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$COMMIT_SHA" refs/remotes/origin/main; then
+            echo "commit_sha must be reachable from main" >&2
+            exit 1
+          fi
+          package_version=$(bun --print "require('./package.json').version")
+          if [[ "$package_version" != "$RELEASE_VERSION" ]]; then
+            echo "version does not match package.json at commit_sha" >&2
+            exit 1
+          fi
+
+          archive="$RUNNER_TEMP/release-candidate.zip"
+          expected_entries="$RUNNER_TEMP/expected-candidate-entries"
+          actual_entries="$RUNNER_TEMP/actual-candidate-entries"
+          printf '%s\n' \
+            SHA256SUMS \
+            gusto-darwin-arm64 \
+            gusto-darwin-x64 \
+            gusto-linux-x64 \
+            release-manifest.json \
+            release-notes.md > "$expected_entries"
+          zipinfo -1 "$archive" | LC_ALL=C sort > "$actual_entries"
+          if ! cmp -s "$expected_entries" "$actual_entries"; then
+            echo "Artifact archive does not contain the exact candidate filenames" >&2
+            exit 1
+          fi
+          mkdir release-candidate
+          unzip -q "$archive" -d release-candidate
+
+          bun scripts/release-manifest.ts verify \
+            --directory release-candidate \
+            --version "$RELEASE_VERSION" \
+            --commit-sha "$COMMIT_SHA" \
+            --release-notes-sha256 "$RELEASE_NOTES_SHA256"
+
+      - name: Publish only from a clear state or accept an exact retry
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_SHA256: ${{ inputs.release_notes_sha256 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tag="v$RELEASE_VERSION"
+          release_json="$RUNNER_TEMP/release.json"
+
+          observe_tag() {
+            local probe
+            probe=""
+            if probe=$(gh api --include --silent "repos/$REPOSITORY/git/ref/tags/$tag"); then
+              gh api "repos/$REPOSITORY/commits/$tag" --jq .sha
+              return
+            fi
+            case "$probe" in
+              HTTP/*" 404 "*) printf 'absent\n' ;;
+              *)
+                echo "Could not determine the target of tag $tag" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          observe_release() {
+            local probe
+            probe=""
+            if probe=$(gh api --include --silent "repos/$REPOSITORY/releases/tags/$tag"); then
+              gh api "repos/$REPOSITORY/releases/tags/$tag" > "$release_json"
+              printf '%s\n' "$release_json"
+              return
+            fi
+            case "$probe" in
+              HTTP/*" 404 "*) printf 'absent\n' ;;
+              *)
+                echo "Could not determine whether Release $tag exists" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          publication_state() {
+            local release_value tag_target
+            tag_target=$(observe_tag)
+            release_value=$(observe_release)
+            bun scripts/release-manifest.ts publication-state \
+              --directory release-candidate \
+              --version "$RELEASE_VERSION" \
+              --commit-sha "$COMMIT_SHA" \
+              --release-notes-sha256 "$RELEASE_NOTES_SHA256" \
+              --tag-target "$tag_target" \
+              --release-json "$release_value"
+          }
+
+          state_json=$(publication_state)
+          state=$(jq -r .kind <<< "$state_json")
+          case "$state" in
+            already-published)
+              echo "Release $tag already matches the exact sealed candidate; nothing to do."
+              exit 0
+              ;;
+            clear) ;;
+            tag-only|release-only|mismatch)
+              echo "Refusing to publish from non-clear state: $state_json" >&2
+              exit 1
+              ;;
+            *)
+              echo "Unexpected publication state: $state_json" >&2
+              exit 1
+              ;;
+          esac
+
+          gh api --method POST "repos/$REPOSITORY/git/refs" \
+            -f ref="refs/tags/$tag" \
+            -f sha="$COMMIT_SHA" >/dev/null
+          gh release create "$tag" \
+            --repo "$REPOSITORY" \
+            --verify-tag \
+            --title "$tag" \
+            --notes-file release-candidate/release-notes.md \
+            release-candidate/gusto-darwin-arm64 \
+            release-candidate/gusto-darwin-x64 \
+            release-candidate/gusto-linux-x64 \
+            release-candidate/SHA256SUMS
+
+          final_state=$(publication_state)
+          if [[ $(jq -r .kind <<< "$final_state") != "already-published" ]]; then
+            echo "Published Release did not match the exact sealed candidate: $final_state" >&2
+            exit 1
+          fi
