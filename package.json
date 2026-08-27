@@ -35,7 +35,9 @@
     "lint:fix": "eslint src tests --fix",
     "format": "prettier --write src tests",
     "format:check": "prettier --check src tests",
-    "postinstall": "[ ! -f scripts/install-hooks.sh ] || sh scripts/install-hooks.sh"
+    "postinstall": "[ ! -f scripts/install-hooks.sh ] || sh scripts/install-hooks.sh",
+    "release:prepare": "bun run scripts/prepare-release.ts prepare",
+    "release:refresh": "bun run scripts/prepare-release.ts refresh"
   },
   "dependencies": {
     "commander": "^15.0.0",
@@ -45,11 +47,13 @@
     "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "^10.0.1",
+    "@release-it/conventional-changelog": "^12.0.0",
     "@types/bun": "^1.1.13",
     "@types/semver": "^7.7.1",
     "eslint": "^10.4.1",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.8.3",
+    "release-it": "^21.0.2",
     "semver": "^7.7.4",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.60.1"
