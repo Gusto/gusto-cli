@@ -169,9 +169,20 @@ function repositorySlug(): string {
 
 function assertNoPublishedRelease(version: string): void {
   const tag = `v${version}`;
-  if (run(["git", "show-ref", "--verify", "--quiet", `refs/tags/${tag}`], { allowFailure: true }).exitCode === 0) {
+  const localTag = run(["git", "show-ref", "--verify", "--quiet", `refs/tags/${tag}`], { allowFailure: true });
+  if (localTag.exitCode === 0) {
     throw new Error(`Tag ${tag} already exists; published changelog sections cannot be refreshed`);
   }
+  if (localTag.exitCode !== 1) throw new Error(`Could not verify whether tag ${tag} exists locally`);
+
+  const remoteTag = run(
+    ["git", "ls-remote", "--exit-code", "--tags", "origin", `refs/tags/${tag}`, `refs/tags/${tag}^{}`],
+    { allowFailure: true },
+  );
+  if (remoteTag.exitCode === 0) {
+    throw new Error(`Tag ${tag} already exists on origin; published changelog sections cannot be refreshed`);
+  }
+  if (remoteTag.exitCode !== 2) throw new Error(`Could not verify whether tag ${tag} exists on origin`);
 
   const release = run(["gh", "api", "--silent", `repos/${repositorySlug()}/releases/tags/${tag}`], {
     allowFailure: true,
@@ -207,6 +218,14 @@ function restoreRefreshState(originalChangelog: string): void {
   runGit(["reset", "--quiet", "HEAD", "--", "CHANGELOG.md", "package.json"], { allowFailure: true });
 }
 
+function rollbackRefreshCommit(originalHead: string, branch: string, createdBranch: boolean): void {
+  runGit(["restore", "--source", originalHead, "--staged", "--worktree", "--", "CHANGELOG.md"]);
+  if (runGit(["branch", "--show-current"]) !== "main") runGit(["switch", "-q", "main"]);
+  if (createdBranch) runGit(["branch", "-D", branch]);
+  if (runGit(["rev-parse", "HEAD"]) !== originalHead)
+    throw new Error("Refresh rollback did not restore the original HEAD");
+}
+
 function refresh(versionArgument: string): void {
   const version = stableVersion(versionArgument, "Refresh version");
   assertCleanCurrentMain();
@@ -215,6 +234,7 @@ function refresh(versionArgument: string): void {
     throw new Error(`Refresh version ${version} must equal package.json version ${manifest.version}`);
 
   const originalChangelog = readFileSync("CHANGELOG.md", "utf8");
+  const originalHead = runGit(["rev-parse", "HEAD"]);
   const section = unpublishedSection(originalChangelog, version);
   assertNoPublishedRelease(version);
   const previousTag = latestStableTag();
@@ -249,9 +269,16 @@ function refresh(versionArgument: string): void {
     throw error;
   }
 
-  createBranch("refresh", version);
-  runGit(["add", "--", "CHANGELOG.md"]);
-  runGit(["commit", "--signoff", "--message", `chore: refresh release ${version}`]);
+  let createdBranch = false;
+  try {
+    createBranch("refresh", version);
+    createdBranch = true;
+    runGit(["add", "--", "CHANGELOG.md"]);
+    runGit(["commit", "--signoff", "--message", `chore: refresh release ${version}`]);
+  } catch (error) {
+    rollbackRefreshCommit(originalHead, branch, createdBranch);
+    throw error;
+  }
 }
 
 function main(args: string[]): void {

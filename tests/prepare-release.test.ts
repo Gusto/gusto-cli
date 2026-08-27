@@ -95,8 +95,14 @@ function installFakeGh(_repo: string, response: "missing" | "exists" | "error"):
   return bin;
 }
 
-function runRefresh(repo: string, version: string, ghResponse: "missing" | "exists" | "error" = "missing") {
+function runRefresh(
+  repo: string,
+  version: string,
+  ghResponse: "missing" | "exists" | "error" = "missing",
+  configureBin?: (bin: string) => void,
+) {
   const bin = installFakeGh(repo, ghResponse);
+  configureBin?.(bin);
   return Bun.spawnSync([process.execPath, path.join(repo, "scripts", "prepare-release.ts"), "refresh", version], {
     cwd: repo,
     env: {
@@ -105,6 +111,39 @@ function runRefresh(repo: string, version: string, ghResponse: "missing" | "exis
       GITHUB_REPOSITORY: "example/release-fixture",
     },
   });
+}
+
+function installFailingGit(bin: string, command: "show-ref" | "ls-remote"): void {
+  const realGit = Bun.which("git");
+  if (realGit === null) throw new Error("git is required for this test");
+  const executable = path.join(bin, "git");
+  writeFileSync(
+    executable,
+    `#!/bin/sh\nif [ "$1" = "${command}" ]; then\n  echo "induced ${command} failure" >&2\n  exit ${command === "show-ref" ? "2" : "128"}\nfi\nexec "${realGit}" "$@"\n`,
+  );
+  chmodSync(executable, 0o755);
+}
+
+function pushRemoteOnlyAnnotatedTag(repo: string, tag: string): void {
+  const publisher = tempDir("prepare-release-tag-publisher");
+  git(publisher, ["clone", "-q", git(repo, ["remote", "get-url", "origin"]), "."]);
+  git(publisher, ["config", "user.name", "Jane Doe"]);
+  git(publisher, ["config", "user.email", "jane@example.com"]);
+  git(publisher, ["switch", "-q", "--orphan", "remote-tag-source"]);
+  git(publisher, ["commit", "--allow-empty", "-m", "chore: remote tag source"]);
+  git(publisher, ["tag", "-a", tag, "-m", tag]);
+  git(publisher, ["push", "-q", "origin", `refs/tags/${tag}`]);
+}
+
+function repositoryState(repo: string) {
+  return {
+    branch: git(repo, ["branch", "--show-current"]),
+    head: git(repo, ["rev-parse", "HEAD"]),
+    index: git(repo, ["diff", "--cached", "--name-status"]),
+    status: git(repo, ["status", "--porcelain", "--untracked-files=all"]),
+    branches: git(repo, ["for-each-ref", "--format=%(refname:short)=%(objectname)", "refs/heads"]).split("\n").sort(),
+    changelog: readFileSync(path.join(repo, "CHANGELOG.md"), "utf8"),
+  };
 }
 
 describe("release preparation", () => {
@@ -317,6 +356,28 @@ describe("release changelog refresh", () => {
     expect(readFileSync(path.join(repo, "CHANGELOG.md"), "utf8")).toBe(originalChangelog);
   });
 
+  test("restores main and preserves a pre-existing colliding refresh branch", () => {
+    const repo = prepareUnpublishedRelease();
+    git(repo, ["branch", "chore/refresh-release-1.1.0"]);
+    const before = repositoryState(repo);
+
+    expectFailure(runRefresh(repo, "1.1.0"), /chore\/refresh-release-1\.1\.0.*already exists/s);
+
+    expect(repositoryState(repo)).toEqual(before);
+  });
+
+  test("restores main and deletes only its new refresh branch when commit fails", () => {
+    const repo = prepareUnpublishedRelease();
+    const hook = path.resolve(repo, git(repo, ["rev-parse", "--git-path", "hooks/pre-commit"]));
+    writeFileSync(hook, '#!/bin/sh\necho "induced commit failure" >&2\nexit 1\n');
+    chmodSync(hook, 0o755);
+    const before = repositoryState(repo);
+
+    expectFailure(runRefresh(repo, "1.1.0"), /induced commit failure/);
+
+    expect(repositoryState(repo)).toEqual(before);
+  });
+
   test("refuses a tagged version or existing release and fails closed when absence cannot be proven", () => {
     const tagged = prepareUnpublishedRelease();
     git(tagged, ["tag", "v1.1.0"]);
@@ -328,4 +389,32 @@ describe("release changelog refresh", () => {
     const unverifiable = prepareUnpublishedRelease();
     expectFailure(runRefresh(unverifiable, "1.1.0", "error"), /Could not verify whether release v1\.1\.0 exists/);
   }, 15_000);
+
+  test("refuses an annotated tag that exists only on the remote", () => {
+    const repo = prepareUnpublishedRelease();
+    pushRemoteOnlyAnnotatedTag(repo, "v1.1.0");
+    const localLookup = Bun.spawnSync(["git", "show-ref", "--verify", "--quiet", "refs/tags/v1.1.0"], {
+      cwd: repo,
+      env: { PATH: process.env.PATH ?? "", ...ISOLATED },
+    });
+    expect(localLookup.exitCode).toBe(1);
+
+    expectFailure(runRefresh(repo, "1.1.0"), /Tag v1\.1\.0 already exists on origin/);
+  });
+
+  test("fails closed when local tag absence cannot be proven", () => {
+    const localFailure = prepareUnpublishedRelease();
+    expectFailure(
+      runRefresh(localFailure, "1.1.0", "missing", (bin) => installFailingGit(bin, "show-ref")),
+      /Could not verify whether tag v1\.1\.0 exists locally/,
+    );
+  });
+
+  test("fails closed when remote tag absence cannot be proven", () => {
+    const remoteFailure = prepareUnpublishedRelease();
+    expectFailure(
+      runRefresh(remoteFailure, "1.1.0", "missing", (bin) => installFailingGit(bin, "ls-remote")),
+      /Could not verify whether tag v1\.1\.0 exists on origin/,
+    );
+  });
 });

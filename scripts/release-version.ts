@@ -99,6 +99,7 @@ function greatestStableTag(): { tag: string; version: string } {
 function commitMessagesSince(tag: string): string[] {
   return runGit(["log", `${tag}..HEAD`, "--format=%B%x00"])
     .split("\0")
+    .map((message, index) => (index === 0 ? message : message.replace(/^\r?\n/, "")))
     .filter((message) => message !== "");
 }
 

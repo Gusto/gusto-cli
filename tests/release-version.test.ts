@@ -138,6 +138,20 @@ describe("release-version CLI", () => {
     expect(JSON.parse(result.stdout.toString())).toEqual({ kind: "release", version: "0.2.1", bump: "patch" });
   });
 
+  test("includes an older release-affecting commit when the newest commit is non-release-affecting", () => {
+    const repo = setupRepo({ prefix: "release-version" });
+    commit(repo, "chore: establish release history");
+    git(repo, ["tag", "v1.2.3"]);
+    commit(repo, "feat: add reports");
+    commit(repo, "docs: clarify reports");
+
+    const result = runCli(repo, "--json");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).toBe("");
+    expect(JSON.parse(result.stdout.toString())).toEqual({ kind: "release", version: "1.3.0", bump: "minor" });
+  });
+
   test("allows a strictly newer stable explicit version without release-affecting commits", () => {
     const repo = setupRepo({ prefix: "release-version" });
     commit(repo, "chore: establish release history");
