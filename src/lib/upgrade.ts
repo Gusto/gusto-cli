@@ -63,8 +63,9 @@ function isTimeout(err: unknown): boolean {
 }
 
 export interface UpgradeResult {
-  /** `available` is the `--dry-run` preview. */
-  status: "up_to_date" | "available" | "upgraded";
+  /** `available` is the `--dry-run` preview. `staged` is `stageUpdate`'s result: a verified binary
+   * sits at `staged_path`, not yet swapped onto `install_path`. */
+  status: "up_to_date" | "available" | "upgraded" | "staged";
   /** The version at `install_path`, or null when nothing runnable is installed there yet. */
   from: string | null;
   /** The release's version, `v` prefix stripped. Null only when a `GUSTO_CLI_BASE_URL` override
@@ -73,6 +74,10 @@ export interface UpgradeResult {
   asset: string;
   install_path: string;
   checksum?: "verified";
+  /** Present only when `status === "staged"`: where the verified binary sits, and its checksum, so
+   * a later swap (a different process, possibly hours later) can re-verify before installing it. */
+  staged_path?: string;
+  staged_checksum?: string;
 }
 
 /** Failure shape mirroring config.ts's `requireValidKey`, so callers can `if (!x.ok) return x.result`. */
@@ -488,6 +493,10 @@ export interface UpgradeDeps {
   stripQuarantine?: (file: string) => Promise<void>;
 }
 
+/** `stageUpdate` never confirms with anyone - it's the unattended half of auto-update - so it takes
+ * every `UpgradeDeps` field except the confirm `gate`. */
+export type StageDeps = Omit<UpgradeDeps, "gate">;
+
 /** Gating the install on this means a build that segfaults never becomes the live binary.
  *
  * Wrapped because a file that isn't a valid executable at all - the shape a truncated or garbage
@@ -591,37 +600,42 @@ async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: tru
   return { ok: true, bytes };
 }
 
-/** The step order below is deliberate, not incidental: every cheap failure resolves before a byte is
- * fetched, the bytes are checksummed before they are ever written, and the file they're written to
- * is exec-checked before the swap. Replacing the binary this process is currently executing is safe
- * on Unix - the running image keeps its own inode. */
-export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Promise<CommandResult<UpgradeResult>> {
-  const {
-    gate,
-    log,
-    env = process.env as EnvSource,
-    currentVersion = VERSION,
-    fetchImpl = fetch,
-    execPath = process.execPath,
-    platform = process.platform,
-    arch = process.arch,
-    versionOf = defaultVersionOf,
-    stripQuarantine = defaultStripQuarantine,
-  } = deps;
+interface UpgradeTarget {
+  asset: string;
+  targetPath: string;
+  from: string | null;
+  tag: string | null;
+  base: { from: string | null; to: string | null; asset: string; install_path: string };
+}
+
+type ResolvedTarget =
+  | { done: CommandResult<UpgradeResult>; target?: undefined }
+  | { done?: undefined; target: UpgradeTarget };
+
+/** Everything through the up-to-date/dry-run decision - shared by `performUpgrade` and
+ * `stageUpdate` so the two can never disagree about whether an update is needed. Returns either a
+ * terminal result (`done`) or the resolved `target` to stage. */
+async function resolveUpgradeTarget(
+  opts: Pick<UpgradeOpts, "force" | "dryRun">,
+  deps: Required<
+    Pick<UpgradeDeps, "env" | "currentVersion" | "fetchImpl" | "execPath" | "platform" | "arch" | "versionOf">
+  >,
+): Promise<ResolvedTarget> {
+  const { env, currentVersion, fetchImpl, execPath, platform, arch, versionOf } = deps;
 
   const assetResult = platformAsset(platform, arch);
-  if (!assetResult.ok) return assetResult.result;
+  if (!assetResult.ok) return { done: assetResult.result };
   const { asset } = assetResult;
 
   const pathResult = resolveTargetPath(env, execPath);
-  if (!pathResult.ok) return pathResult.result;
+  if (!pathResult.ok) return { done: pathResult.result };
   const { targetPath, isSelf } = pathResult;
 
   const preflight = await preflightInstallDir(targetPath);
-  if (!preflight.ok) return preflight.result;
+  if (!preflight.ok) return { done: preflight.result };
 
   const tagResult = await resolveTargetTag(env, fetchImpl);
-  if (!tagResult.ok) return tagResult.result;
+  if (!tagResult.ok) return { done: tagResult.result };
   const { tag } = tagResult;
   const targetVersion = tag === null ? null : tagToVersion(tag);
 
@@ -634,24 +648,43 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   // `GUSTO_CLI_BASE_URL` origin) and an absent installed binary must both still install.
   if (targetVersion !== null && targetVersion === from && opts.force !== true) {
     return {
-      ok: true,
-      data: { status: "up_to_date", ...base },
-      human: () => `already up to date (${targetVersion})`,
+      done: { ok: true, data: { status: "up_to_date", ...base }, human: () => `already up to date (${targetVersion})` },
     };
   }
 
   if (opts.dryRun === true) {
     return {
-      ok: true,
-      data: { status: "available", ...base },
-      human: () => `upgrade available: ${describeFrom(from)} -> ${targetVersion ?? "unknown"}`,
+      done: {
+        ok: true,
+        data: { status: "available", ...base },
+        human: () => `upgrade available: ${describeFrom(from)} -> ${targetVersion ?? "unknown"}`,
+      },
     };
   }
 
-  const gated = gate(`replacing the gusto binary at ${targetPath}`);
-  if (gated) return gated;
+  return { target: { asset, targetPath, from, tag, base } };
+}
 
-  // First mutation of the run, and deliberately the first thing past the gate.
+/** What happens to the staged file once it's downloaded, checksummed, written, and exec-verified:
+ * `performUpgrade` renames it into place immediately (`keep: false`); `stageUpdate` leaves it
+ * sitting at `staged` for a later invocation's swap (`keep: true`). */
+type Finalized = { keep: boolean; result: CommandResult<UpgradeResult> };
+
+/** The step order below is deliberate, not incidental: every cheap failure resolves before a byte
+ * is fetched, the bytes are checksummed before they are ever written, and the file they're written
+ * to is exec-checked before `finalize` decides what happens to it. Shared by `performUpgrade` and
+ * `stageUpdate` so the concurrency guards - the `O_EXCL` create, `stagingStillOurs`, the fixed
+ * staging name's self-healing - can't drift between the interactive and unattended paths. */
+async function stageAndFinalize(
+  target: UpgradeTarget,
+  deps: Required<Pick<UpgradeDeps, "log" | "env" | "fetchImpl" | "versionOf" | "stripQuarantine">>,
+  finalize: (staged: string, reported: string, checksum: string) => Promise<Finalized>,
+): Promise<CommandResult<UpgradeResult>> {
+  const { log, env, fetchImpl, versionOf, stripQuarantine } = deps;
+  const { asset, targetPath, tag } = target;
+
+  // First mutation of the run, and deliberately the first thing past the gate (or, for
+  // `stageUpdate`, the first thing at all - it has no gate to be past).
   const dirReady = await ensureInstallDir(targetPath);
   if (!dirReady.ok) return dirReady.result;
 
@@ -761,6 +794,11 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   } finally {
     await writer.close().catch(() => {});
   }
+
+  // `false` for every failure branch below, exactly as before this function existed - the staged
+  // file is discarded on any of them. Only `finalize` returning `keep: true` (`stageUpdate`'s
+  // contract) leaves it on disk past this call.
+  let keepStaged = false;
   try {
     await stripQuarantine(staged);
 
@@ -781,33 +819,124 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
       };
     }
 
-    // Again immediately before the swap, so what lands on `targetPath` is what was checksummed.
-    // A window remains between this check and the rename - closing it needs `renameat2`, which
-    // isn't reachable from here - but it shrinks from the whole exec-check to a syscall apart.
+    // Again immediately before finalize, so what `finalize` acts on is what was checksummed. A
+    // window remains between this check and the rename (for `performUpgrade`) - closing it needs
+    // `renameat2`, which isn't reachable from here - but it shrinks from the whole exec-check to a
+    // syscall apart.
     if (!(await stagingStillOurs(ident, staged))) return concurrentUpgrade(staged, targetPath);
-    try {
-      await rename(staged, targetPath);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      return fail(
-        "install_failed",
-        `the download verified, but moving it into place at ${targetPath} failed: ${detail}. ` +
-          `${targetPath} is unchanged.`,
-        ExitCode.General,
-        REINSTALL_HINT,
-      ).result;
-    }
-    log(`installed ${targetPath}`);
-    return {
-      ok: true,
-      data: { status: "upgraded", ...base, to: reported, checksum: "verified" },
-      human: () => `upgraded gusto ${describeFrom(from)} -> ${reported}`,
-    };
+
+    const finalized = await finalize(staged, reported, actual);
+    keepStaged = finalized.keep;
+    return finalized.result;
   } finally {
     // Only if the staging path is still our file: after a successful rename it isn't there at all,
     // and if a concurrent run has claimed the path since, that file is theirs to remove, not ours.
-    const ours = await stagingStillOurs(ident, staged);
-    await ident.close().catch(() => {});
-    if (ours) await unlink(staged).catch(() => {});
+    // `keepStaged` skips this deliberately - `stageUpdate` leaves a verified file there on purpose.
+    if (!keepStaged) {
+      const ours = await stagingStillOurs(ident, staged);
+      await ident.close().catch(() => {});
+      if (ours) await unlink(staged).catch(() => {});
+    } else {
+      await ident.close().catch(() => {});
+    }
   }
+}
+
+/** Replacing the binary this process is currently executing is safe on Unix - the running image
+ * keeps its own inode - so renaming over it mid-command is not itself the hazard `stageUpdate`
+ * exists to avoid. The hazard is unattended background writes; see `lib/auto-update.ts`. */
+export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Promise<CommandResult<UpgradeResult>> {
+  const {
+    gate,
+    log,
+    env = process.env as EnvSource,
+    currentVersion = VERSION,
+    fetchImpl = fetch,
+    execPath = process.execPath,
+    platform = process.platform,
+    arch = process.arch,
+    versionOf = defaultVersionOf,
+    stripQuarantine = defaultStripQuarantine,
+  } = deps;
+
+  const resolved = await resolveUpgradeTarget(opts, {
+    env,
+    currentVersion,
+    fetchImpl,
+    execPath,
+    platform,
+    arch,
+    versionOf,
+  });
+  if (resolved.done) return resolved.done;
+  const { target } = resolved;
+
+  const gated = gate(`replacing the gusto binary at ${target.targetPath}`);
+  if (gated) return gated;
+
+  return stageAndFinalize(target, { log, env, fetchImpl, versionOf, stripQuarantine }, async (staged, reported) => {
+    try {
+      await rename(staged, target.targetPath);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        keep: false,
+        result: fail(
+          "install_failed",
+          `the download verified, but moving it into place at ${target.targetPath} failed: ${detail}. ` +
+            `${target.targetPath} is unchanged.`,
+          ExitCode.General,
+          REINSTALL_HINT,
+        ).result,
+      };
+    }
+    log(`installed ${target.targetPath}`);
+    return {
+      keep: false,
+      result: {
+        ok: true,
+        data: { status: "upgraded", ...target.base, to: reported, checksum: "verified" },
+        human: () => `upgraded gusto ${describeFrom(target.from)} -> ${reported}`,
+      },
+    };
+  });
+}
+
+/** The unattended half of auto-update: resolves, downloads, checksums, and exec-verifies exactly
+ * like `performUpgrade`, but never renames - the verified binary is left at `staged_path` for a
+ * later invocation's `swapStagedUpdate` (see `lib/auto-update.ts`) to install. No `gate`: this path
+ * only runs from a detached background process, which has no one to confirm with. No `force`/
+ * `dryRun`: neither concept applies to a check nobody asked for by name. */
+export async function stageUpdate(deps: StageDeps): Promise<CommandResult<UpgradeResult>> {
+  const {
+    log,
+    env = process.env as EnvSource,
+    currentVersion = VERSION,
+    fetchImpl = fetch,
+    execPath = process.execPath,
+    platform = process.platform,
+    arch = process.arch,
+    versionOf = defaultVersionOf,
+    stripQuarantine = defaultStripQuarantine,
+  } = deps;
+
+  const resolved = await resolveUpgradeTarget(
+    {},
+    { env, currentVersion, fetchImpl, execPath, platform, arch, versionOf },
+  );
+  if (resolved.done) return resolved.done;
+  const { target } = resolved;
+
+  return stageAndFinalize(
+    target,
+    { log, env, fetchImpl, versionOf, stripQuarantine },
+    async (staged, reported, checksum) => ({
+      keep: true,
+      result: {
+        ok: true,
+        data: { status: "staged", ...target.base, to: reported, staged_path: staged, staged_checksum: checksum },
+        human: () => `update staged: ${describeFrom(target.from)} -> ${reported}`,
+      },
+    }),
+  );
 }

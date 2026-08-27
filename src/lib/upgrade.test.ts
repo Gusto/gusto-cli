@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -26,8 +27,10 @@ import {
   preflightStagingPath,
   resolveTargetPath,
   resolveTargetTag,
+  stageUpdate,
   tagToVersion,
 } from "./upgrade.ts";
+import { createHash } from "node:crypto";
 
 const scratchDirs: string[] = [];
 
@@ -608,5 +611,123 @@ describe("performUpgrade ordering", () => {
     }
     expect(gateCalled).toBe(false);
     expect(fetched).toBe(false);
+  });
+});
+
+describe("stageUpdate", () => {
+  const NEW_BINARY = '#!/bin/sh\necho "0.2.0"\n';
+
+  /** Stands in for `defaultVersionOf`: reports whatever version the stub binary at `file` would
+   * `echo`, rather than a version fixed at test-setup time - so it reports correctly for both the
+   * pre-existing installed binary and whatever ends up staged. */
+  async function versionOfStub(file: string): Promise<string | null> {
+    try {
+      return readFileSync(file, "utf8").match(/"([0-9]+\.[0-9]+\.[0-9]+)"/)?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function fixtureFetch(opts: { binaryBody?: string; sha256sumsBody?: string } = {}) {
+    const binaryBody = opts.binaryBody ?? NEW_BINARY;
+    const hash = createHash("sha256").update(binaryBody).digest("hex");
+    const sha256sumsBody = opts.sha256sumsBody ?? `${hash}  gusto-linux-x64\n`;
+    const requested: string[] = [];
+    const fetchImpl = stubFetch(async (url) => {
+      const name = url.toString().split("/").pop() ?? "";
+      requested.push(name);
+      if (name === "SHA256SUMS") return new Response(sha256sumsBody);
+      if (name === "gusto-linux-x64") return new Response(binaryBody);
+      return new Response("not found", { status: 404 });
+    });
+    return { fetchImpl, requested, binaryBody };
+  }
+
+  test("stages a verified binary alongside the install path, without touching it", async () => {
+    const dir = tmpDir("gusto-cli-stage-");
+    const installed = path.join(dir, "gusto");
+    writeFileSync(installed, '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const { fetchImpl, requested } = fixtureFetch();
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toMatchObject({ status: "staged", from: "0.1.0", to: "0.2.0", install_path: installed });
+      expect(typeof (result.data as { staged_path?: string }).staged_path).toBe("string");
+    }
+    expect(requested).toContain("gusto-linux-x64");
+    // The installed binary is untouched - staging never renames.
+    expect(readFileSync(installed, "utf8")).toContain("0.1.0");
+    const stagedPath = result.ok ? (result.data as { staged_path: string }).staged_path : "";
+    expect(existsSync(stagedPath)).toBe(true);
+    expect(readFileSync(stagedPath, "utf8")).toContain("0.2.0");
+  });
+
+  test("reports up_to_date and downloads nothing when already current", async () => {
+    const dir = tmpDir("gusto-cli-stage-uptodate-");
+    const installed = path.join(dir, "gusto");
+    writeFileSync(installed, NEW_BINARY, { mode: 0o755 });
+    const { fetchImpl, requested } = fixtureFetch();
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toMatchObject({ status: "up_to_date" });
+    expect(requested).toEqual([]);
+  });
+
+  test("surfaces a preflight failure (managed install) without touching the network", async () => {
+    const { fetchImpl, requested } = fixtureFetch();
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: "/opt/homebrew/bin", GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("managed_install");
+    expect(requested).toEqual([]);
+  });
+
+  test("aborts on a checksum mismatch, leaving no staged file behind", async () => {
+    const dir = tmpDir("gusto-cli-stage-badsum-");
+    writeFileSync(path.join(dir, "gusto"), '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const { fetchImpl } = fixtureFetch({ sha256sumsBody: "0000000000000000  gusto-linux-x64\n" });
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("checksum_mismatch");
+    expect(readdirSync(dir).filter((f) => f.startsWith("."))).toEqual([]);
   });
 });
