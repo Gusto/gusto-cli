@@ -4,21 +4,29 @@ import { parse, stringify } from "smol-toml";
 import type { Environment } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
-export type ConfigKey = "environment" | "format" | "skills_auto_install";
+export type ConfigKey = "environment" | "format" | "skills_auto_install" | "auto_update";
 
-export const CONFIG_KEYS: readonly ConfigKey[] = ["environment", "format", "skills_auto_install"] as const;
+export const CONFIG_KEYS: readonly ConfigKey[] = [
+  "environment",
+  "format",
+  "skills_auto_install",
+  "auto_update",
+] as const;
 
 export type SkillsAutoInstall = "ask" | "always" | "never";
+export type AutoUpdate = "on" | "off";
 
 export interface UserConfig {
   environment?: Environment;
   format?: OutputMode;
   skills_auto_install?: SkillsAutoInstall;
+  auto_update?: AutoUpdate;
 }
 
 const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
+const AUTO_UPDATE_VALUES: readonly AutoUpdate[] = ["on", "off"] as const;
 
 // `json` is the advertised alias for `agent` (see the `--json` / `--agent` global flags).
 // Accept it as a `format` value and persist it as `agent` so the config mirrors the flags.
@@ -84,6 +92,10 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       return (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(value)
         ? null
         : `skills_auto_install must be one of: ${SKILLS_AUTO_INSTALL_VALUES.join(", ")}`;
+    case "auto_update":
+      return (AUTO_UPDATE_VALUES as readonly string[]).includes(value)
+        ? null
+        : `auto_update must be one of: ${AUTO_UPDATE_VALUES.join(", ")}`;
     default: {
       // Exhaustiveness guard: adding a ConfigKey without a case here is a compile error,
       // not a silent validation bypass.
@@ -112,6 +124,9 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
     (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(raw.skills_auto_install)
   ) {
     out.skills_auto_install = raw.skills_auto_install as SkillsAutoInstall;
+  }
+  if (typeof raw.auto_update === "string" && (AUTO_UPDATE_VALUES as readonly string[]).includes(raw.auto_update)) {
+    out.auto_update = raw.auto_update as AutoUpdate;
   }
   return out;
 }

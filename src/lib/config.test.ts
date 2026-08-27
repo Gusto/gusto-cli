@@ -29,6 +29,7 @@ describe("validateKey", () => {
     expect(validateKey("environment")).toBe("environment");
     expect(validateKey("format")).toBe("format");
     expect(validateKey("skills_auto_install")).toBe("skills_auto_install");
+    expect(validateKey("auto_update")).toBe("auto_update");
   });
   test("rejects unknown keys", () => {
     expect(validateKey("token")).toBeNull();
@@ -83,6 +84,11 @@ describe("normalizeValue", () => {
     expect(validateValue("skills_auto_install", "never")).toBeNull();
     expect(validateValue("skills_auto_install", "sometimes")).not.toBeNull();
   });
+  test("auto_update must be on or off", () => {
+    expect(validateValue("auto_update", "on")).toBeNull();
+    expect(validateValue("auto_update", "off")).toBeNull();
+    expect(validateValue("auto_update", "always")).not.toBeNull();
+  });
 });
 
 describe("read/write/reset", () => {
@@ -99,6 +105,13 @@ describe("read/write/reset", () => {
     await writeConfig({ skills_auto_install: "always" }, paths);
     expect(await readConfig(paths)).toEqual({ skills_auto_install: "always" });
     await Bun.write(paths.file, `skills_auto_install = "sometimes"\n`);
+    expect(await readConfig(paths)).toEqual({});
+  });
+
+  test("auto_update round-trips and rejects invalid values from disk", async () => {
+    await writeConfig({ auto_update: "off" }, paths);
+    expect(await readConfig(paths)).toEqual({ auto_update: "off" });
+    await Bun.write(paths.file, `auto_update = "sometimes"\n`);
     expect(await readConfig(paths)).toEqual({});
   });
 
