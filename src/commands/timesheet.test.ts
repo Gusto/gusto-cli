@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { CommandResult } from "../lib/runner.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import { TEST_AUTH as auth, TEST_CONTEXT as ctx, captureSinks, okData, stubGlobalFetch } from "../lib/test-support.ts";
 import {
   clarifyEmptyTimesheetSync,
   timesheetCreateHandler,
@@ -11,6 +11,7 @@ import {
   validateTimesheetCreate,
   validateTimesheetList,
   validateTimesheetSync,
+  warnDeprecatedSyncDateFlags,
 } from "./timesheet.ts";
 
 describe("validateTimesheetCreate", () => {
@@ -196,8 +197,8 @@ describe("validateTimesheetCreate", () => {
 describe("validateTimesheetSync", () => {
   const base = {
     payScheduleUuid: "ps-1",
-    payPeriodStart: "2026-06-01",
-    payPeriodEnd: "2026-06-15",
+    startDate: "2026-06-01",
+    endDate: "2026-06-15",
   };
 
   test("pay-schedule + period dates returns the populated body, kind is always regular", () => {
@@ -215,8 +216,8 @@ describe("validateTimesheetSync", () => {
 
   test("missing --pay-schedule-uuid blocks on pay-schedule-uuid", () => {
     const result = validateTimesheetSync({
-      payPeriodStart: "2026-06-01",
-      payPeriodEnd: "2026-06-15",
+      startDate: "2026-06-01",
+      endDate: "2026-06-15",
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -227,22 +228,98 @@ describe("validateTimesheetSync", () => {
     const result = validateTimesheetSync({ payScheduleUuid: "ps-1" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
   });
 
-  test("a malformed --pay-period-start date is blocked", () => {
-    const result = validateTimesheetSync({ ...base, payPeriodStart: "06/01/2026" });
+  test("a malformed --start-date is blocked", () => {
+    const result = validateTimesheetSync({ ...base, startDate: "06/01/2026" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
   });
 
-  test("a malformed --pay-period-end date is blocked", () => {
-    const result = validateTimesheetSync({ ...base, payPeriodEnd: "not-a-date" });
+  test("a malformed --end-date is blocked", () => {
+    const result = validateTimesheetSync({ ...base, endDate: "not-a-date" });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-period-end" }));
+    expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end-date" }));
+  });
+
+  describe("deprecated --pay-period-* aliases", () => {
+    test("the old spellings still populate the body", () => {
+      const result = validateTimesheetSync({
+        payScheduleUuid: "ps-1",
+        payPeriodStart: "2026-06-01",
+        payPeriodEnd: "2026-06-15",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.body.pay_period_start_date).toBe("2026-06-01");
+      expect(result.body.pay_period_end_date).toBe("2026-06-15");
+    });
+
+    test("one canonical flag and one alias mix freely", () => {
+      const result = validateTimesheetSync({
+        payScheduleUuid: "ps-1",
+        startDate: "2026-06-01",
+        payPeriodEnd: "2026-06-15",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.body.pay_period_end_date).toBe("2026-06-15");
+    });
+
+    test("a malformed date via the alias blocks on the canonical field name", () => {
+      const result = validateTimesheetSync({ payScheduleUuid: "ps-1", payPeriodStart: "06/01/2026" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
+      expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "pay-period-start" }));
+    });
+
+    test("both spellings with conflicting values are blocked rather than silently resolved", () => {
+      const result = validateTimesheetSync({
+        payScheduleUuid: "ps-1",
+        startDate: "2026-06-01",
+        payPeriodStart: "2026-07-01",
+        endDate: "2026-06-15",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.blocked).toContainEqual({
+        field: "start-date",
+        reason: "pass only one of --start-date or --pay-period-start",
+      });
+    });
+
+    test("both spellings carrying the same value are unambiguous and pass", () => {
+      const result = validateTimesheetSync({
+        payScheduleUuid: "ps-1",
+        startDate: "2026-06-01",
+        payPeriodStart: "2026-06-01",
+        endDate: "2026-06-15",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.body.pay_period_start_date).toBe("2026-06-01");
+    });
+  });
+});
+
+describe("warnDeprecatedSyncDateFlags", () => {
+  test("canonical flags print nothing", () => {
+    const { sinks, stderr } = captureSinks();
+    warnDeprecatedSyncDateFlags({ startDate: "2026-06-01", endDate: "2026-06-15" }, sinks.stderr);
+    expect(stderr.buffer).toBe("");
+  });
+
+  test("every deprecated flag used is reported", () => {
+    const { sinks, stderr } = captureSinks();
+    warnDeprecatedSyncDateFlags({ payPeriodStart: "2026-06-01", payPeriodEnd: "2026-06-15" }, sinks.stderr);
+    expect(stderr.buffer).toContain("--pay-period-start is now --start-date");
+    expect(stderr.buffer).toContain("--pay-period-end is now --end-date");
+    expect(stderr.buffer).toContain("gusto skill install timesheet-sync");
   });
 });
 
@@ -333,8 +410,8 @@ describe("timesheetSyncHandler", () => {
       await timesheetSyncHandler({
         ...auth,
         payScheduleUuid: "ps-1",
-        payPeriodStart: "2026-06-01",
-        payPeriodEnd: "2026-06-15",
+        startDate: "2026-06-01",
+        endDate: "2026-06-15",
         dryRun: true,
       })(ctx),
     );
@@ -354,11 +431,38 @@ describe("timesheetSyncHandler", () => {
     expect(result.error.code).toBe("validation");
   });
 
+  test("a deprecated date flag warns on stderr while the sync still builds", async () => {
+    const { sinks, stderr } = captureSinks();
+    const data = okData(
+      await timesheetSyncHandler({
+        ...auth,
+        payScheduleUuid: "ps-1",
+        payPeriodStart: "2026-06-01",
+        payPeriodEnd: "2026-06-15",
+        dryRun: true,
+      })({ ...ctx, sinks }),
+    );
+    expect(data.body).toMatchObject({ pay_period_start_date: "2026-06-01" });
+    expect(stderr.buffer).toContain("--pay-period-start is now --start-date");
+  });
+
+  test("canonical date flags leave stderr silent", async () => {
+    const { sinks, stderr } = captureSinks();
+    await timesheetSyncHandler({
+      ...auth,
+      payScheduleUuid: "ps-1",
+      startDate: "2026-06-01",
+      endDate: "2026-06-15",
+      dryRun: true,
+    })({ ...ctx, sinks });
+    expect(stderr.buffer).toBe("");
+  });
+
   const validSync = {
     ...auth,
     payScheduleUuid: "ps-1",
-    payPeriodStart: "2026-06-01",
-    payPeriodEnd: "2026-06-15",
+    startDate: "2026-06-01",
+    endDate: "2026-06-15",
   };
 
   test("an agent-mode sync without --confirm is blocked and sends nothing", async () => {

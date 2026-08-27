@@ -1,4 +1,4 @@
-import type { Command } from "commander";
+import { type Command, Option } from "commander";
 import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
 import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
@@ -156,29 +156,60 @@ export type TimesheetSyncValidation = ValidationResult<TimesheetSyncBody>;
 
 interface TimesheetSyncInput {
   payScheduleUuid?: string;
+  startDate?: string;
+  endDate?: string;
+  // Deprecated spellings of the two above - see SYNC_DATE_FLAGS.
   payPeriodStart?: string;
   payPeriodEnd?: string;
 }
 
+/** `sync`'s canonical flag names for the deprecated `--pay-period-*` flags. Nothing automatically
+ * refreshes an installed SKILL.md, so the old names must keep working. `canonical`/`alias` are
+ * commander's keys; `field`/`aliasField` appear in blocked_on and messages. */
+const SYNC_DATE_FLAGS = [
+  { canonical: "startDate", alias: "payPeriodStart", field: "start-date", aliasField: "pay-period-start" },
+  { canonical: "endDate", alias: "payPeriodEnd", field: "end-date", aliasField: "pay-period-end" },
+] as const;
+
+type SyncDateFlag = (typeof SYNC_DATE_FLAGS)[number];
+
+const [START_DATE_FLAG, END_DATE_FLAG] = SYNC_DATE_FLAGS;
+
+/** Read one pay-period date from its canonical flag or deprecated alias, validating as it goes.
+ * Returns undefined and appends to `blocked` when unusable, so both dates report in one envelope.
+ * Conflicting values block rather than silently picking a pay period the caller never named. */
+function readSyncDate(opts: TimesheetSyncInput, spec: SyncDateFlag, blocked: BlockedOn[]): string | undefined {
+  const canonical = opts[spec.canonical];
+  const alias = opts[spec.alias];
+  if (canonical !== undefined && alias !== undefined && canonical !== alias) {
+    blocked.push({ field: spec.field, reason: `pass only one of --${spec.field} or --${spec.aliasField}` });
+    return;
+  }
+  const value = canonical ?? alias;
+  if (!value) {
+    blocked.push({ field: spec.field, reason: "required (YYYY-MM-DD)" });
+    return;
+  }
+  if (!isValidIsoDate(value)) {
+    blocked.push({ field: spec.field, reason: "must be a valid date in YYYY-MM-DD format" });
+    return;
+  }
+  return value;
+}
+
 /** Validate timesheet-sync args and, on success, return the payroll-sync request body.
- * `kind` is always "regular" — the API only supports regular payroll exports today. */
+ * `kind` is always "regular" — the API only supports regular payroll exports today.
+ * blocked_on names the canonical flag even when the caller passed a deprecated alias. */
 export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncValidation {
   const blocked: BlockedOn[] = [];
-  const { payScheduleUuid, payPeriodStart, payPeriodEnd } = opts;
+  const { payScheduleUuid } = opts;
   if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
-  if (!payPeriodStart) {
-    blocked.push({ field: "pay-period-start", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(payPeriodStart)) {
-    blocked.push({ field: "pay-period-start", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
-  if (!payPeriodEnd) {
-    blocked.push({ field: "pay-period-end", reason: "required (YYYY-MM-DD)" });
-  } else if (!isValidIsoDate(payPeriodEnd)) {
-    blocked.push({ field: "pay-period-end", reason: "must be a valid date in YYYY-MM-DD format" });
-  }
+
+  const startDate = readSyncDate(opts, START_DATE_FLAG, blocked);
+  const endDate = readSyncDate(opts, END_DATE_FLAG, blocked);
 
   // Re-check the locals (narrows them to `string`) and catch any format errors above.
-  if (!payScheduleUuid || !payPeriodStart || !payPeriodEnd || blocked.length > 0) {
+  if (!payScheduleUuid || !startDate || !endDate || blocked.length > 0) {
     return { ok: false, message: "missing or invalid arguments", blocked };
   }
 
@@ -187,10 +218,22 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
     body: {
       kind: "regular",
       pay_schedule_uuid: payScheduleUuid,
-      pay_period_start_date: payPeriodStart,
-      pay_period_end_date: payPeriodEnd,
+      pay_period_start_date: startDate,
+      pay_period_end_date: endDate,
     },
   };
+}
+
+/** Names `skill install` since a stale installed skill is the likeliest source and nothing else
+ * reports that a skill file is behind the binary. */
+export function warnDeprecatedSyncDateFlags(opts: TimesheetSyncInput, stderr: NodeJS.WritableStream): void {
+  const used = SYNC_DATE_FLAGS.filter((spec) => opts[spec.alias] !== undefined);
+  if (used.length === 0) return;
+  const renames = used.map((spec) => `--${spec.aliasField} is now --${spec.field}`).join("; ");
+  stderr.write(
+    `warning: ${renames}. The old name still works. Refresh an outdated ` +
+      "`timesheet-sync` skill with `gusto skill install timesheet-sync`.\n",
+  );
 }
 
 interface TimesheetCreateOpts extends TimesheetCreateInput {
@@ -276,8 +319,11 @@ export function registerTimesheetCommand(parent: Command): void {
     .command("sync")
     .description("Sync a pay period's time sheets into a draft payroll (async)")
     .option("--pay-schedule-uuid <uuid>", "Pay schedule UUID for the pay period")
-    .option("--pay-period-start <date>", "Pay period start (YYYY-MM-DD)")
-    .option("--pay-period-end <date>", "Pay period end (YYYY-MM-DD)")
+    .option("--start-date <date>", "Pay period start (YYYY-MM-DD)")
+    .option("--end-date <date>", "Pay period end (YYYY-MM-DD)")
+    // Hidden so help shows one name per concept; still parsed. See SYNC_DATE_FLAGS.
+    .addOption(new Option("--pay-period-start <date>", "Deprecated alias for --start-date").hideHelp())
+    .addOption(new Option("--pay-period-end <date>", "Deprecated alias for --end-date").hideHelp())
     .option("--company-uuid <uuid>", "Company UUID (overrides GUSTO_COMPANY_UUID)")
     .option(...TOKEN_STDIN_OPT)
     .option("--dry-run", "Build the request without sending")
@@ -346,7 +392,9 @@ export function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandle
 }
 
 export function timesheetSyncHandler(opts: TimesheetSyncOpts): CommandHandler {
-  return async ({ globals }) => {
+  return async ({ globals, sinks }) => {
+    warnDeprecatedSyncDateFlags(opts, sinks.stderr);
+
     if (opts.example) {
       return {
         ok: true,

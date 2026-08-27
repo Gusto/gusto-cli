@@ -242,6 +242,36 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  // Each row passes one date flag and omits the rest, so exit 7 (validation reached) proves commander
+  // accepted it, not exit 2 (never registered) - which unit tests miss, passing options pre-parsed.
+  test.each([
+    ["--pay-period-start", ["timesheet", "sync", "--pay-period-start", "2026-06-01"], "start-date"],
+    ["--pay-period-end", ["timesheet", "sync", "--pay-period-end", "2026-06-15"], "end-date"],
+    ["--start-date", ["timesheet", "sync", "--start-date", "2026-06-01"], "start-date"],
+    ["--end-date", ["timesheet", "sync", "--end-date", "2026-06-15"], "end-date"],
+  ])("timesheet sync %s is recognized and only the omitted flags block (exit 7)", async (_name, argv, satisfied) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).not.toContain(satisfied);
+  });
+
+  test("timesheet sync and list use the same date flag names", async () => {
+    const [sync, list] = await Promise.all([
+      run(["timesheet", "sync", "--help"]),
+      run(["timesheet", "list", "--help"]),
+    ]);
+    for (const help of [sync.stdout, list.stdout]) {
+      expect(help).toContain("--start-date <date>");
+      expect(help).toContain("--end-date <date>");
+      expect(help).not.toContain("--pay-period-start");
+      expect(help).not.toContain("--pay-period-end");
+    }
+  });
+
   test("department list without a token returns no_access_token (exit 3)", async () => {
     // A brand-new non-alias subcommand: assert it dispatches (reaches the auth check, exit 3) rather
     // than commander's unknown-command (exit 2), proving it is wired into the compiled binary.
