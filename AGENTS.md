@@ -28,6 +28,10 @@ If a command's behavior doesn't match this file or `--help`, check `gusto --vers
 
 **When an upgrade fails, read `error.hint` before improvising.** A failed upgrade never leaves a broken install - the envelope says what to do next in a field, so you don't have to infer it from prose. Where the installer would route around the problem (network failures, an install directory that isn't writable yet) the hint is `curl -fsSL https://cli.gusto.com/install.sh | sh`; surface that to the operator and run it with their approval, as with any other write. Where it wouldn't, the hint says something else instead, and following it matters: reinstalling can't fix a checksum mismatch (the installer verifies the same bytes the same way, so pin a version), and it must not be used on a Homebrew or Nix install, where it would leave a second `gusto` shadowing the managed one. Absence of a hint means no generic fallback applies - `unsupported_platform` has no binary to fetch on any route, and `install_dir_not_a_directory` blocks the installer's own `mkdir -p` just as it blocks this command.
 
+### Background auto-update
+
+You don't need to run `gusto upgrade` yourself. By default (`auto_update` config key, `on`), the CLI checks for a new release in the background roughly once every 24 hours and, once verified, installs it at the start of a later invocation - never mid-command. This never touches stdout, agent mode included; if it happens, you'll only see a one-line stderr notice, and only outside `--agent`/`--json`/piped-stdout mode. Setting `GUSTO_CLI_VERSION` (e.g. for a pinned CI job) disables it entirely, as does `gusto config set auto_update off`. Nothing about this changes how you'd use `gusto upgrade` yourself - it's still there for an explicit, immediate upgrade.
+
 ## Windows
 
 The `gusto` binary ships for macOS and Linux only. On Windows, run it inside WSL2 - the linux-x64 binary works there unchanged. Do all gusto work (and ideally this whole agent session) from the WSL2 shell, not PowerShell or CMD.
