@@ -88,6 +88,22 @@ describe("recommendRelease", () => {
     });
   });
 
+  test("does not treat a newline as a conventional header description", () => {
+    expect(
+      recommendRelease("1.2.3", ["fix:\ncorrect the output\n\nBREAKING CHANGE: old clients stop working"]),
+    ).toEqual({
+      kind: "none",
+    });
+  });
+
+  test("does not treat breaking text in an ordinary body paragraph as a footer", () => {
+    expect(
+      recommendRelease("1.2.3", [
+        "fix: correct the output\n\nBREAKING CHANGE: describes a compatibility concern in the body\n\nMore body text follows.",
+      ]),
+    ).toEqual({ kind: "release", version: "1.2.4", bump: "patch" });
+  });
+
   test("returns no recommendation for non-release-affecting commits", () => {
     expect(recommendRelease("0.2.0", ["docs: clarify install"])).toEqual({ kind: "none" });
   });
@@ -95,6 +111,14 @@ describe("recommendRelease", () => {
   test("rejects malformed and prerelease current versions", () => {
     expect(() => recommendRelease("not-a-version", ["fix: correct a typo"])).toThrow();
     expect(() => recommendRelease("1.2.3-beta.1", ["fix: correct a typo"])).toThrow();
+  });
+
+  test("accepts stable current versions with build metadata", () => {
+    expect(recommendRelease("1.2.3+build.7", ["fix: correct a typo"])).toEqual({
+      kind: "release",
+      version: "1.2.4",
+      bump: "patch",
+    });
   });
 });
 
@@ -125,6 +149,39 @@ describe("release-version CLI", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr.toString()).toBe("");
     expect(JSON.parse(result.stdout.toString())).toEqual({ kind: "release", version: "1.3.0", bump: "minor" });
+  });
+
+  test("allows only a greater explicit build-metadata version", () => {
+    const repo = setupRepo({ prefix: "release-version" });
+    commit(repo, "chore: establish release history");
+    git(repo, ["tag", "v1.2.3+old"]);
+
+    const greater = runCli(repo, "--json", "--version", "1.2.4+new");
+    expect(greater.exitCode).toBe(0);
+    expect(greater.stderr.toString()).toBe("");
+    expect(JSON.parse(greater.stdout.toString())).toEqual({ kind: "release", version: "1.2.4+new", bump: "patch" });
+
+    const equalPrecedence = runCli(repo, "--json", "--version", "1.2.3+new");
+    expect(equalPrecedence.exitCode).not.toBe(0);
+    expect(equalPrecedence.stdout.toString()).toBe("");
+    expect(equalPrecedence.stderr.toString()).not.toBe("");
+  });
+
+  test("uses the greatest stable tag by SemVer precedence, including build metadata", () => {
+    const repo = setupRepo({ prefix: "release-version" });
+    commit(repo, "chore: establish release history");
+    git(repo, ["tag", "v1.2.3"]);
+    commit(repo, "chore: establish the next baseline");
+    git(repo, ["tag", "v1.3.0"]);
+    commit(repo, "chore: establish the greatest baseline");
+    git(repo, ["tag", "v1.4.0+build.2"]);
+    commit(repo, "fix: correct a response");
+
+    const result = runCli(repo, "--json");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).toBe("");
+    expect(JSON.parse(result.stdout.toString())).toEqual({ kind: "release", version: "1.4.1", bump: "patch" });
   });
 
   test("emits the no-op recommendation as JSON", () => {

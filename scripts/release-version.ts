@@ -9,8 +9,9 @@ export type Bump = "patch" | "minor" | "major";
 
 export type Recommendation = { kind: "none" } | { kind: "release"; version: string; bump: Bump };
 
-const CONVENTIONAL_HEADER = /^(?<type>[a-z]+)(?:\([^\r\n)]*\))?(?<breaking>!)?:\s+\S[^\r\n]*/;
+const CONVENTIONAL_HEADER = /^(?<type>[a-z]+)(?:\([^\r\n)]*\))?(?<breaking>!)?:[ \t]+\S[^\r\n]*/;
 const BREAKING_FOOTER = /^BREAKING[ -]CHANGE:\s/m;
+const FOOTER_LINE = /^(?:BREAKING[ -]CHANGE|[A-Za-z][A-Za-z0-9-]*):\s/;
 const TYPE_BUMPS: Readonly<Record<string, Exclude<Bump, "major">>> = {
   feat: "minor",
   fix: "patch",
@@ -20,7 +21,8 @@ const TYPE_BUMPS: Readonly<Record<string, Exclude<Bump, "major">>> = {
 const BUMP_PRIORITY: Readonly<Record<Bump, number>> = { patch: 1, minor: 2, major: 3 };
 
 function isStableVersion(version: string): boolean {
-  return semver.valid(version) === version && semver.prerelease(version) === null;
+  const parsed = semver.parse(version);
+  return parsed !== null && !version.startsWith("v") && parsed.prerelease.length === 0;
 }
 
 function stableVersion(version: string, label: string): string {
@@ -32,8 +34,21 @@ export function parseConventionalCommit(message: string): ParsedCommit {
   const header = CONVENTIONAL_HEADER.exec(message);
   return {
     type: header?.groups?.type ?? null,
-    breaking: header?.groups?.breaking === "!" || BREAKING_FOOTER.test(message),
+    breaking: header?.groups?.breaking === "!" || BREAKING_FOOTER.test(trailingFooterBlock(message)),
   };
+}
+
+function trailingFooterBlock(message: string): string {
+  const lines = message.split(/\r?\n/);
+  let end = lines.length;
+  while (end > 0 && lines[end - 1] === "") end -= 1;
+
+  let start = end;
+  while (start > 0 && lines[start - 1] !== "") start -= 1;
+  if (start === 0) return "";
+
+  const footerLines = lines.slice(start, end);
+  return footerLines.every((line) => FOOTER_LINE.test(line) || /^[ \t]/.test(line)) ? footerLines.join("\n") : "";
 }
 
 function bumpForCommit(commit: ParsedCommit): Bump | null {
