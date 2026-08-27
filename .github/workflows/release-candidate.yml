@@ -49,6 +49,10 @@ jobs:
           fi
 
           default_branch=$(gh api "repos/$REPOSITORY" --jq .default_branch)
+          if [[ "$default_branch" != "main" ]]; then
+            echo "The repository default branch must be main" >&2
+            exit 1
+          fi
           ancestry=$(gh api "repos/$REPOSITORY/compare/$COMMIT_SHA...$default_branch" --jq .status)
           if [[ "$ancestry" != "ahead" && "$ancestry" != "identical" ]]; then
             echo "commit_sha must be reachable from the default branch" >&2
@@ -56,10 +60,10 @@ jobs:
           fi
 
           ci_runs="$RUNNER_TEMP/ci-runs.json"
-          gh api --method GET "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
+          gh api --paginate --slurp --method GET "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
             -f head_sha="$COMMIT_SHA" -f event=push -f status=success -f per_page=100 > "$ci_runs"
           if ! jq -e --arg sha "$COMMIT_SHA" '
-            [.workflow_runs[] |
+            [.[] | .workflow_runs[] |
               select(.head_sha == $sha and .event == "push" and .status == "completed" and .conclusion == "success")]
             | length > 0
           ' "$ci_runs" >/dev/null; then
@@ -97,6 +101,7 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2, pinned to the SHA on Gusto's org Actions allowlist
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -177,6 +182,63 @@ jobs:
         env:
           BUN_NO_CODESIGN_MACHO_BINARY: "1"
         run: bun run build:all
+
+      - name: Revalidate source eligibility before signing
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          resolved=$(gh api "repos/$REPOSITORY/commits/$COMMIT_SHA" --jq .sha)
+          if [[ "$resolved" != "$COMMIT_SHA" ]]; then
+            echo "commit_sha did not resolve to the supplied commit" >&2
+            exit 1
+          fi
+          default_branch=$(gh api "repos/$REPOSITORY" --jq .default_branch)
+          if [[ "$default_branch" != "main" ]]; then
+            echo "The repository default branch must be main" >&2
+            exit 1
+          fi
+          ancestry=$(gh api "repos/$REPOSITORY/compare/$COMMIT_SHA...$default_branch" --jq .status)
+          if [[ "$ancestry" != "ahead" && "$ancestry" != "identical" ]]; then
+            echo "commit_sha must still be reachable from main" >&2
+            exit 1
+          fi
+
+          ci_runs="$RUNNER_TEMP/pre-sign-ci-runs.json"
+          gh api --paginate --slurp --method GET "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$COMMIT_SHA" -f event=push -f status=success -f per_page=100 > "$ci_runs"
+          if ! jq -e --arg sha "$COMMIT_SHA" '
+            [.[] | .workflow_runs[] |
+              select(.head_sha == $sha and .event == "push" and .status == "completed" and .conclusion == "success")]
+            | length > 0
+          ' "$ci_runs" >/dev/null; then
+            echo "No successful push CI run exists for commit_sha" >&2
+            exit 1
+          fi
+
+          tag="v$RELEASE_VERSION"
+          check_absent() {
+            endpoint=$1
+            label=$2
+            response=""
+            if response=$(gh api --include --silent "$endpoint"); then
+              echo "$label already exists" >&2
+              exit 1
+            fi
+            case "$response" in
+              HTTP/*" 404 "*) ;;
+              *)
+                echo "Could not verify whether $label exists" >&2
+                exit 1
+                ;;
+            esac
+          }
+          check_absent "repos/$REPOSITORY/git/ref/tags/$tag" "Tag $tag"
+          check_absent "repos/$REPOSITORY/releases/tags/$tag" "Release $tag"
 
       - name: Sign and notarize macOS binaries
         env:

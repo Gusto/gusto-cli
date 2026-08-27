@@ -14,7 +14,10 @@ const PUBLIC_ASSET_NAMES = ["SHA256SUMS", "gusto-darwin-arm64", "gusto-darwin-x6
 const MANIFEST_NAME = "release-manifest.json";
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const POSITIVE_ID = /^[1-9][0-9]*$/;
 const STABLE_SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const UTC_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/;
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 type PayloadName = (typeof PAYLOAD_NAMES)[number];
@@ -56,7 +59,27 @@ export interface PublishedRelease {
 
 export interface ReleaseObservation {
   tagTargetSha: string | null;
+  tagObjectType: "commit" | "tag" | null;
   release: PublishedRelease | null;
+}
+
+export interface CandidateArtifactIdentity {
+  version: string;
+  commitSha: string;
+  candidateRunId: string;
+  artifactId: string;
+  artifactDigest: string;
+  runSha: string;
+}
+
+export interface VerifiedCandidateArtifactMetadata {
+  id: string;
+  name: string;
+  digest: string;
+  candidateRunId: string;
+  runSha: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export type PublicationState =
@@ -64,7 +87,7 @@ export type PublicationState =
   | { kind: "already-published" }
   | { kind: "tag-only" }
   | { kind: "release-only" }
-  | { kind: "mismatch"; reason: "target" | "body" | "assets" | "release" };
+  | { kind: "mismatch"; reason: "tag" | "target" | "body" | "assets" | "release" };
 
 function sha256(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -83,6 +106,10 @@ function assertFullSha(value: string, label: string): void {
 
 function assertSha256(value: string, label: string): void {
   if (!SHA256.test(value)) throw new Error(`${label} must be a lowercase SHA-256 digest`);
+}
+
+function assertPositiveId(value: string, label: string): void {
+  if (!POSITIVE_ID.test(value)) throw new Error(`${label} must be a positive decimal ID`);
 }
 
 function assertIdentity(identity: ReleaseIdentity): void {
@@ -194,6 +221,125 @@ function plainRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function parseUtcTimestamp(value: unknown, label: string): { source: string; milliseconds: number } {
+  if (typeof value !== "string") throw new Error(`${label} must be a UTC ISO timestamp`);
+  const match = UTC_TIMESTAMP.exec(value);
+  if (match === null) throw new Error(`${label} must be a UTC ISO timestamp`);
+  const milliseconds = Date.parse(value);
+  const base = match[1];
+  const fraction = match[2] ?? "000";
+  const normalized = `${base}.${fraction.padEnd(3, "0")}Z`;
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== normalized) {
+    throw new Error(`${label} must be a valid UTC ISO timestamp`);
+  }
+  return { source: value, milliseconds };
+}
+
+interface ParsedArtifactMetadata extends VerifiedCandidateArtifactMetadata {
+  expired: boolean;
+  createdMilliseconds: number;
+  expiresMilliseconds: number;
+}
+
+function parseArtifactMetadata(value: unknown, label: string): ParsedArtifactMetadata {
+  const artifact = plainRecord(value, label);
+  const workflowRun = plainRecord(artifact.workflow_run, `${label} workflow_run`);
+  if (
+    typeof artifact.id !== "number" ||
+    !Number.isSafeInteger(artifact.id) ||
+    artifact.id <= 0 ||
+    typeof artifact.name !== "string" ||
+    typeof artifact.digest !== "string" ||
+    typeof artifact.expired !== "boolean" ||
+    typeof workflowRun.id !== "number" ||
+    !Number.isSafeInteger(workflowRun.id) ||
+    workflowRun.id <= 0 ||
+    typeof workflowRun.head_sha !== "string"
+  ) {
+    throw new Error(`${label} is missing exact identity fields`);
+  }
+  const created = parseUtcTimestamp(artifact.created_at, `${label} created_at`);
+  const expires = parseUtcTimestamp(artifact.expires_at, `${label} expires_at`);
+  return {
+    id: String(artifact.id),
+    name: artifact.name,
+    digest: artifact.digest,
+    expired: artifact.expired,
+    candidateRunId: String(workflowRun.id),
+    runSha: workflowRun.head_sha,
+    createdAt: created.source,
+    expiresAt: expires.source,
+    createdMilliseconds: created.milliseconds,
+    expiresMilliseconds: expires.milliseconds,
+  };
+}
+
+function sameArtifactMetadata(left: ParsedArtifactMetadata, right: ParsedArtifactMetadata): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.digest === right.digest &&
+    left.expired === right.expired &&
+    left.candidateRunId === right.candidateRunId &&
+    left.runSha === right.runSha &&
+    left.createdAt === right.createdAt &&
+    left.expiresAt === right.expiresAt
+  );
+}
+
+export function verifyCandidateArtifactMetadata(
+  artifactsResponse: unknown,
+  artifactResponse: unknown,
+  identity: CandidateArtifactIdentity,
+  now: Date,
+): VerifiedCandidateArtifactMetadata {
+  assertStableVersion(identity.version);
+  assertFullSha(identity.commitSha, "Commit SHA");
+  assertPositiveId(identity.candidateRunId, "Candidate run ID");
+  assertPositiveId(identity.artifactId, "Artifact ID");
+  assertSha256(identity.artifactDigest, "Artifact digest");
+  assertFullSha(identity.runSha, "Candidate run SHA");
+  const nowMilliseconds = now.getTime();
+  if (!Number.isFinite(nowMilliseconds)) throw new Error("Current time must be valid");
+
+  const list = plainRecord(artifactsResponse, "Candidate artifact list");
+  if (list.total_count !== 1 || !Array.isArray(list.artifacts) || list.artifacts.length !== 1) {
+    throw new Error("Candidate run must contain the sole artifact");
+  }
+  const listed = parseArtifactMetadata(list.artifacts[0], "Listed artifact");
+  const detailed = parseArtifactMetadata(artifactResponse, "Detailed artifact");
+  if (!sameArtifactMetadata(listed, detailed)) throw new Error("Artifact list and detail metadata disagree");
+
+  const expectedName = `release-candidate-${identity.version}-${identity.commitSha}`;
+  const expectedDigest = `sha256:${identity.artifactDigest}`;
+  if (
+    detailed.id !== identity.artifactId ||
+    detailed.name !== expectedName ||
+    detailed.digest !== expectedDigest ||
+    detailed.candidateRunId !== identity.candidateRunId ||
+    detailed.runSha !== identity.runSha
+  ) {
+    throw new Error("Artifact metadata does not match the sealed candidate identity");
+  }
+  if (detailed.expiresMilliseconds <= detailed.createdMilliseconds) {
+    throw new Error("Candidate artifact expires_at must be after created_at");
+  }
+  if (detailed.expiresMilliseconds - detailed.createdMilliseconds > SEVEN_DAYS_MS) {
+    throw new Error("Candidate artifact lifetime must not exceed seven days");
+  }
+  if (detailed.expired || nowMilliseconds >= detailed.expiresMilliseconds) {
+    throw new Error("Candidate artifact is expired");
+  }
+  if (detailed.createdMilliseconds > nowMilliseconds) throw new Error("Candidate artifact was created in the future");
+  const {
+    expired: _expired,
+    createdMilliseconds: _createdMilliseconds,
+    expiresMilliseconds: _expiresMilliseconds,
+    ...verified
+  } = detailed;
+  return verified;
+}
+
 function parseManifest(bytes: Uint8Array): ReleaseManifest {
   const source = strictText(bytes, MANIFEST_NAME);
   let value: unknown;
@@ -300,8 +446,13 @@ export function classifyPublicationState(
     throw new Error("Release notes do not match the manifest release-notes hash");
   }
   if (observation.tagTargetSha === null) {
+    if (observation.tagObjectType !== null) throw new Error("Absent tag must not have an object type");
     return observation.release === null ? { kind: "clear" } : { kind: "release-only" };
   }
+  if (observation.tagObjectType !== "commit" && observation.tagObjectType !== "tag") {
+    throw new Error("Existing tag must have a recognized object type");
+  }
+  if (observation.tagObjectType !== "commit") return { kind: "mismatch", reason: "tag" };
   if (observation.tagTargetSha !== manifest.commitSha) return { kind: "mismatch", reason: "target" };
   if (observation.release === null) return { kind: "tag-only" };
 
@@ -337,14 +488,17 @@ function identityFrom(values: Map<string, string>): ReleaseIdentity {
   };
 }
 
-function parsePublishedRelease(file: string): PublishedRelease {
-  let value: unknown;
+function parseJsonFile(file: string, label: string): unknown {
   try {
-    value = JSON.parse(strictText(readFileSync(file), "Release API response"));
+    return JSON.parse(strictText(readFileSync(file), label));
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error("Release API response must contain valid JSON");
+    if (error instanceof SyntaxError) throw new Error(`${label} must contain valid JSON`);
     throw error;
   }
+}
+
+function parsePublishedRelease(file: string): PublishedRelease {
+  const value = parseJsonFile(file, "Release API response");
   const release = plainRecord(value, "Release API response");
   if (
     typeof release.tag_name !== "string" ||
@@ -389,17 +543,59 @@ async function main(args: string[]): Promise<void> {
     console.log(JSON.stringify(operation(values.get("--directory")!, identityFrom(values))));
     return;
   }
+  if (command === "artifact-metadata") {
+    const values = parseArguments(args.slice(1), [
+      "--artifacts-json",
+      "--artifact-json",
+      "--version",
+      "--commit-sha",
+      "--candidate-run-id",
+      "--artifact-id",
+      "--artifact-digest",
+      "--run-sha",
+    ]);
+    const verified = verifyCandidateArtifactMetadata(
+      parseJsonFile(values.get("--artifacts-json")!, "Candidate artifact list"),
+      parseJsonFile(values.get("--artifact-json")!, "Candidate artifact detail"),
+      {
+        version: values.get("--version")!,
+        commitSha: values.get("--commit-sha")!,
+        candidateRunId: values.get("--candidate-run-id")!,
+        artifactId: values.get("--artifact-id")!,
+        artifactDigest: values.get("--artifact-digest")!,
+        runSha: values.get("--run-sha")!,
+      },
+      new Date(),
+    );
+    console.log(JSON.stringify(verified));
+    return;
+  }
   if (command === "publication-state") {
-    const values = parseArguments(args.slice(1), [...identityArguments, "--tag-target", "--release-json"]);
+    const values = parseArguments(args.slice(1), [
+      ...identityArguments,
+      "--tag-target",
+      "--tag-object-type",
+      "--release-json",
+    ]);
     const directory = values.get("--directory")!;
     const verified = verifyReleaseManifest(directory, identityFrom(values));
     const tagValue = values.get("--tag-target")!;
     const tagTargetSha = tagValue === "absent" ? null : tagValue;
     if (tagTargetSha !== null) assertFullSha(tagTargetSha, "Tag target");
+    const tagTypeValue = values.get("--tag-object-type")!;
+    const tagObjectType = tagTypeValue === "absent" ? null : tagTypeValue;
+    if (tagObjectType !== null && tagObjectType !== "commit" && tagObjectType !== "tag") {
+      throw new Error("Tag object type must be absent, commit, or tag");
+    }
+    if ((tagTargetSha === null) !== (tagObjectType === null)) {
+      throw new Error("Tag target and object type must both be absent or both be present");
+    }
     const releaseValue = values.get("--release-json")!;
     const release = releaseValue === "absent" ? null : parsePublishedRelease(releaseValue);
     const notes = strictText(readRegularFile(artifactDirectory(directory), "release-notes.md"), "release-notes.md");
-    console.log(JSON.stringify(classifyPublicationState(verified.manifest, notes, { tagTargetSha, release })));
+    console.log(
+      JSON.stringify(classifyPublicationState(verified.manifest, notes, { tagTargetSha, tagObjectType, release })),
+    );
     return;
   }
   throw new Error(`Unknown command: ${command ?? ""}`);
