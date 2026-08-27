@@ -16,9 +16,18 @@ import { dirname, join } from "node:path";
 // case-insensitively. Anything outside this set fails the audit for a human to
 // review (a real copyleft dep, or a license string we don't recognize yet).
 const ALLOWED = new Set(
-  ["0BSD", "Apache-2.0", "BlueOak-1.0.0", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "ISC", "MIT", "Unlicense"].map(
-    (id) => id.toLowerCase(),
-  ),
+  [
+    "0BSD",
+    "Apache-2.0",
+    "BlueOak-1.0.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Python-2.0",
+    "Unlicense",
+  ].map((id) => id.toLowerCase()),
 );
 
 const NOTICES_PATH = "NOTICES";

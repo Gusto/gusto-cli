@@ -71,6 +71,7 @@ describe("isAllowed", () => {
     expect(isAllowed("MIT")).toBe(true);
     expect(isAllowed("apache-2.0")).toBe(true);
     expect(isAllowed("BlueOak-1.0.0")).toBe(true);
+    expect(isAllowed("Python-2.0")).toBe(true);
   });
 
   test("rejects copyleft licenses", () => {
