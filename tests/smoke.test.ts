@@ -1,5 +1,16 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
@@ -22,7 +33,15 @@ const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
 async function run(args: string[], env: Record<string, string> = {}, stdin?: string): Promise<Run> {
   return spawnCapture(
     [BIN_PATH, ...args],
-    { ...stripGustoEnv(process.env), XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env },
+    {
+      ...stripGustoEnv(process.env),
+      XDG_CONFIG_HOME: ISOLATED_CONFIG,
+      // Pinned by default so the auto-update background check never fires a real network call
+      // during a smoke run - it's covered hermetically in lib/auto-update.test.ts. A test that
+      // wants to exercise the trigger itself overrides GUSTO_CLI_VERSION explicitly.
+      GUSTO_CLI_VERSION: pkg.version,
+      ...env,
+    },
     { stdin },
   );
 }
@@ -607,6 +626,99 @@ describe("config commands work without auth", () => {
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("invalid_value");
     expect(envelope.error.message).toContain("json");
+  });
+
+  test("auto_update set + get + list round-trip, rejecting invalid values", async () => {
+    const env = { XDG_CONFIG_HOME: scratchHome };
+
+    let result = await run(["config", "set", "auto_update", "off"], env);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).data.value).toBe("off");
+
+    result = await run(["config", "get", "auto_update"], env);
+    expect(JSON.parse(result.stdout.trim()).data.value).toBe("off");
+
+    result = await run(["config", "list"], env);
+    expect(JSON.parse(result.stdout.trim()).data.values.auto_update).toBe("off");
+
+    result = await run(["config", "set", "auto_update", "sometimes"], env);
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_value");
+  });
+});
+
+describe("auto-update background wiring stays invisible on stdout", () => {
+  let scratchHome: string;
+
+  beforeEach(() => {
+    scratchHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-autoupdate-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratchHome, { recursive: true, force: true });
+  });
+
+  // The hard AC: an update pending or not, --agent/--json/piped stdout must be byte-identical.
+  // A stale (>24h) last_checked with no staged version exercises the "would spawn a check" branch
+  // without actually staging or swapping anything - GUSTO_CLI_VERSION stays pinned (the default
+  // `run()` env), so no real network call happens, but every other code path here still runs.
+  // Same XDG_CONFIG_HOME for both runs, so `config_path` in the envelope can't itself differ.
+  test("stdout is unaffected by a pre-existing stale update-check state", async () => {
+    const env = { XDG_CONFIG_HOME: scratchHome };
+    const plain = await run(["config", "list"], env);
+
+    mkdirSync(path.join(scratchHome, "gusto"), { recursive: true });
+    writeFileSync(path.join(scratchHome, "gusto", "update-state.toml"), 'last_checked = "2020-01-01T00:00:00.000Z"\n');
+    const withStaleState = await run(["config", "list"], env);
+
+    expect(withStaleState.exitCode).toBe(plain.exitCode);
+    expect(withStaleState.stdout).toBe(plain.stdout);
+  });
+
+  // The other half of the AC, with a real pending update this time: swapStagedUpdate actually
+  // installs it (against an isolated GUSTO_INSTALL_DIR, never the shared dist/gusto binary), and
+  // stdout still doesn't move. `last_checked` is fresh so maybeSpawnBackgroundCheck's own
+  // staleness check - not the version pin - is what keeps this hermetic (no real spawn), while
+  // GUSTO_CLI_VERSION is unpinned so the swap itself isn't skipped.
+  test("stdout is unaffected by an update that actually gets installed this invocation", async () => {
+    // Canonicalized to match the form `resolveTargetPath` reports back - on macOS $TMPDIR lives
+    // under a /var -> /private/var symlink, and swapStagedUpdate deliberately refuses to swap a
+    // stage recorded under a path that doesn't textually match the freshly resolved target.
+    const installDir = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-autoupdate-install-")));
+    try {
+      const installedPath = path.join(installDir, "gusto");
+      writeFileSync(installedPath, '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+      const stagedBody = '#!/bin/sh\necho "0.2.0"\n';
+      const stagedPath = path.join(installDir, ".gusto-upgrade");
+      writeFileSync(stagedPath, stagedBody, { mode: 0o755 });
+      const checksum = createHash("sha256").update(stagedBody).digest("hex");
+
+      const env = { XDG_CONFIG_HOME: scratchHome, GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "" };
+      const plain = await run(["config", "list"], { XDG_CONFIG_HOME: scratchHome });
+
+      mkdirSync(path.join(scratchHome, "gusto"), { recursive: true });
+      writeFileSync(
+        path.join(scratchHome, "gusto", "update-state.toml"),
+        [
+          `last_checked = "${new Date().toISOString()}"`,
+          `staged_version = "0.2.0"`,
+          `staged_checksum = "${checksum}"`,
+          `staged_path = "${stagedPath}"`,
+          `staged_install_path = "${installedPath}"`,
+          `staged_from = "0.1.0"`,
+          "",
+        ].join("\n"),
+      );
+      const withPendingUpdate = await run(["config", "list"], env);
+
+      expect(withPendingUpdate.exitCode).toBe(plain.exitCode);
+      expect(withPendingUpdate.stdout).toBe(plain.stdout);
+      // The swap really happened, against the isolated install dir - not a no-op.
+      expect(readFileSync(installedPath, "utf8")).toBe(stagedBody);
+      expect(existsSync(stagedPath)).toBe(false);
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
   });
 });
 

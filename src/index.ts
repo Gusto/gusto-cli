@@ -18,11 +18,17 @@ import { registerReportCommand } from "./commands/report.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { registerUpgradeCommand } from "./commands/upgrade.ts";
+import {
+  BACKGROUND_UPDATE_FLAG,
+  maybeSpawnBackgroundCheck,
+  runBackgroundCheck,
+  swapStagedUpdate,
+} from "./lib/auto-update.ts";
 import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
-import { readConfig } from "./lib/config.ts";
+import { readConfig, type UserConfig } from "./lib/config.ts";
 import { ExitCode } from "./lib/exit-codes.ts";
 import type { Environment, GlobalFlags } from "./lib/global-flags.ts";
-import { type StreamSinks, defaultSinks, emit, outputOptionsFrom } from "./lib/output.ts";
+import { type StreamSinks, defaultSinks, emit, outputOptionsFrom, resolveOutputMode } from "./lib/output.ts";
 import { VERSION } from "./lib/version.ts";
 
 const HELP_FOOTER = `
@@ -137,30 +143,46 @@ function usageFlags(argv: string[]): GlobalFlags {
   };
 }
 
-/** The persisted `environment`, read before commander is built so it can become the `--env` default.
+/** The persisted user config, read before commander is built so `environment` can become the
+ * `--env` default and `auto_update` can gate the background check below.
  *
  * A corrupt config file warns and is ignored rather than aborting the run: failing hard here would
  * also block `gusto config reset`, the one command that fixes it. The warning says the defaults were
  * dropped, so a user whose `environment = "sandbox"` is being ignored finds out from us instead of
  * from a production 401. */
-async function configuredEnvironment(sinks: StreamSinks = defaultSinks): Promise<Environment | undefined> {
+async function loadConfig(sinks: StreamSinks = defaultSinks): Promise<UserConfig> {
   try {
-    return (await readConfig()).environment;
+    return await readConfig();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // stderr, like every other diagnostic the CLI writes: stdout carries the envelope and nothing
     // else, so a warning there would corrupt the one stream an agent parses. Through the sinks rather
     // than `process.stderr` directly, matching the rest of the writers.
     sinks.stderr.write(
-      `warning: ignoring user config, so its defaults (including environment) are not applied: ${message}\n`,
+      `warning: ignoring user config, so its defaults (including environment and auto_update) are not applied: ${message}\n`,
     );
-    return undefined;
+    return {};
   }
 }
 
 async function main(argv: string[]): Promise<void> {
+  // The detached background-update child's entire job. Checked before anything else - no signal
+  // handlers, no config read, no commander program - so its startup is as cheap as possible and
+  // it can never recurse into spawning another one of itself.
+  if (argv.includes(BACKGROUND_UPDATE_FLAG)) {
+    await runBackgroundCheck();
+    process.exit(ExitCode.Success);
+  }
+
   installSignalHandlers();
-  const program = buildProgram(await configuredEnvironment());
+  const cfg = await loadConfig();
+
+  // Both fail open internally (see their doc comments) and never throw, so a bug in either can
+  // never block or delay the command the caller actually ran.
+  await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
+  await maybeSpawnBackgroundCheck({ cfg });
+
+  const program = buildProgram(cfg.environment);
 
   try {
     await program.parseAsync(argv);
