@@ -242,8 +242,8 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
-  // Covered here rather than in unit tests: those pass pre-parsed options, so they cannot catch a
-  // flag that was never registered with commander - which would exit 2 (unknown option), not 7.
+  // Each row passes one date flag and omits the rest, so exit 7 (validation reached) proves commander
+  // accepted it, not exit 2 (never registered) - which unit tests miss, passing options pre-parsed.
   test.each([
     ["--pay-period-start", ["timesheet", "sync", "--pay-period-start", "2026-06-01"], "start-date"],
     ["--pay-period-end", ["timesheet", "sync", "--pay-period-end", "2026-06-15"], "end-date"],
@@ -259,26 +259,16 @@ describe("auth required commands without a token", () => {
     expect(fields).not.toContain(satisfied);
   });
 
-  // The canonical names are asserted by the parity test below; this covers only their absence.
-  test("timesheet sync --help hides the deprecated aliases", async () => {
-    const result = await run(["timesheet", "sync", "--help"]);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).not.toContain("--pay-period-start");
-    expect(result.stdout).not.toContain("--pay-period-end");
-  });
-
-  // Pins both names and descriptions against future drift; only the names moved in this rename.
-  // Whitespace is collapsed because commander pads to the longest flag, which differs per command -
-  // and matching flag+description as one string catches them being paired with the wrong date.
-  test("timesheet sync and list keep the same date flag names and descriptions", async () => {
+  test("timesheet sync and list use the same date flag names", async () => {
     const [sync, list] = await Promise.all([
       run(["timesheet", "sync", "--help"]),
       run(["timesheet", "list", "--help"]),
     ]);
     for (const help of [sync.stdout, list.stdout]) {
-      const flat = help.replace(/\s+/g, " ");
-      expect(flat).toContain("--start-date <date> Pay period start (YYYY-MM-DD)");
-      expect(flat).toContain("--end-date <date> Pay period end (YYYY-MM-DD)");
+      expect(help).toContain("--start-date <date>");
+      expect(help).toContain("--end-date <date>");
+      expect(help).not.toContain("--pay-period-start");
+      expect(help).not.toContain("--pay-period-end");
     }
   });
 

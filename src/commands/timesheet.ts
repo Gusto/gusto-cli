@@ -208,9 +208,7 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
   const startDate = readSyncDate(opts, START_DATE_FLAG, blocked);
   const endDate = readSyncDate(opts, END_DATE_FLAG, blocked);
 
-  // Re-check the locals so the compiler narrows them to `string` for the body below. The
-  // blocked.length guard can't fire alone today - readSyncDate returns undefined wherever it pushes
-  // - but it keeps this correct for any later check that blocks without nulling a local.
+  // Re-check the locals (narrows them to `string`) and catch any format errors above.
   if (!payScheduleUuid || !startDate || !endDate || blocked.length > 0) {
     return { ok: false, message: "missing or invalid arguments", blocked };
   }
@@ -226,9 +224,8 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
   };
 }
 
-/** Note on stderr - never stdout - when a deprecated date flag was used, so a caller parsing the
- * JSON envelope is unaffected. Names `skill install` since a stale installed skill is the likeliest
- * source and nothing else reports that a skill file is behind the binary. */
+/** Names `skill install` since a stale installed skill is the likeliest source and nothing else
+ * reports that a skill file is behind the binary. */
 export function warnDeprecatedSyncDateFlags(opts: TimesheetSyncInput, stderr: NodeJS.WritableStream): void {
   const used = SYNC_DATE_FLAGS.filter((spec) => opts[spec.alias] !== undefined);
   if (used.length === 0) return;
