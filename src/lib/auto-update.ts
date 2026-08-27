@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, rename, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import type { AutoUpdate } from "./config.ts";
@@ -35,7 +35,7 @@ export async function readState(file: string = stateFilePath()): Promise<UpdateS
   const text = await f.text();
   if (text.trim().length === 0) return {};
   try {
-    const parsed = parse(text) as Record<string, unknown>;
+    const parsed = parse(text);
     const out: UpdateState = {};
     for (const key of [
       "last_checked",
@@ -45,7 +45,8 @@ export async function readState(file: string = stateFilePath()): Promise<UpdateS
       "staged_install_path",
       "staged_from",
     ] as const) {
-      if (typeof parsed[key] === "string") out[key] = parsed[key] as string;
+      const value = parsed[key];
+      if (typeof value === "string") out[key] = value;
     }
     return out;
   } catch {
@@ -54,7 +55,6 @@ export async function readState(file: string = stateFilePath()): Promise<UpdateS
 }
 
 export async function writeState(state: UpdateState, file: string = stateFilePath()): Promise<void> {
-  const { mkdir, chmod } = await import("node:fs/promises");
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(state)) if (v !== undefined) out[k] = v;
@@ -98,7 +98,7 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
     // auto_update back on later still finds it there.
     if (deps.cfg.auto_update === "off") return;
 
-    const env = deps.env ?? (process.env as EnvSource);
+    const env = deps.env ?? process.env;
     // The pin means "never auto-update" - leave the stage exactly as it is so a later invocation,
     // once the pin is gone, can still pick it up.
     if (isPinned(env)) return;
@@ -207,7 +207,7 @@ export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void
   const file = deps.stateFile ?? stateFilePath();
   try {
     if (deps.cfg.auto_update === "off") return;
-    const env = deps.env ?? (process.env as EnvSource);
+    const env = deps.env ?? process.env;
     if (isPinned(env)) return;
     // Nothing to check without a resolvable target - most commonly `bun run dev` with no
     // GUSTO_INSTALL_DIR override, where execPath is the developer's `bun`, not a `gusto` binary.

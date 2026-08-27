@@ -849,7 +849,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
   const {
     gate,
     log,
-    env = process.env as EnvSource,
+    env = process.env,
     currentVersion = VERSION,
     fetchImpl = fetch,
     execPath = process.execPath,
@@ -910,7 +910,7 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
 export async function stageUpdate(deps: StageDeps): Promise<CommandResult<UpgradeResult>> {
   const {
     log,
-    env = process.env as EnvSource,
+    env = process.env,
     currentVersion = VERSION,
     fetchImpl = fetch,
     execPath = process.execPath,
