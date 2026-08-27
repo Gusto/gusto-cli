@@ -19,6 +19,7 @@ import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
 import {
   assetBaseUrl,
+  defaultVersionOf,
   ensureInstallDir,
   parseSha256Sums,
   performUpgrade,
@@ -27,6 +28,7 @@ import {
   preflightStagingPath,
   resolveTargetPath,
   resolveTargetTag,
+  SKIP_AUTO_UPDATE_ENV,
   stageUpdate,
   tagToVersion,
 } from "./upgrade.ts";
@@ -729,5 +731,24 @@ describe("stageUpdate", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("checksum_mismatch");
     expect(readdirSync(dir).filter((f) => f.startsWith("."))).toEqual([]);
+  });
+});
+
+describe("defaultVersionOf", () => {
+  // The binary being exec-checked is a real `gusto` build - spawning it for `--version` runs its
+  // own `main()` for real. Without this, that nested run's own `swapStagedUpdate` reads the real
+  // `update-state.toml`: if a stale, unrelated stage happens to be recorded there for the same
+  // install target, it hashes *this* file's current bytes against *that* stage's checksum,
+  // mismatches, and deletes the very file this call is still verifying - so the outer upgrade
+  // fails blaming "another gusto upgrade", which never happened. `index.ts` skips the whole
+  // swap/background-check block whenever it sees this env var set.
+  test("passes the skip-auto-update env var to the spawned exec-check", async () => {
+    const dir = tmpDir("gusto-cli-versionof-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\necho "$${SKIP_AUTO_UPDATE_ENV}"\n`, { mode: 0o755 });
+
+    const reported = await defaultVersionOf(script);
+
+    expect(reported).toBe("1");
   });
 });

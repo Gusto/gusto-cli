@@ -15,6 +15,15 @@ import { VERSION } from "./version.ts";
 const DEFAULT_REPO = "Gusto/gusto-cli";
 const BINARY_NAME = "gusto";
 
+/** Set on the exec-check child `defaultVersionOf` spawns, and nowhere else. The binary being
+ * checked is a real `gusto` build, so running it - even just for `--version` - runs its own
+ * `main()` for real. Without this, that nested run's own auto-update wiring (`lib/auto-update.ts`)
+ * reads the same `update-state.toml` the outer call is in the middle of acting on, which can
+ * delete the very file being verified out from under it. `index.ts` checks this env var before
+ * doing anything auto-update-related, and it alone - not argv, so it can't collide with a real
+ * `--version` invocation the way a second argv flag would. */
+export const SKIP_AUTO_UPDATE_ENV = "GUSTO_INTERNAL_SKIP_AUTO_UPDATE";
+
 /** Path prefixes owned by a package manager. Replacing a binary under one of these leaves the
  * manager's metadata describing a version that's no longer on disk, and the next `brew upgrade`
  * silently reverts us - so refuse and name the tool that should be doing the update instead. */
@@ -510,7 +519,11 @@ export type StageDeps = Omit<UpgradeDeps, "gate">;
  * timeout reads as the same null every other bad artifact does. */
 export async function defaultVersionOf(file: string): Promise<string | null> {
   try {
-    const proc = Bun.spawn([file, "--version"], { stdout: "pipe", stderr: "ignore" });
+    const proc = Bun.spawn([file, "--version"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      env: { ...process.env, [SKIP_AUTO_UPDATE_ENV]: "1" },
+    });
     const deadline = setTimeout(() => proc.kill("SIGKILL"), EXEC_CHECK_TIMEOUT_MS);
     try {
       const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
