@@ -658,8 +658,9 @@ describe("auto-update background wiring stays invisible on stdout", () => {
     rmSync(scratchHome, { recursive: true, force: true });
   });
 
-  // The hard AC: an update pending or not, --agent/--json/piped stdout must be byte-identical.
-  // A stale (>24h) last_checked with no staged version exercises the "would spawn a check" branch
+  // The hard requirement: an update pending or not, --agent/--json/piped stdout must be
+  // byte-identical. A stale (>24h) last_checked with no staged version exercises the "would spawn
+  // a check" branch
   // without actually staging or swapping anything - GUSTO_CLI_VERSION stays pinned (the default
   // `run()` env), so no real network call happens, but every other code path here still runs.
   // Same XDG_CONFIG_HOME for both runs, so `config_path` in the envelope can't itself differ.
@@ -675,8 +676,8 @@ describe("auto-update background wiring stays invisible on stdout", () => {
     expect(withStaleState.stdout).toBe(plain.stdout);
   });
 
-  // The other half of the AC, with a real pending update this time: swapStagedUpdate actually
-  // installs it (against an isolated GUSTO_INSTALL_DIR, never the shared dist/gusto binary), and
+  // The other half of that requirement, with a real pending update this time: swapStagedUpdate
+  // actually installs it (against an isolated GUSTO_INSTALL_DIR, never the shared dist/gusto binary), and
   // stdout still doesn't move. `last_checked` is fresh so maybeSpawnBackgroundCheck's own
   // staleness check - not the version pin - is what keeps this hermetic (no real spawn), while
   // GUSTO_CLI_VERSION is unpinned so the swap itself isn't skipped.

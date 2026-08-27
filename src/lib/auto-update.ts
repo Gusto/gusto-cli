@@ -83,10 +83,10 @@ export interface SwapDeps {
 /** Runs at the very top of every invocation, before the command dispatches. Cheap in the common
  * case (nothing staged): one small file read, no network, no hashing. Only when a background check
  * previously staged something does this re-verify and install it - see `lib/upgrade.ts`'s
- * `stageUpdate` for how it got there, and the ticket guardrails this maps to a fix for each of:
- * never mid-command (this runs before dispatch), the pin (checked below), a stale/mismatched stage
- * (discarded, not installed), and a failed rename (left for the next invocation to retry). Always
- * fails open - an update-subsystem bug must never block the command the caller actually wants. */
+ * `stageUpdate` for how it got there. The guardrails that matter: never mid-command (this runs
+ * before dispatch), the pin (checked below), a stale/mismatched stage (discarded, not installed),
+ * and a failed rename (left for the next invocation to retry). Always fails open - an
+ * update-subsystem bug must never block the command the caller actually wants. */
 export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
   const file = deps.stateFile ?? stateFilePath();
   try {
