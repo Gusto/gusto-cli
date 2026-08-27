@@ -19,6 +19,7 @@
     "build:macos-x64": "bun build --compile --target=bun-darwin-x64 --outfile=dist/gusto-darwin-x64 src/index.ts",
     "build:linux-x64": "bun build --compile --target=bun-linux-x64 --outfile=dist/gusto-linux-x64 src/index.ts",
     "build:all": "bun run build:macos-arm64 && bun run build:macos-x64 && bun run build:linux-x64",
+    "commitlint": "commitlint",
     "dev": "bun run src/index.ts",
     "test": "bun test src",
     "test:smoke": "bun run build && bun test tests/smoke.test.ts",
@@ -41,6 +42,8 @@
     "smol-toml": "^1.6.1"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "^10.0.1",
     "@types/bun": "^1.1.13",
     "eslint": "^10.4.1",

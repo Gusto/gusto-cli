@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cleanupTempDirs, git, ISOLATED, setupRepo, tempDir } from "./helpers/git";
 
@@ -7,6 +7,8 @@ afterEach(cleanupTempDirs);
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const PREPARE_HOOK = path.join(REPO_ROOT, ".githooks", "prepare-commit-msg");
+const COMMIT_MSG_HOOK = path.join(REPO_ROOT, ".githooks", "commit-msg");
+const CHECK_MESSAGE_SCRIPT = path.join(REPO_ROOT, "scripts", "check-commit-message.sh");
 const INSTALL_SCRIPT = path.join(REPO_ROOT, "scripts", "install-hooks.sh");
 
 function stageHookOnly(repo: string) {
@@ -17,6 +19,32 @@ function stageHookOnly(repo: string) {
 
 function lastCommitBody(repo: string): string {
   return git(repo, ["log", "-1", "--format=%B"]);
+}
+
+function runMessageCheck(message: string) {
+  const messageFile = path.join(tempDir("commit-message"), "COMMIT_EDITMSG");
+  writeFileSync(messageFile, message);
+  return Bun.spawnSync(["sh", CHECK_MESSAGE_SCRIPT, messageFile], {
+    cwd: REPO_ROOT,
+    env: { PATH: process.env.PATH ?? "", ...ISOLATED },
+  });
+}
+
+function stageCommitValidationHooks(repo: string) {
+  const hooks = path.join(repo, ".githooks");
+  const scripts = path.join(repo, "scripts");
+  mkdirSync(hooks, { recursive: true });
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(PREPARE_HOOK, path.join(hooks, "prepare-commit-msg"));
+  if (existsSync(COMMIT_MSG_HOOK)) copyFileSync(COMMIT_MSG_HOOK, path.join(hooks, "commit-msg"));
+  if (existsSync(CHECK_MESSAGE_SCRIPT))
+    copyFileSync(CHECK_MESSAGE_SCRIPT, path.join(scripts, "check-commit-message.sh"));
+  if (existsSync(path.join(REPO_ROOT, "commitlint.config.ts"))) {
+    copyFileSync(path.join(REPO_ROOT, "commitlint.config.ts"), path.join(repo, "commitlint.config.ts"));
+  }
+  copyFileSync(path.join(REPO_ROOT, "package.json"), path.join(repo, "package.json"));
+  symlinkSync(path.join(REPO_ROOT, "node_modules"), path.join(repo, "node_modules"), "dir");
+  git(repo, ["config", "core.hooksPath", ".githooks"]);
 }
 
 function commitWithoutUserConfig(repo: string, message: string) {
@@ -100,6 +128,80 @@ describe("prepare-commit-msg hook", () => {
     expect(body).toContain("body line one");
     expect(body).toContain("body line two");
     expect(body).toMatch(/^Signed-off-by:/m);
+  });
+});
+
+describe("check-commit-message.sh", () => {
+  test("accepts every allowed conventional commit type", () => {
+    const allowedTypes = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test"];
+
+    for (const type of allowedTypes) {
+      expect(runMessageCheck(`${type}: describe the change\n`).exitCode).toBe(0);
+    }
+  });
+
+  test("accepts lowercase kebab-case scopes", () => {
+    expect(runMessageCheck("feat(auth-session): add login recovery\n").exitCode).toBe(0);
+  });
+
+  test("accepts a breaking change footer", () => {
+    expect(runMessageCheck("feat!: change output schema\n\nBREAKING CHANGE: new envelope\n").exitCode).toBe(0);
+  });
+
+  test("accepts a DCO trailer appended by prepare-commit-msg", () => {
+    expect(
+      runMessageCheck("feat(auth): add login recovery\n\nSigned-off-by: Jane Doe <jane@example.com>\n").exitCode,
+    ).toBe(0);
+  });
+
+  test("accepts merge-generated commit messages", () => {
+    expect(runMessageCheck("Merge branch 'main' into feature\n").exitCode).toBe(0);
+  });
+
+  test("accepts revert-generated commit messages", () => {
+    expect(runMessageCheck('Revert "feat(auth): add login recovery"\n\nThis reverts commit abcdef.\n').exitCode).toBe(
+      0,
+    );
+  });
+
+  test("rejects a subject without a conventional commit type", () => {
+    expect(runMessageCheck("Add login recovery\n").exitCode).not.toBe(0);
+  });
+
+  test("rejects uppercase scopes", () => {
+    expect(runMessageCheck("feat(Auth): add login recovery\n").exitCode).not.toBe(0);
+  });
+
+  test("rejects internal-ticket-shaped scopes", () => {
+    expect(runMessageCheck("feat(INTERNAL-123): add login recovery\n").exitCode).not.toBe(0);
+  });
+
+  test("rejects ticket-shaped references in a conventional subject", () => {
+    const result = runMessageCheck("feat: replace INTERNAL-123 behavior\n");
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("commit subject/scope must not contain an internal ticket key");
+  });
+
+  test("rejects empty subjects", () => {
+    expect(runMessageCheck("feat(auth): \n").exitCode).not.toBe(0);
+  });
+
+  test("rejects headers longer than 100 characters", () => {
+    expect(runMessageCheck(`feat: ${"a".repeat(95)}\n`).exitCode).not.toBe(0);
+  });
+
+  test("rejects an invalid commit after prepare-commit-msg adds the DCO trailer", () => {
+    const repo = setupRepo({ prefix: "commit-validation" });
+    stageCommitValidationHooks(repo);
+
+    const invalid = Bun.spawnSync(["git", "commit", "--allow-empty", "-m", "Add login recovery"], {
+      cwd: repo,
+      env: { PATH: process.env.PATH ?? "", ...ISOLATED },
+    });
+    expect(invalid.exitCode).not.toBe(0);
+
+    git(repo, ["commit", "--allow-empty", "-m", "feat(auth): add login recovery"]);
+    expect(lastCommitBody(repo)).toMatch(/^Signed-off-by: Jane Doe <jane@example\.com>$/m);
   });
 });
 
