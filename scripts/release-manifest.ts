@@ -83,6 +83,11 @@ export interface VerifiedCandidateArtifactMetadata {
   expiresAt: string;
 }
 
+export interface SelectedRelease {
+  releaseId: string | null;
+  published: boolean;
+}
+
 export type PublicationState =
   | { kind: "clear" }
   | { kind: "draft-incomplete"; missingAssets: PublicAssetName[] }
@@ -222,6 +227,61 @@ function plainRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error(`${label} must be an object`);
   return value as Record<string, unknown>;
+}
+
+function releaseListingIdentity(value: unknown, label: string): { id: string; tagName: string; draft: boolean } {
+  const release = plainRecord(value, label);
+  if (
+    typeof release.id !== "number" ||
+    !Number.isSafeInteger(release.id) ||
+    release.id <= 0 ||
+    typeof release.tag_name !== "string" ||
+    typeof release.draft !== "boolean"
+  ) {
+    throw new Error(`${label} is missing an exact ID, tag name, or draft state`);
+  }
+  return { id: String(release.id), tagName: release.tag_name, draft: release.draft };
+}
+
+export function selectUniqueRelease(
+  releasePages: unknown,
+  publishedByTag: unknown | null,
+  expectedTag: string,
+): SelectedRelease {
+  if (!/^v.+$/.test(expectedTag)) throw new Error("Expected Release tag must start with v");
+  if (!Array.isArray(releasePages) || releasePages.length === 0 || releasePages.length > 3) {
+    throw new Error("Release listing must contain between one and three bounded pages");
+  }
+  const pages = releasePages.map((value, pageIndex) => {
+    if (!Array.isArray(value) || value.length > 100) {
+      throw new Error(`Release listing page ${pageIndex + 1} exceeds the bounded page size`);
+    }
+    return value;
+  });
+  if (pages.length === 3 && pages[2]!.length === 100) {
+    throw new Error("Bounded Release listing cannot prove uniqueness beyond 300 records");
+  }
+
+  const matches = pages
+    .flat()
+    .map((value, index) => releaseListingIdentity(value, `Release listing record ${index}`))
+    .filter((release) => release.tagName === expectedTag);
+  if (matches.length > 1) throw new Error(`Multiple Releases use tag ${expectedTag}`);
+
+  if (publishedByTag !== null) {
+    const published = releaseListingIdentity(publishedByTag, "Published Release tag response");
+    if (published.tagName !== expectedTag || published.draft) {
+      throw new Error("Published Release tag response has inconsistent identity");
+    }
+    if (matches.length !== 1 || matches[0]!.id !== published.id || matches[0]!.draft) {
+      throw new Error("Published Release tag response disagrees with the bounded Release listing");
+    }
+    return { releaseId: published.id, published: true };
+  }
+
+  if (matches.length === 0) return { releaseId: null, published: false };
+  if (!matches[0]!.draft) throw new Error("Release listing contains a published tag absent from the tag endpoint");
+  return { releaseId: matches[0]!.id, published: false };
 }
 
 function parseUtcTimestamp(value: unknown, label: string): { source: string; milliseconds: number } {
@@ -599,6 +659,20 @@ async function main(args: string[]): Promise<void> {
       new Date(),
     );
     console.log(JSON.stringify(verified));
+    return;
+  }
+  if (command === "release-lookup") {
+    const values = parseArguments(args.slice(1), ["--release-pages-json", "--published-json", "--tag"]);
+    const publishedValue = values.get("--published-json")!;
+    console.log(
+      JSON.stringify(
+        selectUniqueRelease(
+          parseJsonFile(values.get("--release-pages-json")!, "Bounded Release listing"),
+          publishedValue === "absent" ? null : parseJsonFile(publishedValue, "Published Release tag response"),
+          values.get("--tag")!,
+        ),
+      ),
+    );
     return;
   }
   if (command === "publication-state") {

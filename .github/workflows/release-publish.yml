@@ -33,7 +33,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-publish-${{ inputs.version }}
+  group: release-publication
   cancel-in-progress: false
 
 env:
@@ -357,19 +357,39 @@ jobs:
           observe_release() {
             local probe
             probe=""
+            published_json="$RUNNER_TEMP/published-release.json"
+            published_value=absent
             RELEASE_VALUE=absent
             if probe=$(gh api --include --silent "repos/$REPOSITORY/releases/tags/$tag"); then
-              gh api "repos/$REPOSITORY/releases/tags/$tag" > "$release_json"
-              RELEASE_VALUE=$release_json
-              return
+              gh api "repos/$REPOSITORY/releases/tags/$tag" > "$published_json"
+              published_value=$published_json
+            else
+              case "$probe" in
+                HTTP/*" 404 "*) ;;
+                *)
+                  echo "Could not determine whether published Release $tag exists" >&2
+                  return 1
+                  ;;
+              esac
             fi
-            case "$probe" in
-              HTTP/*" 404 "*) ;;
-              *)
-                echo "Could not determine whether Release $tag exists" >&2
-                return 1
-                ;;
-            esac
+
+            release_pages="$RUNNER_TEMP/release-pages.json"
+            page_files=()
+            for page in 1 2 3; do
+              page_file="$RUNNER_TEMP/releases-page-$page.json"
+              gh api --method GET "repos/$REPOSITORY/releases?per_page=100&page=$page" > "$page_file"
+              page_files+=("$page_file")
+            done
+            jq -s '.' "${page_files[@]}" > "$release_pages"
+            lookup_json=$(bun trusted/scripts/release-manifest.ts release-lookup \
+              --release-pages-json "$release_pages" \
+              --published-json "$published_value" \
+              --tag "$tag")
+            release_id=$(jq -r '.releaseId // "absent"' <<< "$lookup_json")
+            if [[ "$release_id" != "absent" ]]; then
+              gh api "repos/$REPOSITORY/releases/$release_id" > "$release_json"
+              RELEASE_VALUE=$release_json
+            fi
           }
 
           publication_state() {
@@ -395,12 +415,17 @@ jobs:
             clear)
               # Drafts and their assets are private. Publishing the completed
               # draft creates the public tag and Release together.
-              gh release create "$tag" \
-                --repo "$REPOSITORY" \
-                --draft \
-                --target "$COMMIT_SHA" \
-                --title "$tag" \
-                --notes-file "$CANDIDATE_DIRECTORY/release-notes.md"
+              draft_request="$RUNNER_TEMP/draft-release-request.json"
+              created_release="$RUNNER_TEMP/created-draft-release.json"
+              jq -n \
+                --arg tag "$tag" \
+                --arg target "$COMMIT_SHA" \
+                --rawfile body "$CANDIDATE_DIRECTORY/release-notes.md" \
+                '{tag_name: $tag, target_commitish: $target, name: $tag, body: $body, draft: true, prerelease: false}' \
+                > "$draft_request"
+              gh api --method POST "repos/$REPOSITORY/releases" --input "$draft_request" > "$created_release"
+              release_id=$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "$created_release")
+              gh api "repos/$REPOSITORY/releases/$release_id" > "$release_json"
               state_json=$(publication_state)
               state=$(jq -r .kind <<< "$state_json")
               if [[ "$state" != "draft-incomplete" ]]; then

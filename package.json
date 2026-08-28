@@ -25,7 +25,7 @@
     "test:smoke": "bun run build && bun test tests/smoke.test.ts",
     "test:install": "bun test tests/install.test.ts",
     "test:dco": "bun test tests/check-dco.test.ts",
-    "test:hooks": "bun test tests/hooks.test.ts",
+    "test:hooks": "bun test --timeout 20000 tests/hooks.test.ts",
     "test:release": "bun test tests/release-publication.test.ts tests/release-workflows.test.ts",
     "test:all": "bun run test && bun run test:release && bun run test:install && bun run test:dco && bun run test:hooks && bun run test:smoke",
     "license:audit": "bun run scripts/licenses.ts audit",

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+
 env:
   BUN_VERSION: 1.3.14
 

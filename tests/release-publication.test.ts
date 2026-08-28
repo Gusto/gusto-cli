@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ReleaseManifest, ReleaseObservation } from "../scripts/release-manifest.ts";
-import { classifyPublicationState, verifyCandidateArtifactMetadata } from "../scripts/release-manifest.ts";
+import {
+  classifyPublicationState,
+  selectUniqueRelease,
+  verifyCandidateArtifactMetadata,
+} from "../scripts/release-manifest.ts";
 
 const SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const NOTES = "## [1.2.3](https://github.com/Gusto/gusto-cli/compare/v1.2.2...v1.2.3)\n\n- Fix output.\n";
@@ -272,5 +276,40 @@ describe("candidate artifact metadata", () => {
         new Date("2026-08-27T12:00:00Z"),
       ),
     ).toThrow(/sole artifact/);
+  });
+});
+
+describe("draft Release discovery", () => {
+  const draft = { id: 41, tag_name: "v1.2.3", draft: true };
+  const published = { id: 42, tag_name: "v1.2.3", draft: false };
+
+  test("finds a draft in the authenticated releases listing when the published tag endpoint is absent", () => {
+    expect(selectUniqueRelease([[draft], []], null, "v1.2.3")).toEqual({ releaseId: "41", published: false });
+  });
+
+  test("requires the published tag endpoint and releases listing to identify the same unique Release", () => {
+    expect(selectUniqueRelease([[published], []], published, "v1.2.3")).toEqual({
+      releaseId: "42",
+      published: true,
+    });
+  });
+
+  test("rejects published endpoint and listing disagreement about draft state", () => {
+    expect(() => selectUniqueRelease([[{ ...published, draft: true }], []], published, "v1.2.3")).toThrow(/disagrees/i);
+  });
+
+  test("fails closed when duplicate drafts use the same tag", () => {
+    expect(() => selectUniqueRelease([[draft, { ...draft, id: 43 }], []], null, "v1.2.3")).toThrow(
+      /multiple Releases/i,
+    );
+  });
+
+  test("fails closed when the bounded listing cannot prove uniqueness", () => {
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      tag_name: `v0.0.${index + 1}`,
+      draft: true,
+    }));
+    expect(() => selectUniqueRelease([fullPage, fullPage, fullPage], null, "v1.2.3")).toThrow(/bounded/i);
   });
 });
