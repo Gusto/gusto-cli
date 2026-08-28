@@ -50,6 +50,7 @@ export interface PublishedAsset extends ReleaseAssetRecord {
 
 export interface PublishedRelease {
   tagName: string;
+  targetCommitish: string;
   name: string;
   body: string;
   draft: boolean;
@@ -84,6 +85,8 @@ export interface VerifiedCandidateArtifactMetadata {
 
 export type PublicationState =
   | { kind: "clear" }
+  | { kind: "draft-incomplete"; missingAssets: PublicAssetName[] }
+  | { kind: "draft-ready" }
   | { kind: "already-published" }
   | { kind: "tag-only" }
   | { kind: "release-only" }
@@ -436,6 +439,17 @@ function samePublishedAssets(manifest: ReleaseManifest, actual: PublishedAsset[]
   });
 }
 
+function missingDraftAssets(manifest: ReleaseManifest, actual: PublishedAsset[]): PublicAssetName[] | null {
+  const byName = new Map<string, PublishedAsset>();
+  for (const asset of actual) {
+    if (byName.has(asset.name) || !PUBLIC_ASSET_NAMES.includes(asset.name as PublicAssetName)) return null;
+    const expected = manifest.assets[asset.name as PublicAssetName];
+    if (asset.size !== expected.size || asset.sha256 !== expected.sha256) return null;
+    byName.set(asset.name, asset);
+  }
+  return PUBLIC_ASSET_NAMES.filter((name) => !byName.has(name));
+}
+
 export function classifyPublicationState(
   manifest: ReleaseManifest,
   releaseNotes: string,
@@ -447,7 +461,22 @@ export function classifyPublicationState(
   }
   if (observation.tagTargetSha === null) {
     if (observation.tagObjectType !== null) throw new Error("Absent tag must not have an object type");
-    return observation.release === null ? { kind: "clear" } : { kind: "release-only" };
+    if (observation.release === null) return { kind: "clear" };
+    const draft = observation.release;
+    if (!draft.draft) return { kind: "release-only" };
+    const expectedTag = `v${manifest.version}`;
+    if (
+      draft.tagName !== expectedTag ||
+      draft.targetCommitish !== manifest.commitSha ||
+      draft.name !== expectedTag ||
+      draft.prerelease
+    ) {
+      return { kind: "mismatch", reason: "release" };
+    }
+    if (draft.body !== releaseNotes) return { kind: "mismatch", reason: "body" };
+    const missingAssets = missingDraftAssets(manifest, draft.assets);
+    if (missingAssets === null) return { kind: "mismatch", reason: "assets" };
+    return missingAssets.length === 0 ? { kind: "draft-ready" } : { kind: "draft-incomplete", missingAssets };
   }
   if (observation.tagObjectType !== "commit" && observation.tagObjectType !== "tag") {
     throw new Error("Existing tag must have a recognized object type");
@@ -502,6 +531,7 @@ function parsePublishedRelease(file: string): PublishedRelease {
   const release = plainRecord(value, "Release API response");
   if (
     typeof release.tag_name !== "string" ||
+    typeof release.target_commitish !== "string" ||
     typeof release.name !== "string" ||
     typeof release.body !== "string" ||
     typeof release.draft !== "boolean" ||
@@ -526,6 +556,7 @@ function parsePublishedRelease(file: string): PublishedRelease {
   });
   return {
     tagName: release.tag_name,
+    targetCommitish: release.target_commitish,
     name: release.name,
     body: release.body,
     draft: release.draft,

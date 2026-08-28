@@ -42,6 +42,9 @@ env:
 jobs:
   publish:
     name: Verify and publish exact candidate
+    # Complement of release.yml's legacy guard. One repository-variable update
+    # switches publishers without a window where both writers can run.
+    if: ${{ vars.RELEASE_AUTOMATION_CUTOVER == 'sealed-v1' }}
     runs-on:
       group: gusto-ubuntu-default
     steps:
@@ -389,7 +392,23 @@ jobs:
               echo "Release $tag already matches the exact sealed candidate; nothing to do."
               exit 0
               ;;
-            clear) ;;
+            clear)
+              # Drafts and their assets are private. Publishing the completed
+              # draft creates the public tag and Release together.
+              gh release create "$tag" \
+                --repo "$REPOSITORY" \
+                --draft \
+                --target "$COMMIT_SHA" \
+                --title "$tag" \
+                --notes-file "$CANDIDATE_DIRECTORY/release-notes.md"
+              state_json=$(publication_state)
+              state=$(jq -r .kind <<< "$state_json")
+              if [[ "$state" != "draft-incomplete" ]]; then
+                echo "New draft did not match the exact sealed identity: $state_json" >&2
+                exit 1
+              fi
+              ;;
+            draft-incomplete|draft-ready) ;;
             tag-only|release-only|mismatch)
               echo "Refusing to publish from non-clear state: $state_json" >&2
               exit 1
@@ -400,18 +419,27 @@ jobs:
               ;;
           esac
 
-          gh api --method POST "repos/$REPOSITORY/git/refs" \
-            -f ref="refs/tags/$tag" \
-            -f sha="$COMMIT_SHA" >/dev/null
-          gh release create "$tag" \
-            --repo "$REPOSITORY" \
-            --verify-tag \
-            --title "$tag" \
-            --notes-file "$CANDIDATE_DIRECTORY/release-notes.md" \
-            "$CANDIDATE_DIRECTORY/gusto-darwin-arm64" \
-            "$CANDIDATE_DIRECTORY/gusto-darwin-x64" \
-            "$CANDIDATE_DIRECTORY/gusto-linux-x64" \
-            "$CANDIDATE_DIRECTORY/SHA256SUMS"
+          mapfile -t missing_assets < <(jq -r '.missingAssets[]?' <<< "$state_json")
+          for asset in "${missing_assets[@]}"; do
+            case "$asset" in
+              SHA256SUMS|gusto-darwin-arm64|gusto-darwin-x64|gusto-linux-x64) ;;
+              *)
+                echo "Refusing unexpected missing asset name: $asset" >&2
+                exit 1
+                ;;
+            esac
+            # Deliberately omit --clobber. Existing exact bytes were verified;
+            # existing mismatched bytes fail classification before this point.
+            gh release upload "$tag" "$CANDIDATE_DIRECTORY/$asset" --repo "$REPOSITORY"
+          done
+
+          ready_state=$(publication_state)
+          if [[ $(jq -r .kind <<< "$ready_state") != "draft-ready" ]]; then
+            echo "Draft Release is not complete and exact: $ready_state" >&2
+            exit 1
+          fi
+          release_id=$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "$release_json")
+          gh api --method PATCH "repos/$REPOSITORY/releases/$release_id" -F draft=false >/dev/null
 
           final_state=$(publication_state)
           if [[ $(jq -r .kind <<< "$final_state") != "already-published" ]]; then

@@ -93,6 +93,7 @@ function metadata(
 function release(overrides: Partial<NonNullable<ReleaseObservation["release"]>> = {}) {
   return {
     tagName: "v1.2.3",
+    targetCommitish: SHA,
     name: "v1.2.3",
     body: NOTES,
     draft: false,
@@ -119,6 +120,49 @@ describe("publication state", () => {
     expect(classify({ tagTargetSha: null, tagObjectType: null, release: release() })).toEqual({
       kind: "release-only",
     });
+  });
+
+  test("classifies an exact empty draft as resumable with every sealed asset missing", () => {
+    expect(
+      classify({
+        tagTargetSha: null,
+        tagObjectType: null,
+        release: release({ draft: true, assets: [] }),
+      }),
+    ).toEqual({
+      kind: "draft-incomplete",
+      missingAssets: ["SHA256SUMS", "gusto-darwin-arm64", "gusto-darwin-x64", "gusto-linux-x64"],
+    });
+  });
+
+  test("classifies an exact partial draft as resumable without replacing uploaded bytes", () => {
+    expect(
+      classify({
+        tagTargetSha: null,
+        tagObjectType: null,
+        release: release({ draft: true, assets: PUBLIC_ASSETS.slice(0, 2) }),
+      }),
+    ).toEqual({
+      kind: "draft-incomplete",
+      missingAssets: ["gusto-darwin-arm64", "gusto-darwin-x64"],
+    });
+  });
+
+  test("classifies a complete exact draft as ready to publish", () => {
+    expect(classify({ tagTargetSha: null, tagObjectType: null, release: release({ draft: true }) })).toEqual({
+      kind: "draft-ready",
+    });
+  });
+
+  test.each([
+    ["wrong target", { targetCommitish: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    ["wrong body", { body: NOTES.trimEnd() }],
+    ["unexpected asset", { assets: [...PUBLIC_ASSETS, { name: "extra", size: 1, sha256: "0".repeat(64) }] }],
+    ["wrong existing bytes", { assets: [{ ...PUBLIC_ASSETS[0], sha256: "0".repeat(64) }] }],
+  ])("rejects a draft with %s", (_label, override) => {
+    expect(
+      classify({ tagTargetSha: null, tagObjectType: null, release: release({ draft: true, ...override }) }),
+    ).toEqual({ kind: "mismatch", reason: expect.any(String) });
   });
 
   test("treats an exact existing publication as an idempotent retry regardless of asset order", () => {

@@ -14,6 +14,10 @@ env:
 jobs:
   release:
     name: Build + publish binaries
+    # Atomic cutover: absence (and every value except the documented sentinel)
+    # leaves the legacy path enabled. Once flipped, tag pushes still match the
+    # event but this writer is never scheduled.
+    if: ${{ vars.RELEASE_AUTOMATION_CUTOVER != 'sealed-v1' }}
     runs-on:
       group: gusto-ubuntu-default
     steps:
