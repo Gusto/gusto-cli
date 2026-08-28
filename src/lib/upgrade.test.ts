@@ -751,4 +751,39 @@ describe("defaultVersionOf", () => {
 
     expect(reported).toBe("1");
   });
+
+  // The exec-check runs a just-downloaded binary. It needs nothing from the credential env to
+  // print its version, so it doesn't get it - a token that isn't in the child's environment can't
+  // leak out of one.
+  test("does not pass credential env vars to the spawned exec-check", async () => {
+    const dir = tmpDir("gusto-cli-versionof-creds-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\necho "token=[$GUSTO_ACCESS_TOKEN] company=[$GUSTO_COMPANY_UUID]"\n`, {
+      mode: 0o755,
+    });
+
+    const previousToken = process.env.GUSTO_ACCESS_TOKEN;
+    const previousCompany = process.env.GUSTO_COMPANY_UUID;
+    process.env.GUSTO_ACCESS_TOKEN = "should-not-be-inherited";
+    process.env.GUSTO_COMPANY_UUID = "should-not-be-inherited-either";
+    try {
+      const reported = await defaultVersionOf(script);
+      expect(reported).toBe("token=[] company=[]");
+    } finally {
+      if (previousToken === undefined) delete process.env.GUSTO_ACCESS_TOKEN;
+      else process.env.GUSTO_ACCESS_TOKEN = previousToken;
+      if (previousCompany === undefined) delete process.env.GUSTO_COMPANY_UUID;
+      else process.env.GUSTO_COMPANY_UUID = previousCompany;
+    }
+  });
+
+  // PATH in particular: the exec-check and the xattr call both need it to work at all, so the
+  // credential strip must not turn into a minimal-allowlist that breaks them.
+  test("still passes through the ambient env the child needs", async () => {
+    const dir = tmpDir("gusto-cli-versionof-path-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\ntest -n "$PATH" && echo "ok"\n`, { mode: 0o755 });
+
+    expect(await defaultVersionOf(script)).toBe("ok");
+  });
 });

@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -24,6 +33,12 @@ function tmpDir(prefix: string): string {
 afterEach(() => {
   while (scratchDirs.length) {
     const dir = scratchDirs.pop()!;
+    // A test may have made the dir read-only; restore before removing.
+    try {
+      chmodSync(dir, 0o700);
+    } catch {
+      // Already gone or never ours.
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -216,9 +231,32 @@ describe("swapStagedUpdate", () => {
 
     expect(readFileSync(installedPath)).toEqual(before);
     expect(existsSync(stagedPath!)).toBe(false);
-    expect(stderr.buffer).toBe("");
     const state = await readState(stateFile);
     expect(state.staged_version).toBeUndefined();
+    // Bytes changed under a file only this CLI should have written - worth saying so rather than
+    // silently re-downloading on the next cycle forever.
+    expect(stderr.buffer).toContain("checksum");
+  });
+
+  // Same discard, but nothing is printed in agent mode - the stdout contract wins over the warning.
+  test("discards a checksum-mismatched stage silently in agent mode", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: "0".repeat(64),
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "agent" });
+
+    expect(existsSync(stagedPath!)).toBe(false);
+    expect(stderr.buffer).toBe("");
   });
 
   test("discards stale state when the staged file no longer exists", async () => {
@@ -262,6 +300,59 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toBe("");
     const state = await readState(stateFile);
     expect(state.staged_version).toBeUndefined();
+  });
+
+  // The rename's two failure branches, which behave deliberately differently. ENOENT means the
+  // staged file went away between the lstat and the rename - another invocation won the swap, so
+  // the stage is gone for good and the state entry goes with it. Anything else is transient (a full
+  // disk, permissions changed) and the stage is left exactly where it is, so the next invocation
+  // retries for free rather than re-downloading.
+  test("clears the state entry when the rename fails because the source vanished", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    // An install dir that doesn't exist, so `rename` onto it fails ENOENT while the staged file
+    // itself is present and hashes correctly.
+    const missingDir = path.join(tmpDir("gusto-cli-autoupdate-gone-"), "not-created");
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: path.join(missingDir, "gusto"),
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: missingDir }, sinks, mode: "human" });
+
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+  });
+
+  test.skipIf(process.getuid?.() === 0)("keeps the stage for a retry when the rename fails transiently", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+    // Read-only install dir: the staged file is still readable and hashes fine, but `rename` into
+    // this directory is refused - EACCES/EPERM, not ENOENT.
+    chmodSync(installDir, 0o500);
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+    chmodSync(installDir, 0o700); // before any assertion can throw and strand the scratch dir
+
+    expect(existsSync(stagedPath!)).toBe(true);
+    const state = await readState(stateFile);
+    expect(state.staged_version).toBe("0.3.0");
+    expect(state.staged_checksum).toBe(stagedChecksum);
   });
 });
 
@@ -324,17 +415,21 @@ describe("maybeSpawnBackgroundCheck", () => {
     expect((await readState(stateFile)).last_checked).toBe("2020-01-01T00:00:00.000Z");
   });
 
-  // Under `bun run dev` with no GUSTO_INSTALL_DIR override, execPath is the developer's `bun`, not
-  // a `gusto` binary - resolveTargetPath already refuses this exact shape for `gusto upgrade`
-  // (upgrade.ts's "not_installed_binary"). Spawning anyway would fork a doomed child every 24h:
-  // `bun --internal-background-update` never reaches index.ts's flag check at all.
-  test("does not spawn when there is no resolvable install target (e.g. running from source)", async () => {
+  // What gets re-exec'd is `execPath`, so that - not the upgrade target - is what has to be a
+  // `gusto` binary. Under `bun run dev` execPath is the developer's `bun`, and spawning it would
+  // fork a doomed child every 24h: `bun --internal-background-update` never reaches index.ts's
+  // flag check at all. The GUSTO_INSTALL_DIR row is the one a `resolveTargetPath` check misses -
+  // that function stops looking at execPath entirely once an install dir is named.
+  test.each([
+    ["no install dir override", {} as Record<string, string>],
+    ["an install dir override, which does not make execPath runnable", { GUSTO_INSTALL_DIR: "/opt/tools/bin" }],
+  ])("does not spawn when execPath is not a gusto binary: %s", async (_label, env) => {
     const { stateFile } = setup();
     let spawned = 0;
 
     await maybeSpawnBackgroundCheck({
       cfg: {},
-      env: {},
+      env,
       stateFile,
       execPath: "/usr/local/bin/bun",
       spawn: () => spawned++,

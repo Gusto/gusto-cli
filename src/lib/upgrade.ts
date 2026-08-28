@@ -24,6 +24,26 @@ const BINARY_NAME = "gusto";
  * `--version` invocation the way a second argv flag would. */
 export const SKIP_AUTO_UPDATE_ENV = "GUSTO_INTERNAL_SKIP_AUTO_UPDATE";
 
+/** Env vars carrying a credential, or the identity one acts on. Stripped from every subprocess the
+ * upgrade path spawns - a `--version` print, an `xattr` call, a detached release download. None of
+ * them has any use for a token, and one that isn't in a child's environment can't leak out of one.
+ *
+ * A denylist rather than a minimal allowlist on purpose: these children genuinely need a lot of
+ * ambient env to work (`PATH`, `HOME`, `TMPDIR`, proxy settings, the `GUSTO_CLI_*` overrides), and
+ * guessing that list short breaks upgrades on someone's machine in a way tests here wouldn't
+ * catch. Removing the two names that are actually sensitive is the part worth being certain of. */
+const CREDENTIAL_ENV_VARS = ["GUSTO_ACCESS_TOKEN", "GUSTO_COMPANY_UUID"] as const;
+
+/** `source` minus the credential vars, plus `extra`. Used for every subprocess spawned from here. */
+export function envForSubprocess(
+  extra: Record<string, string> = {},
+  source: EnvSource = process.env,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = { ...source, ...extra };
+  for (const key of CREDENTIAL_ENV_VARS) delete out[key];
+  return out;
+}
+
 /** Path prefixes owned by a package manager. Replacing a binary under one of these leaves the
  * manager's metadata describing a version that's no longer on disk, and the next `brew upgrade`
  * silently reverts us - so refuse and name the tool that should be doing the update instead. */
@@ -124,6 +144,28 @@ function canonical(p: string): string {
   }
 }
 
+/** The pinned release tag, or null when nothing is pinned. `"latest"` is deliberately *not* a pin:
+ * it means "resolve the newest release normally", which is what an unset value already does.
+ *
+ * The one place that decides what `GUSTO_CLI_VERSION` means, so the interactive path
+ * (`resolveTargetTag`) and the background path (`lib/auto-update.ts`) can't drift into reading the
+ * same env var two different ways. */
+export function pinnedVersion(env: EnvSource): string | null {
+  const value = env.GUSTO_CLI_VERSION;
+  return value !== undefined && value.length > 0 && value !== "latest" ? value : null;
+}
+
+/** Whether re-exec'ing `execPath` would run this CLI - i.e. it's an installed `gusto` binary
+ * rather than a runtime that happens to be hosting us (`bun run dev`, a test runner).
+ *
+ * Deliberately *not* `resolveTargetPath`, which answers a different question: it reports which
+ * binary an upgrade should *replace*, and skips this basename check entirely once
+ * `GUSTO_INSTALL_DIR` names one. That's correct there and wrong here - with the install dir
+ * overridden under `bun run dev`, it happily reports a target while `execPath` is still `bun`. */
+export function isSelfExecutable(execPath: string = process.execPath): boolean {
+  return path.basename(canonical(execPath)) === BINARY_NAME;
+}
+
 /** Symlinks are resolved so a `~/.local/bin/gusto` link upgrades its target, not itself. Both
  * branches canonicalize, because everything downstream reasons about the resolved path: the
  * managed-install prefixes are matched against it (an Intel Homebrew install reached through
@@ -173,8 +215,8 @@ export async function resolveTargetTag(
   env: EnvSource,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: true; tag: string | null } | Failed> {
-  const pinned = env.GUSTO_CLI_VERSION;
-  if (pinned !== undefined && pinned.length > 0 && pinned !== "latest") return { ok: true, tag: pinned };
+  const pinned = pinnedVersion(env);
+  if (pinned !== null) return { ok: true, tag: pinned };
   if (env.GUSTO_CLI_BASE_URL !== undefined && env.GUSTO_CLI_BASE_URL.length > 0) return { ok: true, tag: null };
 
   const repo = env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0 ? env.GUSTO_CLI_REPO : DEFAULT_REPO;
@@ -522,7 +564,7 @@ export async function defaultVersionOf(file: string): Promise<string | null> {
     const proc = Bun.spawn([file, "--version"], {
       stdout: "pipe",
       stderr: "ignore",
-      env: { ...process.env, [SKIP_AUTO_UPDATE_ENV]: "1" },
+      env: envForSubprocess({ [SKIP_AUTO_UPDATE_ENV]: "1" }),
     });
     const deadline = setTimeout(() => proc.kill("SIGKILL"), EXEC_CHECK_TIMEOUT_MS);
     try {
@@ -544,7 +586,11 @@ export async function defaultVersionOf(file: string): Promise<string | null> {
 export async function defaultStripQuarantine(file: string): Promise<void> {
   if (process.platform !== "darwin") return;
   try {
-    const proc = Bun.spawn(["xattr", "-d", "com.apple.quarantine", file], { stdout: "ignore", stderr: "ignore" });
+    const proc = Bun.spawn(["xattr", "-d", "com.apple.quarantine", file], {
+      stdout: "ignore",
+      stderr: "ignore",
+      env: envForSubprocess(),
+    });
     // Deadline for the same reason every other wait here has one: this is best-effort, so it must
     // never be the thing that hangs the upgrade with no envelope.
     const deadline = setTimeout(() => proc.kill("SIGKILL"), QUARANTINE_TIMEOUT_MS);

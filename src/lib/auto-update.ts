@@ -6,7 +6,14 @@ import type { AutoUpdate } from "./config.ts";
 import { configPaths } from "./config.ts";
 import type { EnvSource } from "./env.ts";
 import type { OutputMode, StreamSinks } from "./output.ts";
-import { resolveTargetPath, type StageDeps, stageUpdate } from "./upgrade.ts";
+import {
+  envForSubprocess,
+  isSelfExecutable,
+  pinnedVersion,
+  resolveTargetPath,
+  type StageDeps,
+  stageUpdate,
+} from "./upgrade.ts";
 
 /** Persisted next to `credentials.toml`/`config.toml`, but never user-edited: last background
  * check time, plus (while one is pending) the staged update a later invocation's
@@ -62,13 +69,8 @@ export async function writeState(state: UpdateState, file: string = stateFilePat
   await chmod(file, 0o600);
 }
 
-/** `"latest"` is deliberately excluded, matching `resolveTargetTag` in `lib/upgrade.ts` - the same
- * env var has to mean the same thing (no pin, resolve the real latest release) on both the
- * interactive and background paths, or `GUSTO_CLI_VERSION=latest` silently disables auto-update
- * while `gusto upgrade` reads it as "check normally". */
 function isPinned(env: EnvSource): boolean {
-  const value = env.GUSTO_CLI_VERSION;
-  return value !== undefined && value.length > 0 && value !== "latest";
+  return pinnedVersion(env) !== null;
 }
 
 export interface SwapDeps {
@@ -125,6 +127,15 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
     const bytes = new Uint8Array(await Bun.file(state.staged_path).arrayBuffer());
     const actual = createHash("sha256").update(bytes).digest("hex");
     if (actual !== state.staged_checksum) {
+      // Bytes changed under a file only this CLI writes, between staging it and now. Discarding is
+      // the safe move either way, but it's worth saying so rather than silently re-downloading on
+      // every cycle forever - a failing disk or real tampering both look exactly like this.
+      // stderr and human-mode only, same as the success notice: the stdout contract comes first.
+      if (deps.mode === "human") {
+        deps.sinks.stderr.write(
+          `gusto: discarded a pending update - its checksum no longer matches, so it was not installed\n`,
+        );
+      }
       await unlink(state.staged_path).catch(() => {});
       await discardStage(state, file);
       return;
@@ -182,6 +193,9 @@ function defaultSpawnBackgroundCheck(): void {
   Bun.spawn([process.execPath, BACKGROUND_UPDATE_FLAG], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"],
+    // All this child does is fetch a public release asset and stage it - it has no use for a
+    // credential, and it outlives the process that spawned it. See `envForSubprocess`.
+    env: envForSubprocess(),
   }).unref();
 }
 
@@ -209,11 +223,12 @@ export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void
     if (deps.cfg.auto_update === "off") return;
     const env = deps.env ?? process.env;
     if (isPinned(env)) return;
-    // Nothing to check without a resolvable target - most commonly `bun run dev` with no
-    // GUSTO_INSTALL_DIR override, where execPath is the developer's `bun`, not a `gusto` binary.
-    // `resolveTargetPath` already refuses that shape for `gusto upgrade`; reusing it here avoids
-    // spawning a background child that could only fail the same way once it got there.
-    if (!resolveTargetPath(env, deps.execPath ?? process.execPath).ok) return;
+    // The child is a re-exec of *this* executable, so that's what has to be a `gusto` binary -
+    // under `bun run dev` it's the developer's `bun`, and `bun --internal-background-update` never
+    // reaches index.ts's flag check. Asked of execPath directly rather than via
+    // `resolveTargetPath`, which answers "what should an upgrade replace" and stops looking at
+    // execPath at all once GUSTO_INSTALL_DIR is set - see `isSelfExecutable`.
+    if (!isSelfExecutable(deps.execPath ?? process.execPath)) return;
 
     const state = await readState(file);
     // A previous check already staged something that's just waiting on a swap (most likely one
