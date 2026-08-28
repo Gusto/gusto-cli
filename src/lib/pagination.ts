@@ -82,7 +82,12 @@ export function parsePaginationFlags(opts: PaginationFlags): ValidationResult<Pa
     }
     return {
       ok: true,
-      body: { startPage: 1, per: Math.min(parsed.value, MAX_PER), maxItems: parsed.value, surfaceNext: false },
+      body: {
+        startPage: 1,
+        per: Math.min(parsed.value, MAX_PER),
+        maxItems: parsed.value,
+        surfaceNext: parsed.value <= MAX_PER,
+      },
     };
   }
 

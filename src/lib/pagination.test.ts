@@ -60,14 +60,14 @@ describe("parsePaginationFlags", () => {
     });
   });
 
-  test("--limit caps total and page size, no next", () => {
+  test("--limit within one API page allows a real next cursor to surface", () => {
     expect(parsePaginationFlags({ limit: "50" })).toEqual({
       ok: true,
-      body: { startPage: 1, per: 50, maxItems: 50, surfaceNext: false },
+      body: { startPage: 1, per: 50, maxItems: 50, surfaceNext: true },
     });
   });
 
-  test("--limit above max clamps per to 500 but keeps the cap", () => {
+  test("--limit above max clamps per to 500, keeps the cap, and suppresses unsafe continuation", () => {
     expect(parsePaginationFlags({ limit: "1200" })).toEqual({
       ok: true,
       body: { startPage: 1, per: 500, maxItems: 1200, surfaceNext: false },
@@ -76,7 +76,7 @@ describe("parsePaginationFlags", () => {
 
   test("--limit with --all is allowed; limit wins", () => {
     const r = parsePaginationFlags({ all: true, limit: "30" });
-    expect(r).toEqual({ ok: true, body: { startPage: 1, per: 30, maxItems: 30, surfaceNext: false } });
+    expect(r).toEqual({ ok: true, body: { startPage: 1, per: 30, maxItems: 30, surfaceNext: true } });
   });
 
   test("--cursor resumes from the encoded page, surfaces next", () => {

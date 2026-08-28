@@ -26,12 +26,12 @@ describe("contractorListHandler pagination", () => {
     expect(result.next).toBeUndefined();
   });
 
-  test("--limit caps and emits no next", async () => {
+  test("--limit within one page caps results and surfaces next", async () => {
     restoreList = stubGlobalFetch(pagedRouter(many(250), { withHeaders: true })).restore;
     const result = await contractorListHandler({ ...TEST_AUTH, limit: "40" })(TEST_CONTEXT);
     if (!result.ok) throw new Error("expected ok");
     expect(result.data as unknown[]).toHaveLength(40);
-    expect(result.next).toBeUndefined();
+    expect(result.next).toBeDefined();
   });
 
   test("malformed --cursor fails validation (exit 7)", async () => {

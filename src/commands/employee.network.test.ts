@@ -20,6 +20,7 @@ import {
   workAddressHandler,
 } from "./employee.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
+import { decodeCursor } from "../lib/pagination.ts";
 import {
   TEST_AUTH as auth,
   TEST_CONTEXT as ctx,
@@ -113,12 +114,25 @@ describe("employeeListHandler pagination", () => {
     expect(result.next).toBeUndefined();
   });
 
-  test("--limit caps total and emits no next", async () => {
-    restore = stubGlobalFetch(pagedRouter(many(250))).restore;
-    const result = await employeeListHandler({ ...auth, limit: "50", status: "all" })(ctx);
+  test("--limit 1 returns an opaque next that resumes at the distinct second employee", async () => {
+    restore = stubGlobalFetch(pagedRouter(many(3), { withHeaders: true })).restore;
+    const first = await employeeListHandler({ ...auth, limit: "1", status: "all" })(ctx);
+    if (!first.ok) throw new Error("expected ok");
+    const firstData = first.data as unknown as EmployeeListData;
+    expect(firstData.employees.map((employee) => employee.uuid)).toEqual(["e0"]);
+    expect(decodeCursor(first.next as string)).toEqual({ page: 2, per: 1 });
+
+    const second = await employeeListHandler({ ...auth, cursor: first.next, status: "all" })(ctx);
+    if (!second.ok) throw new Error("expected ok");
+    const secondData = second.data as unknown as EmployeeListData;
+    expect(secondData.employees.map((employee) => employee.uuid)).toEqual(["e1"]);
+    expect(second.next).toBeDefined();
+  });
+
+  test("--limit omits next on the last page", async () => {
+    restore = stubGlobalFetch(pagedRouter(many(1), { withHeaders: true })).restore;
+    const result = await employeeListHandler({ ...auth, limit: "1", status: "all" })(ctx);
     if (!result.ok) throw new Error("expected ok");
-    const data = result.data as unknown as EmployeeListData;
-    expect(data.employees).toHaveLength(50);
     expect(result.next).toBeUndefined();
   });
 

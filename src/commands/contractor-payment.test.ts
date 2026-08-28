@@ -88,7 +88,7 @@ describe("contractorPaymentListHandler", () => {
     expect(result.next).toBeUndefined();
   });
 
-  test("--limit caps contractor_payments across pages and emits no next", async () => {
+  test("--limit within one page caps contractor_payments and surfaces next", async () => {
     let call = 0;
     const stub = stubGlobalFetch(() => {
       call += 1;
@@ -100,7 +100,7 @@ describe("contractorPaymentListHandler", () => {
     if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
     const data = result.data as { contractor_payments: unknown[] };
     expect(data.contractor_payments).toEqual([{ uuid: "cp-1" }, { uuid: "cp-2" }, { uuid: "cp-3" }]);
-    expect(result.next).toBeUndefined();
+    expect(result.next).toBeDefined();
     expect(stub.calls).toHaveLength(3);
   });
 
