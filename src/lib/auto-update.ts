@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, rename, unlink } from "node:fs/promises";
+import { constants as FS_CONST } from "node:fs";
+import { chmod, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import type { AutoUpdate } from "./config.ts";
@@ -13,6 +14,7 @@ import {
   resolveTargetPath,
   type StageDeps,
   stageUpdate,
+  stagingStillOurs,
 } from "./upgrade.ts";
 
 /** Persisted next to `credentials.toml`/`config.toml`, but never user-edited: last background
@@ -80,6 +82,9 @@ export interface SwapDeps {
   stateFile?: string;
   sinks: StreamSinks;
   mode: OutputMode;
+  /** Whether the open descriptor is still the file at that path. Injectable so a test can force
+   * the lost-race branch, which otherwise needs a real concurrent process to hit. */
+  stillOurs?: typeof stagingStillOurs;
 }
 
 /** Runs at the very top of every invocation, before the command dispatches. Cheap in the common
@@ -108,54 +113,88 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
     const pathResult = resolveTargetPath(env, deps.execPath ?? process.execPath);
     if (!pathResult.ok) return;
     const { targetPath } = pathResult;
+    const stagedPath = state.staged_path;
+    const stillOurs = deps.stillOurs ?? stagingStillOurs;
 
-    // Staged for a different install target (GUSTO_INSTALL_DIR changed since) - stale, not ours to
-    // install here. Discard rather than risk swapping a verified binary onto the wrong path.
-    if (state.staged_install_path !== targetPath) {
-      await discardStage(state, file);
-      return;
-    }
-
-    const info = await lstat(state.staged_path).catch(() => null);
-    if (info === null || !info.isFile()) {
-      // Gone (a concurrent invocation already won the swap) or something odd sitting there -
-      // either way it isn't a verified stage anymore.
-      await discardStage(state, file);
-      return;
-    }
-
-    const bytes = new Uint8Array(await Bun.file(state.staged_path).arrayBuffer());
-    const actual = createHash("sha256").update(bytes).digest("hex");
-    if (actual !== state.staged_checksum) {
-      // Bytes changed under a file only this CLI writes, between staging it and now. Discarding is
-      // the safe move either way, but it's worth saying so rather than silently re-downloading on
-      // every cycle forever - a failing disk or real tampering both look exactly like this.
-      // stderr and human-mode only, same as the success notice: the stdout contract comes first.
-      if (deps.mode === "human") {
-        deps.sinks.stderr.write(
-          `gusto: discarded a pending update - its checksum no longer matches, so it was not installed\n`,
-        );
-      }
-      await unlink(state.staged_path).catch(() => {});
+    // Opened once and held for the rest of this function, because `.gusto-upgrade` is a fixed name
+    // shared with every `gusto upgrade` and every background stage. Everything below acts on *this
+    // descriptor* - the bytes are hashed off it, and its identity is re-checked before the path is
+    // touched - so a concurrent run replacing the file mid-flight can't get unverified bytes
+    // renamed onto the live binary, or get its own in-flight download deleted by us. Same reasoning
+    // (and the same `stagingStillOurs`) as `lib/upgrade.ts`'s own staging.
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(stagedPath, FS_CONST.O_RDONLY);
+    } catch {
+      // Gone (a concurrent invocation already won the swap) or unreadable - either way there is no
+      // verified stage here anymore.
       await discardStage(state, file);
       return;
     }
 
     try {
-      await rename(state.staged_path, targetPath);
-    } catch (err) {
-      // The source vanished between our lstat and this rename - someone else won the race.
-      // Anything else (disk full, perms changed) is transient: leave the stage for a retry.
-      if ((err as { code?: unknown }).code === "ENOENT") await discardStage(state, file);
-      return;
-    }
+      if (!(await handle.stat()).isFile()) {
+        await discardStage(state, file);
+        return;
+      }
 
-    await discardStage(state, file);
-    if (deps.mode === "human") {
-      const from = state.staged_from ?? "unknown";
-      deps.sinks.stderr.write(
-        `gusto auto-updated: ${from} -> ${state.staged_version} (opt out: gusto config set auto_update off)\n`,
-      );
+      // Off the descriptor rather than the path, so what gets verified is what was opened.
+      const actual = createHash("sha256")
+        .update(await handle.readFile())
+        .digest("hex");
+      if (actual !== state.staged_checksum) {
+        // The file at the staging path is not the one we staged. The likeliest cause is benign and
+        // active: another process claimed the shared name for its own download. So the state entry
+        // goes, the file stays - deleting it would sabotage that run, and `preflightStagingPath`
+        // already clears a genuine stray next time anything stages here. Worth a line either way,
+        // since a failing disk or real tampering look the same from here.
+        // stderr and human-mode only, same as the success notice: the stdout contract comes first.
+        if (deps.mode === "human") {
+          deps.sinks.stderr.write(
+            `gusto: ignored a pending update - its checksum no longer matches, so it was not installed\n`,
+          );
+        }
+        await discardStage(state, file);
+        return;
+      }
+
+      // Recorded against a different install target (GUSTO_INSTALL_DIR moved since the stage was
+      // made). Not ours to install here - and nothing will look at that directory again, so the
+      // file is removed rather than stranded there at release size forever. Safe to remove
+      // precisely because the checksum above matched: this is provably the file we staged, and the
+      // identity check makes sure it still is at the moment of the unlink.
+      if (state.staged_install_path !== targetPath) {
+        if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
+        await discardStage(state, file);
+        return;
+      }
+
+      // Immediately before the rename, so what lands on the live binary is what was just hashed.
+      // A window remains between this check and the rename - closing it needs `renameat2`, which
+      // isn't reachable from here - but it shrinks from the whole hash to a syscall apart.
+      if (!(await stillOurs(handle, stagedPath))) {
+        await discardStage(state, file);
+        return;
+      }
+
+      try {
+        await rename(stagedPath, targetPath);
+      } catch (err) {
+        // The source vanished between the check above and this rename - someone else won the swap.
+        // Anything else (disk full, perms changed) is transient: leave the stage for a retry.
+        if ((err as { code?: unknown }).code === "ENOENT") await discardStage(state, file);
+        return;
+      }
+
+      await discardStage(state, file);
+      if (deps.mode === "human") {
+        const from = state.staged_from ?? "unknown";
+        deps.sinks.stderr.write(
+          `gusto auto-updated: ${from} -> ${state.staged_version} (opt out: gusto config set auto_update off)\n`,
+        );
+      }
+    } finally {
+      await handle.close().catch(() => {});
     }
   } catch {
     // Fail open.

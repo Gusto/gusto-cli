@@ -212,7 +212,12 @@ describe("swapStagedUpdate", () => {
     expect(state.staged_version).toBe("0.3.0");
   });
 
-  test("discards a staged file whose checksum no longer matches, without swapping", async () => {
+  // A mismatch means the file at the staging path is *not* the one we staged - and since
+  // `.gusto-upgrade` is a fixed name every stage and every `gusto upgrade` shares, the likeliest
+  // reason is that another process has already claimed it for its own in-flight download.
+  // Deleting it would sabotage that run, so the state entry is dropped and the file is left where
+  // it is; `preflightStagingPath` clears a genuine stray next time anything stages there.
+  test("gives up a checksum-mismatched stage without deleting the file, and never swaps", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath } = setup({ stagedBody: STAGED_BODY });
     await writeState(
@@ -225,16 +230,15 @@ describe("swapStagedUpdate", () => {
       stateFile,
     );
     const before = readFileSync(installedPath);
+    const stagedBefore = readFileSync(stagedPath!);
     const { sinks, stderr } = captureSinks();
 
     await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
 
     expect(readFileSync(installedPath)).toEqual(before);
-    expect(existsSync(stagedPath!)).toBe(false);
+    expect(readFileSync(stagedPath!)).toEqual(stagedBefore);
     const state = await readState(stateFile);
     expect(state.staged_version).toBeUndefined();
-    // Bytes changed under a file only this CLI should have written - worth saying so rather than
-    // silently re-downloading on the next cycle forever.
     expect(stderr.buffer).toContain("checksum");
   });
 
@@ -255,7 +259,7 @@ describe("swapStagedUpdate", () => {
 
     await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "agent" });
 
-    expect(existsSync(stagedPath!)).toBe(false);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
     expect(stderr.buffer).toBe("");
   });
 
@@ -279,7 +283,12 @@ describe("swapStagedUpdate", () => {
     expect(state.staged_version).toBeUndefined();
   });
 
-  test("discards a stage recorded for a different install target", async () => {
+  // Recorded against an install target that isn't the one resolving now - GUSTO_INSTALL_DIR moved
+  // since the stage was made. Nothing will ever look at the old directory again, so dropping only
+  // the state entry would strand a release-sized binary there permanently. The checksum matches
+  // here, which is what makes deleting it safe: it proves the file is the one we staged rather
+  // than something another process now owns.
+  test("removes the staged file, not just the state entry, when the install target moved", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
     await writeState(
@@ -297,9 +306,68 @@ describe("swapStagedUpdate", () => {
     await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
 
     expect(readFileSync(installedPath)).toEqual(before);
+    expect(existsSync(stagedPath!)).toBe(false);
     expect(stderr.buffer).toBe("");
     const state = await readState(stateFile);
     expect(state.staged_version).toBeUndefined();
+  });
+
+  // The other half of that: if the file at the recorded path is *not* the one we staged, it isn't
+  // ours to delete even though the install target moved - it may be a concurrent run's download.
+  test("leaves a mismatched file alone when the install target moved", async () => {
+    const { stateFile, installDir, installedPath, stagedPath } = setup({ stagedBody: "someone else's bytes\n" });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: "0".repeat(64),
+        staged_path: stagedPath,
+        staged_install_path: "/somewhere/else/gusto",
+      },
+      stateFile,
+    );
+    const stagedBefore = readFileSync(stagedPath!);
+    const { sinks } = captureSinks();
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+
+    expect(readFileSync(stagedPath!)).toEqual(stagedBefore);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(readFileSync(installedPath, "utf8")).toContain("0.2.0");
+  });
+
+  // The rename must act on the file that was just hashed. `.gusto-upgrade` is a fixed name shared
+  // with every `gusto upgrade` and every background stage, so a concurrent run can replace it
+  // between the hash and the rename - and renaming then installs bytes nothing ever verified onto
+  // the live binary. `upgrade.ts` guards its own staging with the same identity check; this pins
+  // that the swap refuses rather than installing an unverified file.
+  test("refuses to swap when the staged file is replaced after it was verified", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+      },
+      stateFile,
+    );
+    const before = readFileSync(installedPath);
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      sinks,
+      mode: "human",
+      // Stands in for the race: the file we hashed is no longer the file at that path.
+      stillOurs: async () => false,
+    });
+
+    expect(readFileSync(installedPath)).toEqual(before);
+    expect(stderr.buffer).toBe("");
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
   });
 
   // The rename's two failure branches, which behave deliberately differently. ENOENT means the

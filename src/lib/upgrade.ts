@@ -499,7 +499,7 @@ export async function preflightStagingPath(staged: string): Promise<{ ok: true }
  * break every real upgrade there while passing here, since the tests stage shell scripts and
  * `ETXTBSY` applies to the executable image, not to a script's interpreter. The staging-write
  * cleanup passes its writer, which runs nothing and closes immediately after. */
-async function stagingStillOurs(handle: Awaited<ReturnType<typeof open>>, staged: string): Promise<boolean> {
+export async function stagingStillOurs(handle: Awaited<ReturnType<typeof open>>, staged: string): Promise<boolean> {
   try {
     const ours = await handle.stat();
     if (ours.nlink === 0) return false;
