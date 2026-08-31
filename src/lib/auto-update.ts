@@ -340,7 +340,7 @@ export async function runBackgroundCheck(
     // later `preflightStagingPath` runs to clear it either. So: clean up and record nothing.
     const cfg = await readConfigForBackgroundCheck(deps.configFile);
     if (cfg.auto_update === "off") {
-      if (result.data.staged_path !== undefined) await unlink(result.data.staged_path).catch(() => {});
+      await unlinkIfStillOurs(result.data.staged_path, result.data.staged_checksum);
       return;
     }
 
@@ -358,6 +358,31 @@ export async function runBackgroundCheck(
     );
   } catch {
     // Fail open.
+  }
+}
+
+/** Removes a staged file we just wrote, but only if it's still the one we wrote.
+ *
+ * By this point `stageAndFinalize` has closed the descriptor it verified through, so there is no
+ * handle left to check identity against - the checksum is the only thing tying this path to our
+ * bytes. `.gusto-upgrade` is a shared fixed name, so without the re-hash this would delete a
+ * concurrent `gusto upgrade`'s in-flight download and leave it failing with a `staging_path_blocked`
+ * blaming a run that never happened. Anything unreadable, changed, or missing is left alone. */
+async function unlinkIfStillOurs(stagedPath: string | undefined, expected: string | undefined): Promise<void> {
+  if (stagedPath === undefined || expected === undefined) return;
+  try {
+    const handle = await open(stagedPath, FS_CONST.O_RDONLY);
+    try {
+      const actual = createHash("sha256")
+        .update(await handle.readFile())
+        .digest("hex");
+      if (actual !== expected) return;
+      if (await stagingStillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
+    } finally {
+      await handle.close().catch(() => {});
+    }
+  } catch {
+    // Gone or unreadable - nothing of ours to remove.
   }
 }
 

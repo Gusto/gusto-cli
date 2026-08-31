@@ -659,11 +659,12 @@ describe("auto-update background wiring stays invisible on stdout", () => {
   });
 
   // The hard requirement: an update pending or not, --agent/--json/piped stdout must be
-  // byte-identical. A stale (>24h) last_checked with no staged version exercises the "would spawn
-  // a check" branch
-  // without actually staging or swapping anything - GUSTO_CLI_VERSION stays pinned (the default
-  // `run()` env), so no real network call happens, but every other code path here still runs.
-  // Same XDG_CONFIG_HOME for both runs, so `config_path` in the envelope can't itself differ.
+  // byte-identical. GUSTO_CLI_VERSION stays pinned (the default `run()` env) so no real network
+  // call happens - which also means the trigger returns at its pin check before ever reading
+  // `last_checked`, so this does *not* exercise the staleness comparison. What it does cover is
+  // `swapStagedUpdate`, which reads that same file on every invocation regardless of the pin:
+  // a present-but-unusable state entry must leave stdout untouched. Same XDG_CONFIG_HOME for both
+  // runs, so `config_path` in the envelope can't itself differ.
   test("stdout is unaffected by a pre-existing stale update-check state", async () => {
     const env = { XDG_CONFIG_HOME: scratchHome };
     const plain = await run(["config", "list"], env);
@@ -769,10 +770,18 @@ describe("background check is suppressed for upgrade invocations", () => {
     expect(existsSync(stateFile())).toBe(false);
   });
 
+  // Unpinned so the trigger's pin check doesn't short-circuit before the spawn - but the child it
+  // spawns is a real detached process, so it needs somewhere to fail before it reaches the network.
+  // GUSTO_INSTALL_DIR does that: `isSelfExecutable` never looks at it, so the parent still claims
+  // the window and writes the state file, while the child stops at `managed_install` inside
+  // `preflightInstallDir`, which runs before `resolveTargetTag`. Without this the child does a live
+  // release lookup against github.com on every `bun run test:all`, and downloads a real binary into
+  // `dist/` whenever the latest release differs from package.json's version.
   test("a non-upgrade command still claims and spawns a background check", async () => {
     const result = await run(["config", "get", "environment"], {
       XDG_CONFIG_HOME: scratchHome,
       GUSTO_CLI_VERSION: "",
+      GUSTO_INSTALL_DIR: "/opt/homebrew/bin",
     });
 
     expect(result.exitCode).toBe(0);

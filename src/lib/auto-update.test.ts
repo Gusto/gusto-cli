@@ -21,6 +21,7 @@ import {
   writeState,
 } from "./auto-update.ts";
 import { captureSinks } from "./test-support.ts";
+import { BACKGROUND_STAGING_NAME } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
 
 const scratchDirs: string[] = [];
@@ -697,8 +698,47 @@ describe("runBackgroundCheck", () => {
     });
 
     expect((await readState(stateFile)).staged_version).toBeUndefined();
-    expect(existsSync(path.join(installDir, ".gusto-upgrade"))).toBe(false);
+    expect(existsSync(path.join(installDir, BACKGROUND_STAGING_NAME))).toBe(false);
     expect(readFileSync(installedPath, "utf8")).toContain("0.2.0");
+  });
+
+  // ...but that cleanup must not delete a file that is no longer the one we staged. By the time it
+  // runs, `stageAndFinalize` has closed its descriptor, so the only thing tying the path to our
+  // bytes is the checksum - and a `gusto upgrade` that claimed the same name in the meantime would
+  // otherwise get its in-flight download deleted, then fail blaming a concurrent run.
+  test("leaves the staging path alone on opt-out cleanup when the file is no longer ours", async () => {
+    const { stateFile, installDir, configFile } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
+    const NEW_BINARY = '#!/bin/sh\necho "0.3.0"\n';
+    const hash = createHash("sha256").update(NEW_BINARY).digest("hex");
+    const stagedPath = path.join(installDir, BACKGROUND_STAGING_NAME);
+    const someoneElse = "another run's in-flight download\n";
+
+    await runBackgroundCheck({
+      stateFile,
+      configFile,
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "v0.3.0" },
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: stubFetch(async (url) => {
+        const name = url.toString().split("/").pop() ?? "";
+        writeFileSync(configFile, 'auto_update = "off"\n');
+        if (name === "SHA256SUMS") return new Response(`${hash}  gusto-linux-x64\n`);
+        if (name === "gusto-linux-x64") return new Response(NEW_BINARY);
+        return new Response("not found", { status: 404 });
+      }),
+      // Runs after staging completes and before the cleanup: stands in for another process
+      // claiming the shared staging name in that window.
+      versionOf: async (file) => {
+        const reported = readFileSync(file, "utf8").match(/"([0-9.]+)"/)?.[1] ?? null;
+        writeFileSync(stagedPath, someoneElse);
+        return reported;
+      },
+    });
+
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(readFileSync(stagedPath, "utf8")).toBe(someoneElse);
   });
 
   test("persists nothing when already up to date", async () => {
