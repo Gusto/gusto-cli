@@ -78,6 +78,15 @@ const PIN_HINT =
  * makes that safe is `preflightStagingPath` plus the `O_EXCL` create - see both. */
 const STAGING_NAME = `.${BINARY_NAME}-upgrade`;
 
+/** The unattended path stages under its own name, so an interactive `gusto upgrade` and a
+ * background check can never contend for one file. They otherwise would: `preflightStagingPath`
+ * unlinks before the download and the `O_EXCL` create lands after it, so the window where each
+ * would clobber the other is the whole download. Whichever preflighted second removed the other's
+ * file, and the loser failed with `staging_path_blocked` blaming "another `gusto upgrade`" that the
+ * user never started. Separate names keep both paths independently self-healing - each one's
+ * preflight only ever clears its own strand. */
+export const BACKGROUND_STAGING_NAME = `.${BINARY_NAME}-background-upgrade`;
+
 /** Deadlines, so a connection that opens and then stalls can't hang `gusto upgrade` with no
  * envelope and no exit code. The download's is generous because release assets run to tens of MB
  * over whatever link the user has; the lookup is a single redirect and the exec check is a
@@ -738,6 +747,7 @@ async function stageAndFinalize(
   target: UpgradeTarget,
   deps: Required<Pick<UpgradeDeps, "log" | "env" | "fetchImpl" | "versionOf" | "stripQuarantine">>,
   finalize: (staged: string, reported: string, checksum: string) => Promise<Finalized>,
+  stagingName: string = STAGING_NAME,
 ): Promise<CommandResult<UpgradeResult>> {
   const { log, env, fetchImpl, versionOf, stripQuarantine } = deps;
   const { asset, targetPath, tag } = target;
@@ -754,7 +764,7 @@ async function stageAndFinalize(
   // Settled here rather than at the write below, so a blocked staging path costs nothing instead of
   // surfacing after tens of MB are already downloaded. Not any earlier, because clearing a stranded
   // file is a mutation and `--dry-run` must leave the disk alone.
-  const staged = path.join(path.dirname(targetPath), STAGING_NAME);
+  const staged = path.join(path.dirname(targetPath), stagingName);
   const stagingPreflight = await preflightStagingPath(staged);
   if (!stagingPreflight.ok) return stagingPreflight.result;
 
@@ -997,5 +1007,7 @@ export async function stageUpdate(deps: StageDeps): Promise<CommandResult<Upgrad
         human: () => `update staged: ${describeFrom(target.from)} -> ${reported}`,
       },
     }),
+    // Its own name, so this can never contend with an interactive `gusto upgrade` for one file.
+    BACKGROUND_STAGING_NAME,
   );
 }

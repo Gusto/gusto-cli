@@ -192,29 +192,34 @@ async function main(argv: string[]): Promise<void> {
   // works normally from there.
   const skipAutoUpdate = process.env[SKIP_AUTO_UPDATE_ENV] !== undefined;
 
-  if (!skipAutoUpdate) {
-    // Fails open internally (see its doc comment) and never throws, so a bug in it can never
-    // block or delay the command the caller actually ran.
-    await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
-  }
-
   const program = buildProgram(cfg.environment);
 
   if (!skipAutoUpdate) {
-    // Every command handler calls `process.exit()` itself (see `lib/runner.ts`), so
-    // `program.parseAsync()` below never actually returns for a normal invocation - there is no
-    // "after parseAsync" to hook the background-check trigger onto. `preAction` is the one point
-    // that is both after commander has resolved which command matched and before that command's
-    // own handler (and its own `process.exit`) runs.
+    // Both halves of auto-update hang off this one hook, for two reasons.
     //
-    // Skipped specifically for `upgrade` (any flags, including `--dry-run`): it stages into the
-    // exact same fixed path `stageUpdate` uses, so spawning a background check for this same
-    // invocation would race the interactive upgrade for that path, and `--dry-run`'s "without
-    // downloading or replacing anything" promise would be broken by a background download it
-    // coincidentally triggered. `--help`/`--version`/an invalid command never reach this hook at
-    // all, which just means no check that invocation - the next real command retries it.
+    // It has to be a hook rather than straight-line code before `parseAsync`: every command handler
+    // calls `process.exit()` itself (see `lib/runner.ts`), so `parseAsync` never actually returns
+    // for a normal invocation, and there is no "after parse" to run anything in. `preAction` is the
+    // one point that is both after commander has resolved which command matched and before that
+    // command's own handler - and its exit - runs. Installing before the handler is also what keeps
+    // the swap off the mid-command path.
+    //
+    // And both halves share the `upgrade` exclusion, because both of them break that command
+    // otherwise. The spawn would race the interactive upgrade for the staging path. The swap is
+    // worse: it replaces the binary before commander has even parsed, so `upgrade --dry-run` -
+    // documented as reporting "without downloading or replacing anything" - would replace it, and
+    // then report against this process's compiled-in `VERSION` rather than what is now on disk,
+    // printing `auto-updated: 0.2.0 -> 0.3.0` on stderr and `upgrade available: 0.2.0 -> 0.3.0` on
+    // stdout in the same run.
+    //
+    // `--help`/`--version`/an invalid command never reach this hook, which just means neither half
+    // happens that invocation - the next real command picks both up.
     program.hook("preAction", async (_thisCommand, actionCommand) => {
-      if (actionCommand.name() !== "upgrade") await maybeSpawnBackgroundCheck({ cfg });
+      if (actionCommand.name() === "upgrade") return;
+      // Each fails open internally (see their doc comments) and never throws, so a bug in either
+      // can never block or delay the command the caller actually ran.
+      await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
+      await maybeSpawnBackgroundCheck({ cfg });
     });
   }
 
