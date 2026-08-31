@@ -21,6 +21,7 @@ import {
   writeState,
 } from "./auto-update.ts";
 import { captureSinks } from "./test-support.ts";
+import { VERSION } from "./version.ts";
 
 const scratchDirs: string[] = [];
 
@@ -60,7 +61,10 @@ function setup(opts: { installedBody?: string; stagedBody?: string } = {}) {
     stagedChecksum = createHash("sha256").update(opts.stagedBody).digest("hex");
   }
 
-  return { stateFile, installDir, installedPath, stagedPath, stagedChecksum };
+  // Lives next to the state file, mirroring the real config dir layout.
+  const configFile = path.join(stateDir, "config.toml");
+
+  return { stateFile, configFile, installDir, installedPath, stagedPath, stagedChecksum };
 }
 
 describe("swapStagedUpdate", () => {
@@ -370,6 +374,75 @@ describe("swapStagedUpdate", () => {
     expect((await readState(stateFile)).staged_version).toBeUndefined();
   });
 
+  // The checksum proves integrity - these are the bytes we staged - but says nothing about
+  // freshness. If something replaced the live binary after the stage was made (the installer, which
+  // stages through its own mktemp dir and so leaves `.gusto-upgrade` untouched), installing the
+  // stage now is a *downgrade*, announced as an upgrade. `execPath` pointing at the install target
+  // makes this process's own VERSION the version on disk, so the check costs nothing there.
+  test("discards a stage whose recorded from-version no longer matches what is installed", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        // Staged when 0.1.0 was installed; the running binary reports package.json's version, so
+        // these deliberately disagree - something replaced the install behind our back.
+        staged_from: "0.1.0",
+      },
+      stateFile,
+    );
+    const before = readFileSync(installedPath);
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      // Makes isSelf true, which is what lets the swap know the installed version for free.
+      execPath: installedPath,
+      sinks,
+      mode: "human",
+    });
+
+    expect(readFileSync(installedPath)).toEqual(before);
+    expect(existsSync(stagedPath!)).toBe(false);
+    // Names both versions, so the reason it was skipped is legible rather than mysterious.
+    expect(stderr.buffer).toContain("staged against 0.1.0");
+    expect(stderr.buffer).toContain(`${VERSION} is installed`);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+  });
+
+  test("still swaps when the recorded from-version matches what is installed", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: VERSION,
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: installedPath,
+      sinks,
+      mode: "human",
+    });
+
+    expect(readFileSync(installedPath, "utf8")).toBe(STAGED_BODY);
+    expect(stderr.buffer).toContain("auto-updated");
+  });
+
   // The rename's two failure branches, which behave deliberately differently. ENOENT means the
   // staged file went away between the lstat and the rename - another invocation won the swap, so
   // the stage is gone for good and the state entry goes with it. Anything else is transient (a full
@@ -592,6 +665,39 @@ describe("runBackgroundCheck", () => {
     expect(state.staged_from).toBe("0.2.0");
     expect(existsSync(state.staged_path!)).toBe(true);
     // The installed binary itself is untouched - staging never renames.
+    expect(readFileSync(installedPath, "utf8")).toContain("0.2.0");
+  });
+
+  // The child outlives the invocation that spawned it, so `auto_update` can be turned off while it
+  // is still downloading - including by the very command that spawned it, since the trigger sees
+  // the pre-command config. Recording the stage anyway would strand a release-sized binary that
+  // nothing will ever consume, because swapping is now disabled. Re-read at the end and clean up.
+  test("discards its own staged file when auto_update was turned off while it ran", async () => {
+    const { stateFile, installDir, installedPath, configFile } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
+    const NEW_BINARY = '#!/bin/sh\necho "0.3.0"\n';
+    const hash = createHash("sha256").update(NEW_BINARY).digest("hex");
+
+    await runBackgroundCheck({
+      stateFile,
+      configFile,
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "v0.3.0" },
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: stubFetch(async (url) => {
+        const name = url.toString().split("/").pop() ?? "";
+        // Stands in for the race: the opt-out lands while this download is in flight.
+        writeFileSync(configFile, 'auto_update = "off"\n');
+        if (name === "SHA256SUMS") return new Response(`${hash}  gusto-linux-x64\n`);
+        if (name === "gusto-linux-x64") return new Response(NEW_BINARY);
+        return new Response("not found", { status: 404 });
+      }),
+      versionOf: async (file) => readFileSync(file, "utf8").match(/"([0-9.]+)"/)?.[1] ?? null,
+    });
+
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(existsSync(path.join(installDir, ".gusto-upgrade"))).toBe(false);
     expect(readFileSync(installedPath, "utf8")).toContain("0.2.0");
   });
 

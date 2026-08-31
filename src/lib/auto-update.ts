@@ -4,7 +4,7 @@ import { chmod, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import type { AutoUpdate } from "./config.ts";
-import { configPaths } from "./config.ts";
+import { configPaths, readConfig } from "./config.ts";
 import type { EnvSource } from "./env.ts";
 import type { OutputMode, StreamSinks } from "./output.ts";
 import {
@@ -16,6 +16,7 @@ import {
   stageUpdate,
   stagingStillOurs,
 } from "./upgrade.ts";
+import { VERSION } from "./version.ts";
 
 /** Persisted next to `credentials.toml`/`config.toml`, but never user-edited: last background
  * check time, plus (while one is pending) the staged update a later invocation's
@@ -85,6 +86,8 @@ export interface SwapDeps {
   /** Whether the open descriptor is still the file at that path. Injectable so a test can force
    * the lost-race branch, which otherwise needs a real concurrent process to hit. */
   stillOurs?: typeof stagingStillOurs;
+  /** This build's version, i.e. the installed one when `isSelf`. Injectable for tests. */
+  currentVersion?: string;
 }
 
 /** Runs at the very top of every invocation, before the command dispatches. Cheap in the common
@@ -112,9 +115,10 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
 
     const pathResult = resolveTargetPath(env, deps.execPath ?? process.execPath);
     if (!pathResult.ok) return;
-    const { targetPath } = pathResult;
+    const { targetPath, isSelf } = pathResult;
     const stagedPath = state.staged_path;
     const stillOurs = deps.stillOurs ?? stagingStillOurs;
+    const currentVersion = deps.currentVersion ?? VERSION;
 
     // Opened once and held for the rest of this function, because `.gusto-upgrade` is a fixed name
     // shared with every `gusto upgrade` and every background stage. Everything below acts on *this
@@ -169,6 +173,29 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
         return;
       }
 
+      // The checksum above proves integrity - these are the bytes that were staged - but says
+      // nothing about freshness. If the live binary changed since the stage was made, installing it
+      // now is a downgrade dressed up as an upgrade: the installer stages through its own temp dir
+      // (`install.sh`), so a `curl | sh` reinstall to a newer release leaves `.gusto-upgrade` and
+      // this state entry perfectly intact, and the next invocation would rename the older staged
+      // build over the newer installed one while announcing the stale `from -> to` pair.
+      //
+      // Only checkable for free when `isSelf` - then this process *is* the binary at `targetPath`,
+      // so its compiled-in version is the installed one. Otherwise the installed version would cost
+      // a subprocess spawn on a path that must stay cheap, and the stage is left for the normal
+      // checks to handle.
+      if (isSelf && state.staged_from !== currentVersion) {
+        if (deps.mode === "human") {
+          deps.sinks.stderr.write(
+            `gusto: ignored a pending update - it was staged against ${state.staged_from ?? "nothing installed"}, ` +
+              `but ${currentVersion} is installed now, so it was not installed\n`,
+          );
+        }
+        if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
+        await discardStage(state, file);
+        return;
+      }
+
       // Immediately before the rename, so what lands on the live binary is what was just hashed.
       // A window remains between this check and the rename - closing it needs `renameat2`, which
       // isn't reachable from here - but it shrinks from the whole hash to a syscall apart.
@@ -201,12 +228,16 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
   }
 }
 
-/** Clears the staged_* fields of the exact stage `state` observed - but only if the state file
- * still holds that same stage. A concurrent process (a background check finishing, another
- * invocation's own discard) can write a different stage in the window between our read and this
- * write; re-reading and comparing first stops that write from being silently erased. Re-reads
- * rather than reusing `state` for everything else too, so a concurrent `last_checked` update
- * (from `maybeSpawnBackgroundCheck`) survives as well. */
+/** Clears the staged_* fields of the stage `state` observed, and re-reads first so a concurrent
+ * `last_checked` update (from `maybeSpawnBackgroundCheck`) survives rather than being written back
+ * stale.
+ *
+ * The equality check catches a *different* stage having replaced ours in the window, but it can't
+ * catch a *duplicate* one: `staged_path` is the fixed `.gusto-upgrade` derived from the install
+ * dir, and `staged_version` is whatever the newest release is - both identical for any two
+ * concurrent checks, and so is `staged_checksum`, since the bytes are the same. Distinguishing
+ * those would take a per-stage nonce, which isn't worth carrying: the cost of losing that race is
+ * one orphaned staged file and one more 24h window, not a bad install. */
 export async function discardStage(state: UpdateState, file: string): Promise<void> {
   const fresh = await readState(file);
   if (fresh.staged_version !== state.staged_version || fresh.staged_path !== state.staged_path) return;
@@ -293,11 +324,25 @@ export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void
  * `/dev/null` by construction, so there is nothing to report to and nothing to wait for - success
  * persists a stage for a later invocation to swap in; anything else (already up to date, blocked,
  * a download/checksum failure) just exits with nothing recorded, silently. */
-export async function runBackgroundCheck(deps: StageDeps & { stateFile?: string } = { log: () => {} }): Promise<void> {
+export async function runBackgroundCheck(
+  deps: StageDeps & { stateFile?: string; configFile?: string } = { log: () => {} },
+): Promise<void> {
   const file = deps.stateFile ?? stateFilePath();
   try {
     const result = await stageUpdate(deps);
     if (!result.ok || result.data.status !== "staged") return;
+
+    // Config is re-read *after* the download rather than before it, because this process outlives
+    // the invocation that spawned it - by minutes, on a slow link. `auto_update` can be turned off
+    // in that window, including by the very command that spawned this child (the trigger runs
+    // before dispatch, so it sees the pre-command value). Recording the stage anyway would leave a
+    // release-sized binary that nothing will ever consume, since swapping is now disabled - and no
+    // later `preflightStagingPath` runs to clear it either. So: clean up and record nothing.
+    const cfg = await readConfigForBackgroundCheck(deps.configFile);
+    if (cfg.auto_update === "off") {
+      if (result.data.staged_path !== undefined) await unlink(result.data.staged_path).catch(() => {});
+      return;
+    }
 
     const state = await readState(file);
     await writeState(
@@ -313,5 +358,17 @@ export async function runBackgroundCheck(deps: StageDeps & { stateFile?: string 
     );
   } catch {
     // Fail open.
+  }
+}
+
+/** The `auto_update` value as of right now, for the post-download re-check above. Reads the config
+ * file directly rather than taking a `UserConfig` from the caller, because the whole point is to
+ * see a write that landed after this process started. Unreadable or corrupt reads as unset, which
+ * leaves the stage in place - the same fail-open direction as everything else here. */
+async function readConfigForBackgroundCheck(configFile?: string): Promise<{ auto_update?: AutoUpdate }> {
+  try {
+    return await readConfig(configFile === undefined ? undefined : { dir: path.dirname(configFile), file: configFile });
+  } catch {
+    return {};
   }
 }
