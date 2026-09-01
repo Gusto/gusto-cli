@@ -30,6 +30,19 @@ function runMessageCheck(message: string) {
   });
 }
 
+function runMessageCheckWithoutGit(message: string) {
+  const source = tempDir("source-artifact");
+  const messageFile = path.join(source, "PR_TITLE");
+  copyFileSync(path.join(REPO_ROOT, "package.json"), path.join(source, "package.json"));
+  copyFileSync(path.join(REPO_ROOT, "commitlint.config.ts"), path.join(source, "commitlint.config.ts"));
+  symlinkSync(path.join(REPO_ROOT, "node_modules"), path.join(source, "node_modules"), "dir");
+  writeFileSync(messageFile, message);
+  return Bun.spawnSync(["sh", CHECK_MESSAGE_SCRIPT, messageFile], {
+    cwd: source,
+    env: { PATH: process.env.PATH ?? "", ...ISOLATED },
+  });
+}
+
 function stageCommitValidationHooks(repo: string) {
   const hooks = path.join(repo, ".githooks");
   const scripts = path.join(repo, "scripts");
@@ -132,6 +145,11 @@ describe("prepare-commit-msg hook", () => {
 });
 
 describe("check-commit-message.sh", () => {
+  test("accepts a PR title from an extracted source artifact without Git metadata", () => {
+    const result = runMessageCheckWithoutGit("ci: validate pull request titles\n");
+    expect(result.exitCode).toBe(0);
+  });
+
   test("accepts every allowed conventional commit type", () => {
     const allowedTypes = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test"];
 
