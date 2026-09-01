@@ -609,7 +609,6 @@ describe("timesheetListHandler", () => {
   describe("--company-uuid", () => {
     const dates = { startDate: "2026-06-01", endDate: "2026-06-15" };
 
-    // preload.ts strips every GUSTO_* var before the suite, so the delete restores the baseline.
     async function listWith(opts: Parameters<typeof timesheetListHandler>[0], env?: string) {
       if (env !== undefined) process.env.GUSTO_COMPANY_UUID = env;
       const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ source: "none" }) }));

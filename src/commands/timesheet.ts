@@ -468,7 +468,6 @@ export function timesheetListHandler(opts: TimesheetListOpts): CommandHandler {
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
     const companyUuid = getCompanyUuid(opts.companyUuid);
-    // company_uuid has to be omitted, not null, for the tool's fallback to the token's company to work.
     const args = companyUuid ? { ...validation.body, company_uuid: companyUuid } : validation.body;
 
     return callMcpTool(globals, { tokenStdin: opts.tokenStdin }, "list_time_records", args);
