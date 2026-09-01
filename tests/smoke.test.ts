@@ -765,6 +765,17 @@ describe("auto-update background wiring stays invisible on stdout", () => {
     expect(result.exitCode).toBe(7);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("unknown_key");
   });
+
+  // The other half of that argv match, and the only part of this feature whose behaviour differs
+  // between the compiled binary and `bun test` - the unit tests call `runBackgroundCheck` directly
+  // rather than reaching it through argv, so this line is otherwise uncovered. Hermetic under
+  // `run()`'s default pin: the child resolves `up_to_date` before any fetch.
+  test("the internal background-update flag dispatches to the child and stays silent", async () => {
+    const result = await run(["--internal-background-update"], { XDG_CONFIG_HOME: scratchHome });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("");
+  });
 });
 
 describe("background check is suppressed for upgrade invocations", () => {
@@ -798,6 +809,54 @@ describe("background check is suppressed for upgrade invocations", () => {
     // outcome isn't what this test is about, only that it didn't also claim/spawn a check.
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("managed_install");
     expect(existsSync(stateFile())).toBe(false);
+  });
+
+  // The other half of the same exclusion, and the half with teeth: the swap replaces the binary
+  // before commander parses, so without it `--dry-run` - documented as reporting "without
+  // downloading or replacing anything" - installs a pending stage and then reports against this
+  // process's compiled-in VERSION, printing `auto-updated: X -> Y` on stderr and
+  // `upgrade available: X -> Y` on stdout in one run. One `return` guards both halves, so moving
+  // the swap back out of the hook would pass the spawn test above while bringing this back.
+  test("gusto upgrade --dry-run leaves a pending stage on disk instead of installing it", async () => {
+    const installDir = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-dryrun-")));
+    try {
+      const installedPath = path.join(installDir, "gusto");
+      copyFileSync(BIN_PATH, installedPath);
+      const stagedBody = '#!/bin/sh\necho "9.9.9"\n';
+      const stagedPath = path.join(installDir, ".gusto-background-upgrade");
+      writeFileSync(stagedPath, stagedBody, { mode: 0o755 });
+      const installedBefore = readFileSync(installedPath);
+
+      mkdirSync(path.join(scratchHome, "gusto"), { recursive: true });
+      writeFileSync(
+        path.join(scratchHome, "gusto", "update-state.toml"),
+        [
+          `staged_version = "9.9.9"`,
+          `staged_checksum = "${createHash("sha256").update(stagedBody).digest("hex")}"`,
+          `staged_path = "${stagedPath}"`,
+          `staged_install_path = "${installedPath}"`,
+          `staged_from = "${pkg.version}"`,
+          "",
+        ].join("\n"),
+      );
+
+      // Unpinned, so nothing but the upgrade exclusion can stop the swap. The base-URL override
+      // keeps the dry-run itself off the network.
+      const result = await run(["upgrade", "--dry-run"], {
+        XDG_CONFIG_HOME: scratchHome,
+        GUSTO_INSTALL_DIR: installDir,
+        GUSTO_CLI_VERSION: "",
+        GUSTO_CLI_BASE_URL: "http://127.0.0.1:1",
+      });
+
+      expect(result.exitCode).toBe(0);
+      // Neither replaced nor consumed: the stage is exactly where dry-run found it.
+      expect(readFileSync(installedPath)).toEqual(installedBefore);
+      expect(readFileSync(stagedPath, "utf8")).toBe(stagedBody);
+      expect(result.stderr).not.toContain("auto-updated");
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
   });
 
   // Unpinned so the trigger's pin check doesn't short-circuit before the spawn - but the child it

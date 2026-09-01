@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   discardStage,
+  MAX_SWAP_ATTEMPTS,
   maybeSpawnBackgroundCheck,
   readState,
   runBackgroundCheck,
@@ -57,7 +58,11 @@ function setup(opts: { installedBody?: string; stagedBody?: string } = {}) {
   let stagedPath: string | undefined;
   let stagedChecksum: string | undefined;
   if (opts.stagedBody !== undefined) {
-    stagedPath = path.join(installDir, ".gusto-upgrade");
+    // The name a background check actually stages under. The swap reads the path out of state
+    // rather than reconstructing it, so this literal doesn't change behaviour - but staging the
+    // fixture at the interactive name would suggest the two paths share one file, which is the
+    // thing `BACKGROUND_STAGING_NAME` exists to prevent.
+    stagedPath = path.join(installDir, BACKGROUND_STAGING_NAME);
     writeFileSync(stagedPath, opts.stagedBody, { mode: 0o755 });
     stagedChecksum = createHash("sha256").update(opts.stagedBody).digest("hex");
   }
@@ -247,8 +252,12 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toContain("checksum");
   });
 
-  // Same discard, but nothing is printed in agent mode - the stdout contract wins over the warning.
-  test("discards a checksum-mismatched stage silently in agent mode", async () => {
+  // Unlike the routine "auto-updated" notice, this one is reported in agent mode too. Only a
+  // background check ever writes the staged file, so a mismatch means it changed underneath the
+  // one process that touches it - an anomaly worth surfacing rather than a routine event. Precedent
+  // is `loadConfig`'s corrupt-config warning, which also goes to stderr with no mode check; stdout
+  // stays a clean envelope either way, which is the contract that actually matters.
+  test("reports a checksum-mismatched stage in agent mode too, naming the file", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath } = setup({ stagedBody: STAGED_BODY });
     await writeState(
@@ -265,7 +274,9 @@ describe("swapStagedUpdate", () => {
     await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "agent" });
 
     expect((await readState(stateFile)).staged_version).toBeUndefined();
-    expect(stderr.buffer).toBe("");
+    expect(stderr.buffer).toContain("checksum");
+    // Names the file, so there is something to go and look at.
+    expect(stderr.buffer).toContain(stagedPath!);
   });
 
   test("discards stale state when the staged file no longer exists", async () => {
@@ -496,6 +507,39 @@ describe("swapStagedUpdate", () => {
     expect(state.staged_version).toBe("0.3.0");
     expect(state.staged_checksum).toBe(stagedChecksum);
   });
+
+  // ...but "keep it for a retry" can't mean forever. An install dir that stays unwritable is not
+  // transient, and nothing else clears a pending stage - `maybeSpawnBackgroundCheck` returns early
+  // while one is set. Left unbounded, every subsequent invocation would open the staged binary and
+  // sha256 tens of MB on the startup path before failing the same rename, which is the one cost
+  // this whole design is built to avoid. So the retries are counted and the stage is dropped.
+  test("gives up on a stage after repeated rename failures instead of retrying forever", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+    chmodSync(installDir, 0o500);
+
+    let attempts = 0;
+    // One more than the cap, so the last one is the give-up.
+    for (let i = 0; i < MAX_SWAP_ATTEMPTS + 1; i++) {
+      await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+      attempts += 1;
+      if ((await readState(stateFile)).staged_version === undefined) break;
+    }
+    chmodSync(installDir, 0o700); // before any assertion can throw and strand the scratch dir
+
+    expect(attempts).toBeLessThanOrEqual(MAX_SWAP_ATTEMPTS + 1);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+  });
 });
 
 describe("maybeSpawnBackgroundCheck", () => {
@@ -521,6 +565,27 @@ describe("maybeSpawnBackgroundCheck", () => {
     });
 
     expect(spawned).toBe(0);
+  });
+
+  // A base-URL override makes `resolveTargetTag` return no tag at all, so `resolveUpgradeTarget`
+  // can never reach its up-to-date branch and `stageUpdate` stages unconditionally. That's correct
+  // for `gusto upgrade`, where installing regardless is the documented point of the override, but
+  // unattended it never converges: every window re-downloads the same asset and the next
+  // invocation renames it over an identical binary, announcing `0.2.0 -> 0.2.0` forever.
+  test("does not spawn when GUSTO_CLI_BASE_URL points at a custom origin", async () => {
+    const { stateFile } = setup();
+    let spawned = 0;
+
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: { GUSTO_CLI_BASE_URL: "http://localhost:9999" },
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      spawn: () => spawned++,
+    });
+
+    expect(spawned).toBe(0);
+    expect((await readState(stateFile)).last_checked).toBeUndefined();
   });
 
   test("spawns when GUSTO_CLI_VERSION is latest, since that is not a pin", async () => {

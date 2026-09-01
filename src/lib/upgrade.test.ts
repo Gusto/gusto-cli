@@ -19,6 +19,7 @@ import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
 import {
   assetBaseUrl,
+  BACKGROUND_STAGING_NAME,
   defaultVersionOf,
   ensureInstallDir,
   parseSha256Sums,
@@ -672,6 +673,11 @@ describe("stageUpdate", () => {
     const stagedPath = result.ok ? (result.data as { staged_path: string }).staged_path : "";
     expect(existsSync(stagedPath)).toBe(true);
     expect(readFileSync(stagedPath, "utf8")).toContain("0.2.0");
+    // The whole point of the separate name: a background stage must not land on the path an
+    // interactive `gusto upgrade` claims, or the two contend for one file and whichever preflights
+    // second deletes the other's download. Asserting the basename is what keeps that split honest -
+    // without it, dropping the argument that selects this name leaves the suite green.
+    expect(path.basename(stagedPath)).toBe(BACKGROUND_STAGING_NAME);
   });
 
   test("reports up_to_date and downloads nothing when already current", async () => {
