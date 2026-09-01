@@ -173,9 +173,11 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
         // agent mode would let it recur silently forever. `loadConfig`'s corrupt-config warning
         // sets the precedent: stderr with no mode check, stdout still a clean envelope. The path is
         // named so there is something to go and look at.
+        // noboost - the XSS rule matches `.write(` with interpolation; this is a terminal stream in
+        // a CLI with no web surface, and every value here comes from our own 0600 state file.
         deps.sinks.stderr.write(
-          `gusto: ignored a pending update - the staged file at ${stagedPath} no longer matches its ` +
-            `recorded checksum, so it was not installed\n`,
+          `gusto: ignored a pending update - the staged file at ${stagedPath} no longer matches its ` + // noboost
+            `recorded checksum, so it was not installed\n`, // noboost
         );
         await discardStage(state, file);
         return;
@@ -206,8 +208,8 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
       if (isSelf && state.staged_from !== currentVersion) {
         if (deps.mode === "human") {
           deps.sinks.stderr.write(
-            `gusto: ignored a pending update - it was staged against ${state.staged_from ?? "nothing installed"}, ` +
-              `but ${currentVersion} is installed now, so it was not installed\n`,
+            `gusto: ignored a pending update - it was staged against ${state.staged_from ?? "nothing installed"}, ` + // noboost
+              `but ${currentVersion} is installed now, so it was not installed\n`, // noboost
           );
         }
         if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
@@ -252,7 +254,7 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
       if (deps.mode === "human") {
         const from = state.staged_from ?? "unknown";
         deps.sinks.stderr.write(
-          `gusto auto-updated: ${from} -> ${state.staged_version} (opt out: gusto config set auto_update off)\n`,
+          `gusto auto-updated: ${from} -> ${state.staged_version} (opt out: gusto config set auto_update off)\n`, // noboost
         );
       }
     } finally {

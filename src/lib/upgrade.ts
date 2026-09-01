@@ -829,7 +829,9 @@ async function stageAndFinalize(
   // One `try`, not two nested ones, so the `catch` runs while `writer` is still open - see there.
   try {
     const created = await writer.stat();
-    await writer.write(binary.bytes);
+    // noboost - a file write of release bytes already verified against SHA256SUMS above (see the
+    // `checksum_mismatch` bail), not an HTTP response. The XSS rule matches on the method name.
+    await writer.write(binary.bytes); // noboost
     await writer.chmod(0o755);
     // Reopened rather than reused so the exec-check isn't blocked by our own write handle. The
     // reopen races the same concurrent run everything else here does, so it's checked against
