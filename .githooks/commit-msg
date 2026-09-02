@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec sh scripts/check-commit-message.sh "$1"

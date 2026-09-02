@@ -1,0 +1,53 @@
+{
+  "$schema": "https://unpkg.com/release-it@21/schema/release-it.json",
+  "git": {
+    "requireBranch": "main",
+    "push": false,
+    "tag": false,
+    "tagExclude": "*.*.*-*",
+    "commitMessage": "chore: release ${version}",
+    "commitArgs": ["--signoff"]
+  },
+  "npm": {
+    "publish": false
+  },
+  "github": {
+    "release": false
+  },
+  "hooks": {
+    "after:bump": "bun run scripts/prepare-release.ts create-branch release ${version}",
+    "before:git:release": "bun run scripts/prepare-release.ts verify-changes release"
+  },
+  "plugins": {
+    "@release-it/conventional-changelog": {
+      "infile": "CHANGELOG.md",
+      "context": {
+        "host": "https://github.com",
+        "owner": "Gusto",
+        "repository": "gusto-cli"
+      },
+      "tagOpts": {
+        "skipUnstable": true
+      },
+      "writerOpts": {
+        "generateOn": null
+      },
+      "preset": {
+        "name": "conventionalcommits",
+        "types": [
+          { "type": "feat", "section": "Features", "effect": "bump" },
+          { "type": "fix", "section": "Fixes", "effect": "bump" },
+          { "type": "perf", "section": "Fixes", "effect": "bump" },
+          { "type": "revert", "section": "Fixes", "effect": "bump" },
+          { "type": "docs", "section": "Maintenance", "effect": "changelog" },
+          { "type": "build", "section": "Maintenance", "effect": "changelog" },
+          { "type": "chore", "section": "Maintenance", "effect": "changelog" },
+          { "type": "refactor", "section": "Maintenance", "effect": "changelog" },
+          { "type": "ci", "effect": "hidden" },
+          { "type": "test", "effect": "hidden" },
+          { "type": "style", "effect": "hidden" }
+        ]
+      }
+    }
+  }
+}
