@@ -204,13 +204,15 @@ async function main(argv: string[]): Promise<void> {
     // command's own handler - and its exit - runs. Installing before the handler is also what keeps
     // the swap off the mid-command path.
     //
-    // And both halves share the `upgrade` exclusion, because both of them break that command
-    // otherwise. The spawn would race the interactive upgrade for the staging path. The swap is
-    // worse: it replaces the binary before commander has even parsed, so `upgrade --dry-run` -
-    // documented as reporting "without downloading or replacing anything" - would replace it, and
-    // then report against this process's compiled-in `VERSION` rather than what is now on disk,
-    // printing `auto-updated: 0.2.0 -> 0.3.0` on stderr and `upgrade available: 0.2.0 -> 0.3.0` on
-    // stdout in the same run.
+    // And both halves share the `upgrade` exclusion. For the spawn it's just waste: the two paths
+    // stage under different names and can't contend for a file (see `BACKGROUND_STAGING_NAME`), but
+    // downloading the same release in the background while someone is explicitly upgrading to it is
+    // a pointless second copy of a 60MB asset. For the swap it's correctness: it runs immediately
+    // before the `upgrade` handler, so `upgrade --dry-run` - documented as reporting "without
+    // downloading or replacing anything" - would find the binary already replaced, and would then
+    // report against this process's compiled-in `VERSION` rather than what is now on disk, printing
+    // `auto-updated: 0.2.0 -> 0.3.0` on stderr and `upgrade available: 0.2.0 -> 0.3.0` on stdout in
+    // the same run.
     //
     // `--help`/`--version`/an invalid command never reach this hook, which just means neither half
     // happens that invocation - the next real command picks both up.

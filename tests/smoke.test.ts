@@ -1397,8 +1397,14 @@ describe("auto-update end to end against a served release", () => {
     expect(staged).toContain(".gusto-background-upgrade");
     expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(true);
 
-    // Now the swap, on an ordinary command. Unpinned so nothing suppresses it.
-    const swap = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "" });
+    // Now the swap, on an ordinary command. Unpinned, since a pin suppresses the swap outright -
+    // but with the base URL still pointed at the fixture server, because unpinning also re-arms the
+    // background *trigger*: no stage is pending any more and nothing has written `last_checked`, so
+    // every gate would pass and this would spawn a real detached child against live github and
+    // download a release into a directory `afterEach` is about to delete (and race the assertion
+    // below if it ever won). `swapStagedUpdate` never reads the base URL, so this weakens nothing
+    // here - it only makes the trigger bail, which is what `run()` uses the default pin for.
+    const swap = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
     expect(swap.exitCode).toBe(0);
     expect(swap.stderr).toContain("auto-updated");
     // stdout carries the command's own output and nothing else - the contract agents rely on.
@@ -1407,7 +1413,32 @@ describe("auto-update end to end against a served release", () => {
     expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(false);
 
     // Nothing pending now, so an identical command says nothing at all.
-    const again = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "" });
+    const again = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
     expect(again.stderr).not.toContain("auto-updated");
+  });
+
+  // The consumer side of `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`. `upgrade.test.ts` pins the producer -
+  // that `defaultVersionOf` sets the variable on the child it spawns - but nothing pinned that
+  // `index.ts` honours it, so the whole `if (!skipAutoUpdate)` guard could be deleted with the
+  // suite still green. It matters because the exec-check runs the *downloaded* binary for real: a
+  // nested run that took this path would act on the same `update-state.toml` the outer call is
+  // still working through.
+  test("an invocation with the skip variable set touches neither the binary nor the state", async () => {
+    serveRelease();
+    const before = readFileSync(installed);
+    await Bun.write(statePath(), `staged_version = "9.9.9"\nstaged_path = "/nonexistent"\n`);
+    const stateBefore = readFileSync(statePath(), "utf8");
+
+    const run = await invoke(["config", "list", "--human"], {
+      GUSTO_CLI_VERSION: "",
+      GUSTO_INTERNAL_SKIP_AUTO_UPDATE: "1",
+    });
+
+    expect(run.exitCode).toBe(0);
+    // No swap attempted, so nothing consumed or cleared the pending stage...
+    expect(readFileSync(statePath(), "utf8")).toBe(stateBefore);
+    // ...and no check claimed a window either, which is what `last_checked` would record.
+    expect(readFileSync(statePath(), "utf8")).not.toContain("last_checked");
+    expect(readFileSync(installed).equals(before)).toBe(true);
   });
 });

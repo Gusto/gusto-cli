@@ -557,6 +557,24 @@ export interface UpgradeDeps {
  * every `UpgradeDeps` field except the confirm `gate`. */
 export type StageDeps = Omit<UpgradeDeps, "gate">;
 
+/** The host defaults shared by `performUpgrade` and `stageUpdate`, resolved in one place. Both were
+ * filling in the same eight fields verbatim, so a ninth dep added to one site and not the other
+ * would silently give the interactive and unattended paths different behaviour - the exact
+ * divergence splitting out `resolveUpgradeTarget`/`stageAndFinalize` exists to rule out. `log` is
+ * left to the callers: it has no sensible default, and each already requires it. */
+function resolvedHostDeps(deps: StageDeps): Required<Omit<StageDeps, "log">> {
+  return {
+    env: deps.env ?? process.env,
+    currentVersion: deps.currentVersion ?? VERSION,
+    fetchImpl: deps.fetchImpl ?? fetch,
+    execPath: deps.execPath ?? process.execPath,
+    platform: deps.platform ?? process.platform,
+    arch: deps.arch ?? process.arch,
+    versionOf: deps.versionOf ?? defaultVersionOf,
+    stripQuarantine: deps.stripQuarantine ?? defaultStripQuarantine,
+  };
+}
+
 /** Gating the install on this means a build that segfaults never becomes the live binary.
  *
  * Wrapped because a file that isn't a valid executable at all - the shape a truncated or garbage
@@ -917,18 +935,9 @@ async function stageAndFinalize(
  * keeps its own inode - so renaming over it mid-command is not itself the hazard `stageUpdate`
  * exists to avoid. The hazard is unattended background writes; see `lib/auto-update.ts`. */
 export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Promise<CommandResult<UpgradeResult>> {
-  const {
-    gate,
-    log,
-    env = process.env,
-    currentVersion = VERSION,
-    fetchImpl = fetch,
-    execPath = process.execPath,
-    platform = process.platform,
-    arch = process.arch,
-    versionOf = defaultVersionOf,
-    stripQuarantine = defaultStripQuarantine,
-  } = deps;
+  const { gate, log } = deps;
+  const { env, currentVersion, fetchImpl, execPath, platform, arch, versionOf, stripQuarantine } =
+    resolvedHostDeps(deps);
 
   const resolved = await resolveUpgradeTarget(opts, {
     env,
@@ -979,17 +988,9 @@ export async function performUpgrade(opts: UpgradeOpts, deps: UpgradeDeps): Prom
  * only runs from a detached background process, which has no one to confirm with. No `force`/
  * `dryRun`: neither concept applies to a check nobody asked for by name. */
 export async function stageUpdate(deps: StageDeps): Promise<CommandResult<UpgradeResult>> {
-  const {
-    log,
-    env = process.env,
-    currentVersion = VERSION,
-    fetchImpl = fetch,
-    execPath = process.execPath,
-    platform = process.platform,
-    arch = process.arch,
-    versionOf = defaultVersionOf,
-    stripQuarantine = defaultStripQuarantine,
-  } = deps;
+  const { log } = deps;
+  const { env, currentVersion, fetchImpl, execPath, platform, arch, versionOf, stripQuarantine } =
+    resolvedHostDeps(deps);
 
   const resolved = await resolveUpgradeTarget(
     {},

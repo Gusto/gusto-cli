@@ -41,6 +41,8 @@ gusto config set auto_update off
 
 That takes effect from the next invocation onward. Pinning `GUSTO_CLI_VERSION` to a version disables it too, and does so immediately - which is what you want in CI, where the pin already fixes the version. (`GUSTO_CLI_VERSION=latest` is not a pin and does not disable it.)
 
+Installs managed by a package manager (Homebrew, Nix) are never updated this way, for the same reason `gusto upgrade` refuses them - use the package manager, so its metadata stays in step with what's on disk.
+
 ## Authentication
 
 The simplest path is an interactive OAuth login:

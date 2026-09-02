@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -24,6 +25,11 @@ import {
 import { captureSinks } from "./test-support.ts";
 import { BACKGROUND_STAGING_NAME } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
+
+/** What the "installed" fixture binary reports for `--version`. The freshness check in
+ * `swapStagedUpdate` really does spawn it on the `!isSelf` path, so a fixture that expects the swap
+ * to proceed has to record this as the version it was staged against. */
+const INSTALLED_VERSION = "0.2.0";
 
 const scratchDirs: string[] = [];
 
@@ -53,7 +59,9 @@ function setup(opts: { installedBody?: string; stagedBody?: string } = {}) {
   const installDir = tmpDir("gusto-cli-autoupdate-install-");
   const stateFile = path.join(stateDir, "update-state.toml");
   const installedPath = path.join(installDir, "gusto");
-  writeFileSync(installedPath, opts.installedBody ?? '#!/bin/sh\necho "0.2.0"\n', { mode: 0o755 });
+  writeFileSync(installedPath, opts.installedBody ?? `#!/bin/sh\necho "${INSTALLED_VERSION}"\n`, {
+    mode: 0o755,
+  });
 
   let stagedPath: string | undefined;
   let stagedChecksum: string | undefined;
@@ -122,6 +130,7 @@ describe("swapStagedUpdate", () => {
         staged_checksum: stagedChecksum,
         staged_path: stagedPath,
         staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
       },
       stateFile,
     );
@@ -176,6 +185,7 @@ describe("swapStagedUpdate", () => {
         staged_checksum: stagedChecksum,
         staged_path: stagedPath,
         staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
       },
       stateFile,
     );
@@ -365,6 +375,7 @@ describe("swapStagedUpdate", () => {
         staged_checksum: stagedChecksum,
         staged_path: stagedPath,
         staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
       },
       stateFile,
     );
@@ -460,6 +471,63 @@ describe("swapStagedUpdate", () => {
   // the stage is gone for good and the state entry goes with it. Anything else is transient (a full
   // disk, permissions changed) and the stage is left exactly where it is, so the next invocation
   // retries for free rather than re-downloading.
+  // The same downgrade the isSelf case above refuses, on the path where the swap target isn't this
+  // process - which `GUSTO_INSTALL_DIR` naming a second install reaches, and the README documents
+  // as supported. The checksum proves the bytes and `staged_install_path` proves the destination;
+  // neither looks at what is actually installed there now, so without a spawn a stage made against
+  // an older release renames over a newer one that landed out of band.
+  test("discards a stale stage on the !isSelf path, where the installed version costs a spawn", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    // Installed is 0.4.0 - newer than the 0.2.0 this stage was built against.
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({
+      installedBody: '#!/bin/sh\necho "0.4.0"\n',
+      stagedBody: STAGED_BODY,
+    });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: "0.2.0",
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    // No execPath override, so the swap target is not this process: the real `versionOf` spawn runs.
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+
+    expect(readFileSync(installedPath, "utf8")).toContain("0.4.0");
+    expect(stderr.buffer).toContain("staged against 0.2.0");
+    expect(stderr.buffer).toContain("0.4.0 is installed now");
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(existsSync(stagedPath!)).toBe(false);
+  });
+
+  // The other half of that: an unreadable target reports no version at all, which has to match a
+  // stage recorded against nothing installed rather than being treated as a mismatch.
+  test("still swaps on the !isSelf path when the target reports the version it was staged against", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+
+    expect(readFileSync(installedPath, "utf8")).toBe(STAGED_BODY);
+    expect(stderr.buffer).toContain("auto-updated");
+  });
+
   test("clears the state entry when the rename fails because the source vanished", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
@@ -491,6 +559,7 @@ describe("swapStagedUpdate", () => {
         staged_checksum: stagedChecksum,
         staged_path: stagedPath,
         staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
       },
       stateFile,
     );
@@ -513,9 +582,16 @@ describe("swapStagedUpdate", () => {
   // while one is set. Left unbounded, every subsequent invocation would open the staged binary and
   // sha256 tens of MB on the startup path before failing the same rename, which is the one cost
   // this whole design is built to avoid. So the retries are counted and the stage is dropped.
-  test("gives up on a stage after repeated rename failures instead of retrying forever", async () => {
+  test("gives up on a stage after repeated rename failures, and removes the staged file", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    // A *directory* where the binary belongs, so `rename` onto it fails EISDIR every time while the
+    // install dir itself stays writable. Making the directory unwritable instead - the obvious way
+    // to fail a rename - also makes this branch's own `unlink` fail EACCES and get swallowed, so
+    // the stage would read as dropped from the state file while the file stayed on disk at release
+    // size, and deleting that `unlink` would leave the test green.
+    rmSync(installedPath);
+    mkdirSync(installedPath);
     await writeState(
       {
         staged_version: "0.3.0",
@@ -526,19 +602,51 @@ describe("swapStagedUpdate", () => {
       stateFile,
     );
     const { sinks } = captureSinks();
-    chmodSync(installDir, 0o500);
-
-    let attempts = 0;
-    // One more than the cap, so the last one is the give-up.
-    for (let i = 0; i < MAX_SWAP_ATTEMPTS + 1; i++) {
+    const swap = async (): Promise<void> => {
       await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
-      attempts += 1;
-      if ((await readState(stateFile)).staged_version === undefined) break;
-    }
-    chmodSync(installDir, 0o700); // before any assertion can throw and strand the scratch dir
+    };
 
-    expect(attempts).toBeLessThanOrEqual(MAX_SWAP_ATTEMPTS + 1);
-    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    // Below the cap the stage survives and the count climbs, so the next invocation retries.
+    for (let attempt = 1; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
+      await swap();
+      const state = await readState(stateFile);
+      expect(state.staged_version).toBe("0.3.0");
+      expect(state.swap_attempts).toBe(String(attempt));
+      expect(existsSync(stagedPath!)).toBe(true);
+    }
+
+    // The attempt that reaches the cap drops both the state entry and the file itself.
+    await swap();
+    const state = await readState(stateFile);
+    expect(state.staged_version).toBeUndefined();
+    expect(state.swap_attempts).toBeUndefined();
+    expect(existsSync(stagedPath!)).toBe(false);
+  });
+
+  // The count is read back out of a file, so a value that isn't a number has to be survivable:
+  // `Number("?") + 1` is NaN, every comparison against the cap is false, and `String(NaN)` would go
+  // straight back to disk - leaving the cap permanently unreachable and every later invocation
+  // re-hashing the whole staged binary on the startup path before failing the same rename.
+  test("treats a non-numeric swap_attempts as zero instead of disabling the cap", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    rmSync(installedPath);
+    mkdirSync(installedPath);
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        swap_attempts: "not-a-number",
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+
+    expect((await readState(stateFile)).swap_attempts).toBe("1");
   });
 });
 
@@ -586,6 +694,50 @@ describe("maybeSpawnBackgroundCheck", () => {
 
     expect(spawned).toBe(0);
     expect((await readState(stateFile)).last_checked).toBeUndefined();
+  });
+
+  // Same shape as the base-URL bail, but the stake is integrity rather than convergence: the child
+  // inherits the whole environment, so this override would have it stage a binary from a different
+  // origin - checksummed against that origin's own SHA256SUMS, so nothing downstream can tell -
+  // for a later ordinary invocation to install and report as an auto-update.
+  test("does not spawn when GUSTO_CLI_REPO points at a different origin", async () => {
+    const { stateFile } = setup();
+    let spawned = 0;
+
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: { GUSTO_CLI_REPO: "someone/fork" },
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      spawn: () => spawned++,
+    });
+
+    expect(spawned).toBe(0);
+    expect((await readState(stateFile)).last_checked).toBeUndefined();
+  });
+
+  // A `last_checked` ahead of now - clock skew on a fresh VM, or a config dir restored from a
+  // machine ahead in time - makes the age negative, which satisfies "younger than the window" and
+  // would suppress every check until wall-clock time caught up. Nothing would recover it either,
+  // since the field is only rewritten once the staleness gate passes.
+  test("checks anyway when last_checked is in the future, and resets it", async () => {
+    const { stateFile } = setup();
+    const future = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString();
+    await writeState({ last_checked: future }, stateFile);
+    let spawned = 0;
+    const now = new Date().toISOString();
+
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: {},
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      now,
+      spawn: () => spawned++,
+    });
+
+    expect(spawned).toBe(1);
+    expect((await readState(stateFile)).last_checked).toBe(now);
   });
 
   test("spawns when GUSTO_CLI_VERSION is latest, since that is not a pin", async () => {

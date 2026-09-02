@@ -8,6 +8,7 @@ import { configPaths, readConfig } from "./config.ts";
 import type { EnvSource } from "./env.ts";
 import type { OutputMode, StreamSinks } from "./output.ts";
 import {
+  defaultVersionOf,
   envForSubprocess,
   isSelfExecutable,
   pinnedVersion,
@@ -102,13 +103,20 @@ export interface SwapDeps {
   stillOurs?: typeof stagingStillOurs;
   /** This build's version, i.e. the installed one when `isSelf`. Injectable for tests. */
   currentVersion?: string;
+  /** Reads the version of the binary at a path. Only called when the swap target isn't us; see the
+   * freshness check. Injectable for tests. */
+  versionOf?: (file: string) => Promise<string | null>;
 }
 
-/** Runs at the very top of every invocation, before the command dispatches. Cheap in the common
+/** Runs from the `preAction` hook in `index.ts` - after the config read and after commander has
+ * resolved which command matched, but before that command's own handler, which is what keeps the
+ * swap off the mid-command path. Not every invocation reaches it: `upgrade` is excluded,
+ * `--help`/`--version`/an invalid command never dispatch a handler at all, and the exec-check child
+ * skips the hook entirely via `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`. Cheap in the common
  * case (nothing staged): one small file read, no network, no hashing. Only when a background check
  * previously staged something does this re-verify and install it - see `lib/upgrade.ts`'s
  * `stageUpdate` for how it got there. The guardrails that matter: never mid-command (this runs
- * before dispatch), the pin (checked below), a stale/mismatched stage (discarded, not installed),
+ * before the handler), the pin (checked below), a stale/mismatched stage (discarded, not installed),
  * and a failed rename (left for the next invocation to retry). Always fails open - an
  * update-subsystem bug must never block the command the caller actually wants. */
 export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
@@ -133,6 +141,7 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
     const stagedPath = state.staged_path;
     const stillOurs = deps.stillOurs ?? stagingStillOurs;
     const currentVersion = deps.currentVersion ?? VERSION;
+    const versionOf = deps.versionOf ?? defaultVersionOf;
 
     // Opened once and held for the rest of this function. `BACKGROUND_STAGING_NAME` keeps
     // `gusto upgrade` out of this path entirely, but it is still a fixed name shared by every
@@ -201,15 +210,22 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
       // this state entry perfectly intact, and the next invocation would rename the older staged
       // build over the newer installed one while announcing the stale `from -> to` pair.
       //
-      // Only checkable for free when `isSelf` - then this process *is* the binary at `targetPath`,
-      // so its compiled-in version is the installed one. Otherwise the installed version would cost
-      // a subprocess spawn on a path that must stay cheap, and the stage is left for the normal
-      // checks to handle.
-      if (isSelf && state.staged_from !== currentVersion) {
+      // Free when `isSelf` - this process *is* the binary at `targetPath`, so its compiled-in
+      // version is the installed one. Otherwise it costs a subprocess spawn, which is worth paying
+      // rather than skipping the check: by this point the whole staged binary has already been read
+      // and sha256'd, so the spawn is cheaper than what just ran, and `resolveUpgradeTarget` pays
+      // exactly this spawn on the same `!isSelf` path to work out `from` to begin with. Skipping it
+      // would leave the same downgrade wide open on the other path - reachable whenever
+      // `GUSTO_INSTALL_DIR` names a second install, which the README documents as supported.
+      //
+      // Both sides normalise to `undefined` for "nothing runnable installed", so a stage made when
+      // the target was empty still installs into an empty target.
+      const installed = isSelf ? currentVersion : ((await versionOf(targetPath)) ?? undefined);
+      if (state.staged_from !== installed) {
         if (deps.mode === "human") {
           deps.sinks.stderr.write(
             `gusto: ignored a pending update - it was staged against ${state.staged_from ?? "nothing installed"}, ` + // noboost
-              `but ${currentVersion} is installed now, so it was not installed\n`, // noboost
+              `but ${installed ?? "nothing runnable"} is installed now, so it was not installed\n`, // noboost
           );
         }
         if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
@@ -237,7 +253,12 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
         // Anything else (disk full, perms changed) *might* be transient, so the stage is kept - but
         // only for a bounded number of goes, or an install dir that never becomes writable would
         // make every future invocation hash the whole staged binary before failing the same way.
-        const attempts = Number(state.swap_attempts ?? "0") + 1;
+        // `readState` accepts any string for this field, and a non-numeric one would make every
+        // comparison below false: the cap would never fire, `String(NaN)` would be written back,
+        // and each later invocation would re-hash the whole staged binary on the startup path -
+        // exactly the cost this counter exists to bound.
+        const previous = Number.parseInt(state.swap_attempts ?? "0", 10);
+        const attempts = (Number.isFinite(previous) ? previous : 0) + 1;
         if (attempts >= MAX_SWAP_ATTEMPTS) {
           if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
           await discardStage(state, file);
@@ -337,6 +358,15 @@ export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void
     // download, stage, rename an identical build over itself, repeat next window. Leave that
     // override to the explicit command.
     if (env.GUSTO_CLI_BASE_URL !== undefined && env.GUSTO_CLI_BASE_URL.length > 0) return;
+    // Same reasoning, but for integrity rather than convergence. `envForSubprocess` hands the whole
+    // environment to the detached child, so a single `GUSTO_CLI_REPO=someone/fork gusto whoami`
+    // would stage a binary from that origin - checksummed against *that* repo's own `SHA256SUMS`,
+    // so every integrity check downstream passes - and a later ordinary invocation with no override
+    // set would rename it over the live binary and report it as an auto-update. Nothing in the
+    // staged state records where the bytes came from, and it shouldn't have to: an origin override
+    // is an explicit thing someone typed, so it belongs to `gusto upgrade` and never to the
+    // unattended path.
+    if (env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0) return;
     // The child is a re-exec of *this* executable, so that's what has to be a `gusto` binary -
     // under `bun run dev` it's the developer's `bun`, and `bun --internal-background-update` never
     // reaches index.ts's flag check. Asked of execPath directly rather than via
@@ -353,8 +383,13 @@ export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void
     if (state.staged_version !== undefined) return;
     const nowIso = deps.now ?? new Date().toISOString();
     if (state.last_checked !== undefined) {
+      // `age >= 0` matters as much as the NaN guard: a `last_checked` in the future - clock skew on
+      // a fresh VM, or a config dir restored from a machine ahead in time - makes a negative age
+      // satisfy `< STALE_MS` and suppress every check until wall-clock time catches up, with
+      // nothing to recover it since the write below is only reached once this gate passes. Falling
+      // through instead rewrites the field to now, so a skewed clock costs one early check.
       const age = Date.parse(nowIso) - Date.parse(state.last_checked);
-      if (!Number.isNaN(age) && age < STALE_MS) return;
+      if (!Number.isNaN(age) && age >= 0 && age < STALE_MS) return;
     }
 
     await writeState({ ...state, last_checked: nowIso }, file);
