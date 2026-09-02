@@ -267,7 +267,6 @@ describe("isValidUuid", () => {
 describe("validateUuid", () => {
   const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
 
-  // An absent optional flag must not block; presence is the calling validator's check.
   test("undefined passes (an absent flag is not validated)", () => {
     expect(validateUuid("job-uuid", undefined)).toBeNull();
   });
