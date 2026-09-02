@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { CommandResult } from "../lib/runner.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, captureSinks, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  captureSinks,
+  okData,
+  stubGlobalFetch,
+  successEnvelope,
+} from "../lib/test-support.ts";
 import {
   clarifyEmptyTimesheetSync,
   timesheetCreateHandler,
@@ -597,6 +604,44 @@ describe("timesheetListHandler", () => {
     } finally {
       restore();
     }
+  });
+
+  describe("--company-uuid", () => {
+    const dates = { startDate: "2026-06-01", endDate: "2026-06-15" };
+
+    async function listWith(opts: Parameters<typeof timesheetListHandler>[0], env?: string) {
+      if (env !== undefined) process.env.GUSTO_COMPANY_UUID = env;
+      const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ source: "none" }) }));
+      try {
+        await timesheetListHandler(opts)(ctx);
+        return (calls[0]?.body as { params?: { arguments?: Record<string, unknown> } } | undefined)?.params?.arguments;
+      } finally {
+        restore();
+        delete process.env.GUSTO_COMPANY_UUID;
+      }
+    }
+
+    test("the flag is forwarded as company_uuid", async () => {
+      expect(await listWith({ ...dates, companyUuid: "co-flag" })).toEqual({
+        start_date: "2026-06-01",
+        end_date: "2026-06-15",
+        company_uuid: "co-flag",
+      });
+    });
+
+    test("GUSTO_COMPANY_UUID is used when the flag is absent", async () => {
+      expect(await listWith(dates, "co-env")).toMatchObject({ company_uuid: "co-env" });
+    });
+
+    test("the flag overrides GUSTO_COMPANY_UUID", async () => {
+      expect(await listWith({ ...dates, companyUuid: "co-flag" }, "co-env")).toMatchObject({
+        company_uuid: "co-flag",
+      });
+    });
+
+    test("with neither, company_uuid is omitted entirely", async () => {
+      expect(await listWith(dates)).toEqual({ start_date: "2026-06-01", end_date: "2026-06-15" });
+    });
   });
 
   test("tool-not-found (missing scope) maps to mcp_tool_not_found / Auth exit", async () => {
