@@ -1318,3 +1318,96 @@ describe("per-environment credential slots", () => {
     },
   );
 });
+
+// The whole feature, end to end, with real compiled binaries and real processes: a background
+// child that downloads and verifies an actual release asset, then a later invocation that installs
+// it. Everything else stubs `fetch`, `spawn` or `versionOf` somewhere, so this is the only place
+// the production path runs as production.
+//
+// Measured, so the coverage claim is honest rather than assumed: reverting the staging-name split
+// or silencing the swap notice both fail this test. Removing SKIP_AUTO_UPDATE_ENV does not - the
+// exec-check does run the downloaded binary for real, but state carries no stage yet at that
+// point, so the nested run exits at its first check. That guard is pinned in upgrade.test.ts
+// instead, and this comment used to claim otherwise.
+describe("auto-update end to end against a served release", () => {
+  let work: string;
+  let installDir: string;
+  let configHome: string;
+  let installed: string;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    work = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-e2e-")));
+    installDir = path.join(work, "install");
+    configHome = path.join(work, "config");
+    mkdirSync(installDir, { recursive: true });
+    mkdirSync(path.join(configHome, "gusto"), { recursive: true });
+    installed = path.join(installDir, "gusto");
+    copyFileSync(BIN_PATH, installed);
+  });
+
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  function serveRelease(): string {
+    // The real binary as the release asset, checksummed for real. Same version as the one
+    // "installed", which is what keeps this hermetic - the point here is the mechanics, and the
+    // version transition itself is covered by the unit tests around `staged_from`.
+    const bytes = readFileSync(BIN_PATH);
+    const sum = createHash("sha256").update(bytes).digest("hex");
+    const asset = `gusto-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
+    server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const name = new URL(req.url).pathname.replace(/^\//, "");
+        if (name === "SHA256SUMS") return new Response(`${sum}  ${asset}\n`);
+        if (name === asset) return new Response(bytes);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    return `http://localhost:${server.port}`;
+  }
+
+  async function invoke(args: string[], extra: Record<string, string> = {}): Promise<Run> {
+    return spawnCapture([installed, ...args], {
+      ...stripGustoEnv(process.env),
+      XDG_CONFIG_HOME: configHome,
+      GUSTO_INSTALL_DIR: installDir,
+      ...extra,
+    });
+  }
+
+  const statePath = (): string => path.join(configHome, "gusto", "update-state.toml");
+
+  test("a background check stages a verified release, and the next command installs it", async () => {
+    const base = serveRelease();
+
+    // The child is invoked directly, the way the detached spawn invokes it. It does the real
+    // download, the real checksum, and the real exec-check.
+    const child = await invoke(["--internal-background-update"], { GUSTO_CLI_BASE_URL: base });
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout).toBe("");
+
+    const staged = readFileSync(statePath(), "utf8");
+    expect(staged).toContain(`staged_version = "${pkg.version}"`);
+    // Its own staging name, so an interactive `gusto upgrade` can never contend for the file.
+    expect(staged).toContain(".gusto-background-upgrade");
+    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(true);
+
+    // Now the swap, on an ordinary command. Unpinned so nothing suppresses it.
+    const swap = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "" });
+    expect(swap.exitCode).toBe(0);
+    expect(swap.stderr).toContain("auto-updated");
+    // stdout carries the command's own output and nothing else - the contract agents rely on.
+    expect(swap.stdout).not.toContain("auto-updated");
+    expect(readFileSync(statePath(), "utf8")).not.toContain("staged_version");
+    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(false);
+
+    // Nothing pending now, so an identical command says nothing at all.
+    const again = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "" });
+    expect(again.stderr).not.toContain("auto-updated");
+  });
+});
