@@ -52,6 +52,7 @@ export type TimesheetCreateBody = {
 export type TimesheetCreateValidation = ValidationResult<TimesheetCreateBody>;
 
 interface TimesheetCreateInput {
+  companyUuid?: string;
   employeeUuid?: string;
   contractorUuid?: string;
   start?: string;
@@ -63,11 +64,17 @@ interface TimesheetCreateInput {
   doubleOvertime?: string;
 }
 
+function pushUuidBlockedOn(field: string, value: string | undefined, blocked: BlockedOn[]): void {
+  const entry = validateUuid(field, value);
+  if (entry) blocked.push(entry);
+}
+
 /** Validate timesheet-create args and, on success, return the fully-populated request body.
  * Exactly one of --employee-uuid / --contractor-uuid sets the entity; at least one of the
  * granular hour flags is required and each becomes one `entries` row with its pay_classification. */
 export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCreateValidation {
   const blocked: BlockedOn[] = [];
+  pushUuidBlockedOn("company-uuid", opts.companyUuid, blocked);
 
   const { start, timeZone } = opts;
   const ambiguousEntity = Boolean(opts.employeeUuid && opts.contractorUuid);
@@ -78,8 +85,7 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   } else if (!entityUuid) {
     blocked.push({ field: "employee-uuid", reason: "required (or pass --contractor-uuid)" });
   } else {
-    const entry = validateUuid(isEmployee ? "employee-uuid" : "contractor-uuid", entityUuid);
-    if (entry) blocked.push(entry);
+    pushUuidBlockedOn(isEmployee ? "employee-uuid" : "contractor-uuid", entityUuid, blocked);
   }
 
   // The API requires a job for employee time sheets (TimeTracking::TimeSheet validates
@@ -87,8 +93,7 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   let entity: TimesheetEntity | undefined;
   if (isEmployee) {
     if (opts.jobUuid) {
-      const entry = validateUuid("job-uuid", opts.jobUuid);
-      if (entry) blocked.push(entry);
+      pushUuidBlockedOn("job-uuid", opts.jobUuid, blocked);
       entity = { entity_type: "Employee", job_uuid: opts.jobUuid };
     } else {
       blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
@@ -162,6 +167,7 @@ export interface TimesheetSyncBody {
 export type TimesheetSyncValidation = ValidationResult<TimesheetSyncBody>;
 
 interface TimesheetSyncInput {
+  companyUuid?: string;
   payScheduleUuid?: string;
   startDate?: string;
   endDate?: string;
@@ -209,13 +215,10 @@ function readSyncDate(opts: TimesheetSyncInput, spec: SyncDateFlag, blocked: Blo
  * blocked_on names the canonical flag even when the caller passed a deprecated alias. */
 export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncValidation {
   const blocked: BlockedOn[] = [];
+  pushUuidBlockedOn("company-uuid", opts.companyUuid, blocked);
   const { payScheduleUuid } = opts;
-  if (!payScheduleUuid) {
-    blocked.push({ field: "pay-schedule-uuid", reason: "required" });
-  } else {
-    const entry = validateUuid("pay-schedule-uuid", payScheduleUuid);
-    if (entry) blocked.push(entry);
-  }
+  if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
+  else pushUuidBlockedOn("pay-schedule-uuid", payScheduleUuid, blocked);
 
   const startDate = readSyncDate(opts, START_DATE_FLAG, blocked);
   const endDate = readSyncDate(opts, END_DATE_FLAG, blocked);
@@ -269,6 +272,7 @@ interface TimesheetShowOpts {
 }
 
 interface TimesheetListInput {
+  companyUuid?: string;
   startDate?: string;
   endDate?: string;
 }
@@ -282,6 +286,7 @@ export type TimesheetListValidation = ValidationResult<{ start_date: string; end
 
 export function validateTimesheetList(opts: TimesheetListInput): TimesheetListValidation {
   const blocked: BlockedOn[] = [];
+  pushUuidBlockedOn("company-uuid", opts.companyUuid, blocked);
   const { startDate, endDate } = opts;
   if (!startDate) {
     blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });

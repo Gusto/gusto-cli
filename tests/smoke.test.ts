@@ -15,6 +15,7 @@ const CONTRACTOR_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
 const CONTRACTOR_PAYMENT_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
 const CONTRACTOR_PAYMENT_GROUP_UUID = "9c0d1e2f-0000-4111-2222-333344445555";
 const TIME_SHEET_UUID = "7a6b5c4d-0000-4111-2222-333344445555";
+const COMPANY_UUID = "3c2b1a09-0000-4111-2222-333344445555";
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -262,7 +263,7 @@ describe("auth required commands without a token", () => {
 
   // Dates omitted on purpose: exit 7 means commander accepted the flag, exit 2 would mean it did not.
   test("timesheet list --company-uuid is registered", async () => {
-    const result = await run(["timesheet", "list", "--company-uuid", "co-1"]);
+    const result = await run(["timesheet", "list", "--company-uuid", COMPANY_UUID]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("validation");

@@ -97,8 +97,6 @@ export function isValidUuid(value: string): boolean {
 /** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
 const ECHOED_VALUE_MAX_LENGTH = 60;
 
-/** The blocked_on reason for a non-UUID value, echoing it back so the caller sees what they sent.
- * Shared with `invalidUuid` so collecting validators and fail-fast positionals word it the same. */
 export function uuidReason(value: string): string {
   const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
   return `must be a valid UUID, got: ${JSON.stringify(echoed)}`;
