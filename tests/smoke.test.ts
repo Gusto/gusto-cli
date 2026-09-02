@@ -14,6 +14,7 @@ const ADDRESS_UUID = "9b8c7d6e-0000-4111-2222-333344445555";
 const CONTRACTOR_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
 const CONTRACTOR_PAYMENT_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
 const CONTRACTOR_PAYMENT_GROUP_UUID = "9c0d1e2f-0000-4111-2222-333344445555";
+const TIME_SHEET_UUID = "7a6b5c4d-0000-4111-2222-333344445555";
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -233,7 +234,7 @@ describe("auth required commands without a token", () => {
     ["department", ["department", "get", "department-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
-    ["timesheet", ["timesheet", "get", "time-sheet-uuid-123"]],
+    ["timesheet", ["timesheet", "get", TIME_SHEET_UUID]],
     ["job", ["job", "get", "job-uuid-123"]],
     ["compensation", ["compensation", "get", "comp-uuid-123"]],
   ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {

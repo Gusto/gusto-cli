@@ -6,11 +6,12 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
+import { isValidIso8601, isValidIsoDate, isValidUuid, parsePositiveNumber, validateUuid } from "../lib/parse.ts";
 import {
   type CommandHandler,
   type CommandResult,
   type ValidationResult,
+  invalidUuid,
   runCommand,
   runReadCommand,
   validationFailure,
@@ -76,6 +77,9 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
     blocked.push({ field: "employee-uuid", reason: "pass only one of --employee-uuid or --contractor-uuid" });
   } else if (!entityUuid) {
     blocked.push({ field: "employee-uuid", reason: "required (or pass --contractor-uuid)" });
+  } else {
+    const entry = validateUuid(isEmployee ? "employee-uuid" : "contractor-uuid", entityUuid);
+    if (entry) blocked.push(entry);
   }
 
   // The API requires a job for employee time sheets (TimeTracking::TimeSheet validates
@@ -83,6 +87,8 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   let entity: TimesheetEntity | undefined;
   if (isEmployee) {
     if (opts.jobUuid) {
+      const entry = validateUuid("job-uuid", opts.jobUuid);
+      if (entry) blocked.push(entry);
       entity = { entity_type: "Employee", job_uuid: opts.jobUuid };
     } else {
       blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
@@ -204,7 +210,12 @@ function readSyncDate(opts: TimesheetSyncInput, spec: SyncDateFlag, blocked: Blo
 export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncValidation {
   const blocked: BlockedOn[] = [];
   const { payScheduleUuid } = opts;
-  if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
+  if (!payScheduleUuid) {
+    blocked.push({ field: "pay-schedule-uuid", reason: "required" });
+  } else {
+    const entry = validateUuid("pay-schedule-uuid", payScheduleUuid);
+    if (entry) blocked.push(entry);
+  }
 
   const startDate = readSyncDate(opts, START_DATE_FLAG, blocked);
   const endDate = readSyncDate(opts, END_DATE_FLAG, blocked);
@@ -458,8 +469,14 @@ export function clarifyEmptyTimesheetSync(result: CommandResult): CommandResult 
 }
 
 export function timesheetShowHandler(timeSheetUuid: string, opts: TimesheetShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/time_tracking/time_sheets/${timeSheetUuid}`);
+  return async ({ globals }) => {
+    if (!isValidUuid(timeSheetUuid)) return invalidUuid("time_sheet_uuid", timeSheetUuid);
+    return fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/time_tracking/time_sheets/${timeSheetUuid}`,
+    );
+  };
 }
 
 export function timesheetListHandler(opts: TimesheetListOpts): CommandHandler {

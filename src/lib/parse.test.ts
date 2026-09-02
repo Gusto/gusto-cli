@@ -10,6 +10,7 @@ import {
   resolveTimeoutMs,
   splitTokens,
   validateEnum,
+  validateUuid,
 } from "./parse.ts";
 
 describe("splitTokens", () => {
@@ -260,6 +261,31 @@ describe("isValidUuid", () => {
 
   test("internal whitespace is rejected", () => {
     expect(isValidUuid("3f2a8c1d-0000-4111-2222-33334444 5555")).toBe(false);
+  });
+});
+
+describe("validateUuid", () => {
+  const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
+
+  // An absent optional flag must not block; presence is the calling validator's check.
+  test("undefined passes (an absent flag is not validated)", () => {
+    expect(validateUuid("job-uuid", undefined)).toBeNull();
+  });
+
+  test("a valid uuid passes", () => {
+    expect(validateUuid("job-uuid", VALID)).toBeNull();
+  });
+
+  test("a non-uuid returns an entry naming the field and echoing the value", () => {
+    expect(validateUuid("job-uuid", "job-1")).toEqual({
+      field: "job-uuid",
+      reason: 'must be a valid UUID, got: "job-1"',
+    });
+  });
+
+  // Empty string is distinct from undefined: commander yields it for `--job-uuid ""`.
+  test("an empty string is rejected rather than treated as absent", () => {
+    expect(validateUuid("job-uuid", "")).toEqual({ field: "job-uuid", reason: 'must be a valid UUID, got: ""' });
   });
 });
 
