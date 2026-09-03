@@ -840,11 +840,11 @@ describe("api request", () => {
     expect(envelope.error.code).toBe("invalid_company_uuid");
   });
 
-  test("--dry-run reports a malformed GUSTO_COMPANY_UUID instead of echoing the placeholder", async () => {
-    const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], {
-      GUSTO_ACCESS_TOKEN: "tok",
-      GUSTO_COMPANY_UUID: "co-1",
-    });
+  test.each([
+    ["with a token", { GUSTO_ACCESS_TOKEN: "tok", GUSTO_COMPANY_UUID: "co-1" }],
+    ["without one", { GUSTO_COMPANY_UUID: "co-1" }],
+  ])("--dry-run %s reports a malformed GUSTO_COMPANY_UUID instead of echoing the placeholder", async (_case, env) => {
+    const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], env);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(false);

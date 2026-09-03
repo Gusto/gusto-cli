@@ -293,6 +293,15 @@ export async function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
 ): Promise<Resolved<ApiContext>> {
+  const supplied = getCompanyUuid(opts.companyOverride);
+  if (supplied && !isValidUuid(supplied.value)) {
+    return {
+      ok: false,
+      reason: "invalid_input",
+      result: invalidCompanyUuid(supplied.value, supplied.source, defaultEnv(globals.env)),
+    };
+  }
+
   const resolved = await resolveAuthToken(globals, opts);
   if (!resolved.ok) return { ok: false, reason: "credentials", result: resolved.result };
   const { token, source: tokenSource } = resolved;
@@ -307,7 +316,6 @@ export async function resolveApiContext(
 
   // Only borrow the session's company when the token came from the session; an
   // env/stdin token must not silently target an unrelated login's company.
-  const supplied = getCompanyUuid(opts.companyOverride);
   const fallbackCompany = supplied || tokenSource !== "session" ? null : await sessionCompanyUuid(globals, opts);
   const company = supplied ?? (fallbackCompany ? ({ value: fallbackCompany, source: "session" } as const) : null);
   if (company && !isValidUuid(company.value)) {
