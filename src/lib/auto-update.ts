@@ -246,11 +246,17 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
       const installed = isSelf
         ? currentVersion
         : ((await versionOf(targetPath, SWAP_EXEC_CHECK_TIMEOUT_MS, noteTimeout)) ?? undefined);
+      // Checked before the comparison, not inside it: a killed probe means the installed version
+      // was not determined, which has to be decided on its own. Inside, a stage recorded when
+      // nothing runnable was there (`staged_from` absent) matched the `undefined` a timeout also
+      // produces, so the branch was skipped and the stage installed over whatever is now at the
+      // target - the very downgrade this check exists to refuse, for the slow-target case the
+      // deadline was added for.
+      if (probeTimedOut) {
+        await countSwapAttempt(state, file, handle, stagedPath, stillOurs);
+        return;
+      }
       if (state.staged_from !== installed) {
-        if (probeTimedOut) {
-          await countSwapAttempt(state, file, handle, stagedPath, stillOurs);
-          return;
-        }
         if (deps.mode === "human") {
           deps.sinks.stderr.write(
             `gusto: ignored a pending update - it was staged against ${state.staged_from ?? "nothing installed"}, ` + // noboost

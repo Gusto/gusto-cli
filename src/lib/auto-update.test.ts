@@ -590,6 +590,48 @@ describe("swapStagedUpdate", () => {
   // two - a cold release-sized binary on a network-mounted install dir - would otherwise have a
   // good stage deleted, be described as "nothing runnable" while it sits there installed and
   // runnable, and have the same release downloaded again next window, forever.
+  // The timeout has to be decided before the version comparison rather than inside it. A stage
+  // recorded when nothing runnable was at the target carries no `staged_from`, which matched the
+  // `undefined` a killed probe also produces - so the retry branch was skipped and the stage
+  // installed over whatever is at the target now, which is the downgrade this check exists to
+  // refuse, in exactly the slow-target case the deadline was introduced for.
+  test("does not install over an undetermined target just because the stage recorded no from-version", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    // Newer than the stage, and installed - but too slow to answer inside the deadline.
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({
+      installedBody: '#!/bin/sh\necho "0.9.0"\n',
+      stagedBody: STAGED_BODY,
+    });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      sinks,
+      mode: "human",
+      versionOf: async (_file, _timeoutMs, onTimeout) => {
+        onTimeout?.();
+        return null;
+      },
+    });
+
+    expect(readFileSync(installedPath, "utf8")).toContain("0.9.0");
+    expect(existsSync(stagedPath!)).toBe(true);
+    expect((await readState(stateFile)).swap_attempts).toBe("1");
+    // Nothing claimed about a version it never read.
+    expect(stderr.buffer).toBe("");
+  });
+
   test("keeps the stage for a bounded retry when the freshness probe hits its deadline", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
