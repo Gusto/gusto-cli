@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
+import type { EnvSource } from "./env.ts";
 import type { Environment } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
@@ -27,6 +28,28 @@ const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
 const AUTO_UPDATE_VALUES: readonly AutoUpdate[] = ["on", "off"] as const;
+
+/** The env override for `auto_update`, which wins over the config file. */
+export const AUTO_UPDATE_ENV = "GUSTO_CLI_AUTO_UPDATE";
+
+/** Normalises anything that might mean on or off. Only `on` reads as on; everything else present
+ * reads as off, because `on` is the default and so the only reason to set this at all is to turn it
+ * off - see the `auto_update` branch of `pickValid`. */
+function readAutoUpdate(value: string | boolean): AutoUpdate {
+  const text = typeof value === "boolean" ? (value ? "on" : "off") : String(value).trim();
+  return text.toLowerCase() === "on" ? "on" : "off";
+}
+
+/** Whether auto-update is on for this invocation, env first.
+ *
+ * The env form exists for the places a config file doesn't reach: an ephemeral container writes no
+ * `update-state.toml` and keeps no `config.toml`, so without this the only ways to stop a
+ * per-container release download were baking a config file into the image or pinning a version. */
+export function autoUpdateEnabled(cfg: Pick<UserConfig, "auto_update">, env: EnvSource = process.env): boolean {
+  const override = env[AUTO_UPDATE_ENV];
+  if (override !== undefined && override.length > 0) return readAutoUpdate(override) === "on";
+  return cfg.auto_update !== "off";
+}
 
 // `json` is the advertised alias for `agent` (see the `--json` / `--agent` global flags).
 // Accept it as a `format` value and persist it as `agent` so the config mirrors the flags.
@@ -130,9 +153,11 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
   // obvious hand-edit, and TOML parses it as a boolean a string check would discard. `on` is
   // already the default, so anything unrecognised is read as off. `config set` stays strict.
   if (raw.auto_update !== undefined) {
-    const value =
-      typeof raw.auto_update === "boolean" ? (raw.auto_update ? "on" : "off") : String(raw.auto_update).trim();
-    out.auto_update = value.toLowerCase() === "on" ? "on" : "off";
+    out.auto_update = readAutoUpdate(
+      typeof raw.auto_update === "boolean" || typeof raw.auto_update === "string"
+        ? raw.auto_update
+        : String(raw.auto_update),
+    );
   }
   return out;
 }

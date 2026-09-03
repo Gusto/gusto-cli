@@ -4,7 +4,7 @@ import { chmod, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import type { AutoUpdate } from "./config.ts";
-import { configPaths, readConfig } from "./config.ts";
+import { autoUpdateEnabled, configPaths, readConfig } from "./config.ts";
 import type { EnvSource } from "./env.ts";
 import type { OutputMode, StreamSinks } from "./output.ts";
 import {
@@ -128,8 +128,8 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
     // would otherwise pay a stat, an open, a read and a TOML parse on every command they ever run
     // to reach a decision that needed none of it. Neither branch touches state, so a stage left
     // behind before the opt-out still sits there untouched when it's turned back on.
-    if (deps.cfg.auto_update === "off") return;
     const env = deps.env ?? process.env;
+    if (!autoUpdateEnabled(deps.cfg, env)) return;
     if (isPinned(env)) return;
 
     const state = await readState(file);
@@ -354,8 +354,8 @@ export interface TriggerDeps {
 export async function maybeSpawnBackgroundCheck(deps: TriggerDeps): Promise<void> {
   const file = deps.stateFile ?? stateFilePath();
   try {
-    if (deps.cfg.auto_update === "off") return;
     const env = deps.env ?? process.env;
+    if (!autoUpdateEnabled(deps.cfg, env)) return;
     if (isPinned(env)) return;
     // A base-URL override leaves `resolveTargetTag` with no tag to compare, so `stageUpdate` can
     // never conclude "already up to date" and stages every time. `gusto upgrade` wants exactly that
@@ -420,18 +420,23 @@ export async function runBackgroundCheck(
   if (isPinned(env)) return;
   if (env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0) return;
   if (!isSelfExecutable(deps.execPath ?? process.execPath)) return;
+  // Checked up front as well as after the download. The env can't change under a process that is
+  // already running, so an override that forbids this now forbids it at the end too - and the
+  // container case this override exists for is exactly the one where paying for the download first
+  // would be the whole cost. `{}` because the config file is deliberately left to the re-read
+  // below, which is what catches an opt-out landing mid-download.
+  if (!autoUpdateEnabled({}, env)) return;
   try {
     const result = await stageUpdate(deps);
     if (!result.ok || result.data.status !== "staged") return;
 
-    // Config is re-read *after* the download rather than before it, because this process outlives
-    // the invocation that spawned it - by minutes, on a slow link. `auto_update` can be turned off
-    // in that window, including by the very command that spawned this child (the trigger runs
-    // before dispatch, so it sees the pre-command value). Recording the stage anyway would leave a
-    // release-sized binary that nothing will ever consume, since swapping is now disabled - and no
-    // later `preflightStagingPath` runs to clear it either. So: clean up and record nothing.
+    // Re-read *after* the download, because this process outlives the invocation that spawned it -
+    // by minutes on a slow link - and `auto_update` can be turned off in that window, including by
+    // the command that spawned it. Recording the stage anyway would leave a release-sized binary
+    // nothing will ever consume. The env override is re-checked through the same helper for one
+    // definition of precedence, though it can't have changed for a process already running.
     const cfg = await readConfigForBackgroundCheck(deps.configFile);
-    if (cfg.auto_update === "off") {
+    if (!autoUpdateEnabled(cfg, env)) {
       await unlinkIfStillOurs(result.data.staged_path, result.data.staged_checksum);
       return;
     }

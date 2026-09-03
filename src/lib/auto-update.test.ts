@@ -143,6 +143,68 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toBe("");
   });
 
+  // The env form of the opt-out, for the places a config file doesn't reach - an ephemeral
+  // container keeps neither `config.toml` nor `update-state.toml`, so every container would
+  // otherwise pull a release once.
+  test("leaves the stage untouched when the env override is off", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
+      },
+      stateFile,
+    );
+    const before = readFileSync(installedPath);
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_AUTO_UPDATE: "off" },
+      sinks,
+      mode: "human",
+    });
+
+    expect(readFileSync(installedPath)).toEqual(before);
+    expect(stderr.buffer).toBe("");
+    // Kept, like the pin: clearing the override later finds it still here.
+    expect(existsSync(stagedPath!)).toBe(true);
+    expect((await readState(stateFile)).staged_version).toBe("0.3.0");
+  });
+
+  // An override that wins both ways, so a machine with `auto_update = "off"` on disk can still opt
+  // in for one invocation.
+  test("the env override beats the config file in both directions", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: { auto_update: "off" },
+      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_AUTO_UPDATE: "on" },
+      sinks,
+      mode: "human",
+    });
+
+    expect(readFileSync(installedPath, "utf8")).toBe(STAGED_BODY);
+  });
+
   test("leaves the stage untouched when GUSTO_CLI_VERSION is pinned", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
@@ -945,6 +1007,43 @@ describe("maybeSpawnBackgroundCheck", () => {
     expect((await readState(stateFile)).last_checked).toBeUndefined();
   });
 
+  test.each([
+    ["off", 0],
+    ["false", 0],
+    ["0", 0],
+    ["on", 1],
+  ])("spawns %s times when the env override is %s", async (value, expected) => {
+    const { stateFile } = setup();
+    let spawned = 0;
+
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: { GUSTO_CLI_AUTO_UPDATE: value },
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      spawn: () => spawned++,
+    });
+
+    expect(spawned).toBe(expected);
+  });
+
+  // An empty value is not an opt-out - `GUSTO_CLI_AUTO_UPDATE=` in a shell profile shouldn't read
+  // as "off" any more than an unset variable does. Falls through to the config file.
+  test("an empty env override falls through to the config", async () => {
+    const { stateFile } = setup();
+    let spawned = 0;
+
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: { GUSTO_CLI_AUTO_UPDATE: "" },
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      spawn: () => spawned++,
+    });
+
+    expect(spawned).toBe(1);
+  });
+
   test("does not spawn when GUSTO_CLI_VERSION is pinned", async () => {
     const { stateFile } = setup();
     let spawned = 0;
@@ -1320,6 +1419,39 @@ describe("runBackgroundCheck", () => {
 
     expect(fetched).toBe(0);
     expect((await readState(stateFile)).staged_version).toBeUndefined();
+  });
+
+  // Refused before the network, not just cleaned up afterwards: the environments this override is
+  // for are the ones where paying for a release-sized download and then discarding it is the entire
+  // cost being avoided.
+  test("downloads nothing at all when the env override is off", async () => {
+    const { stateFile, installDir, installedPath } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
+    const NEW_BINARY = '#!/bin/sh\necho "0.3.0"\n';
+    const hash = createHash("sha256").update(NEW_BINARY).digest("hex");
+    let fetched = 0;
+
+    await runBackgroundCheck({
+      stateFile,
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_AUTO_UPDATE: "off" },
+      execPath: installedPath,
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: stubFetch(async (url) => {
+        fetched += 1;
+        const name = url.toString().split("/").pop() ?? "";
+        if (name === "latest") return latestRelease("v0.3.0");
+        if (name === "SHA256SUMS") return new Response(`${hash}  gusto-linux-x64\n`);
+        if (name === "gusto-linux-x64") return new Response(NEW_BINARY);
+        return new Response("not found", { status: 404 });
+      }),
+      versionOf: async (file) => readFileSync(file, "utf8").match(/"([0-9.]+)"/)?.[1] ?? null,
+    });
+
+    expect(fetched).toBe(0);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(existsSync(path.join(installDir, BACKGROUND_STAGING_NAME))).toBe(false);
   });
 
   test("persists nothing when already up to date", async () => {

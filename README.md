@@ -41,6 +41,14 @@ To turn it off:
 gusto config set auto_update off
 ```
 
+Or per-environment, which is what you want in a container or CI image where no config file persists:
+
+```sh
+export GUSTO_CLI_AUTO_UPDATE=off
+```
+
+The environment variable wins over the config file, in both directions.
+
 That takes effect from the next invocation onward, which includes one edge worth knowing: an update already staged before you opted out still installs on the command that turns it off, since the swap runs before the command's own handler. Pinning `GUSTO_CLI_VERSION` to a version disables it too, and does so immediately - which is what you want in CI, where the pin already fixes the version. (`GUSTO_CLI_VERSION=latest` is not a pin and does not disable it.)
 
 Pointing `GUSTO_CLI_REPO` or `GUSTO_CLI_BASE_URL` at a different origin also turns it off - an origin override is an explicit thing you typed, so it's left to `gusto upgrade`.
