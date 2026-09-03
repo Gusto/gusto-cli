@@ -96,6 +96,14 @@ const DOWNLOAD_TIMEOUT_MS = 600_000;
 const EXEC_CHECK_TIMEOUT_MS = 30_000;
 const QUARANTINE_TIMEOUT_MS = 10_000;
 
+/** The same exec check on the unattended path, where nobody asked for an upgrade at all:
+ * `swapStagedUpdate` runs before the matched command's handler, so whatever this spawn waits for is
+ * added to that command's startup. A target that blocks on init - a wedged build, a stale mount at
+ * `GUSTO_INSTALL_DIR` - must cost an ordinary `gusto whoami` a moment, not half a minute. A local
+ * `--version` print that can't answer inside this reads as the same null an unrunnable target does,
+ * so the stage is dropped and the next background window stages afresh. */
+export const SWAP_EXEC_CHECK_TIMEOUT_MS = 5_000;
+
 function isTimeout(err: unknown): boolean {
   return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
 }
@@ -585,15 +593,21 @@ function resolvedHostDeps(deps: StageDeps): Required<Omit<StageDeps, "log">> {
  * Killed on a deadline for the same reason: this is where a just-fetched artifact runs, and one
  * that blocks on init would otherwise hang the upgrade with a staged 0755 file in the install dir.
  * A build that won't print its version inside the deadline is a build we won't install, so the
- * timeout reads as the same null every other bad artifact does. */
-export async function defaultVersionOf(file: string): Promise<string | null> {
+ * timeout reads as the same null every other bad artifact does. The deadline is a parameter
+ * because the swap path pays this same spawn before an ordinary command's handler rather than
+ * inside an upgrade someone asked for, and wants a far shorter one - see
+ * `SWAP_EXEC_CHECK_TIMEOUT_MS`. */
+export async function defaultVersionOf(
+  file: string,
+  timeoutMs: number = EXEC_CHECK_TIMEOUT_MS,
+): Promise<string | null> {
   try {
     const proc = Bun.spawn([file, "--version"], {
       stdout: "pipe",
       stderr: "ignore",
       env: envForSubprocess({ [SKIP_AUTO_UPDATE_ENV]: "1" }),
     });
-    const deadline = setTimeout(() => proc.kill("SIGKILL"), EXEC_CHECK_TIMEOUT_MS);
+    const deadline = setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
     try {
       const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
       if (code !== 0) return null;

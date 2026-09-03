@@ -1419,10 +1419,14 @@ describe("auto-update end to end against a served release", () => {
 
   // The consumer side of `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`. `upgrade.test.ts` pins the producer -
   // that `defaultVersionOf` sets the variable on the child it spawns - but nothing pinned that
-  // `index.ts` honours it, so the whole `if (!skipAutoUpdate)` guard could be deleted with the
-  // suite still green. It matters because the exec-check runs the *downloaded* binary for real: a
-  // nested run that took this path would act on the same `update-state.toml` the outer call is
-  // still working through.
+  // `index.ts` honours it, so the swap half of the `if (!skipAutoUpdate)` guard could be deleted
+  // with the suite still green. It matters because the exec-check runs the *downloaded* binary for
+  // real: a nested run that took this path would act on the same `update-state.toml` the outer
+  // call is still working through.
+  //
+  // The swap half only: the pending stage set up below is also what makes
+  // `maybeSpawnBackgroundCheck` return early, so the trigger stays quiet here with or without the
+  // guard, and this pins nothing about it.
   test("an invocation with the skip variable set touches neither the binary nor the state", async () => {
     serveRelease();
     const before = readFileSync(installed);
@@ -1435,10 +1439,9 @@ describe("auto-update end to end against a served release", () => {
     });
 
     expect(run.exitCode).toBe(0);
-    // No swap attempted, so nothing consumed or cleared the pending stage...
+    // No swap attempted: one would fail to open `/nonexistent`, discard the stage and rewrite this
+    // file, so an untouched byte-for-byte copy is what says the guard held.
     expect(readFileSync(statePath(), "utf8")).toBe(stateBefore);
-    // ...and no check claimed a window either, which is what `last_checked` would record.
-    expect(readFileSync(statePath(), "utf8")).not.toContain("last_checked");
     expect(readFileSync(installed).equals(before)).toBe(true);
   });
 });

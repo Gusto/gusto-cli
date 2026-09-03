@@ -466,11 +466,6 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toContain("auto-updated");
   });
 
-  // The rename's two failure branches, which behave deliberately differently. ENOENT means the
-  // staged file went away between the lstat and the rename - another invocation won the swap, so
-  // the stage is gone for good and the state entry goes with it. Anything else is transient (a full
-  // disk, permissions changed) and the stage is left exactly where it is, so the next invocation
-  // retries for free rather than re-downloading.
   // The same downgrade the isSelf case above refuses, on the path where the swap target isn't this
   // process - which `GUSTO_INSTALL_DIR` naming a second install reaches, and the README documents
   // as supported. The checksum proves the bytes and `staged_install_path` proves the destination;
@@ -505,8 +500,8 @@ describe("swapStagedUpdate", () => {
     expect(existsSync(stagedPath!)).toBe(false);
   });
 
-  // The other half of that: an unreadable target reports no version at all, which has to match a
-  // stage recorded against nothing installed rather than being treated as a mismatch.
+  // The mirror of that on the same path: the spawn reports the very version the stage was recorded
+  // against, so the freshness check confirms the stage rather than refusing it, and the swap runs.
   test("still swaps on the !isSelf path when the target reports the version it was staged against", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
@@ -528,6 +523,38 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toContain("auto-updated");
   });
 
+  // And the `installed === undefined` case the check normalises for: nothing runnable at the target
+  // at all, so the spawn reports no version, which has to match a stage recorded against nothing
+  // installed rather than reading as a mismatch. Otherwise a stage made into an empty
+  // `GUSTO_INSTALL_DIR` could never complete - the absent `staged_from` would never equal it.
+  test("still swaps on the !isSelf path when nothing is installed at the target yet", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    // Nothing for `versionOf` to spawn, which is what makes it report no version.
+    rmSync(installedPath);
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        // No `staged_from`: this stage was recorded with nothing installed there.
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+
+    expect(readFileSync(installedPath, "utf8")).toBe(STAGED_BODY);
+    expect(stderr.buffer).toContain("auto-updated");
+  });
+
+  // The rename's two failure branches, which behave deliberately differently. ENOENT means the
+  // staged file went away between the lstat and the rename - another invocation won the swap, so
+  // the stage is gone for good and the state entry goes with it. Anything else is transient (a full
+  // disk, permissions changed) and the stage is left exactly where it is, so the next invocation
+  // retries for free rather than re-downloading.
   test("clears the state entry when the rename fails because the source vanished", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });

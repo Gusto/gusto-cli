@@ -16,6 +16,7 @@ import {
   type StageDeps,
   stageUpdate,
   stagingStillOurs,
+  SWAP_EXEC_CHECK_TIMEOUT_MS,
 } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
 
@@ -105,7 +106,7 @@ export interface SwapDeps {
   currentVersion?: string;
   /** Reads the version of the binary at a path. Only called when the swap target isn't us; see the
    * freshness check. Injectable for tests. */
-  versionOf?: (file: string) => Promise<string | null>;
+  versionOf?: (file: string, timeoutMs?: number) => Promise<string | null>;
 }
 
 /** Runs from the `preAction` hook in `index.ts` - after the config read and after commander has
@@ -218,9 +219,18 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
       // would leave the same downgrade wide open on the other path - reachable whenever
       // `GUSTO_INSTALL_DIR` names a second install, which the README documents as supported.
       //
+      // Bounded by `SWAP_EXEC_CHECK_TIMEOUT_MS` rather than the 30s `gusto upgrade` allows a
+      // just-downloaded build, because this one runs before the handler of a command nobody
+      // invoked to upgrade anything: a target that blocks on init - a wedged build, a stale mount
+      // at `GUSTO_INSTALL_DIR` - would otherwise add half a minute to an ordinary `gusto whoami`.
+      // Timing out reports the same null an unrunnable target does, so a stage that can't be
+      // checked is discarded rather than installed blind - and only once, since that clears it.
+      //
       // Both sides normalise to `undefined` for "nothing runnable installed", so a stage made when
       // the target was empty still installs into an empty target.
-      const installed = isSelf ? currentVersion : ((await versionOf(targetPath)) ?? undefined);
+      const installed = isSelf
+        ? currentVersion
+        : ((await versionOf(targetPath, SWAP_EXEC_CHECK_TIMEOUT_MS)) ?? undefined);
       if (state.staged_from !== installed) {
         if (deps.mode === "human") {
           deps.sinks.stderr.write(
