@@ -741,6 +741,80 @@ describe("stageUpdate", () => {
 });
 
 describe("defaultVersionOf", () => {
+  // A binary that prints its version and leaves something forked behind holding the stdout pipe.
+  // Draining stdout ends only when every write end closes, so before the probe became a process
+  // group leader this shape ignored `timeoutMs` completely - a 1s deadline measured 20s.
+  function scriptLeavingAGrandchild(dir: string, body: string): string {
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\n${body}\nsleep 20 &\nexit 0\n`, { mode: 0o755 });
+    return script;
+  }
+
+  // The distinction `onTimeout` exists to draw. A binary that can't run reports no version, exactly
+  // like one the deadline killed - but only the second is a stage worth retrying. Reporting a
+  // timeout for the first would have `swapStagedUpdate` keep a stage it should have dropped and
+  // burn its bounded attempts on a target that is never going to answer.
+  test.each([
+    ["exits non-zero", "#!/bin/sh\nexit 1\n"],
+    ["prints nothing", "#!/bin/sh\ntrue\n"],
+    ["is not executable at all", "this is not a program\n"],
+  ])("does not report a timeout when the target simply %s", async (_label, body) => {
+    const dir = tmpDir("gusto-cli-versionof-unrunnable-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, body, { mode: 0o755 });
+    let timedOut = false;
+
+    const reported = await defaultVersionOf(script, 5_000, () => {
+      timedOut = true;
+    });
+
+    expect(reported).toBeNull();
+    expect(timedOut).toBe(false);
+  });
+
+  test("returns inside the deadline when the probe leaves a grandchild holding stdout", async () => {
+    const script = scriptLeavingAGrandchild(tmpDir("gusto-cli-versionof-gc-"), 'echo "1.2.3"');
+
+    const started = performance.now();
+    const reported = await defaultVersionOf(script, 500);
+    const elapsed = performance.now() - started;
+
+    // Bounded - the whole point. Generous ceiling so a loaded CI box doesn't flake it; the
+    // regression this catches overruns by 40x, not 4x.
+    expect(elapsed).toBeLessThan(5_000);
+    // And a version the binary really did print still wins: killing the process group closes the
+    // pipe, so the read settles with what was written rather than being abandoned.
+    expect(reported).toBe("1.2.3");
+  }, 30_000);
+
+  test("reports the deadline through onTimeout when nothing usable came back", async () => {
+    const script = scriptLeavingAGrandchild(tmpDir("gusto-cli-versionof-gc-silent-"), "true");
+    let timedOut = false;
+
+    const reported = await defaultVersionOf(script, 500, () => {
+      timedOut = true;
+    });
+
+    expect(reported).toBeNull();
+    expect(timedOut).toBe(true);
+  }, 30_000);
+
+  // The other direction, and the one that matters for the swap: a probe the deadline interrupted
+  // but which had already printed a version must NOT report a timeout. `swapStagedUpdate` treats a
+  // timeout as "installed version undetermined" and spends one of its bounded attempts on it, so a
+  // false timeout there costs a verified stage.
+  test("does not report a timeout when a version came back despite the kill", async () => {
+    const script = scriptLeavingAGrandchild(tmpDir("gusto-cli-versionof-gc-won-"), 'echo "4.5.6"');
+    let timedOut = false;
+
+    const reported = await defaultVersionOf(script, 500, () => {
+      timedOut = true;
+    });
+
+    expect(reported).toBe("4.5.6");
+    expect(timedOut).toBe(false);
+  }, 30_000);
+
   // The binary being exec-checked is a real `gusto` build - spawning it for `--version` runs its
   // own `main()` for real. Without this, that nested run's own `swapStagedUpdate` reads the real
   // `update-state.toml`: if a stale, unrelated stage happens to be recorded there for the same

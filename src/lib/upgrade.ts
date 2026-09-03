@@ -96,6 +96,10 @@ const DOWNLOAD_TIMEOUT_MS = 600_000;
 const EXEC_CHECK_TIMEOUT_MS = 30_000;
 const QUARANTINE_TIMEOUT_MS = 10_000;
 
+/** How long after the group kill to keep waiting for the version the probe may already have
+ * printed, before giving up on a write end nothing is going to close. */
+const KILL_GRACE_MS = 1_000;
+
 /** The same exec check on the unattended path, where nobody asked for an upgrade at all:
  * `swapStagedUpdate` runs before the matched command's handler, so whatever this spawn waits for is
  * added to that command's startup. A target that blocks on init - a wedged build, a stale mount at
@@ -613,31 +617,55 @@ export async function defaultVersionOf(
 ): Promise<string | null> {
   let killed = false;
   try {
+    // `detached` is what makes the deadline below a real bound. Draining stdout finishes only once
+    // every write end is closed, so a probed binary that forks something inheriting the pipe leaves
+    // the await pending for as long as that grandchild lives - and `proc.kill` reaches the direct
+    // child only. Measured before this: a 1s deadline returned after 20s. Being the group leader
+    // lets the timer signal the grandchild too, which closes the pipe. It matters most on the path
+    // the short deadline exists for: `swapStagedUpdate` is awaited in the `preAction` hook, so an
+    // unbounded wait here doesn't delay an upgrade someone asked for, it hangs every command.
     const proc = Bun.spawn([file, "--version"], {
       stdout: "pipe",
       stderr: "ignore",
+      detached: true,
       env: envForSubprocess({ [SKIP_AUTO_UPDATE_ENV]: "1" }),
     });
-    const deadline = setTimeout(() => {
-      killed = true;
-      proc.kill("SIGKILL");
-    }, timeoutMs);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let backstop: ReturnType<typeof setTimeout> | undefined;
+    const abandoned = new Promise<null>((resolve) => {
+      deadline = setTimeout(() => {
+        killed = true;
+        try {
+          process.kill(-proc.pid, "SIGKILL");
+        } catch {
+          // No group (spawn declined `detached`, or it's already gone) - the child alone will do.
+          proc.kill("SIGKILL");
+        }
+        // Killing the group normally closes the pipe and lets the await below settle with whatever
+        // was printed, which is why this waits rather than resolving now: a version the binary did
+        // produce should still win. The backstop is only for a grandchild that escaped the group by
+        // calling `setsid` itself, where nothing will ever close that write end.
+        backstop = setTimeout(() => resolve(null), KILL_GRACE_MS);
+      }, timeoutMs);
+    });
     try {
-      const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-      const version = code === 0 ? out.trim() : "";
-      if (version.length > 0) return version;
+      const settled = await Promise.race([Promise.all([new Response(proc.stdout).text(), proc.exited]), abandoned]);
+      if (settled !== null) {
+        const [out, code] = settled;
+        const version = code === 0 ? out.trim() : "";
+        if (version.length > 0) return version;
+      }
     } finally {
       clearTimeout(deadline);
+      clearTimeout(backstop);
     }
   } catch {
     // Nothing came back at all - `Bun.spawn` throwing ENOEXEC on a file that isn't a valid
     // executable is the usual way here.
   }
-  // Only with nothing usable in hand does the timer having run mean the deadline is what ended
-  // this: it times the spawn *plus* draining stdout, and `proc.kill` reaches the direct child only,
-  // so a grandchild holding the write end can keep that read pending long after a clean exit that
-  // already printed a version. Reporting that as a timeout would have `swapStagedUpdate` throw a
-  // good read away and spend one of its bounded attempts on it.
+  // Only with nothing usable in hand does the timer having run mean the deadline is what cost us an
+  // answer: a kill that still let a version through is not a timeout, and reporting it as one would
+  // have `swapStagedUpdate` discard a verified stage and spend one of its bounded attempts on it.
   if (killed) onTimeout?.();
   return null;
 }
