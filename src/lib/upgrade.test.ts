@@ -792,4 +792,20 @@ describe("defaultVersionOf", () => {
 
     expect(await defaultVersionOf(script)).toBe("ok");
   });
+
+  // The deadline is a parameter because the swap path pays this spawn before an ordinary command's
+  // handler rather than inside an upgrade someone asked for - see `SWAP_EXEC_CHECK_TIMEOUT_MS`. A
+  // target that only answers after it has to read as the same null an unrunnable build does, or
+  // that path would wait out the full 30s it never asked for.
+  test("reports no version when the target answers only after the deadline it was given", async () => {
+    const dir = tmpDir("gusto-cli-versionof-deadline-");
+    const script = path.join(dir, "gusto");
+    // Prints a version, but only long after the deadline below - so getting that version back at
+    // all would mean the deadline was ignored. `sleep`'s own stdout goes to /dev/null so the shell
+    // this kills is the only holder of the pipe being read; otherwise the surviving `sleep` keeps
+    // it open and the read waits out the whole 5s regardless.
+    writeFileSync(script, '#!/bin/sh\nsleep 5 >/dev/null 2>&1\necho "9.9.9"\n', { mode: 0o755 });
+
+    expect(await defaultVersionOf(script, 50)).toBeNull();
+  });
 });

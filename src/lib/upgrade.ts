@@ -596,10 +596,16 @@ function resolvedHostDeps(deps: StageDeps): Required<Omit<StageDeps, "log">> {
  * timeout reads as the same null every other bad artifact does. The deadline is a parameter
  * because the swap path pays this same spawn before an ordinary command's handler rather than
  * inside an upgrade someone asked for, and wants a far shorter one - see
- * `SWAP_EXEC_CHECK_TIMEOUT_MS`. */
+ * `SWAP_EXEC_CHECK_TIMEOUT_MS`.
+ *
+ * `onTimeout` fires only when that deadline, rather than the binary, ended the spawn. The return
+ * value can't carry that - a killed build and an unrunnable one both have to read as null here -
+ * and the swap path has to tell them apart: a target too slow for its short deadline is a stage
+ * to retry, not a stage that was staged against the wrong version. */
 export async function defaultVersionOf(
   file: string,
   timeoutMs: number = EXEC_CHECK_TIMEOUT_MS,
+  onTimeout?: () => void,
 ): Promise<string | null> {
   try {
     const proc = Bun.spawn([file, "--version"], {
@@ -607,7 +613,10 @@ export async function defaultVersionOf(
       stderr: "ignore",
       env: envForSubprocess({ [SKIP_AUTO_UPDATE_ENV]: "1" }),
     });
-    const deadline = setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
+    const deadline = setTimeout(() => {
+      onTimeout?.();
+      proc.kill("SIGKILL");
+    }, timeoutMs);
     try {
       const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
       if (code !== 0) return null;

@@ -23,7 +23,7 @@ import {
   writeState,
 } from "./auto-update.ts";
 import { captureSinks } from "./test-support.ts";
-import { BACKGROUND_STAGING_NAME } from "./upgrade.ts";
+import { BACKGROUND_STAGING_NAME, SWAP_EXEC_CHECK_TIMEOUT_MS } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
 
 /** What the "installed" fixture binary reports for `--version`. The freshness check in
@@ -523,6 +523,41 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toContain("auto-updated");
   });
 
+  // The deadline that spawn is given, which this path can't leave to the 30s default: it runs
+  // before the handler of a command nobody invoked to upgrade anything, so a target that blocks
+  // on init - a wedged build, a stale mount at `GUSTO_INSTALL_DIR` - has to cost that command a
+  // moment rather than half a minute.
+  test("bounds the !isSelf freshness spawn by the short swap deadline", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+    const deadlines: (number | undefined)[] = [];
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      sinks,
+      mode: "human",
+      versionOf: async (_file, timeoutMs) => {
+        deadlines.push(timeoutMs);
+        return INSTALLED_VERSION;
+      },
+    });
+
+    expect(deadlines).toEqual([SWAP_EXEC_CHECK_TIMEOUT_MS]);
+  });
+
   // And the `installed === undefined` case the check normalises for: nothing runnable at the target
   // at all, so the spawn reports no version, which has to match a stage recorded against nothing
   // installed rather than reading as a mismatch. Otherwise a stage made into an empty
@@ -548,6 +583,61 @@ describe("swapStagedUpdate", () => {
 
     expect(readFileSync(installedPath, "utf8")).toBe(STAGED_BODY);
     expect(stderr.buffer).toContain("auto-updated");
+  });
+
+  // A probe its deadline killed is not a mismatch. This deadline is `SWAP_EXEC_CHECK_TIMEOUT_MS`
+  // while `staged_from` was recorded under the 30s default, so a target that answers between the
+  // two - a cold release-sized binary on a network-mounted install dir - would otherwise have a
+  // good stage deleted, be described as "nothing runnable" while it sits there installed and
+  // runnable, and have the same release downloaded again next window, forever.
+  test("keeps the stage for a bounded retry when the freshness probe hits its deadline", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        staged_from: INSTALLED_VERSION,
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+    const swap = async (): Promise<void> => {
+      await swapStagedUpdate({
+        stateFile,
+        cfg: {},
+        env: { GUSTO_INSTALL_DIR: installDir },
+        sinks,
+        mode: "human",
+        // What the real `defaultVersionOf` reports when the deadline, not the binary, ended the
+        // spawn: no version, plus the callback that says which of the two it was.
+        versionOf: async (_file, _timeoutMs, onTimeout) => {
+          onTimeout?.();
+          return null;
+        },
+      });
+    };
+
+    // Below the cap the stage survives untouched and the count climbs, so a target that is merely
+    // slow this time gets another go rather than a fresh multi-MB download next window.
+    for (let attempt = 1; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
+      await swap();
+      const state = await readState(stateFile);
+      expect(state.staged_version).toBe("0.3.0");
+      expect(state.swap_attempts).toBe(String(attempt));
+      expect(existsSync(stagedPath!)).toBe(true);
+      // Nothing announced either: nothing has been decided about this stage yet.
+      expect(stderr.buffer).toBe("");
+    }
+
+    // The cap still applies, since nothing else clears a pending stage.
+    await swap();
+    const state = await readState(stateFile);
+    expect(state.staged_version).toBeUndefined();
+    expect(existsSync(stagedPath!)).toBe(false);
+    expect(readFileSync(installedPath, "utf8")).toContain(INSTALLED_VERSION);
   });
 
   // The rename's two failure branches, which behave deliberately differently. ENOENT means the
@@ -793,7 +883,13 @@ describe("maybeSpawnBackgroundCheck", () => {
     await writeState({ last_checked: "2020-01-01T00:00:00.000Z", staged_version: "0.3.0" }, stateFile);
     let spawned = 0;
 
-    await maybeSpawnBackgroundCheck({ cfg: {}, env: {}, stateFile, spawn: () => spawned++ });
+    await maybeSpawnBackgroundCheck({
+      cfg: {},
+      env: {},
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      spawn: () => spawned++,
+    });
 
     expect(spawned).toBe(0);
     // Untouched, including the stale last_checked - swapStagedUpdate, not this function, owns
@@ -850,6 +946,7 @@ describe("maybeSpawnBackgroundCheck", () => {
     await maybeSpawnBackgroundCheck({
       cfg: {},
       env: {},
+      execPath: "/usr/local/bin/gusto",
       stateFile,
       now: "2026-08-27T12:00:00.000Z",
       spawn: () => spawned++,

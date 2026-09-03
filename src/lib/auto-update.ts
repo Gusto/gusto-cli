@@ -105,8 +105,10 @@ export interface SwapDeps {
   /** This build's version, i.e. the installed one when `isSelf`. Injectable for tests. */
   currentVersion?: string;
   /** Reads the version of the binary at a path. Only called when the swap target isn't us; see the
-   * freshness check. Injectable for tests. */
-  versionOf?: (file: string, timeoutMs?: number) => Promise<string | null>;
+   * freshness check. `onTimeout` fires when the deadline, rather than the binary itself, ended that
+   * spawn - a distinction the return value can't carry, since a killed build and an unrunnable one
+   * both read as null. Injectable for tests. */
+  versionOf?: (file: string, timeoutMs?: number, onTimeout?: () => void) => Promise<string | null>;
 }
 
 /** Runs from the `preAction` hook in `index.ts` - after the config read and after commander has
@@ -223,15 +225,32 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
       // just-downloaded build, because this one runs before the handler of a command nobody
       // invoked to upgrade anything: a target that blocks on init - a wedged build, a stale mount
       // at `GUSTO_INSTALL_DIR` - would otherwise add half a minute to an ordinary `gusto whoami`.
-      // Timing out reports the same null an unrunnable target does, so a stage that can't be
-      // checked is discarded rather than installed blind - and only once, since that clears it.
+      //
+      // Which makes this deadline shorter than the one the stage was recorded under:
+      // `resolveUpgradeTarget` probes the same target for `staged_from` with the 30s default. A
+      // target that answers between the two - a cold release-sized binary on a network-mounted
+      // `GUSTO_INSTALL_DIR` is the realistic one - would therefore stage against a real version and
+      // then fail its own freshness check: the stage discarded, a notice claiming "nothing
+      // runnable" about a binary that is installed and runnable, and the same release downloaded
+      // again next window. So a spawn the deadline killed counts as "not determined this time"
+      // rather than as a mismatch - the stage is kept and one bounded attempt is spent, exactly
+      // like a rename that failed for a reason that might not repeat. A target that never answers
+      // in time still runs out of attempts and is dropped, so nothing lingers.
       //
       // Both sides normalise to `undefined` for "nothing runnable installed", so a stage made when
       // the target was empty still installs into an empty target.
+      let probeTimedOut = false;
+      const noteTimeout = (): void => {
+        probeTimedOut = true;
+      };
       const installed = isSelf
         ? currentVersion
-        : ((await versionOf(targetPath, SWAP_EXEC_CHECK_TIMEOUT_MS)) ?? undefined);
+        : ((await versionOf(targetPath, SWAP_EXEC_CHECK_TIMEOUT_MS, noteTimeout)) ?? undefined);
       if (state.staged_from !== installed) {
+        if (probeTimedOut) {
+          await countSwapAttempt(state, file, handle, stagedPath, stillOurs);
+          return;
+        }
         if (deps.mode === "human") {
           deps.sinks.stderr.write(
             `gusto: ignored a pending update - it was staged against ${state.staged_from ?? "nothing installed"}, ` + // noboost
@@ -263,21 +282,7 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
         // Anything else (disk full, perms changed) *might* be transient, so the stage is kept - but
         // only for a bounded number of goes, or an install dir that never becomes writable would
         // make every future invocation hash the whole staged binary before failing the same way.
-        // `readState` accepts any string for this field, and a non-numeric one would make every
-        // comparison below false: the cap would never fire, `String(NaN)` would be written back,
-        // and each later invocation would re-hash the whole staged binary on the startup path -
-        // exactly the cost this counter exists to bound.
-        const previous = Number.parseInt(state.swap_attempts ?? "0", 10);
-        const attempts = (Number.isFinite(previous) ? previous : 0) + 1;
-        if (attempts >= MAX_SWAP_ATTEMPTS) {
-          if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
-          await discardStage(state, file);
-          return;
-        }
-        const fresh = await readState(file);
-        if (fresh.staged_version === state.staged_version && fresh.staged_path === state.staged_path) {
-          await writeState({ ...fresh, swap_attempts: String(attempts) }, file);
-        }
+        await countSwapAttempt(state, file, handle, stagedPath, stillOurs);
         return;
       }
 
@@ -293,6 +298,36 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
     }
   } catch {
     // Fail open.
+  }
+}
+
+/** One more bounded go at a stage this invocation couldn't resolve either way: a rename that
+ * failed for a reason that might not repeat, or a freshness probe its own deadline killed. Below
+ * the cap the stage and its file are kept and the count climbs, so the next invocation retries for
+ * free instead of re-downloading a release. At the cap both go, because nothing else ever clears a
+ * pending stage - `maybeSpawnBackgroundCheck` returns early while one is set, and every invocation
+ * until then re-hashes the whole staged binary on the startup path.
+ *
+ * `readState` accepts any string for `swap_attempts`, and a non-numeric one would make every
+ * comparison here false: the cap would never fire, `String(NaN)` would be written back, and that
+ * startup re-hash would go on forever - exactly the cost this counter exists to bound. */
+async function countSwapAttempt(
+  state: UpdateState,
+  file: string,
+  handle: Awaited<ReturnType<typeof open>>,
+  stagedPath: string,
+  stillOurs: typeof stagingStillOurs,
+): Promise<void> {
+  const previous = Number.parseInt(state.swap_attempts ?? "0", 10);
+  const attempts = (Number.isFinite(previous) ? previous : 0) + 1;
+  if (attempts >= MAX_SWAP_ATTEMPTS) {
+    if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
+    await discardStage(state, file);
+    return;
+  }
+  const fresh = await readState(file);
+  if (fresh.staged_version === state.staged_version && fresh.staged_path === state.staged_path) {
+    await writeState({ ...fresh, swap_attempts: String(attempts) }, file);
   }
 }
 
