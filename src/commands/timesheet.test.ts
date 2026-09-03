@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
 import type { CommandResult } from "../lib/runner.ts";
-import { TEST_CONTEXT as ctx, captureSinks, okData, stubGlobalFetch, successEnvelope } from "../lib/test-support.ts";
+import {
+  TEST_AUTH as auth,
+  TEST_COMPANY_UUID,
+  TEST_CONTEXT as ctx,
+  captureSinks,
+  okData,
+  stubGlobalFetch,
+  successEnvelope,
+} from "../lib/test-support.ts";
 import {
   clarifyEmptyTimesheetSync,
   timesheetCreateHandler,
@@ -19,7 +27,6 @@ const CONTRACTOR_UUID = "5c4d3e2f-0000-1111-2222-333344445555";
 const JOB_UUID = "1f2e3d4c-0000-1111-2222-333344445555";
 const PAY_SCHEDULE_UUID = "1a2b3c4d-0000-1111-2222-333344445555";
 const TIME_SHEET_UUID = "7a6b5c4d-0000-1111-2222-333344445555";
-const COMPANY_UUID = "3c2b1a09-0000-1111-2222-333344445555";
 
 describe("validateTimesheetCreate", () => {
   const base = {
@@ -230,14 +237,13 @@ describe("validateTimesheetCreate", () => {
     test("bad uuids and a bad timestamp all report in one envelope", () => {
       const result = validateTimesheetCreate({
         ...base,
-        companyUuid: "co-1",
         employeeUuid: "emp-1",
         jobUuid: "job-1",
         start: "not-a-date",
       });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
-      expect(result.blocked.map((b) => b.field).sort()).toEqual(["company-uuid", "employee-uuid", "job-uuid", "start"]);
+      expect(result.blocked.map((b) => b.field).sort()).toEqual(["employee-uuid", "job-uuid", "start"]);
     });
   });
 });
@@ -392,7 +398,7 @@ describe("timesheetCreateHandler", () => {
   test("--dry-run builds the POST body from the flags", async () => {
     const data = okData(
       await timesheetCreateHandler({
-        companyUuid: COMPANY_UUID,
+        ...auth,
         employeeUuid: EMPLOYEE_UUID,
         jobUuid: JOB_UUID,
         start: "2026-06-01T09:00:00Z",
@@ -418,7 +424,7 @@ describe("timesheetCreateHandler", () => {
   });
 
   const validCreate = {
-    companyUuid: COMPANY_UUID,
+    ...auth,
     employeeUuid: EMPLOYEE_UUID,
     jobUuid: JOB_UUID,
     start: "2026-06-01T09:00:00Z",
@@ -448,7 +454,7 @@ describe("timesheetCreateHandler", () => {
       const result = await timesheetCreateHandler({ ...validCreate, confirm: true })(ctx);
       expect(result.ok).toBe(true);
       const post = calls.find((c) => c.method === "POST");
-      expect(post?.url).toContain(`/v1/companies/${COMPANY_UUID}/time_tracking/time_sheets`);
+      expect(post?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/time_tracking/time_sheets`);
     } finally {
       restore();
     }
@@ -466,7 +472,7 @@ describe("timesheetSyncHandler", () => {
   test("--dry-run builds the POST body from the flags", async () => {
     const data = okData(
       await timesheetSyncHandler({
-        companyUuid: COMPANY_UUID,
+        ...auth,
         payScheduleUuid: PAY_SCHEDULE_UUID,
         startDate: "2026-06-01",
         endDate: "2026-06-15",
@@ -493,7 +499,7 @@ describe("timesheetSyncHandler", () => {
     const { sinks, stderr } = captureSinks();
     const data = okData(
       await timesheetSyncHandler({
-        companyUuid: COMPANY_UUID,
+        ...auth,
         payScheduleUuid: PAY_SCHEDULE_UUID,
         payPeriodStart: "2026-06-01",
         payPeriodEnd: "2026-06-15",
@@ -507,7 +513,7 @@ describe("timesheetSyncHandler", () => {
   test("canonical date flags leave stderr silent", async () => {
     const { sinks, stderr } = captureSinks();
     await timesheetSyncHandler({
-      companyUuid: COMPANY_UUID,
+      ...auth,
       payScheduleUuid: PAY_SCHEDULE_UUID,
       startDate: "2026-06-01",
       endDate: "2026-06-15",
@@ -517,7 +523,7 @@ describe("timesheetSyncHandler", () => {
   });
 
   const validSync = {
-    companyUuid: COMPANY_UUID,
+    ...auth,
     payScheduleUuid: PAY_SCHEDULE_UUID,
     startDate: "2026-06-01",
     endDate: "2026-06-15",
@@ -545,7 +551,7 @@ describe("timesheetSyncHandler", () => {
       const result = await timesheetSyncHandler({ ...validSync, confirm: true })(ctx);
       expect(result.ok).toBe(true);
       const post = calls.find((c) => c.method === "POST");
-      expect(post?.url).toContain(`/v1/companies/${COMPANY_UUID}/time_tracking/payroll_syncs`);
+      expect(post?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/time_tracking/payroll_syncs`);
     } finally {
       restore();
     }
@@ -693,21 +699,41 @@ describe("timesheetListHandler", () => {
     }
 
     test("the flag is forwarded as company_uuid", async () => {
-      expect(await listWith({ ...dates, companyUuid: COMPANY_UUID })).toEqual({
+      expect(await listWith({ ...dates, companyUuid: TEST_COMPANY_UUID })).toEqual({
         start_date: "2026-06-01",
         end_date: "2026-06-15",
-        company_uuid: COMPANY_UUID,
+        company_uuid: TEST_COMPANY_UUID,
       });
     });
 
     test("GUSTO_COMPANY_UUID is used when the flag is absent", async () => {
-      expect(await listWith(dates, "co-env")).toMatchObject({ company_uuid: "co-env" });
+      expect(await listWith(dates, TEST_COMPANY_UUID)).toMatchObject({ company_uuid: TEST_COMPANY_UUID });
     });
 
-    test("the flag overrides GUSTO_COMPANY_UUID", async () => {
-      expect(await listWith({ ...dates, companyUuid: COMPANY_UUID }, "co-env")).toMatchObject({
-        company_uuid: COMPANY_UUID,
+    test("the flag overrides GUSTO_COMPANY_UUID, including an unusable one", async () => {
+      expect(await listWith({ ...dates, companyUuid: TEST_COMPANY_UUID }, "co-env")).toMatchObject({
+        company_uuid: TEST_COMPANY_UUID,
       });
+    });
+
+    test.each([
+      ["the flag", { ...dates, companyUuid: "co-1" }, undefined, "--company-uuid"],
+      ["GUSTO_COMPANY_UUID", dates, "co-1", "GUSTO_COMPANY_UUID"],
+    ])("a non-uuid company from %s is rejected, naming that source", async (_name, opts, env, origin) => {
+      if (env !== undefined) process.env.GUSTO_COMPANY_UUID = env;
+      const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: {} }));
+      try {
+        const result = await timesheetListHandler(opts)(ctx);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.exitCode).toBe(ExitCode.Validation);
+        expect(result.error.code).toBe("invalid_company_uuid");
+        expect(result.error.message).toContain(origin);
+        expect(calls).toHaveLength(0);
+      } finally {
+        restore();
+        delete process.env.GUSTO_COMPANY_UUID;
+      }
     });
 
     test("with neither, company_uuid is omitted entirely", async () => {
@@ -819,37 +845,5 @@ describe("clarifyEmptyTimesheetSync", () => {
   test("passes successful results straight through", () => {
     const ok: CommandResult = { ok: true, data: { status: "pending" } };
     expect(clarifyEmptyTimesheetSync(ok)).toBe(ok);
-  });
-});
-
-describe("--company-uuid format", () => {
-  const dates = { startDate: "2026-06-01", endDate: "2026-06-15" };
-  test.each([
-    [
-      "create",
-      () =>
-        timesheetCreateHandler({
-          employeeUuid: EMPLOYEE_UUID,
-          jobUuid: JOB_UUID,
-          start: "2026-06-01T09:00:00Z",
-          timeZone: "America/New_York",
-          regular: "8",
-          companyUuid: "co-1",
-        })(ctx),
-    ],
-    ["sync", () => timesheetSyncHandler({ ...dates, payScheduleUuid: PAY_SCHEDULE_UUID, companyUuid: "co-1" })(ctx)],
-    ["list", () => timesheetListHandler({ ...dates, companyUuid: "co-1" })(ctx)],
-  ])("timesheet %s rejects a non-uuid --company-uuid before any request", async (_name, run) => {
-    const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: {} }));
-    try {
-      const result = await run();
-      expect(result.ok).toBe(false);
-      if (result.ok) throw new Error("unreachable");
-      expect(result.exitCode).toBe(ExitCode.Validation);
-      expect(result.error.blocked_on).toEqual([{ field: "company-uuid", reason: 'must be a valid UUID, got: "co-1"' }]);
-      expect(calls).toHaveLength(0);
-    } finally {
-      restore();
-    }
   });
 });

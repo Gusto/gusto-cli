@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { departmentListHandler, departmentShowHandler } from "./department.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  okData,
+  stubGlobalFetch,
+  TEST_COMPANY_UUID,
+} from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
@@ -15,7 +21,7 @@ describe("departmentListHandler", () => {
     restore = stub.restore;
     const result = await departmentListHandler({ ...auth })(ctx);
     if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result.error)}`);
-    expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/departments");
+    expect(stub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/departments`);
     expect(result.data).toEqual(body);
   });
 
@@ -42,6 +48,6 @@ describe("departmentShowHandler", () => {
     restore = stub.restore;
     await departmentShowHandler("../companies/co-1/payroll_reversals", {})(ctx);
     expect(stub.calls[0]?.url).toContain("/v1/departments/..%2Fcompanies%2Fco-1%2Fpayroll_reversals");
-    expect(stub.calls[0]?.url).not.toContain("/v1/companies/co-1/payroll_reversals");
+    expect(stub.calls[0]?.url).not.toContain(`/v1/companies/${TEST_COMPANY_UUID}/payroll_reversals`);
   });
 });

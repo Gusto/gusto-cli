@@ -8,7 +8,13 @@ import {
   companySignatoriesHandler,
   renderCompanyShow,
 } from "./company.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  okData,
+  stubGlobalFetch,
+  TEST_COMPANY_UUID,
+} from "../lib/test-support.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 
 let restore: () => void = () => {};
@@ -95,7 +101,7 @@ describe("companyFormsListHandler", () => {
     restore = stub.restore;
     const result = await companyFormsListHandler({ ...auth })(ctx);
     if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result.error)}`);
-    expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/forms");
+    expect(stub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/forms`);
     expect(result.data).toEqual(body);
   });
 
@@ -108,7 +114,7 @@ describe("companyFormsListHandler", () => {
     restore = stub.restore;
     const result = await companyFormsListHandler({ ...auth, limit: "1" })(ctx);
     if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result.error)}`);
-    expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/forms");
+    expect(stub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/forms`);
     expect(result.data).toEqual([{ uuid: "form-1", title: "Form 8655" }]);
   });
 
@@ -146,7 +152,7 @@ describe("companyFormShowHandler", () => {
     restore = stub.restore;
     await companyFormShowHandler("../companies/co-1/signatories", {})(ctx);
     expect(stub.calls[0]?.url).toContain("/v1/forms/..%2Fcompanies%2Fco-1%2Fsignatories");
-    expect(stub.calls[0]?.url).not.toContain("/v1/companies/co-1/signatories");
+    expect(stub.calls[0]?.url).not.toContain(`/v1/companies/${TEST_COMPANY_UUID}/signatories`);
   });
 
   test("a 404 surfaces as a failed result with the api-client exit code", async () => {
@@ -185,7 +191,7 @@ describe("companySignatoriesHandler", () => {
     restore = stub.restore;
     const result = await companySignatoriesHandler({ ...auth })(ctx);
     if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result.error)}`);
-    expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/signatories");
+    expect(stub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/signatories`);
     expect(result.data).toEqual(body);
   });
 
@@ -214,7 +220,7 @@ describe("companyFederalTaxesHandler", () => {
     const stub = stubGlobalFetch(() => ({ status: 200, body }));
     restore = stub.restore;
     const d = okData(await companyFederalTaxesHandler({ ...auth })(ctx));
-    expect(stub.calls[0]?.url).toContain("/v1/companies/co-1/federal_tax_details");
+    expect(stub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/federal_tax_details`);
     expect(d).toEqual(body);
   });
 

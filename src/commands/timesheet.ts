@@ -1,12 +1,12 @@
 import { type Command, Option } from "commander";
-import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource, invalidCompanyUuid } from "../lib/api-context.ts";
 import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
-import { getCompanyUuid } from "../lib/env.ts";
+import { defaultEnv, getCompanyUuid } from "../lib/env.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIso8601, isValidIsoDate, isValidUuid, parsePositiveNumber, validateUuid } from "../lib/parse.ts";
+import { isValidIso8601, isValidIsoDate, isValidUuid, parsePositiveNumber, pushUuidBlockedOn } from "../lib/parse.ts";
 import {
   type CommandHandler,
   type CommandResult,
@@ -52,7 +52,6 @@ export type TimesheetCreateBody = {
 export type TimesheetCreateValidation = ValidationResult<TimesheetCreateBody>;
 
 interface TimesheetCreateInput {
-  companyUuid?: string;
   employeeUuid?: string;
   contractorUuid?: string;
   start?: string;
@@ -64,17 +63,11 @@ interface TimesheetCreateInput {
   doubleOvertime?: string;
 }
 
-function pushUuidBlockedOn(field: string, value: string | undefined, blocked: BlockedOn[]): void {
-  const entry = validateUuid(field, value);
-  if (entry) blocked.push(entry);
-}
-
 /** Validate timesheet-create args and, on success, return the fully-populated request body.
  * Exactly one of --employee-uuid / --contractor-uuid sets the entity; at least one of the
  * granular hour flags is required and each becomes one `entries` row with its pay_classification. */
 export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCreateValidation {
   const blocked: BlockedOn[] = [];
-  pushUuidBlockedOn("company-uuid", opts.companyUuid, blocked);
 
   const { start, timeZone } = opts;
   const ambiguousEntity = Boolean(opts.employeeUuid && opts.contractorUuid);
@@ -167,7 +160,6 @@ export interface TimesheetSyncBody {
 export type TimesheetSyncValidation = ValidationResult<TimesheetSyncBody>;
 
 interface TimesheetSyncInput {
-  companyUuid?: string;
   payScheduleUuid?: string;
   startDate?: string;
   endDate?: string;
@@ -215,7 +207,6 @@ function readSyncDate(opts: TimesheetSyncInput, spec: SyncDateFlag, blocked: Blo
  * blocked_on names the canonical flag even when the caller passed a deprecated alias. */
 export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncValidation {
   const blocked: BlockedOn[] = [];
-  pushUuidBlockedOn("company-uuid", opts.companyUuid, blocked);
   const { payScheduleUuid } = opts;
   if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
   else pushUuidBlockedOn("pay-schedule-uuid", payScheduleUuid, blocked);
@@ -272,7 +263,6 @@ interface TimesheetShowOpts {
 }
 
 interface TimesheetListInput {
-  companyUuid?: string;
   startDate?: string;
   endDate?: string;
 }
@@ -286,7 +276,6 @@ export type TimesheetListValidation = ValidationResult<{ start_date: string; end
 
 export function validateTimesheetList(opts: TimesheetListInput): TimesheetListValidation {
   const blocked: BlockedOn[] = [];
-  pushUuidBlockedOn("company-uuid", opts.companyUuid, blocked);
   const { startDate, endDate } = opts;
   if (!startDate) {
     blocked.push({ field: "start-date", reason: "required (YYYY-MM-DD)" });
@@ -489,8 +478,11 @@ export function timesheetListHandler(opts: TimesheetListOpts): CommandHandler {
     const validation = validateTimesheetList(opts);
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
-    const companyUuid = getCompanyUuid(opts.companyUuid);
-    const args = companyUuid ? { ...validation.body, company_uuid: companyUuid } : validation.body;
+    const supplied = getCompanyUuid(opts.companyUuid);
+    if (supplied && !isValidUuid(supplied.value)) {
+      return invalidCompanyUuid(supplied.value, supplied.source, defaultEnv(globals.env));
+    }
+    const args = supplied ? { ...validation.body, company_uuid: supplied.value } : validation.body;
 
     return callMcpTool(globals, { tokenStdin: opts.tokenStdin }, "list_time_records", args);
   };

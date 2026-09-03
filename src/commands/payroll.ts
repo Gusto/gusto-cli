@@ -1214,6 +1214,7 @@ export function payrollCalculateHandler(payrollUuid: string | undefined, opts: P
     if (gate) return gate;
 
     const ctx = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, companyOverride: opts.companyUuid });
+    if (!ctx.ok && ctx.reason === "invalid_input") return ctx.result;
     if (opts.dryRun) {
       // Show the resolved company path when we have one, else the unresolved template - dry-run needs
       // neither a token nor a company, and sends nothing either way.

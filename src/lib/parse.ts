@@ -102,10 +102,8 @@ export function uuidReason(value: string): string {
   return `must be a valid UUID, got: ${JSON.stringify(echoed)}`;
 }
 
-/** blocked_on entry for a UUID-typed flag, or null when absent or valid. Absence is the caller's
- * required-check to make, so a validator can collect format and presence errors in one envelope. */
-export function validateUuid(field: string, value: string | undefined): BlockedOn | null {
-  return value === undefined || isValidUuid(value) ? null : { field, reason: uuidReason(value) };
+export function pushUuidBlockedOn(field: string, value: string | undefined, blocked: BlockedOn[]): void {
+  if (value !== undefined && !isValidUuid(value)) blocked.push({ field, reason: uuidReason(value) });
 }
 
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry

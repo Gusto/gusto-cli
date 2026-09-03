@@ -140,8 +140,11 @@ describe("getAccessToken", () => {
 });
 
 describe("getCompanyUuid", () => {
-  test("override beats env", () => {
-    expect(getCompanyUuid("OVERRIDE", { GUSTO_COMPANY_UUID: "ENV" })).toBe("OVERRIDE");
+  test("override beats env, and reports the flag as the source", () => {
+    expect(getCompanyUuid("OVERRIDE", { GUSTO_COMPANY_UUID: "ENV" })).toEqual({ value: "OVERRIDE", source: "flag" });
+  });
+  test("falls back to the env var and reports it as the source", () => {
+    expect(getCompanyUuid(undefined, { GUSTO_COMPANY_UUID: "ENV" })).toEqual({ value: "ENV", source: "env" });
   });
   test("returns null when both empty", () => {
     expect(getCompanyUuid(undefined, {})).toBeNull();

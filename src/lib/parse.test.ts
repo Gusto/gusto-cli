@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { BlockedOn } from "./output.ts";
 import {
   isValidIso8601,
   isValidIsoDate,
@@ -10,7 +11,7 @@ import {
   resolveTimeoutMs,
   splitTokens,
   validateEnum,
-  validateUuid,
+  pushUuidBlockedOn,
 } from "./parse.ts";
 
 describe("splitTokens", () => {
@@ -264,27 +265,29 @@ describe("isValidUuid", () => {
   });
 });
 
-describe("validateUuid", () => {
+describe("pushUuidBlockedOn", () => {
   const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
+  const push = (value: string | undefined): BlockedOn[] => {
+    const blocked: BlockedOn[] = [];
+    pushUuidBlockedOn("job-uuid", value, blocked);
+    return blocked;
+  };
 
-  test("undefined passes (an absent flag is not validated)", () => {
-    expect(validateUuid("job-uuid", undefined)).toBeNull();
+  test("undefined appends nothing (an absent flag is not validated)", () => {
+    expect(push(undefined)).toEqual([]);
   });
 
-  test("a valid uuid passes", () => {
-    expect(validateUuid("job-uuid", VALID)).toBeNull();
+  test("a valid uuid appends nothing", () => {
+    expect(push(VALID)).toEqual([]);
   });
 
-  test("a non-uuid returns an entry naming the field and echoing the value", () => {
-    expect(validateUuid("job-uuid", "job-1")).toEqual({
-      field: "job-uuid",
-      reason: 'must be a valid UUID, got: "job-1"',
-    });
+  test("a non-uuid appends an entry naming the field and echoing the value", () => {
+    expect(push("job-1")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: "job-1"' }]);
   });
 
   // Empty string is distinct from undefined: commander yields it for `--job-uuid ""`.
   test("an empty string is rejected rather than treated as absent", () => {
-    expect(validateUuid("job-uuid", "")).toEqual({ field: "job-uuid", reason: 'must be a valid UUID, got: ""' });
+    expect(push("")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: ""' }]);
   });
 });
 

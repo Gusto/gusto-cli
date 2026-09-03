@@ -31,9 +31,13 @@ export function captureSinks(): { sinks: StreamSinks; stdout: CapturedStream; st
 /** Shared command-handler test fixtures. */
 export const TEST_GLOBALS: GlobalFlags = { agent: true, human: false, json: false, verbose: false, env: "sandbox" };
 export const TEST_CONTEXT: CommandContext = { command: "test", globals: TEST_GLOBALS, sinks: defaultSinks };
+export const TEST_COMPANY_UUID = "3c2b1a09-0000-4111-2222-333344445555";
+
 // Just the company override; the access token comes from the ambient env set in
 // tests/preload.ts (explicit token wins: stdin > env > session).
-export const TEST_AUTH = { companyUuid: "co-1" };
+export const TEST_AUTH = { companyUuid: TEST_COMPANY_UUID };
+
+export const TEST_OVERRIDE_COMPANY_UUID = "7a8b9c0d-0000-4111-2222-333344445555";
 
 /** JSON-RPC 2.0 success envelope wrapping a single text content block. */
 export const successEnvelope = (payload: unknown) => ({

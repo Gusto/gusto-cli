@@ -17,7 +17,11 @@ import type { GlobalFlags } from "./global-flags.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import { memoryStore, mockHttp } from "./oauth/test-support.ts";
 import type { TokenStore } from "./oauth/token-store.ts";
-import { stubGlobalFetch } from "./test-support.ts";
+import { stubGlobalFetch, TEST_COMPANY_UUID } from "./test-support.ts";
+
+const SESSION_COMPANY_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
+const FLAG_COMPANY_UUID = "6f7a8b9c-0000-4111-2222-333344445555";
+const OTHER_COMPANY_UUID = "0a1b2c3d-0000-4111-2222-333344445555";
 
 const flags: GlobalFlags = { agent: true, human: false, json: false, verbose: false };
 
@@ -116,11 +120,14 @@ describe("resolveApiContext", () => {
   });
 
   test("companyOverride passes through to the resolved context", async () => {
-    const result = await resolveApiContext(flags, { ...stdinAuth(), companyOverride: "co-123" });
+    const result = await resolveApiContext(flags, {
+      ...stdinAuth(),
+      companyOverride: OTHER_COMPANY_UUID,
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.ctx.hasCompany).toBe(true);
-    expect(result.ctx.companyUuid).toBe("co-123");
+    expect(result.ctx.companyUuid).toBe(OTHER_COMPANY_UUID);
   });
 
   test("production env resolves the production base URL", async () => {
@@ -237,7 +244,11 @@ describe("resolveApiContext - company fallback honors the resolved token source"
   test("an env token never borrows the session's company", async () => {
     process.env.GUSTO_ACCESS_TOKEN = "env-tok";
     const store = memoryStore({
-      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+      production: {
+        accessToken: "sess-tok",
+        expiresAt: 10_000_000,
+        companyUuid: SESSION_COMPANY_UUID,
+      },
     });
     const result = await resolveApiContext(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
     expect(result.ok).toBe(false);
@@ -568,27 +579,58 @@ describe("resolveApiContext - stored session fallback", () => {
 
   test("falls back to the stored companyUuid when no --company-uuid/env", async () => {
     const store = memoryStore({
-      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+      production: {
+        accessToken: "sess-tok",
+        expiresAt: 10_000_000,
+        companyUuid: SESSION_COMPANY_UUID,
+      },
     });
     const result = await resolveApiContext(flags, { store, http: mockHttp({ status: 200 }), now: () => 1_000 });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    expect(result.ctx.companyUuid).toBe("co-sess");
+    expect(result.ctx.companyUuid).toBe(SESSION_COMPANY_UUID);
   });
 
   test("--company-uuid wins over the stored companyUuid", async () => {
     const store = memoryStore({
-      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+      production: {
+        accessToken: "sess-tok",
+        expiresAt: 10_000_000,
+        companyUuid: SESSION_COMPANY_UUID,
+      },
     });
     const result = await resolveApiContext(flags, {
-      companyOverride: "co-flag",
+      companyOverride: FLAG_COMPANY_UUID,
       store,
       http: mockHttp({ status: 200 }),
       now: () => 1_000,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    expect(result.ctx.companyUuid).toBe("co-flag");
+    expect(result.ctx.companyUuid).toBe(FLAG_COMPANY_UUID);
+  });
+
+  test.each([
+    ["the flag --company-uuid", { companyOverride: "co-flag" }, undefined, "--company-uuid"],
+    ["the env GUSTO_COMPANY_UUID", {}, "co-env", "GUSTO_COMPANY_UUID"],
+    ["the stored session", {}, undefined, "the [production] slot"],
+  ])("a non-uuid company from %s is rejected before any request", async (_case, extra, envCompany, origin) => {
+    if (envCompany !== undefined) process.env.GUSTO_COMPANY_UUID = envCompany;
+    const store = memoryStore({
+      production: { accessToken: "sess-tok", expiresAt: 10_000_000, companyUuid: "co-sess" },
+    });
+    const result = await resolveApiContext(flags, {
+      ...extra,
+      store,
+      http: mockHttp({ status: 200 }),
+      now: () => 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.exitCode).toBe(ExitCode.Validation);
+    expect(result.result.error.code).toBe("invalid_company_uuid");
+    expect(result.result.error.message).toContain(`company UUID from ${origin}`);
   });
 
   test("a stdin token does not borrow a company (none to borrow without a session)", async () => {
@@ -619,6 +661,19 @@ describe("createCompanyResource", () => {
     });
   });
 
+  test("dry-run with a supplied-but-invalid company reports it instead of previewing", async () => {
+    const result = await createCompanyResource(
+      flags,
+      "employees",
+      { first_name: "Jane" },
+      { dryRun: true, companyUuid: "co-1", ...stdinAuth() },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(result.error.code).toBe("invalid_company_uuid");
+  });
+
   test("dry-run with resolved context interpolates the company uuid and drops the note", async () => {
     const result = await createCompanyResource(
       flags,
@@ -626,13 +681,17 @@ describe("createCompanyResource", () => {
       { email: "a@b.com" },
       {
         ...stdinAuth(),
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
         dryRun: true,
       },
     );
     expect(result).toEqual({
       ok: true,
-      data: { method: "POST", path: "/v1/companies/co-1/contractors", body: { email: "a@b.com" } },
+      data: {
+        method: "POST",
+        path: `/v1/companies/${TEST_COMPANY_UUID}/contractors`,
+        body: { email: "a@b.com" },
+      },
     });
   });
 
@@ -934,7 +993,7 @@ describe("a 401 from a resolved client", () => {
       { first_name: "A" },
       {
         confirm: true,
-        companyUuid: "c-1",
+        companyUuid: "9c0d1e2f-0000-4111-2222-333344445555",
         ...stdinAuth(),
       },
     );
@@ -1087,7 +1146,7 @@ describe("withCompanyContext", () => {
   });
 
   test("maps an ApiError thrown by fn via toResult", async () => {
-    const result = await withCompanyContext(flags, { ...stdinAuth(), companyUuid: "co-1" }, async () => {
+    const result = await withCompanyContext(flags, { ...stdinAuth(), companyUuid: TEST_COMPANY_UUID }, async () => {
       throw new ApiError(404, { error: "nope" }, ExitCode.ApiClient, "GET x -> 404");
     });
     expect(result.ok).toBe(false);
@@ -1097,13 +1156,13 @@ describe("withCompanyContext", () => {
   });
 
   test("returns fn's result on success", async () => {
-    const result = await withCompanyContext(flags, { ...stdinAuth(), companyUuid: "co-1" }, async (ctx) => ({
+    const result = await withCompanyContext(flags, { ...stdinAuth(), companyUuid: TEST_COMPANY_UUID }, async (ctx) => ({
       ok: true,
       data: { company: ctx.companyUuid },
     }));
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    expect((result.data as { company: string }).company).toBe("co-1");
+    expect((result.data as { company: string }).company).toBe(TEST_COMPANY_UUID);
   });
 });
 
