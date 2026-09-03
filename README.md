@@ -31,7 +31,9 @@ In agent mode (piped stdout, `--agent`, `--json`) the upgrade is gated behind `-
 
 ### Automatic updates
 
-You don't have to run `gusto upgrade` yourself. On by default, the CLI checks for a new release in the background roughly once a day and installs it at the start of a later invocation - never partway through one. When that happens you get a single line on stderr saying so; nothing is ever written to stdout, so scripts and agents parsing output are unaffected.
+You don't have to run `gusto upgrade` yourself. On by default, the CLI checks for a new release in the background roughly once a day and installs it at the start of a later invocation - never partway through one. Nothing is ever written to stdout, so scripts and agents parsing output are unaffected.
+
+When an update installs you get a single line on stderr saying so - in human mode only, so under `--agent`, `--json`, or a piped stdout it happens silently. One case isn't suppressed: if a staged file no longer matches the checksum recorded for it, that's reported on stderr in every mode, because it means the file changed underneath the only process that writes it.
 
 To turn it off:
 
@@ -39,7 +41,9 @@ To turn it off:
 gusto config set auto_update off
 ```
 
-That takes effect from the next invocation onward. Pinning `GUSTO_CLI_VERSION` to a version disables it too, and does so immediately - which is what you want in CI, where the pin already fixes the version. (`GUSTO_CLI_VERSION=latest` is not a pin and does not disable it.)
+That takes effect from the next invocation onward, which includes one edge worth knowing: an update already staged before you opted out still installs on the command that turns it off, since the swap runs before the command's own handler. Pinning `GUSTO_CLI_VERSION` to a version disables it too, and does so immediately - which is what you want in CI, where the pin already fixes the version. (`GUSTO_CLI_VERSION=latest` is not a pin and does not disable it.)
+
+Pointing `GUSTO_CLI_REPO` or `GUSTO_CLI_BASE_URL` at a different origin also turns it off - an origin override is an explicit thing you typed, so it's left to `gusto upgrade`.
 
 Installs managed by a package manager (Homebrew, Nix) are never updated this way, for the same reason `gusto upgrade` refuses them - use the package manager, so its metadata stays in step with what's on disk.
 
