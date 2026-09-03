@@ -125,13 +125,10 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
   ) {
     out.skills_auto_install = raw.skills_auto_install as SkillsAutoInstall;
   }
-  // The one key here whose failure direction matters. Both readers test `=== "off"`, so a value
-  // dropped as invalid reads as on - "replace the binary" for someone who was trying to opt out.
-  // And `auto_update = false` is the obvious hand-edit for an on/off key, which TOML parses as a
-  // boolean that a string check discards. So the boolean form is coerced, and anything else we
-  // don't recognise is read as off: `on` is already the default, so the only reason to touch this
-  // key by hand is to turn it off. `config set` stays strict (see `validateValue`) - it can reject
-  // a typo to your face, which a config file read at startup cannot.
+  // The one key whose failure direction matters: both readers test `=== "off"`, so a dropped value
+  // reads as on - "replace the binary" for someone trying to opt out. `auto_update = false` is the
+  // obvious hand-edit, and TOML parses it as a boolean a string check would discard. `on` is
+  // already the default, so anything unrecognised is read as off. `config set` stays strict.
   if (raw.auto_update !== undefined) {
     const value =
       typeof raw.auto_update === "boolean" ? (raw.auto_update ? "on" : "off") : String(raw.auto_update).trim();

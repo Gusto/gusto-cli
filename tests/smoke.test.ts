@@ -1327,11 +1327,9 @@ describe("per-environment credential slots", () => {
 // it. Everything else stubs `fetch`, `spawn` or `versionOf` somewhere, so this is the only place
 // the production path runs as production.
 //
-// Measured, so the coverage claim is honest rather than assumed: reverting the staging-name split
-// or silencing the swap notice both fail this test. Removing SKIP_AUTO_UPDATE_ENV does not - the
-// exec-check does run the downloaded binary for real, but state carries no stage yet at that
-// point, so the nested run exits at its first check. That guard is pinned in upgrade.test.ts
-// instead, and this comment used to claim otherwise.
+// What it pins, measured rather than assumed: the staging-name split and the swap notice. Not
+// SKIP_AUTO_UPDATE_ENV - no stage exists when the exec-check runs, so the nested run exits at its
+// first check; that guard is pinned in upgrade.test.ts.
 describe("auto-update end to end against a served release", () => {
   let work: string;
   let installDir: string;
@@ -1420,12 +1418,9 @@ describe("auto-update end to end against a served release", () => {
     expect(again.stderr).not.toContain("auto-updated");
   });
 
-  // The consumer side of `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`. `upgrade.test.ts` pins the producer -
-  // that `defaultVersionOf` sets the variable on the child it spawns - but nothing pinned that
-  // `index.ts` honours it, so the swap half of the `if (!skipAutoUpdate)` guard could be deleted
-  // with the suite still green. It matters because the exec-check runs the *downloaded* binary for
-  // real: a nested run that took this path would act on the same `update-state.toml` the outer
-  // call is still working through.
+  // The consumer side of `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`: that `index.ts` honours it, not just
+  // that `defaultVersionOf` sets it. The exec-check runs the downloaded binary for real, so a
+  // nested run would act on the same `update-state.toml` the outer call is working through.
   //
   // The swap half only: the pending stage set up below is also what makes
   // `maybeSpawnBackgroundCheck` return early, so the trigger stays quiet here with or without the

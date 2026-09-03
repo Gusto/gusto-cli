@@ -167,15 +167,9 @@ async function loadConfig(sinks: StreamSinks = defaultSinks): Promise<UserConfig
 }
 
 async function main(argv: string[]): Promise<void> {
-  // The detached background-update child's entire job. Checked before anything else - no signal
-  // handlers, no config read, no commander program - so its startup is as cheap as possible and
-  // it can never recurse into spawning another one of itself.
-  //
-  // Matched against the exact argv shape `defaultSpawnBackgroundCheck` spawns - a single real
-  // argument, and that argument is the flag - rather than `argv.includes(...)`. A loose `includes`
-  // would also match a normal command whose own positional or option value happens to equal this
-  // string (e.g. `gusto employee create --note "--internal-background-update"`), running the
-  // updater and exiting instead of the command actually requested.
+  // The detached child's entire job, checked before anything else so its startup stays cheap.
+  // Matched against the exact argv shape the spawn produces rather than `argv.includes(...)`, which
+  // would also match a command whose own option value happened to equal this string.
   const realArgs = argv.slice(2);
   if (realArgs.length === 1 && realArgs[0] === BACKGROUND_UPDATE_FLAG) {
     await runBackgroundCheck();
@@ -185,41 +179,20 @@ async function main(argv: string[]): Promise<void> {
   installSignalHandlers();
   const cfg = await loadConfig();
 
-  // `defaultVersionOf` (lib/upgrade.ts) sets this on the child it spawns to exec-check a binary -
-  // that binary's own `main()` runs for real, and without this it would run its own copy of
-  // everything below against the same `update-state.toml` the outer call is still acting on. Skip
-  // straight to building the program - `--version` (what the exec-check actually asked for) still
-  // works normally from there.
+  // Set by `defaultVersionOf` on the binary it exec-checks: that binary's `main()` runs for real,
+  // and would otherwise act on the same `update-state.toml` the outer call is still working through.
   const skipAutoUpdate = process.env[SKIP_AUTO_UPDATE_ENV] !== undefined;
 
   const program = buildProgram(cfg.environment);
 
   if (!skipAutoUpdate) {
-    // Both halves of auto-update hang off this one hook, for two reasons.
-    //
-    // It has to be a hook rather than straight-line code before `parseAsync`: every command handler
-    // calls `process.exit()` itself (see `lib/runner.ts`), so `parseAsync` never actually returns
-    // for a normal invocation, and there is no "after parse" to run anything in. `preAction` is the
-    // one point that is both after commander has resolved which command matched and before that
-    // command's own handler - and its exit - runs. Installing before the handler is also what keeps
-    // the swap off the mid-command path.
-    //
-    // And both halves share the `upgrade` exclusion. For the spawn it's just waste: the two paths
-    // stage under different names and can't contend for a file (see `BACKGROUND_STAGING_NAME`), but
-    // downloading the same release in the background while someone is explicitly upgrading to it is
-    // a pointless second copy of a 60MB asset. For the swap it's correctness: it runs immediately
-    // before the `upgrade` handler, so `upgrade --dry-run` - documented as reporting "without
-    // downloading or replacing anything" - would find the binary already replaced, and would then
-    // report against this process's compiled-in `VERSION` rather than what is now on disk, printing
-    // `auto-updated: 0.2.0 -> 0.3.0` on stderr and `upgrade available: 0.2.0 -> 0.3.0` on stdout in
-    // the same run.
-    //
-    // `--help`/`--version`/an invalid command never reach this hook, which just means neither half
-    // happens that invocation - the next real command picks both up.
+    // A hook rather than code before `parseAsync`: every handler calls `process.exit()` itself
+    // (see `lib/runner.ts`), so `parseAsync` never returns and there is no "after parse" to run in.
     program.hook("preAction", async (_thisCommand, actionCommand) => {
+      // Excluded from both halves: swapping right before the `upgrade` handler would have
+      // `--dry-run` report a version other than what is now on disk, and the background download
+      // would duplicate the one being asked for.
       if (actionCommand.name() === "upgrade") return;
-      // Each fails open internally (see their doc comments) and never throws, so a bug in either
-      // can never block or delay the command the caller actually ran.
       await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
       await maybeSpawnBackgroundCheck({ cfg });
     });

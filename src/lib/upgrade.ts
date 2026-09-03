@@ -15,13 +15,9 @@ import { VERSION } from "./version.ts";
 const DEFAULT_REPO = "Gusto/gusto-cli";
 const BINARY_NAME = "gusto";
 
-/** Set on the exec-check child `defaultVersionOf` spawns, and nowhere else. The binary being
- * checked is a real `gusto` build, so running it - even just for `--version` - runs its own
- * `main()` for real. Without this, that nested run's own auto-update wiring (`lib/auto-update.ts`)
- * reads the same `update-state.toml` the outer call is in the middle of acting on, which can
- * delete the very file being verified out from under it. `index.ts` checks this env var before
- * doing anything auto-update-related, and it alone - not argv, so it can't collide with a real
- * `--version` invocation the way a second argv flag would. */
+/** Set on the exec-check child `defaultVersionOf` spawns, and nowhere else. That child is a real
+ * `gusto` build, so `--version` runs its `main()` for real - and without this it would act on the
+ * same `update-state.toml` the outer call is mid-way through, deleting the file being verified. */
 export const SKIP_AUTO_UPDATE_ENV = "GUSTO_INTERNAL_SKIP_AUTO_UPDATE";
 
 /** Env vars carrying a credential, or the identity one acts on. Stripped from every subprocess the
@@ -100,16 +96,10 @@ const QUARANTINE_TIMEOUT_MS = 10_000;
  * printed, before giving up on a write end nothing is going to close. */
 const KILL_GRACE_MS = 1_000;
 
-/** The same exec check on the unattended path, where nobody asked for an upgrade at all:
- * `swapStagedUpdate` runs before the matched command's handler, so whatever this spawn waits for is
- * added to that command's startup. A target that blocks on init - a wedged build, a stale mount at
- * `GUSTO_INSTALL_DIR` - must cost an ordinary `gusto whoami` a moment, not half a minute. A local
- * `--version` print that can't answer inside this reads as the same null an unrunnable target does,
- * so `defaultVersionOf` reports the deadline separately, through `onTimeout`: a killed probe means
- * the installed version was not determined, and `swapStagedUpdate` keeps the stage and its file and
- * spends one bounded attempt on it rather than dropping it. Dropping it wouldn't buy a fresh check
- * either - `maybeSpawnBackgroundCheck` returns early while any stage is pending, so nothing stages
- * afresh until this one installs or runs out of attempts. */
+/** The same exec check on the unattended path, where nobody asked for an upgrade: the swap runs
+ * before the matched command's handler, so this spawn is added to an ordinary command's startup and
+ * a wedged target must cost it a moment, not half a minute. A probe this kills reports through
+ * `onTimeout` rather than as a plain null, so the stage is retried instead of dropped. */
 export const SWAP_EXEC_CHECK_TIMEOUT_MS = 5_000;
 
 function isTimeout(err: unknown): boolean {
@@ -573,11 +563,8 @@ export interface UpgradeDeps {
  * every `UpgradeDeps` field except the confirm `gate`. */
 export type StageDeps = Omit<UpgradeDeps, "gate">;
 
-/** The host defaults shared by `performUpgrade` and `stageUpdate`, resolved in one place. Both were
- * filling in the same eight fields verbatim, so a ninth dep added to one site and not the other
- * would silently give the interactive and unattended paths different behaviour - the exact
- * divergence splitting out `resolveUpgradeTarget`/`stageAndFinalize` exists to rule out. `log` is
- * left to the callers: it has no sensible default, and each already requires it. */
+/** Host defaults for both `performUpgrade` and `stageUpdate`, so a new dep can't reach one path and
+ * not the other. `log` stays with the callers - no sensible default, and both already require it. */
 function resolvedHostDeps(deps: StageDeps): Required<Omit<StageDeps, "log">> {
   return {
     env: deps.env ?? process.env,
@@ -606,10 +593,9 @@ function resolvedHostDeps(deps: StageDeps): Required<Omit<StageDeps, "log">> {
  * inside an upgrade someone asked for, and wants a far shorter one - see
  * `SWAP_EXEC_CHECK_TIMEOUT_MS`.
  *
- * `onTimeout` fires only when that deadline is what cost us an answer: the timer ran *and* nothing
- * usable came back. The return value can't carry that - a killed build and an unrunnable one both
- * have to read as null here - and the swap path has to tell them apart: a target too slow for its
- * short deadline is a stage to retry, not a stage that was staged against the wrong version. */
+ * `onTimeout` fires only when the deadline is what cost us an answer - the timer ran *and* nothing
+ * usable came back. The return can't carry that, since a killed build and an unrunnable one both
+ * read as null, and the swap has to tell "too slow" (retry) from "wrong version" (discard). */
 export async function defaultVersionOf(
   file: string,
   timeoutMs: number = EXEC_CHECK_TIMEOUT_MS,
@@ -617,13 +603,10 @@ export async function defaultVersionOf(
 ): Promise<string | null> {
   let killed = false;
   try {
-    // `detached` is what makes the deadline below a real bound. Draining stdout finishes only once
-    // every write end is closed, so a probed binary that forks something inheriting the pipe leaves
-    // the await pending for as long as that grandchild lives - and `proc.kill` reaches the direct
-    // child only. Measured before this: a 1s deadline returned after 20s. Being the group leader
-    // lets the timer signal the grandchild too, which closes the pipe. It matters most on the path
-    // the short deadline exists for: `swapStagedUpdate` is awaited in the `preAction` hook, so an
-    // unbounded wait here doesn't delay an upgrade someone asked for, it hangs every command.
+    // `detached` is what makes the deadline a real bound. Draining stdout ends only when every
+    // write end closes, so a probe that forks something inheriting the pipe keeps the await pending
+    // however long that grandchild lives, and `proc.kill` reaches the direct child only - measured
+    // at 20s against a 1s deadline. Being the group leader lets the timer signal the grandchild too.
     const proc = Bun.spawn([file, "--version"], {
       stdout: "pipe",
       stderr: "ignore",
