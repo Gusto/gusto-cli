@@ -309,10 +309,14 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
 
 /** One more bounded go at a stage this invocation couldn't resolve either way: a rename that
  * failed for a reason that might not repeat, or a freshness probe its own deadline killed. Below
- * the cap the stage and its file are kept and the count climbs, so the next invocation retries for
- * free instead of re-downloading a release. At the cap both go, because nothing else ever clears a
- * pending stage - `maybeSpawnBackgroundCheck` returns early while one is set, and every invocation
- * until then re-hashes the whole staged binary on the startup path.
+ * the cap the stage and its file are kept and the count climbs, so the next invocation gets another
+ * go at bytes already on disk instead of a fresh multi-MB download. Not free, though, which is why
+ * the count is bounded at all: the retry re-opens and re-hashes the whole staged binary on the
+ * startup path, and a probe the deadline killed waits out `SWAP_EXEC_CHECK_TIMEOUT_MS` again first.
+ * One deadline per invocation is still all an ordinary command pays - the bound `upgrade.ts`
+ * justifies the short deadline with - and the cap is what stops it being paid invocation after
+ * invocation. At the cap both go, because nothing else ever clears a pending stage -
+ * `maybeSpawnBackgroundCheck` returns early while one is set.
  *
  * `readState` accepts any string for `swap_attempts`, and a non-numeric one would make every
  * comparison here false: the cap would never fire, `String(NaN)` would be written back, and that

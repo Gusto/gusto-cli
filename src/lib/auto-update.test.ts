@@ -585,11 +585,6 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toContain("auto-updated");
   });
 
-  // A probe its deadline killed is not a mismatch. This deadline is `SWAP_EXEC_CHECK_TIMEOUT_MS`
-  // while `staged_from` was recorded under the 30s default, so a target that answers between the
-  // two - a cold release-sized binary on a network-mounted install dir - would otherwise have a
-  // good stage deleted, be described as "nothing runnable" while it sits there installed and
-  // runnable, and have the same release downloaded again next window, forever.
   // The timeout has to be decided before the version comparison rather than inside it. A stage
   // recorded when nothing runnable was at the target carries no `staged_from`, which matched the
   // `undefined` a killed probe also produces - so the retry branch was skipped and the stage
@@ -632,6 +627,11 @@ describe("swapStagedUpdate", () => {
     expect(stderr.buffer).toBe("");
   });
 
+  // A probe its deadline killed is not a mismatch. This deadline is `SWAP_EXEC_CHECK_TIMEOUT_MS`
+  // while `staged_from` was recorded under the 30s default, so a target that answers between the
+  // two - a cold release-sized binary on a network-mounted install dir - would otherwise have a
+  // good stage deleted, be described as "nothing runnable" while it sits there installed and
+  // runnable, and have the same release downloaded again next window, forever.
   test("keeps the stage for a bounded retry when the freshness probe hits its deadline", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
@@ -810,11 +810,20 @@ describe("swapStagedUpdate", () => {
 });
 
 describe("maybeSpawnBackgroundCheck", () => {
+  // Every case here has to name an `execPath` that looks like an installed `gusto`: under the test
+  // runner `process.execPath` is `bun`, which `isSelfExecutable` rejects, so a case that leaves it
+  // out passes on that gate alone and never reaches the one it is named for.
   test("does not spawn when auto_update is off", async () => {
     const { stateFile } = setup();
     let spawned = 0;
 
-    await maybeSpawnBackgroundCheck({ cfg: { auto_update: "off" }, env: {}, stateFile, spawn: () => spawned++ });
+    await maybeSpawnBackgroundCheck({
+      cfg: { auto_update: "off" },
+      env: {},
+      execPath: "/usr/local/bin/gusto",
+      stateFile,
+      spawn: () => spawned++,
+    });
 
     expect(spawned).toBe(0);
     expect((await readState(stateFile)).last_checked).toBeUndefined();
@@ -827,6 +836,7 @@ describe("maybeSpawnBackgroundCheck", () => {
     await maybeSpawnBackgroundCheck({
       cfg: {},
       env: { GUSTO_CLI_VERSION: "v0.2.0" },
+      execPath: "/usr/local/bin/gusto",
       stateFile,
       spawn: () => spawned++,
     });

@@ -101,7 +101,11 @@ const QUARANTINE_TIMEOUT_MS = 10_000;
  * added to that command's startup. A target that blocks on init - a wedged build, a stale mount at
  * `GUSTO_INSTALL_DIR` - must cost an ordinary `gusto whoami` a moment, not half a minute. A local
  * `--version` print that can't answer inside this reads as the same null an unrunnable target does,
- * so the stage is dropped and the next background window stages afresh. */
+ * so `defaultVersionOf` reports the deadline separately, through `onTimeout`: a killed probe means
+ * the installed version was not determined, and `swapStagedUpdate` keeps the stage and its file and
+ * spends one bounded attempt on it rather than dropping it. Dropping it wouldn't buy a fresh check
+ * either - `maybeSpawnBackgroundCheck` returns early while any stage is pending, so nothing stages
+ * afresh until this one installs or runs out of attempts. */
 export const SWAP_EXEC_CHECK_TIMEOUT_MS = 5_000;
 
 function isTimeout(err: unknown): boolean {
@@ -598,15 +602,16 @@ function resolvedHostDeps(deps: StageDeps): Required<Omit<StageDeps, "log">> {
  * inside an upgrade someone asked for, and wants a far shorter one - see
  * `SWAP_EXEC_CHECK_TIMEOUT_MS`.
  *
- * `onTimeout` fires only when that deadline, rather than the binary, ended the spawn. The return
- * value can't carry that - a killed build and an unrunnable one both have to read as null here -
- * and the swap path has to tell them apart: a target too slow for its short deadline is a stage
- * to retry, not a stage that was staged against the wrong version. */
+ * `onTimeout` fires only when that deadline is what cost us an answer: the timer ran *and* nothing
+ * usable came back. The return value can't carry that - a killed build and an unrunnable one both
+ * have to read as null here - and the swap path has to tell them apart: a target too slow for its
+ * short deadline is a stage to retry, not a stage that was staged against the wrong version. */
 export async function defaultVersionOf(
   file: string,
   timeoutMs: number = EXEC_CHECK_TIMEOUT_MS,
   onTimeout?: () => void,
 ): Promise<string | null> {
+  let killed = false;
   try {
     const proc = Bun.spawn([file, "--version"], {
       stdout: "pipe",
@@ -614,20 +619,27 @@ export async function defaultVersionOf(
       env: envForSubprocess({ [SKIP_AUTO_UPDATE_ENV]: "1" }),
     });
     const deadline = setTimeout(() => {
-      onTimeout?.();
+      killed = true;
       proc.kill("SIGKILL");
     }, timeoutMs);
     try {
       const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-      if (code !== 0) return null;
-      const version = out.trim();
-      return version.length > 0 ? version : null;
+      const version = code === 0 ? out.trim() : "";
+      if (version.length > 0) return version;
     } finally {
       clearTimeout(deadline);
     }
   } catch {
-    return null;
+    // Nothing came back at all - `Bun.spawn` throwing ENOEXEC on a file that isn't a valid
+    // executable is the usual way here.
   }
+  // Only with nothing usable in hand does the timer having run mean the deadline is what ended
+  // this: it times the spawn *plus* draining stdout, and `proc.kill` reaches the direct child only,
+  // so a grandchild holding the write end can keep that read pending long after a clean exit that
+  // already printed a version. Reporting that as a timeout would have `swapStagedUpdate` throw a
+  // good read away and spend one of its bounded attempts on it.
+  if (killed) onTimeout?.();
+  return null;
 }
 
 /** The darwin binaries can't carry a stapled notarization ticket (a bare Mach-O isn't stapleable),
