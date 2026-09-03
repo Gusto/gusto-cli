@@ -316,7 +316,7 @@ export async function resolveApiContext(
 
   // Only borrow the session's company when the token came from the session; an
   // env/stdin token must not silently target an unrelated login's company.
-  const fallbackCompany = supplied || tokenSource !== "session" ? null : await sessionCompanyUuid(globals, opts);
+  const fallbackCompany = !supplied && tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
   const company = supplied ?? (fallbackCompany ? ({ value: fallbackCompany, source: "session" } as const) : null);
   if (company && !isValidUuid(company.value)) {
     return {
