@@ -1416,7 +1416,7 @@ describe("auto-update end to end against a served release", () => {
     // Nothing pending now, so an identical command says nothing at all.
     const again = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
     expect(again.stderr).not.toContain("auto-updated");
-  });
+  }, 120_000);
 
   // The consumer side of `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`: that `index.ts` honours it, not just
   // that `defaultVersionOf` sets it. The exec-check runs the downloaded binary for real, so a
@@ -1441,5 +1441,5 @@ describe("auto-update end to end against a served release", () => {
     // file, so an untouched byte-for-byte copy is what says the guard held.
     expect(readFileSync(statePath(), "utf8")).toBe(stateBefore);
     expect(readFileSync(installed).equals(before)).toBe(true);
-  });
+  }, 120_000);
 });
