@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -314,7 +315,11 @@ describe("swapStagedUpdate", () => {
   // the state entry would strand a release-sized binary there permanently. The checksum matches
   // here, which is what makes deleting it safe: it proves the file is the one we staged rather
   // than something another process now owns.
-  test("removes the staged file, not just the state entry, when the install target moved", async () => {
+  // The stage belongs to a different install target, so the entry goes and the file does not: the
+  // path recorded alongside it is not one this invocation derived, and nothing that came out of the
+  // state file is trusted enough to unlink. A genuine stray at the derived path is cleared by
+  // `preflightStagingPath` the next time anything stages there.
+  test("drops the entry but leaves the file alone when the install target moved", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
     await writeState(
@@ -332,10 +337,49 @@ describe("swapStagedUpdate", () => {
     await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
 
     expect(readFileSync(installedPath)).toEqual(before);
-    expect(existsSync(stagedPath!)).toBe(false);
+    expect(existsSync(stagedPath!)).toBe(true);
     expect(stderr.buffer).toBe("");
-    const state = await readState(stateFile);
-    expect(state.staged_version).toBeUndefined();
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+  });
+
+  // The state file stops being a trust boundary: `staged_path` is derived from the resolved install
+  // target, never read back. Without that, whoever can write the state file supplies both the path
+  // and the checksum it is compared against, so "drop a 0755 file anywhere" became "the next gusto
+  // invocation installs it as gusto" - and in agent mode, silently.
+  test("refuses a staged_path that is not the one it derives, and installs nothing", async () => {
+    const { stateFile, installDir, installedPath } = setup();
+    const elsewhere = tmpDir("gusto-cli-autoupdate-elsewhere-");
+    const PLANTED = '#!/bin/sh\necho "planted"\n';
+    const planted = path.join(elsewhere, "not-the-staging-name");
+    writeFileSync(planted, PLANTED, { mode: 0o755 });
+    const before = readFileSync(installedPath);
+    await writeState(
+      {
+        staged_version: "9.9.9",
+        // Both sides of the integrity check, supplied by whoever wrote this file.
+        staged_checksum: createHash("sha256").update(PLANTED).digest("hex"),
+        staged_path: planted,
+        staged_install_path: installedPath,
+        staged_from: VERSION,
+      },
+      stateFile,
+    );
+    const { sinks, stderr } = captureSinks();
+
+    await swapStagedUpdate({
+      stateFile,
+      cfg: {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: installedPath,
+      sinks,
+      mode: "human",
+    });
+
+    expect(readFileSync(installedPath)).toEqual(before);
+    // Not ours to delete either - it was never a path we chose.
+    expect(existsSync(planted)).toBe(true);
+    expect(stderr.buffer).toBe("");
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
   });
 
   // The other half of that: if the file at the recorded path is *not* the one we staged, it isn't
@@ -786,6 +830,35 @@ describe("swapStagedUpdate", () => {
   // `Number("?") + 1` is NaN, every comparison against the cap is false, and `String(NaN)` would go
   // straight back to disk - leaving the cap permanently unreachable and every later invocation
   // re-hashing the whole staged binary on the startup path before failing the same rename.
+  // A negative value parses cleanly, so the finite check above lets it through - and then
+  // `attempts >= MAX_SWAP_ATTEMPTS` stays false for longer than anyone will run this, which is the
+  // same unbounded startup re-hash the non-numeric case was fixed for.
+  test("treats a negative swap_attempts as zero instead of disabling the cap", async () => {
+    const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
+    const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
+    rmSync(installedPath);
+    mkdirSync(installedPath);
+    await writeState(
+      {
+        staged_version: "0.3.0",
+        staged_checksum: stagedChecksum,
+        staged_path: stagedPath,
+        staged_install_path: installedPath,
+        swap_attempts: "-999999",
+      },
+      stateFile,
+    );
+    const { sinks } = captureSinks();
+
+    for (let i = 0; i < MAX_SWAP_ATTEMPTS; i++) {
+      await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
+    }
+
+    // Counted from zero, so the cap is reached in the usual number of goes and the stage is gone.
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(existsSync(stagedPath!)).toBe(false);
+  });
+
   test("treats a non-numeric swap_attempts as zero instead of disabling the cap", async () => {
     const STAGED_BODY = '#!/bin/sh\necho "0.3.0"\n';
     const { stateFile, installDir, installedPath, stagedPath, stagedChecksum } = setup({ stagedBody: STAGED_BODY });
@@ -806,6 +879,49 @@ describe("swapStagedUpdate", () => {
     await swapStagedUpdate({ stateFile, cfg: {}, env: { GUSTO_INSTALL_DIR: installDir }, sinks, mode: "human" });
 
     expect((await readState(stateFile)).swap_attempts).toBe("1");
+  });
+});
+
+// `readState` cannot tell a torn file from a fresh install - both read as `{}` - so a truncated
+// state file used to be silently upgraded into permanent data loss: the next trigger wrote
+// `{...{}, last_checked}` over it, erasing the entry pointing at a verified release-sized binary
+// and orphaning that binary in the install dir forever.
+describe("writeState durability", () => {
+  test("leaves no truncated file for a reader to mistake for a fresh install", async () => {
+    const dir = tmpDir("gusto-cli-autoupdate-atomic-");
+    const stateFile = path.join(dir, "update-state.toml");
+    await writeState({ last_checked: "2026-01-01T00:00:00.000Z", staged_version: "0.3.0" }, stateFile);
+
+    // Nothing but the state file itself: no leftover temp for the next run to trip over.
+    expect(readdirSync(dir)).toEqual(["update-state.toml"]);
+    const state = await readState(stateFile);
+    expect(state.staged_version).toBe("0.3.0");
+    expect(statSync(stateFile).mode & 0o777).toBe(0o600);
+  });
+
+  // Note what this does and doesn't cover: it pins that two writes overlapping in one process
+  // don't collide on a shared temp path. The crash-atomicity the temp-then-rename is really for -
+  // a reader seeing a file truncated by a kill mid-write - needs a fault-injection seam this
+  // module doesn't have, so it isn't pinned here. Reverting to a truncate-in-place write keeps
+  // this suite green.
+  test("overlapping writes in one process don't collide on the temp path", async () => {
+    const dir = tmpDir("gusto-cli-autoupdate-atomic2-");
+    const stateFile = path.join(dir, "update-state.toml");
+    await writeState({ staged_version: "0.3.0", staged_checksum: "a".repeat(64) }, stateFile);
+
+    // Interleave reads with rewrites. Every read must see a complete document - under the old
+    // truncate-in-place write, a reader landing mid-write saw `{}`.
+    const reads: (string | undefined)[] = [];
+    await Promise.all([
+      ...Array.from({ length: 12 }, async () => {
+        reads.push((await readState(stateFile)).staged_version);
+      }),
+      ...Array.from({ length: 6 }, async () =>
+        writeState({ staged_version: "0.3.0", staged_checksum: "a".repeat(64) }, stateFile),
+      ),
+    ]);
+
+    expect(reads).not.toContain(undefined);
   });
 });
 
@@ -1031,6 +1147,17 @@ describe("runBackgroundCheck", () => {
     return impl as unknown as typeof fetch;
   }
 
+  /** What `resolveTargetTag` reads when nothing is pinned: the redirect off `/releases/latest`.
+   *  These tests used to pin `GUSTO_CLI_VERSION` to skip this, but a pin is a configuration the
+   *  child now refuses outright (and one the trigger would never have spawned), so it would have
+   *  exercised the child in a state production can't reach. */
+  function latestRelease(tag: string): Response {
+    return new Response(null, {
+      status: 302,
+      headers: { location: `https://github.com/Gusto/gusto-cli/releases/tag/${tag}` },
+    });
+  }
+
   test("persists a staged update to state on success", async () => {
     const { stateFile, installDir, installedPath } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
     const NEW_BINARY = '#!/bin/sh\necho "0.3.0"\n';
@@ -1039,12 +1166,14 @@ describe("runBackgroundCheck", () => {
     await runBackgroundCheck({
       stateFile,
       log: () => {},
-      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "v0.3.0" },
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: installedPath,
       currentVersion: "0.2.0",
       platform: "linux",
       arch: "x64",
       fetchImpl: stubFetch(async (url) => {
         const name = url.toString().split("/").pop() ?? "";
+        if (name === "latest") return latestRelease("v0.3.0");
         if (name === "SHA256SUMS") return new Response(`${hash}  gusto-linux-x64\n`);
         if (name === "gusto-linux-x64") return new Response(NEW_BINARY);
         return new Response("not found", { status: 404 });
@@ -1075,12 +1204,14 @@ describe("runBackgroundCheck", () => {
       stateFile,
       configFile,
       log: () => {},
-      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "v0.3.0" },
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: installedPath,
       currentVersion: "0.2.0",
       platform: "linux",
       arch: "x64",
       fetchImpl: stubFetch(async (url) => {
         const name = url.toString().split("/").pop() ?? "";
+        if (name === "latest") return latestRelease("v0.3.0");
         // Stands in for the race: the opt-out lands while this download is in flight.
         writeFileSync(configFile, 'auto_update = "off"\n');
         if (name === "SHA256SUMS") return new Response(`${hash}  gusto-linux-x64\n`);
@@ -1100,7 +1231,7 @@ describe("runBackgroundCheck", () => {
   // bytes is the checksum - and a `gusto upgrade` that claimed the same name in the meantime would
   // otherwise get its in-flight download deleted, then fail blaming a concurrent run.
   test("leaves the staging path alone on opt-out cleanup when the file is no longer ours", async () => {
-    const { stateFile, installDir, configFile } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
+    const { stateFile, installDir, installedPath, configFile } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
     const NEW_BINARY = '#!/bin/sh\necho "0.3.0"\n';
     const hash = createHash("sha256").update(NEW_BINARY).digest("hex");
     const stagedPath = path.join(installDir, BACKGROUND_STAGING_NAME);
@@ -1110,12 +1241,14 @@ describe("runBackgroundCheck", () => {
       stateFile,
       configFile,
       log: () => {},
-      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "v0.3.0" },
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: installedPath,
       currentVersion: "0.2.0",
       platform: "linux",
       arch: "x64",
       fetchImpl: stubFetch(async (url) => {
         const name = url.toString().split("/").pop() ?? "";
+        if (name === "latest") return latestRelease("v0.3.0");
         writeFileSync(configFile, 'auto_update = "off"\n');
         if (name === "SHA256SUMS") return new Response(`${hash}  gusto-linux-x64\n`);
         if (name === "gusto-linux-x64") return new Response(NEW_BINARY);
@@ -1134,13 +1267,69 @@ describe("runBackgroundCheck", () => {
     expect(readFileSync(stagedPath, "utf8")).toBe(someoneElse);
   });
 
-  test("persists nothing when already up to date", async () => {
-    const { stateFile, installDir } = setup({ installedBody: '#!/bin/sh\necho "0.3.0"\n' });
+  // `--internal-background-update` is a flag anyone can type, and `index.ts` dispatches it upstream
+  // of every other check - so the refusals in `maybeSpawnBackgroundCheck` are not enough on their
+  // own. Without these, an origin override stages a fork's binary with a valid state entry,
+  // checksummed against that fork's own SHA256SUMS, and the next ordinary invocation installs it.
+  test.each([
+    ["an origin repo override", { GUSTO_CLI_REPO: "someone/fork" }],
+    ["a pinned version", { GUSTO_CLI_VERSION: "v0.3.0" }],
+  ])("stages nothing when invoked directly with %s", async (_label, override) => {
+    const { stateFile, installDir, installedPath } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
+    let fetched = 0;
 
     await runBackgroundCheck({
       stateFile,
       log: () => {},
-      env: { GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "v0.3.0" },
+      env: { GUSTO_INSTALL_DIR: installDir, ...override },
+      execPath: installedPath,
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: stubFetch(async () => {
+        fetched += 1;
+        return new Response("not found", { status: 404 });
+      }),
+    });
+
+    // Refused before the network is touched at all.
+    expect(fetched).toBe(0);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+    expect(existsSync(path.join(installDir, BACKGROUND_STAGING_NAME))).toBe(false);
+  });
+
+  // The other half: a runtime that isn't an installed gusto binary. Under `bun run dev` the child
+  // would be the developer's `bun`, which never reaches the flag dispatch in the first place.
+  test("stages nothing when invoked directly from something that isn't a gusto binary", async () => {
+    const { stateFile, installDir } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });
+    let fetched = 0;
+
+    await runBackgroundCheck({
+      stateFile,
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: "/usr/local/bin/bun",
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: stubFetch(async () => {
+        fetched += 1;
+        return new Response("not found", { status: 404 });
+      }),
+    });
+
+    expect(fetched).toBe(0);
+    expect((await readState(stateFile)).staged_version).toBeUndefined();
+  });
+
+  test("persists nothing when already up to date", async () => {
+    const { stateFile, installDir, installedPath } = setup({ installedBody: '#!/bin/sh\necho "0.3.0"\n' });
+
+    await runBackgroundCheck({
+      stateFile,
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: installDir },
+      execPath: installedPath,
       currentVersion: "0.3.0",
       platform: "linux",
       arch: "x64",

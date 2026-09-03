@@ -732,7 +732,10 @@ describe("auto-update background wiring stays invisible on stdout", () => {
       const installedPath = path.join(installDir, "gusto");
       writeFileSync(installedPath, '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
       const stagedBody = '#!/bin/sh\necho "0.2.0"\n';
-      const stagedPath = path.join(installDir, ".gusto-upgrade");
+      // The background staging name, which is the only one the swap will look at now that it
+      // derives the path rather than reading it back out of state. This fixture used to sit at the
+      // interactive `.gusto-upgrade`, which worked only because the recorded path was trusted.
+      const stagedPath = path.join(installDir, ".gusto-background-upgrade");
       writeFileSync(stagedPath, stagedBody, { mode: 0o755 });
       const checksum = createHash("sha256").update(stagedBody).digest("hex");
 

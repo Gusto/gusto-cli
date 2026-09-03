@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as FS_CONST } from "node:fs";
 import { chmod, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +8,7 @@ import { configPaths, readConfig } from "./config.ts";
 import type { EnvSource } from "./env.ts";
 import type { OutputMode, StreamSinks } from "./output.ts";
 import {
+  BACKGROUND_STAGING_NAME,
   defaultVersionOf,
   envForSubprocess,
   isSelfExecutable,
@@ -84,8 +85,27 @@ export async function writeState(state: UpdateState, file: string = stateFilePat
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(state)) if (v !== undefined) out[k] = v;
-  await Bun.write(file, stringify(out));
-  await chmod(file, 0o600);
+
+  // Written to a sibling and renamed over, rather than truncated in place. `Bun.write` is
+  // open(O_TRUNC) then write, and `readState` maps both an empty file and a parse failure to `{}` -
+  // "nothing has happened yet" - which it cannot tell from a real first run. So a file left
+  // truncated by a Ctrl-C or a kill mid-write didn't just lose the pending stage: the next
+  // `maybeSpawnBackgroundCheck` read `{}`, wrote `{...{}, last_checked}`, and permanently erased
+  // the entry pointing at a verified release-sized binary, which then sat orphaned in the install
+  // dir forever. `rename` is atomic, so every reader now sees either the whole old file or the
+  // whole new one. Same discipline `stageAndFinalize` uses for the binary itself.
+  // Unique per call, not per process: two writes overlapping inside one process would otherwise
+  // share a temp path, and the first `rename` to land would leave the second with nothing to
+  // rename. Both callers in the `preAction` hook write this file.
+  const temp = `${file}.${randomUUID()}.tmp`;
+  try {
+    await Bun.write(temp, stringify(out));
+    await chmod(temp, 0o600);
+    await rename(temp, file);
+  } catch (err) {
+    await unlink(temp).catch(() => {});
+    throw err;
+  }
 }
 
 function isPinned(env: EnvSource): boolean {
@@ -125,23 +145,37 @@ export interface SwapDeps {
 export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
   const file = deps.stateFile ?? stateFilePath();
   try {
-    const state = await readState(file);
-    if (state.staged_version === undefined || state.staged_path === undefined) return;
-
-    // Opting out silences both the update and the notice - including a stage a background check
-    // left behind before the opt-out. Leave it exactly as it is, same as the pin below: turning
-    // auto_update back on later still finds it there.
+    // Both free, and both checked before the state file is read: a user who opted out or pinned
+    // would otherwise pay a stat, an open, a read and a TOML parse on every command they ever run
+    // to reach a decision that needed none of it. Neither branch touches state, so a stage left
+    // behind before the opt-out still sits there untouched when it's turned back on.
     if (deps.cfg.auto_update === "off") return;
-
     const env = deps.env ?? process.env;
-    // The pin means "never auto-update" - leave the stage exactly as it is so a later invocation,
-    // once the pin is gone, can still pick it up.
     if (isPinned(env)) return;
+
+    const state = await readState(file);
+    if (state.staged_version === undefined || state.staged_checksum === undefined) return;
 
     const pathResult = resolveTargetPath(env, deps.execPath ?? process.execPath);
     if (!pathResult.ok) return;
     const { targetPath, isSelf } = pathResult;
-    const stagedPath = state.staged_path;
+
+    // Derived, never read from the state file. A background check only ever stages one place - a
+    // sibling of the install target - so the recorded path carries no information this doesn't.
+    // Taking it from the file instead made it an arbitrary-path primitive: everything downstream
+    // that looks like verification is self-referential, because whoever writes `staged_path` also
+    // writes the `staged_checksum` it gets compared against. With local write access to the config
+    // dir, that turned "drop a 0755 file anywhere" into "the next gusto invocation installs it as
+    // gusto", announced as a routine auto-update. Deriving it costs nothing and removes the
+    // primitive outright, so the state file stops being a trust boundary.
+    const stagedPath = path.join(path.dirname(targetPath), BACKGROUND_STAGING_NAME);
+    if (state.staged_path !== stagedPath) {
+      // Either a corrupt entry or one written for a different install dir. The recorded path is
+      // not trusted enough to open or unlink, so only the entry goes; a real stray at the derived
+      // path is cleared by `preflightStagingPath` the next time anything stages there.
+      await discardStage(state, file);
+      return;
+    }
     const stillOurs = deps.stillOurs ?? stagingStillOurs;
     const currentVersion = deps.currentVersion ?? VERSION;
     const versionOf = deps.versionOf ?? defaultVersionOf;
@@ -179,29 +213,32 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
         // run, and `preflightStagingPath` already clears a genuine stray next time anything stages
         // here.
         //
-        // Reported in every mode, unlike the routine success notice below. Only a background check
-        // ever writes this path, so a mismatch means it changed underneath the one process that
-        // writes it - a failing disk or real tampering look exactly like this, and swallowing it in
-        // agent mode would let it recur silently forever. `loadConfig`'s corrupt-config warning
-        // sets the precedent: stderr with no mode check, stdout still a clean envelope. The path is
-        // named so there is something to go and look at.
+        // Reported in every mode, unlike the routine success notice below, because a failing disk
+        // and real tampering both look exactly like this and swallowing it in agent mode would let
+        // either recur forever. `loadConfig`'s corrupt-config warning sets the precedent: stderr
+        // with no mode check, stdout still a clean envelope.
+        //
+        // Deliberately worded as an observation rather than an accusation. An earlier version said
+        // this could only mean the file changed underneath the one process that writes it, which
+        // isn't true: the staging name is shared by every background check and two of those can
+        // overlap (see the `open` above), so a second check replacing the first's file reaches here
+        // too. That's benign, and a notice telling an operator to treat it as tampering when the
+        // likeliest cause is a race is worse than no notice. The path is named so there is
+        // something to go and look at, and the next line says what to do about it.
         // noboost - the XSS rule matches `.write(` with interpolation; this is a terminal stream in
         // a CLI with no web surface, and every value here comes from our own 0600 state file.
         deps.sinks.stderr.write(
           `gusto: ignored a pending update - the staged file at ${stagedPath} no longer matches its ` + // noboost
-            `recorded checksum, so it was not installed\n`, // noboost
+            `recorded checksum, so it was not installed. If this repeats, remove that file and ` + // noboost
+            `run \`gusto upgrade\` to install a verified build.\n`, // noboost
         );
         await discardStage(state, file);
         return;
       }
 
-      // Recorded against a different install target (GUSTO_INSTALL_DIR moved since the stage was
-      // made). Not ours to install here - and nothing will look at that directory again, so the
-      // file is removed rather than stranded there at release size forever. Safe to remove
-      // precisely because the checksum above matched: this is provably the file we staged, and the
-      // identity check makes sure it still is at the moment of the unlink.
+      // Staged for a different install target (GUSTO_INSTALL_DIR moved since). The file at the
+      // derived path belongs to that other target, so it is left alone and only the entry goes.
       if (state.staged_install_path !== targetPath) {
-        if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
         await discardStage(state, file);
         return;
       }
@@ -318,9 +355,12 @@ export async function swapStagedUpdate(deps: SwapDeps): Promise<void> {
  * invocation. At the cap both go, because nothing else ever clears a pending stage -
  * `maybeSpawnBackgroundCheck` returns early while one is set.
  *
- * `readState` accepts any string for `swap_attempts`, and a non-numeric one would make every
- * comparison here false: the cap would never fire, `String(NaN)` would be written back, and that
- * startup re-hash would go on forever - exactly the cost this counter exists to bound. */
+ * `readState` accepts any string for `swap_attempts`, so the parse has to survive whatever is in
+ * the file. A non-numeric value would make every comparison here false and write `String(NaN)`
+ * back; a negative one parses fine and is worse, since `attempts >= MAX_SWAP_ATTEMPTS` then stays
+ * false for longer than anyone will run this. Either way the cap would never fire and the startup
+ * re-hash would go on forever, which is the cost this counter exists to bound - hence a positive
+ * integer or nothing. */
 async function countSwapAttempt(
   state: UpdateState,
   file: string,
@@ -329,7 +369,7 @@ async function countSwapAttempt(
   stillOurs: typeof stagingStillOurs,
 ): Promise<void> {
   const previous = Number.parseInt(state.swap_attempts ?? "0", 10);
-  const attempts = (Number.isFinite(previous) ? previous : 0) + 1;
+  const attempts = (Number.isInteger(previous) && previous > 0 ? previous : 0) + 1;
   if (attempts >= MAX_SWAP_ATTEMPTS) {
     if (await stillOurs(handle, stagedPath)) await unlink(stagedPath).catch(() => {});
     await discardStage(state, file);
@@ -462,6 +502,25 @@ export async function runBackgroundCheck(
   deps: StageDeps & { stateFile?: string; configFile?: string } = { log: () => {} },
 ): Promise<void> {
   const file = deps.stateFile ?? stateFilePath();
+  const env = deps.env ?? process.env;
+  // Re-asserted here, not just in `maybeSpawnBackgroundCheck`, because this is reachable without
+  // going through it: `--internal-background-update` is a flag anyone can type and `index.ts`
+  // dispatches it upstream of every other check. Without the repo check,
+  // `GUSTO_CLI_REPO=someone/fork gusto --internal-background-update` stages that fork's binary with
+  // a complete state entry - checksummed against the fork's own SHA256SUMS, so nothing downstream
+  // can tell it apart - and the next ordinary invocation with no override set installs it over the
+  // live binary and calls it a routine auto-update. Guarding only the spawn left that guard
+  // describing an attack it didn't actually prevent.
+  //
+  // `GUSTO_CLI_BASE_URL` is deliberately *not* refused here, even though the trigger refuses it.
+  // The trigger's reason is convergence, not integrity: with a base URL there's no tag to compare,
+  // so an unattended check would re-stage the same bytes every window forever. It can't produce an
+  // installable stage either way - `resolveTargetTag` returns a null tag, so `to` is null,
+  // `staged_version` is never recorded, and `swapStagedUpdate` returns at its first guard. Leaving
+  // it usable is what lets the test suite drive this against a local server offline.
+  if (isPinned(env)) return;
+  if (env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0) return;
+  if (!isSelfExecutable(deps.execPath ?? process.execPath)) return;
   try {
     const result = await stageUpdate(deps);
     if (!result.ok || result.data.status !== "staged") return;
