@@ -90,6 +90,12 @@ describe("resolveApiContext", () => {
     expect(result.result.error.message).toContain("--token-stdin");
   });
 
+  test("requireCompany:false ignores a malformed GUSTO_COMPANY_UUID", async () => {
+    process.env.GUSTO_COMPANY_UUID = "co-1";
+    const result = await resolveApiContext(flags, { requireCompany: false, ...stdinAuth() });
+    expect(result.ok).toBe(true);
+  });
+
   test("requireCompany:false returns a context narrowed to hasCompany:false", async () => {
     const result = await resolveApiContext(flags, { requireCompany: false, ...stdinAuth() });
     expect(result.ok).toBe(true);

@@ -152,7 +152,7 @@ describe("companyFormShowHandler", () => {
     restore = stub.restore;
     await companyFormShowHandler("../companies/co-1/signatories", {})(ctx);
     expect(stub.calls[0]?.url).toContain("/v1/forms/..%2Fcompanies%2Fco-1%2Fsignatories");
-    expect(stub.calls[0]?.url).not.toContain(`/v1/companies/${TEST_COMPANY_UUID}/signatories`);
+    expect(stub.calls[0]?.url).not.toContain("/v1/companies/co-1/signatories");
   });
 
   test("a 404 surfaces as a failed result with the api-client exit code", async () => {

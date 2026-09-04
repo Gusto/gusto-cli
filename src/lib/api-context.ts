@@ -293,7 +293,7 @@ export async function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
 ): Promise<Resolved<ApiContext>> {
-  const supplied = getCompanyUuid(opts.companyOverride);
+  const supplied = opts.requireCompany === false ? null : getCompanyUuid(opts.companyOverride);
   if (supplied && !isValidUuid(supplied.value)) {
     return {
       ok: false,

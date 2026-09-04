@@ -48,6 +48,6 @@ describe("departmentShowHandler", () => {
     restore = stub.restore;
     await departmentShowHandler("../companies/co-1/payroll_reversals", {})(ctx);
     expect(stub.calls[0]?.url).toContain("/v1/departments/..%2Fcompanies%2Fco-1%2Fpayroll_reversals");
-    expect(stub.calls[0]?.url).not.toContain(`/v1/companies/${TEST_COMPANY_UUID}/payroll_reversals`);
+    expect(stub.calls[0]?.url).not.toContain("/v1/companies/co-1/payroll_reversals");
   });
 });

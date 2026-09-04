@@ -728,7 +728,7 @@ describe("timesheetListHandler", () => {
         if (result.ok) throw new Error("unreachable");
         expect(result.exitCode).toBe(ExitCode.Validation);
         expect(result.error.code).toBe("invalid_company_uuid");
-        expect(result.error.message).toContain(origin);
+        expect(result.error.message).toContain(`company UUID from ${origin}`);
         expect(calls).toHaveLength(0);
       } finally {
         restore();
