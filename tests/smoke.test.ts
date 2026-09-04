@@ -1,5 +1,16 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
@@ -22,7 +33,15 @@ const ISOLATED_CONFIG = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-"));
 async function run(args: string[], env: Record<string, string> = {}, stdin?: string): Promise<Run> {
   return spawnCapture(
     [BIN_PATH, ...args],
-    { ...stripGustoEnv(process.env), XDG_CONFIG_HOME: ISOLATED_CONFIG, ...env },
+    {
+      ...stripGustoEnv(process.env),
+      XDG_CONFIG_HOME: ISOLATED_CONFIG,
+      // Pinned by default so the auto-update background check never fires a real network call
+      // during a smoke run - it's covered hermetically in lib/auto-update.test.ts. A test that
+      // wants to exercise the trigger itself overrides GUSTO_CLI_VERSION explicitly.
+      GUSTO_CLI_VERSION: pkg.version,
+      ...env,
+    },
     { stdin },
   );
 }
@@ -649,6 +668,228 @@ describe("config commands work without auth", () => {
     expect(envelope.error.code).toBe("invalid_value");
     expect(envelope.error.message).toContain("json");
   });
+
+  test("auto_update set + get + list round-trip, rejecting invalid values", async () => {
+    const env = { XDG_CONFIG_HOME: scratchHome };
+
+    let result = await run(["config", "set", "auto_update", "off"], env);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).data.value).toBe("off");
+
+    result = await run(["config", "get", "auto_update"], env);
+    expect(JSON.parse(result.stdout.trim()).data.value).toBe("off");
+
+    result = await run(["config", "list"], env);
+    expect(JSON.parse(result.stdout.trim()).data.values.auto_update).toBe("off");
+
+    result = await run(["config", "set", "auto_update", "sometimes"], env);
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_value");
+  });
+});
+
+describe("auto-update background wiring stays invisible on stdout", () => {
+  let scratchHome: string;
+
+  beforeEach(() => {
+    scratchHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-autoupdate-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratchHome, { recursive: true, force: true });
+  });
+
+  // The hard requirement: an update pending or not, --agent/--json/piped stdout must be
+  // byte-identical. GUSTO_CLI_VERSION stays pinned (the default `run()` env) so no real network
+  // call happens - which also means the trigger returns at its pin check before ever reading
+  // `last_checked`, so this does *not* exercise the staleness comparison. What it does cover is
+  // `swapStagedUpdate`, which reads that same file on every invocation regardless of the pin:
+  // a present-but-unusable state entry must leave stdout untouched. Same XDG_CONFIG_HOME for both
+  // runs, so `config_path` in the envelope can't itself differ.
+  test("stdout is unaffected by a pre-existing stale update-check state", async () => {
+    const env = { XDG_CONFIG_HOME: scratchHome };
+    const plain = await run(["config", "list"], env);
+
+    mkdirSync(path.join(scratchHome, "gusto"), { recursive: true });
+    writeFileSync(path.join(scratchHome, "gusto", "update-state.toml"), 'last_checked = "2020-01-01T00:00:00.000Z"\n');
+    const withStaleState = await run(["config", "list"], env);
+
+    expect(withStaleState.exitCode).toBe(plain.exitCode);
+    expect(withStaleState.stdout).toBe(plain.stdout);
+  });
+
+  // The other half of that requirement, with a real pending update this time: swapStagedUpdate
+  // actually installs it (against an isolated GUSTO_INSTALL_DIR, never the shared dist/gusto binary), and
+  // stdout still doesn't move. `last_checked` is fresh so maybeSpawnBackgroundCheck's own
+  // staleness check - not the version pin - is what keeps this hermetic (no real spawn), while
+  // GUSTO_CLI_VERSION is unpinned so the swap itself isn't skipped.
+  test("stdout is unaffected by an update that actually gets installed this invocation", async () => {
+    // Canonicalized to match the form `resolveTargetPath` reports back - on macOS $TMPDIR lives
+    // under a /var -> /private/var symlink, and swapStagedUpdate deliberately refuses to swap a
+    // stage recorded under a path that doesn't textually match the freshly resolved target.
+    const installDir = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-autoupdate-install-")));
+    try {
+      const installedPath = path.join(installDir, "gusto");
+      writeFileSync(installedPath, '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+      const stagedBody = '#!/bin/sh\necho "0.2.0"\n';
+      // The background staging name, which is the only one the swap will look at now that it
+      // derives the path rather than reading it back out of state. This fixture used to sit at the
+      // interactive `.gusto-upgrade`, which worked only because the recorded path was trusted.
+      const stagedPath = path.join(installDir, ".gusto-background-upgrade");
+      writeFileSync(stagedPath, stagedBody, { mode: 0o755 });
+      const checksum = createHash("sha256").update(stagedBody).digest("hex");
+
+      const env = { XDG_CONFIG_HOME: scratchHome, GUSTO_INSTALL_DIR: installDir, GUSTO_CLI_VERSION: "" };
+      const plain = await run(["config", "list"], { XDG_CONFIG_HOME: scratchHome });
+
+      mkdirSync(path.join(scratchHome, "gusto"), { recursive: true });
+      writeFileSync(
+        path.join(scratchHome, "gusto", "update-state.toml"),
+        [
+          `last_checked = "${new Date().toISOString()}"`,
+          `staged_version = "0.2.0"`,
+          `staged_checksum = "${checksum}"`,
+          `staged_path = "${stagedPath}"`,
+          `staged_install_path = "${installedPath}"`,
+          `staged_from = "0.1.0"`,
+          "",
+        ].join("\n"),
+      );
+      const withPendingUpdate = await run(["config", "list"], env);
+
+      expect(withPendingUpdate.exitCode).toBe(plain.exitCode);
+      expect(withPendingUpdate.stdout).toBe(plain.stdout);
+      // The swap really happened, against the isolated install dir - not a no-op.
+      expect(readFileSync(installedPath, "utf8")).toBe(stagedBody);
+      expect(existsSync(stagedPath)).toBe(false);
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  // The internal-child check matches the exact argv shape `defaultSpawnBackgroundCheck` spawns
+  // (one real argument, and it's the flag) rather than scanning for the string anywhere in argv.
+  // A normal command whose own argument value happens to equal that string must still run - not
+  // get swallowed by the background-check short-circuit and exit 0 without ever executing.
+  test("a command argument equal to the internal background-update flag still runs the command", async () => {
+    const result = await run(["config", "get", "--", "--internal-background-update"], {
+      XDG_CONFIG_HOME: scratchHome,
+    });
+
+    expect(result.exitCode).toBe(7);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("unknown_key");
+  });
+
+  // The other half of that argv match, and the only part of this feature whose behaviour differs
+  // between the compiled binary and `bun test` - the unit tests call `runBackgroundCheck` directly
+  // rather than reaching it through argv, so this line is otherwise uncovered. Hermetic under
+  // `run()`'s default pin: the child resolves `up_to_date` before any fetch.
+  test("the internal background-update flag dispatches to the child and stays silent", async () => {
+    const result = await run(["--internal-background-update"], { XDG_CONFIG_HOME: scratchHome });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+});
+
+describe("background check is suppressed for upgrade invocations", () => {
+  let scratchHome: string;
+
+  beforeEach(() => {
+    scratchHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-autoupdate-upgrade-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratchHome, { recursive: true, force: true });
+  });
+
+  function stateFile(): string {
+    return path.join(scratchHome, "gusto", "update-state.toml");
+  }
+
+  // GUSTO_CLI_VERSION unpinned (overriding run()'s hermetic default) so the trigger's own pin
+  // check isn't what's suppressing it here - only the preAction hook's upgrade check should be.
+  // GUSTO_INSTALL_DIR points at a Homebrew-shaped path so upgrade's own resolution fails fast on
+  // `managed_install`, before any network call - dry-run's exit code is irrelevant to this test,
+  // only whether the background check got claimed/spawned.
+  test("gusto upgrade --dry-run does not claim or spawn a background check", async () => {
+    const result = await run(["upgrade", "--dry-run"], {
+      XDG_CONFIG_HOME: scratchHome,
+      GUSTO_CLI_VERSION: "",
+      GUSTO_INSTALL_DIR: "/opt/homebrew/bin",
+    });
+
+    // Blocked on managed_install, as expected for a Homebrew-shaped install dir - upgrade's own
+    // outcome isn't what this test is about, only that it didn't also claim/spawn a check.
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("managed_install");
+    expect(existsSync(stateFile())).toBe(false);
+  });
+
+  // The other half of the same exclusion, and the half with teeth: the swap replaces the binary
+  // before commander parses, so without it `--dry-run` - documented as reporting "without
+  // downloading or replacing anything" - installs a pending stage and then reports against this
+  // process's compiled-in VERSION, printing `auto-updated: X -> Y` on stderr and
+  // `upgrade available: X -> Y` on stdout in one run. One `return` guards both halves, so moving
+  // the swap back out of the hook would pass the spawn test above while bringing this back.
+  test("gusto upgrade --dry-run leaves a pending stage on disk instead of installing it", async () => {
+    const installDir = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-dryrun-")));
+    try {
+      const installedPath = path.join(installDir, "gusto");
+      copyFileSync(BIN_PATH, installedPath);
+      const stagedBody = '#!/bin/sh\necho "9.9.9"\n';
+      const stagedPath = path.join(installDir, ".gusto-background-upgrade");
+      writeFileSync(stagedPath, stagedBody, { mode: 0o755 });
+      const installedBefore = readFileSync(installedPath);
+
+      mkdirSync(path.join(scratchHome, "gusto"), { recursive: true });
+      writeFileSync(
+        path.join(scratchHome, "gusto", "update-state.toml"),
+        [
+          `staged_version = "9.9.9"`,
+          `staged_checksum = "${createHash("sha256").update(stagedBody).digest("hex")}"`,
+          `staged_path = "${stagedPath}"`,
+          `staged_install_path = "${installedPath}"`,
+          `staged_from = "${pkg.version}"`,
+          "",
+        ].join("\n"),
+      );
+
+      // Unpinned, so nothing but the upgrade exclusion can stop the swap. The base-URL override
+      // keeps the dry-run itself off the network.
+      const result = await run(["upgrade", "--dry-run"], {
+        XDG_CONFIG_HOME: scratchHome,
+        GUSTO_INSTALL_DIR: installDir,
+        GUSTO_CLI_VERSION: "",
+        GUSTO_CLI_BASE_URL: "http://127.0.0.1:1",
+      });
+
+      expect(result.exitCode).toBe(0);
+      // Neither replaced nor consumed: the stage is exactly where dry-run found it.
+      expect(readFileSync(installedPath)).toEqual(installedBefore);
+      expect(readFileSync(stagedPath, "utf8")).toBe(stagedBody);
+      expect(result.stderr).not.toContain("auto-updated");
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  // Unpinned so the trigger's pin check doesn't short-circuit before the spawn - but the child it
+  // spawns is a real detached process, so it needs somewhere to fail before it reaches the network.
+  // GUSTO_INSTALL_DIR does that: `isSelfExecutable` never looks at it, so the parent still claims
+  // the window and writes the state file, while the child stops at `managed_install` inside
+  // `preflightInstallDir`, which runs before `resolveTargetTag`. Without this the child does a live
+  // release lookup against github.com on every `bun run test:all`, and downloads a real binary into
+  // `dist/` whenever the latest release differs from package.json's version.
+  test("a non-upgrade command still claims and spawns a background check", async () => {
+    const result = await run(["config", "get", "environment"], {
+      XDG_CONFIG_HOME: scratchHome,
+      GUSTO_CLI_VERSION: "",
+      GUSTO_INSTALL_DIR: "/opt/homebrew/bin",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(stateFile())).toBe(true);
+  });
 });
 
 describe("skill commands work without auth", () => {
@@ -1079,4 +1320,126 @@ describe("per-environment credential slots", () => {
       expect(result.stdout).toContain("--env and GUSTO_ENVIRONMENT override it");
     },
   );
+});
+
+// The whole feature, end to end, with real compiled binaries and real processes: a background
+// child that downloads and verifies an actual release asset, then a later invocation that installs
+// it. Everything else stubs `fetch`, `spawn` or `versionOf` somewhere, so this is the only place
+// the production path runs as production.
+//
+// What it pins, measured rather than assumed: the staging-name split and the swap notice. Not
+// SKIP_AUTO_UPDATE_ENV - no stage exists when the exec-check runs, so the nested run exits at its
+// first check; that guard is pinned in upgrade.test.ts.
+describe("auto-update end to end against a served release", () => {
+  let work: string;
+  let installDir: string;
+  let configHome: string;
+  let installed: string;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    work = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-e2e-")));
+    installDir = path.join(work, "install");
+    configHome = path.join(work, "config");
+    mkdirSync(installDir, { recursive: true });
+    mkdirSync(path.join(configHome, "gusto"), { recursive: true });
+    installed = path.join(installDir, "gusto");
+    copyFileSync(BIN_PATH, installed);
+  });
+
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  function serveRelease(): string {
+    // The real binary as the release asset, checksummed for real. Same version as the one
+    // "installed", which is what keeps this hermetic - the point here is the mechanics, and the
+    // version transition itself is covered by the unit tests around `staged_from`.
+    const bytes = readFileSync(BIN_PATH);
+    const sum = createHash("sha256").update(bytes).digest("hex");
+    const asset = `gusto-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
+    server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const name = new URL(req.url).pathname.replace(/^\//, "");
+        if (name === "SHA256SUMS") return new Response(`${sum}  ${asset}\n`);
+        if (name === asset) return new Response(bytes);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    return `http://localhost:${server.port}`;
+  }
+
+  async function invoke(args: string[], extra: Record<string, string> = {}): Promise<Run> {
+    return spawnCapture([installed, ...args], {
+      ...stripGustoEnv(process.env),
+      XDG_CONFIG_HOME: configHome,
+      GUSTO_INSTALL_DIR: installDir,
+      ...extra,
+    });
+  }
+
+  const statePath = (): string => path.join(configHome, "gusto", "update-state.toml");
+
+  test("a background check stages a verified release, and the next command installs it", async () => {
+    const base = serveRelease();
+
+    // The child is invoked directly, the way the detached spawn invokes it. It does the real
+    // download, the real checksum, and the real exec-check.
+    const child = await invoke(["--internal-background-update"], { GUSTO_CLI_BASE_URL: base });
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout).toBe("");
+
+    const staged = readFileSync(statePath(), "utf8");
+    expect(staged).toContain(`staged_version = "${pkg.version}"`);
+    // Its own staging name, so an interactive `gusto upgrade` can never contend for the file.
+    expect(staged).toContain(".gusto-background-upgrade");
+    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(true);
+
+    // Now the swap, on an ordinary command. Unpinned, since a pin suppresses the swap outright -
+    // but with the base URL still pointed at the fixture server, because unpinning also re-arms the
+    // background *trigger*: no stage is pending any more and nothing has written `last_checked`, so
+    // every gate would pass and this would spawn a real detached child against live github and
+    // download a release into a directory `afterEach` is about to delete (and race the assertion
+    // below if it ever won). `swapStagedUpdate` never reads the base URL, so this weakens nothing
+    // here - it only makes the trigger bail, which is what `run()` uses the default pin for.
+    const swap = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
+    expect(swap.exitCode).toBe(0);
+    expect(swap.stderr).toContain("auto-updated");
+    // stdout carries the command's own output and nothing else - the contract agents rely on.
+    expect(swap.stdout).not.toContain("auto-updated");
+    expect(readFileSync(statePath(), "utf8")).not.toContain("staged_version");
+    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(false);
+
+    // Nothing pending now, so an identical command says nothing at all.
+    const again = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
+    expect(again.stderr).not.toContain("auto-updated");
+  }, 120_000);
+
+  // The consumer side of `GUSTO_INTERNAL_SKIP_AUTO_UPDATE`: that `index.ts` honours it, not just
+  // that `defaultVersionOf` sets it. The exec-check runs the downloaded binary for real, so a
+  // nested run would act on the same `update-state.toml` the outer call is working through.
+  //
+  // The swap half only: the pending stage set up below is also what makes
+  // `maybeSpawnBackgroundCheck` return early, so the trigger stays quiet here with or without the
+  // guard, and this pins nothing about it.
+  test("an invocation with the skip variable set touches neither the binary nor the state", async () => {
+    serveRelease();
+    const before = readFileSync(installed);
+    await Bun.write(statePath(), `staged_version = "9.9.9"\nstaged_path = "/nonexistent"\n`);
+    const stateBefore = readFileSync(statePath(), "utf8");
+
+    const run = await invoke(["config", "list", "--human"], {
+      GUSTO_CLI_VERSION: "",
+      GUSTO_INTERNAL_SKIP_AUTO_UPDATE: "1",
+    });
+
+    expect(run.exitCode).toBe(0);
+    // No swap attempted: one would fail to open `/nonexistent`, discard the stage and rewrite this
+    // file, so an untouched byte-for-byte copy is what says the guard held.
+    expect(readFileSync(statePath(), "utf8")).toBe(stateBefore);
+    expect(readFileSync(installed).equals(before)).toBe(true);
+  }, 120_000);
 });

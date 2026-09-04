@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -18,6 +19,8 @@ import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
 import {
   assetBaseUrl,
+  BACKGROUND_STAGING_NAME,
+  defaultVersionOf,
   ensureInstallDir,
   parseSha256Sums,
   performUpgrade,
@@ -26,8 +29,11 @@ import {
   preflightStagingPath,
   resolveTargetPath,
   resolveTargetTag,
+  SKIP_AUTO_UPDATE_ENV,
+  stageUpdate,
   tagToVersion,
 } from "./upgrade.ts";
+import { createHash } from "node:crypto";
 
 const scratchDirs: string[] = [];
 
@@ -608,5 +614,272 @@ describe("performUpgrade ordering", () => {
     }
     expect(gateCalled).toBe(false);
     expect(fetched).toBe(false);
+  });
+});
+
+describe("stageUpdate", () => {
+  const NEW_BINARY = '#!/bin/sh\necho "0.2.0"\n';
+
+  /** Stands in for `defaultVersionOf`: reports whatever version the stub binary at `file` would
+   * `echo`, rather than a version fixed at test-setup time - so it reports correctly for both the
+   * pre-existing installed binary and whatever ends up staged. */
+  async function versionOfStub(file: string): Promise<string | null> {
+    try {
+      return readFileSync(file, "utf8").match(/"([0-9]+\.[0-9]+\.[0-9]+)"/)?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function fixtureFetch(opts: { binaryBody?: string; sha256sumsBody?: string } = {}) {
+    const binaryBody = opts.binaryBody ?? NEW_BINARY;
+    const hash = createHash("sha256").update(binaryBody).digest("hex");
+    const sha256sumsBody = opts.sha256sumsBody ?? `${hash}  gusto-linux-x64\n`;
+    const requested: string[] = [];
+    const fetchImpl = stubFetch(async (url) => {
+      const name = url.toString().split("/").pop() ?? "";
+      requested.push(name);
+      if (name === "SHA256SUMS") return new Response(sha256sumsBody);
+      if (name === "gusto-linux-x64") return new Response(binaryBody);
+      return new Response("not found", { status: 404 });
+    });
+    return { fetchImpl, requested, binaryBody };
+  }
+
+  test("stages a verified binary alongside the install path, without touching it", async () => {
+    const dir = tmpDir("gusto-cli-stage-");
+    const installed = path.join(dir, "gusto");
+    writeFileSync(installed, '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const { fetchImpl, requested } = fixtureFetch();
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toMatchObject({ status: "staged", from: "0.1.0", to: "0.2.0", install_path: installed });
+      expect(typeof (result.data as { staged_path?: string }).staged_path).toBe("string");
+    }
+    expect(requested).toContain("gusto-linux-x64");
+    // The installed binary is untouched - staging never renames.
+    expect(readFileSync(installed, "utf8")).toContain("0.1.0");
+    const stagedPath = result.ok ? (result.data as { staged_path: string }).staged_path : "";
+    expect(existsSync(stagedPath)).toBe(true);
+    expect(readFileSync(stagedPath, "utf8")).toContain("0.2.0");
+    // The whole point of the separate name: a background stage must not land on the path an
+    // interactive `gusto upgrade` claims, or the two contend for one file and whichever preflights
+    // second deletes the other's download. Asserting the basename is what keeps that split honest -
+    // without it, dropping the argument that selects this name leaves the suite green.
+    expect(path.basename(stagedPath)).toBe(BACKGROUND_STAGING_NAME);
+  });
+
+  test("reports up_to_date and downloads nothing when already current", async () => {
+    const dir = tmpDir("gusto-cli-stage-uptodate-");
+    const installed = path.join(dir, "gusto");
+    writeFileSync(installed, NEW_BINARY, { mode: 0o755 });
+    const { fetchImpl, requested } = fixtureFetch();
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.2.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toMatchObject({ status: "up_to_date" });
+    expect(requested).toEqual([]);
+  });
+
+  test("surfaces a preflight failure (managed install) without touching the network", async () => {
+    const { fetchImpl, requested } = fixtureFetch();
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: "/opt/homebrew/bin", GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("managed_install");
+    expect(requested).toEqual([]);
+  });
+
+  test("aborts on a checksum mismatch, leaving no staged file behind", async () => {
+    const dir = tmpDir("gusto-cli-stage-badsum-");
+    writeFileSync(path.join(dir, "gusto"), '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const { fetchImpl } = fixtureFetch({ sha256sumsBody: "0000000000000000  gusto-linux-x64\n" });
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("checksum_mismatch");
+    expect(readdirSync(dir).filter((f) => f.startsWith("."))).toEqual([]);
+  });
+});
+
+describe("defaultVersionOf", () => {
+  // A binary that prints its version and leaves something forked behind holding the stdout pipe.
+  // Draining stdout ends only when every write end closes, so before the probe became a process
+  // group leader this shape ignored `timeoutMs` completely - a 1s deadline measured 20s.
+  function scriptLeavingAGrandchild(dir: string, body: string): string {
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\n${body}\nsleep 20 &\nexit 0\n`, { mode: 0o755 });
+    return script;
+  }
+
+  // The distinction `onTimeout` exists to draw. A binary that can't run reports no version, exactly
+  // like one the deadline killed - but only the second is a stage worth retrying. Reporting a
+  // timeout for the first would have `swapStagedUpdate` keep a stage it should have dropped and
+  // burn its bounded attempts on a target that is never going to answer.
+  test.each([
+    ["exits non-zero", "#!/bin/sh\nexit 1\n"],
+    ["prints nothing", "#!/bin/sh\ntrue\n"],
+    ["is not executable at all", "this is not a program\n"],
+  ])("does not report a timeout when the target simply %s", async (_label, body) => {
+    const dir = tmpDir("gusto-cli-versionof-unrunnable-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, body, { mode: 0o755 });
+    let timedOut = false;
+
+    const reported = await defaultVersionOf(script, 5_000, () => {
+      timedOut = true;
+    });
+
+    expect(reported).toBeNull();
+    expect(timedOut).toBe(false);
+  });
+
+  test("returns inside the deadline when the probe leaves a grandchild holding stdout", async () => {
+    const script = scriptLeavingAGrandchild(tmpDir("gusto-cli-versionof-gc-"), 'echo "1.2.3"');
+
+    const started = performance.now();
+    const reported = await defaultVersionOf(script, 500);
+    const elapsed = performance.now() - started;
+
+    // Bounded - the whole point. Generous ceiling so a loaded CI box doesn't flake it; the
+    // regression this catches overruns by 40x, not 4x.
+    expect(elapsed).toBeLessThan(5_000);
+    // And a version the binary really did print still wins: killing the process group closes the
+    // pipe, so the read settles with what was written rather than being abandoned.
+    expect(reported).toBe("1.2.3");
+  }, 30_000);
+
+  test("reports the deadline through onTimeout when nothing usable came back", async () => {
+    const script = scriptLeavingAGrandchild(tmpDir("gusto-cli-versionof-gc-silent-"), "true");
+    let timedOut = false;
+
+    const reported = await defaultVersionOf(script, 500, () => {
+      timedOut = true;
+    });
+
+    expect(reported).toBeNull();
+    expect(timedOut).toBe(true);
+  }, 30_000);
+
+  // The other direction, and the one that matters for the swap: a probe the deadline interrupted
+  // but which had already printed a version must NOT report a timeout. `swapStagedUpdate` treats a
+  // timeout as "installed version undetermined" and spends one of its bounded attempts on it, so a
+  // false timeout there costs a verified stage.
+  test("does not report a timeout when a version came back despite the kill", async () => {
+    const script = scriptLeavingAGrandchild(tmpDir("gusto-cli-versionof-gc-won-"), 'echo "4.5.6"');
+    let timedOut = false;
+
+    const reported = await defaultVersionOf(script, 500, () => {
+      timedOut = true;
+    });
+
+    expect(reported).toBe("4.5.6");
+    expect(timedOut).toBe(false);
+  }, 30_000);
+
+  // The binary being exec-checked is a real `gusto` build - spawning it for `--version` runs its
+  // own `main()` for real. Without this, that nested run's own `swapStagedUpdate` reads the real
+  // `update-state.toml`: if a stale, unrelated stage happens to be recorded there for the same
+  // install target, it hashes *this* file's current bytes against *that* stage's checksum,
+  // mismatches, and deletes the very file this call is still verifying - so the outer upgrade
+  // fails blaming "another gusto upgrade", which never happened. `index.ts` skips the whole
+  // swap/background-check block whenever it sees this env var set.
+  test("passes the skip-auto-update env var to the spawned exec-check", async () => {
+    const dir = tmpDir("gusto-cli-versionof-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\necho "$${SKIP_AUTO_UPDATE_ENV}"\n`, { mode: 0o755 });
+
+    const reported = await defaultVersionOf(script);
+
+    expect(reported).toBe("1");
+  });
+
+  // The exec-check runs a just-downloaded binary. It needs nothing from the credential env to
+  // print its version, so it doesn't get it - a token that isn't in the child's environment can't
+  // leak out of one.
+  test("does not pass credential env vars to the spawned exec-check", async () => {
+    const dir = tmpDir("gusto-cli-versionof-creds-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\necho "token=[$GUSTO_ACCESS_TOKEN] company=[$GUSTO_COMPANY_UUID]"\n`, {
+      mode: 0o755,
+    });
+
+    const previousToken = process.env.GUSTO_ACCESS_TOKEN;
+    const previousCompany = process.env.GUSTO_COMPANY_UUID;
+    process.env.GUSTO_ACCESS_TOKEN = "should-not-be-inherited";
+    process.env.GUSTO_COMPANY_UUID = "should-not-be-inherited-either";
+    try {
+      const reported = await defaultVersionOf(script);
+      expect(reported).toBe("token=[] company=[]");
+    } finally {
+      if (previousToken === undefined) delete process.env.GUSTO_ACCESS_TOKEN;
+      else process.env.GUSTO_ACCESS_TOKEN = previousToken;
+      if (previousCompany === undefined) delete process.env.GUSTO_COMPANY_UUID;
+      else process.env.GUSTO_COMPANY_UUID = previousCompany;
+    }
+  });
+
+  // PATH in particular: the exec-check and the xattr call both need it to work at all, so the
+  // credential strip must not turn into a minimal-allowlist that breaks them.
+  test("still passes through the ambient env the child needs", async () => {
+    const dir = tmpDir("gusto-cli-versionof-path-");
+    const script = path.join(dir, "gusto");
+    writeFileSync(script, `#!/bin/sh\ntest -n "$PATH" && echo "ok"\n`, { mode: 0o755 });
+
+    expect(await defaultVersionOf(script)).toBe("ok");
+  });
+
+  // The deadline is a parameter because the swap path pays this spawn before an ordinary command's
+  // handler rather than inside an upgrade someone asked for - see `SWAP_EXEC_CHECK_TIMEOUT_MS`. A
+  // target that only answers after it has to read as the same null an unrunnable build does, or
+  // that path would wait out the full 30s it never asked for.
+  test("reports no version when the target answers only after the deadline it was given", async () => {
+    const dir = tmpDir("gusto-cli-versionof-deadline-");
+    const script = path.join(dir, "gusto");
+    // Prints a version, but only long after the deadline below - so getting that version back at
+    // all would mean the deadline was ignored. `sleep`'s own stdout goes to /dev/null so the shell
+    // this kills is the only holder of the pipe being read; otherwise the surviving `sleep` keeps
+    // it open and the read waits out the whole 5s regardless.
+    writeFileSync(script, '#!/bin/sh\nsleep 5 >/dev/null 2>&1\necho "9.9.9"\n', { mode: 0o755 });
+
+    expect(await defaultVersionOf(script, 50)).toBeNull();
   });
 });

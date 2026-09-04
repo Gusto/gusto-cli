@@ -29,6 +29,7 @@ describe("validateKey", () => {
     expect(validateKey("environment")).toBe("environment");
     expect(validateKey("format")).toBe("format");
     expect(validateKey("skills_auto_install")).toBe("skills_auto_install");
+    expect(validateKey("auto_update")).toBe("auto_update");
   });
   test("rejects unknown keys", () => {
     expect(validateKey("token")).toBeNull();
@@ -83,6 +84,11 @@ describe("normalizeValue", () => {
     expect(validateValue("skills_auto_install", "never")).toBeNull();
     expect(validateValue("skills_auto_install", "sometimes")).not.toBeNull();
   });
+  test("auto_update must be on or off", () => {
+    expect(validateValue("auto_update", "on")).toBeNull();
+    expect(validateValue("auto_update", "off")).toBeNull();
+    expect(validateValue("auto_update", "always")).not.toBeNull();
+  });
 });
 
 describe("read/write/reset", () => {
@@ -100,6 +106,28 @@ describe("read/write/reset", () => {
     expect(await readConfig(paths)).toEqual({ skills_auto_install: "always" });
     await Bun.write(paths.file, `skills_auto_install = "sometimes"\n`);
     expect(await readConfig(paths)).toEqual({});
+  });
+
+  // Unlike every other key here, a value this one can't parse must not fall back to the default:
+  // both readers test `=== "off"`, so anything dropped reads as on - "replace the binary" for
+  // someone who was trying to opt out. `on` is already the default, so a hand-edit of this key is
+  // an attempt to disable it, and that's how an unrecognised value is read.
+  test("auto_update round-trips, and an unparseable value reads as off rather than on", async () => {
+    await writeConfig({ auto_update: "off" }, paths);
+    expect(await readConfig(paths)).toEqual({ auto_update: "off" });
+
+    // The obvious hand-edit for an on/off key, which TOML parses as a boolean.
+    await Bun.write(paths.file, `auto_update = false\n`);
+    expect(await readConfig(paths)).toEqual({ auto_update: "off" });
+    await Bun.write(paths.file, `auto_update = true\n`);
+    expect(await readConfig(paths)).toEqual({ auto_update: "on" });
+
+    await Bun.write(paths.file, `auto_update = "sometimes"\n`);
+    expect(await readConfig(paths)).toEqual({ auto_update: "off" });
+    await Bun.write(paths.file, `auto_update = "OFF"\n`);
+    expect(await readConfig(paths)).toEqual({ auto_update: "off" });
+    await Bun.write(paths.file, `auto_update = "  on  "\n`);
+    expect(await readConfig(paths)).toEqual({ auto_update: "on" });
   });
 
   test("readConfig ignores unknown keys + invalid values", async () => {
