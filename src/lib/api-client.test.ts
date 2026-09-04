@@ -679,3 +679,114 @@ describe("ApiClient RequestObserver", () => {
     expect(stderr.buffer).toBe("> GET /v1/me 200 (12ms) request_id=edge-abc,origin-def\n");
   });
 });
+
+describe("ApiClient reactive refresh on a 401", () => {
+  test("refreshes once and retries with the new token", async () => {
+    const seq = sequenceFetch([{ status: 401 }, { status: 200, body: { ok: true } }]);
+    let refreshCalls = 0;
+    const client = makeClient(seq.fetch, {
+      onUnauthorized: async () => {
+        refreshCalls += 1;
+        return "refreshed-tok";
+      },
+    });
+    const res = await client.get<{ ok: boolean }>("/v1/me");
+    expect(res.body.ok).toBe(true);
+    expect(refreshCalls).toBe(1);
+  });
+
+  test("a second 401 on the retry propagates without a second refresh", async () => {
+    const seq = sequenceFetch([{ status: 401 }, { status: 401 }]);
+    let refreshCalls = 0;
+    const client = makeClient(seq.fetch, {
+      onUnauthorized: async () => {
+        refreshCalls += 1;
+        return "refreshed-tok";
+      },
+    });
+    await expect(client.get("/v1/me")).rejects.toBeInstanceOf(ApiError);
+    expect(refreshCalls).toBe(1);
+  });
+
+  test("concurrent 401s on one client share a single refresh instead of each starting their own", async () => {
+    const responses = [401, 401, 401, 200, 200, 200];
+    const authHeaders: string[] = [];
+    let calls = 0;
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      authHeaders.push((init?.headers as Record<string, string>).Authorization);
+      const status = responses[Math.min(calls, responses.length - 1)] ?? 200;
+      calls += 1;
+      return new Response(status === 200 ? JSON.stringify({ ok: true }) : "", {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    let refreshCalls = 0;
+    const client = makeClient(fetchImpl, {
+      onUnauthorized: async () => {
+        refreshCalls += 1;
+        return "refreshed-tok";
+      },
+    });
+
+    const [a, b, c] = await Promise.all([client.get("/v1/a"), client.get("/v1/b"), client.get("/v1/c")]);
+
+    expect(a.body).toEqual({ ok: true });
+    expect(b.body).toEqual({ ok: true });
+    expect(c.body).toEqual({ ok: true });
+    expect(refreshCalls).toBe(1);
+    expect(calls).toBe(6);
+    expect(authHeaders.filter((h) => h === "Bearer refreshed-tok")).toHaveLength(3);
+  });
+
+  test("a 401 that arrives after a concurrent refresh already finished retries directly, without a second refresh", async () => {
+    // B's first response is gated so it resolves only after A's entire 401 -> refresh -> retry
+    // cycle has completed - the "late straggler" case the in-flight-promise guard alone can't
+    // catch, since by then `inFlightRefresh` has already cleared.
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let aCalls = 0;
+    let bCalls = 0;
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = url.toString();
+      if (u.endsWith("/v1/a")) {
+        aCalls += 1;
+        const status = aCalls === 1 ? 401 : 200;
+        return new Response(status === 200 ? JSON.stringify({ ok: true }) : "", {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      bCalls += 1;
+      if (bCalls === 1) {
+        await gate;
+        return new Response("", { status: 401 });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    let refreshCalls = 0;
+    const client = makeClient(fetchImpl, {
+      onUnauthorized: async () => {
+        refreshCalls += 1;
+        return "refreshed-tok";
+      },
+    });
+
+    const bPromise = client.get("/v1/b"); // starts, then blocks inside fetchImpl on `gate`
+    const a = await client.get("/v1/a"); // 401 -> refresh -> retry -> 200, fully resolves
+    expect(a.body).toEqual({ ok: true });
+    expect(refreshCalls).toBe(1);
+
+    openGate(); // deliver B's 401 now - this.token is already "refreshed-tok"
+    const b = await bPromise;
+    expect(b.body).toEqual({ ok: true });
+    expect(refreshCalls).toBe(1); // B retried directly instead of starting a second refresh
+  });
+});

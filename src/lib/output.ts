@@ -14,6 +14,16 @@ export interface BlockedOn {
   reason: string;
 }
 
+/** Lifts an error's raw body/request id into the two `EnvelopeError` fields that carry them.
+ * Shared by every error-to-envelope mapper so `details`/`request_id` can't drift in shape between
+ * one failure type and another (an `ApiError`-driven one vs. an OAuth-refresh-driven one, say). */
+export function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
+  return {
+    ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
+    ...(err.requestId ? { request_id: err.requestId } : {}),
+  };
+}
+
 export interface EnvelopeError {
   code: string;
   message: string;

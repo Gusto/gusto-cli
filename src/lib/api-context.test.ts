@@ -1010,6 +1010,120 @@ describe("a 401 from a resolved client", () => {
   });
 });
 
+// A stored token can look locally valid (bad/absent expiresAt, clock skew, server-side revocation)
+// and still get rejected; only a session-sourced token has something to refresh and retry with.
+describe("reactive refresh on a 401", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const refreshableSlot = (overrides: Record<string, unknown> = {}) => ({
+    clientId: "cli-id",
+    clientSecret: "cli-secret",
+    accessToken: "stale-tok",
+    refreshToken: "refresh-tok",
+    expiresAt: 10_000_000,
+    ...overrides,
+  });
+
+  test("a session token with a future expiresAt that the server rejects anyway refreshes once and retries", async () => {
+    const s = stubGlobalFetch([
+      { status: 401, body: { error: "unauthorized" } },
+      { status: 200, body: { ok: true } },
+    ]);
+    restore = s.restore;
+    const store = memoryStore({ production: refreshableSlot() });
+    const result = await fetchResource(
+      flags,
+      {
+        store,
+        http: mockHttp({ status: 200, body: { access_token: "fresh-tok", expires_in: 3600 } }),
+        now: () => 1_000,
+      },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual({ ok: true });
+    expect(s.calls).toHaveLength(2); // the rejected attempt, then the retry with the refreshed token
+    // The refreshed pair is persisted, so the next command doesn't repeat the round trip.
+    expect(store.data.production?.accessToken).toBe("fresh-tok");
+  });
+
+  test("a session token with no expiresAt at all still refreshes reactively on a 401", async () => {
+    // classifySession treats an absent expiresAt as "unknown, not expired" and passes the token
+    // through - a 401 is the only thing that can disprove it.
+    const s = stubGlobalFetch([{ status: 401 }, { status: 200, body: { ok: true } }]);
+    restore = s.restore;
+    const store = memoryStore({
+      production: {
+        clientId: "cli-id",
+        clientSecret: "cli-secret",
+        accessToken: "stale-tok",
+        refreshToken: "refresh-tok",
+      },
+    });
+    const result = await fetchResource(
+      flags,
+      {
+        store,
+        http: mockHttp({ status: 200, body: { access_token: "fresh-tok", expires_in: 3600 } }),
+        now: () => 1_000,
+      },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("a failed reactive refresh reports token_refresh_failed, not a bare 401", async () => {
+    const s = stubGlobalFetch([{ status: 401 }]);
+    restore = s.restore;
+    const store = memoryStore({ production: refreshableSlot() });
+    const result = await fetchResource(
+      flags,
+      { store, http: mockHttp({ status: 400, body: { error: "invalid_grant" } }), now: () => 1_000 },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("token_refresh_failed");
+    expect(result.error.environment).toBe("production");
+  });
+
+  test("a 401 on the retried request reports credential_rejected, not a second refresh attempt", async () => {
+    const s = stubGlobalFetch([{ status: 401 }, { status: 401 }]);
+    restore = s.restore;
+    const store = memoryStore({ production: refreshableSlot() });
+    const result = await fetchResource(
+      flags,
+      {
+        store,
+        http: mockHttp({ status: 200, body: { access_token: "fresh-tok", expires_in: 3600 } }),
+        now: () => 1_000,
+      },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(s.calls).toHaveLength(2); // exactly one retry - no refresh loop
+  });
+
+  test("an explicit --token-stdin token that 401s never attempts a refresh, even with a refreshable session on file", async () => {
+    const s = stubGlobalFetch([{ status: 401 }]);
+    restore = s.restore;
+    const refreshHttp = mockHttp({ status: 200, body: { access_token: "fresh-tok", expires_in: 3600 } });
+    const result = await fetchResource(
+      flags,
+      { ...stdinAuth(), store: memoryStore({ production: refreshableSlot() }), http: refreshHttp },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(s.calls).toHaveLength(1); // no retry
+  });
+});
+
 describe("writeResource", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());

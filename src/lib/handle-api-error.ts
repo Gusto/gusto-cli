@@ -1,15 +1,10 @@
 import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
+import { TokenRefreshFailedError, tokenRefreshFailedResult } from "./oauth/refresh-failure.ts";
+import { errorExtras } from "./output.ts";
 import { isObject } from "./predicates.ts";
 import type { CommandResult } from "./runner.ts";
-
-function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
-  return {
-    ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
-    ...(err.requestId ? { request_id: err.requestId } : {}),
-  };
-}
 
 /** Pull a scope name out of a 403 body when the server names one: RFC 6750's top-level `scope`
  * first, falling back to the `missing_scope_name` Gusto's own `missing_oauth_scopes` error entry
@@ -128,6 +123,9 @@ function insufficientScopeMessage(scope: string | undefined, auth: AuthContext |
 }
 
 export function toResult(err: unknown): CommandResult<never> {
+  // ApiClient's 401 retry hit a rejected refresh - report it like a pre-request refresh failure,
+  // not as a bare 401.
+  if (err instanceof TokenRefreshFailedError) return tokenRefreshFailedResult(err.cause, err.env);
   if (err instanceof ApiError) {
     if (err.status === 401) return credentialRejected(err);
     if (err.status === 403 && isInsufficientScope(err.body)) {

@@ -143,6 +143,9 @@ export interface ApiClientOptions {
   /** The credential this client authenticates with, stamped onto any `ApiError` it throws so a 401
    * can name what was refused. Omitted by clients built without a resolved context. */
   auth?: AuthContext;
+  /** Called once on a 401 for a replacement token; `null` leaves the 401 as-is. Omitted for an
+   * explicit env/stdin token, so a rejected one is never silently retried as the stored session. */
+  onUnauthorized?: () => Promise<string | null>;
 }
 
 /** One HTTP attempt as seen by the client. `status` is `0` for a pre-response network fault
@@ -171,7 +174,7 @@ export type ReadClient = { get: <T>(p: string) => Promise<{ body: T }> };
 
 export class ApiClient {
   private readonly baseUrl: string;
-  private readonly token: string;
+  private token: string;
   private readonly apiVersion: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
@@ -179,6 +182,8 @@ export class ApiClient {
   private readonly retrySleepMs: (attempt: number) => number;
   private readonly observer?: RequestObserver;
   private readonly auth?: AuthContext;
+  private readonly onUnauthorized?: () => Promise<string | null>;
+  private inFlightRefresh?: Promise<string | null>;
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
@@ -191,6 +196,7 @@ export class ApiClient {
     this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
     this.observer = opts.observer;
     this.auth = opts.auth;
+    this.onUnauthorized = opts.onUnauthorized;
   }
 
   get<T = unknown>(path: string, opts?: RequestOptions): Promise<ApiResponse<T>> {
@@ -301,6 +307,39 @@ export class ApiClient {
     path: string,
     body?: unknown,
     opts: RequestOptions = {},
+  ): Promise<ApiResponse<T>> {
+    const tokenUsed = this.token;
+    try {
+      return await this.requestAttempt<T>(method, path, body, opts);
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 401 || !this.onUnauthorized) throw err;
+      // this.token may have already moved past `tokenUsed` by the time we get here - a concurrent
+      // request's refresh landed while this one was still in flight. Retry directly with whatever
+      // it is now instead of spending a second, redundant refresh call.
+      if (this.token === tokenUsed) {
+        const refreshed = await this.refreshOnce(this.onUnauthorized);
+        if (refreshed === null) throw err;
+        this.token = refreshed;
+      }
+      return await this.requestAttempt<T>(method, path, body, opts);
+    }
+  }
+
+  /** Concurrent 401s on this client (e.g. two requests under one `Promise.all`) that are still
+   * pending when this runs share a single refresh, rather than each spending their own round trip
+   * and risking a rotated-token race with each other. */
+  private refreshOnce(onUnauthorized: () => Promise<string | null>): Promise<string | null> {
+    this.inFlightRefresh ??= onUnauthorized().finally(() => {
+      this.inFlightRefresh = undefined;
+    });
+    return this.inFlightRefresh;
+  }
+
+  private async requestAttempt<T = unknown>(
+    method: string,
+    path: string,
+    body: unknown,
+    opts: RequestOptions,
   ): Promise<ApiResponse<T>> {
     const isIdempotent = IDEMPOTENT_METHODS.has(method.toUpperCase());
     const now = opts.now ?? (() => Date.now());
