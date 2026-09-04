@@ -285,7 +285,6 @@ describe("pushUuidBlockedOn", () => {
     expect(push("job-1")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: "job-1"' }]);
   });
 
-  // Empty string is distinct from undefined: commander yields it for `--job-uuid ""`.
   test("an empty string is rejected rather than treated as absent", () => {
     expect(push("")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: ""' }]);
   });

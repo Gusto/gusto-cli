@@ -78,7 +78,7 @@ export function getCompanyUuid(
   override?: string,
   source: EnvSource = process.env as EnvSource,
 ): { value: string; source: SuppliedCompanySource } | null {
-  if (override && override.length > 0) return { value: override, source: "flag" };
+  if (override !== undefined) return { value: override, source: "flag" };
   const uuid = source.GUSTO_COMPANY_UUID;
   return uuid && uuid.length > 0 ? { value: uuid, source: "env" } : null;
 }
