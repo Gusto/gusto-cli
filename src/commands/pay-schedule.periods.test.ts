@@ -5,7 +5,15 @@ import {
   payPeriodsListHandler,
   terminationPeriodsHandler,
 } from "./pay-schedule.ts";
-import { TEST_AUTH as auth, TEST_CONTEXT as ctx, blockedFields, okData, stubGlobalFetch } from "../lib/test-support.ts";
+import {
+  TEST_AUTH as auth,
+  TEST_CONTEXT as ctx,
+  blockedFields,
+  okData,
+  stubGlobalFetch,
+  TEST_COMPANY_UUID,
+  TEST_OVERRIDE_COMPANY_UUID,
+} from "../lib/test-support.ts";
 
 function okQuery(opts: PayPeriodsListOpts) {
   const parsed = buildPayPeriodsQuery(opts);
@@ -76,7 +84,7 @@ describe("payPeriodsListHandler", () => {
     const result = await payPeriodsListHandler({ ...auth })(ctx);
     expect(result.ok).toBe(true);
     expect(okData(result)).toEqual(FIXTURE as unknown as Record<string, unknown>);
-    expect(s.calls[0]?.url).toContain("/v1/companies/co-1/pay_periods");
+    expect(s.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/pay_periods`);
   });
 
   test("forwards start_date/end_date/payroll_types as query params", async () => {
@@ -103,8 +111,8 @@ describe("payPeriodsListHandler", () => {
   test("a --company-uuid override scopes the endpoint to that company", async () => {
     const s = stubGlobalFetch(() => ({ status: 200, body: FIXTURE }));
     restore = s.restore;
-    await payPeriodsListHandler({ companyUuid: "co-override" })(ctx);
-    expect(s.calls[0]?.url).toContain("/v1/companies/co-override/pay_periods");
+    await payPeriodsListHandler({ companyUuid: TEST_OVERRIDE_COMPANY_UUID })(ctx);
+    expect(s.calls[0]?.url).toContain(`/v1/companies/${TEST_OVERRIDE_COMPANY_UUID}/pay_periods`);
   });
 });
 
@@ -119,7 +127,9 @@ describe("terminationPeriodsHandler", () => {
     const result = await terminationPeriodsHandler({ ...auth })(ctx);
     expect(result.ok).toBe(true);
     expect(okData(result)).toEqual(body as unknown as Record<string, unknown>);
-    expect(s.calls[0]?.url).toContain("/v1/companies/co-1/pay_periods/unprocessed_termination_pay_periods");
+    expect(s.calls[0]?.url).toContain(
+      `/v1/companies/${TEST_COMPANY_UUID}/pay_periods/unprocessed_termination_pay_periods`,
+    );
   });
 
   test("an empty array (no termination periods) passes through as success", async () => {
@@ -133,7 +143,9 @@ describe("terminationPeriodsHandler", () => {
   test("a --company-uuid override scopes the endpoint to that company", async () => {
     const s = stubGlobalFetch(() => ({ status: 200, body: [] }));
     restore = s.restore;
-    await terminationPeriodsHandler({ companyUuid: "co-override" })(ctx);
-    expect(s.calls[0]?.url).toContain("/v1/companies/co-override/pay_periods/unprocessed_termination_pay_periods");
+    await terminationPeriodsHandler({ companyUuid: TEST_OVERRIDE_COMPANY_UUID })(ctx);
+    expect(s.calls[0]?.url).toContain(
+      `/v1/companies/${TEST_OVERRIDE_COMPANY_UUID}/pay_periods/unprocessed_termination_pay_periods`,
+    );
   });
 });

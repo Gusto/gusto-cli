@@ -6,6 +6,7 @@ import {
   blockedFields,
   routeFetch,
   stubGlobalFetch,
+  TEST_COMPANY_UUID,
 } from "../lib/test-support.ts";
 import { payScheduleCreateHandler } from "../lib/pay-schedule.ts";
 import { payScheduleAssignmentsHandler, payScheduleListHandler, payScheduleShowHandler } from "./pay-schedule.ts";
@@ -20,7 +21,7 @@ describe("pay-schedule read handlers", () => {
     const result = await payScheduleListHandler({ ...auth })(ctx);
     expect(result.ok).toBe(true);
     const get = calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("/v1/companies/co-1/pay_schedules");
+    expect(get?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/pay_schedules`);
     expect(get?.url).not.toContain("/assignments");
   });
 
@@ -32,7 +33,7 @@ describe("pay-schedule read handlers", () => {
     const result = await payScheduleAssignmentsHandler({ ...auth })(ctx);
     expect(result.ok).toBe(true);
     const get = calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("/v1/companies/co-1/pay_schedules/assignments");
+    expect(get?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/pay_schedules/assignments`);
   });
 
   test("show GETs a single pay schedule by uuid", async () => {
@@ -43,7 +44,7 @@ describe("pay-schedule read handlers", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.data).toMatchObject({ uuid: "ps-9" });
     const get = calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("/v1/companies/co-1/pay_schedules/ps-9");
+    expect(get?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/pay_schedules/ps-9`);
   });
 
   test("show percent-encodes the pay schedule uuid so it can't retarget the request", async () => {
@@ -298,6 +299,6 @@ describe("payScheduleCreateHandler write confirmation gate", () => {
     const result = await payScheduleCreateHandler({ ...validBiweekly, confirm: true })(ctx);
     expect(result.ok).toBe(true);
     const post = s.calls.find((c) => c.method === "POST");
-    expect(post?.url).toContain("/v1/companies/co-1/pay_schedules");
+    expect(post?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/pay_schedules`);
   });
 });

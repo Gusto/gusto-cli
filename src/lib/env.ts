@@ -70,8 +70,15 @@ export function getAccessToken(source: EnvSource = process.env as EnvSource): st
   return token && token.length > 0 ? token : null;
 }
 
-export function getCompanyUuid(override?: string, source: EnvSource = process.env as EnvSource): string | null {
-  if (override && override.length > 0) return override;
+export type CompanySource = "flag" | "env" | "session";
+
+export type SuppliedCompanySource = Exclude<CompanySource, "session">;
+
+export function getCompanyUuid(
+  override?: string,
+  source: EnvSource = process.env as EnvSource,
+): { value: string; source: SuppliedCompanySource } | null {
+  if (override !== undefined) return { value: override, source: "flag" };
   const uuid = source.GUSTO_COMPANY_UUID;
-  return uuid && uuid.length > 0 ? uuid : null;
+  return uuid && uuid.length > 0 ? { value: uuid, source: "env" } : null;
 }

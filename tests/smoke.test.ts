@@ -14,6 +14,10 @@ const ADDRESS_UUID = "9b8c7d6e-0000-4111-2222-333344445555";
 const CONTRACTOR_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
 const CONTRACTOR_PAYMENT_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
 const CONTRACTOR_PAYMENT_GROUP_UUID = "9c0d1e2f-0000-4111-2222-333344445555";
+const TIME_SHEET_UUID = "7a6b5c4d-0000-4111-2222-333344445555";
+const COMPANY_UUID = "3c2b1a09-0000-4111-2222-333344445555";
+const PAY_SCHEDULE_UUID = "1a2b3c4d-0000-4111-2222-333344445556";
+const PAYROLL_UUID = "5e6f7a8b-0000-4111-2222-333344445557";
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -233,7 +237,7 @@ describe("auth required commands without a token", () => {
     ["department", ["department", "get", "department-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
-    ["timesheet", ["timesheet", "get", "time-sheet-uuid-123"]],
+    ["timesheet", ["timesheet", "get", TIME_SHEET_UUID]],
     ["job", ["job", "get", "job-uuid-123"]],
     ["compensation", ["compensation", "get", "comp-uuid-123"]],
   ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {
@@ -261,7 +265,7 @@ describe("auth required commands without a token", () => {
 
   // Dates omitted on purpose: exit 7 means commander accepted the flag, exit 2 would mean it did not.
   test("timesheet list --company-uuid is registered", async () => {
-    const result = await run(["timesheet", "list", "--company-uuid", "co-1"]);
+    const result = await run(["timesheet", "list", "--company-uuid", COMPANY_UUID]);
     expect(result.exitCode).toBe(7);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.error.code).toBe("validation");
@@ -813,14 +817,49 @@ describe("api request", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_json");
   });
 
+  test.each([
+    [
+      "timesheet sync",
+      [
+        "timesheet",
+        "sync",
+        "--pay-schedule-uuid",
+        PAY_SCHEDULE_UUID,
+        "--start-date",
+        "2026-06-01",
+        "--end-date",
+        "2026-06-15",
+      ],
+    ],
+    ["payroll calculate", ["payroll", "calculate", PAYROLL_UUID, "--confirm"]],
+  ])("%s --dry-run reports a malformed GUSTO_COMPANY_UUID rather than previewing", async (_name, argv) => {
+    const result = await run([...argv, "--dry-run"], { GUSTO_ACCESS_TOKEN: "tok", GUSTO_COMPANY_UUID: "co-1" });
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("invalid_company_uuid");
+  });
+
+  test.each([
+    ["with a token", { GUSTO_ACCESS_TOKEN: "tok", GUSTO_COMPANY_UUID: "co-1" }],
+    ["without one", { GUSTO_COMPANY_UUID: "co-1" }],
+  ])("--dry-run %s reports a malformed GUSTO_COMPANY_UUID instead of echoing the placeholder", async (_case, env) => {
+    const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], env);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("invalid_company_uuid");
+    expect(envelope.error.message).toContain("GUSTO_COMPANY_UUID");
+  });
+
   test("--dry-run substitutes {company_uuid} from GUSTO_COMPANY_UUID into the path", async () => {
     const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], {
       GUSTO_ACCESS_TOKEN: "tok",
-      GUSTO_COMPANY_UUID: "co-1",
+      GUSTO_COMPANY_UUID: COMPANY_UUID,
     });
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.data.path).toBe("/v1/companies/co-1/employees");
+    expect(envelope.data.path).toBe(`/v1/companies/${COMPANY_UUID}/employees`);
     expect(envelope.data.note).toBeUndefined();
   });
 
@@ -900,13 +939,13 @@ describe("token-stdin authentication", () => {
         "--token-stdin",
         "--dry-run",
       ],
-      { GUSTO_COMPANY_UUID: "co-1" },
+      { GUSTO_COMPANY_UUID: COMPANY_UUID },
       "piped-secret-token\n",
     );
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
-    expect(envelope.data.path).toBe("/v1/companies/co-1/pay_schedules");
+    expect(envelope.data.path).toBe(`/v1/companies/${COMPANY_UUID}/pay_schedules`);
     expect(envelope.data.note).toBeUndefined();
   });
 
@@ -925,7 +964,7 @@ describe("token-stdin authentication", () => {
         "2026-06-26",
         "--dry-run",
       ],
-      { GUSTO_COMPANY_UUID: "co-1" },
+      { GUSTO_COMPANY_UUID: COMPANY_UUID },
     );
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
