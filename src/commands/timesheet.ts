@@ -464,6 +464,7 @@ export function clarifyEmptyTimesheetSync(result: CommandResult): CommandResult 
 
 export function timesheetShowHandler(timeSheetUuid: string, opts: TimesheetShowOpts): CommandHandler {
   return async ({ globals }) => {
+    // No hint: `timesheet list` returns these uuids only for companies on third-party time tracking
     if (!isValidUuid(timeSheetUuid)) return invalidUuid("time_sheet_uuid", timeSheetUuid);
     return fetchResource(
       globals,
