@@ -73,6 +73,49 @@ describe("OAuthError on non-2xx responses", () => {
   });
 });
 
+describe("install ID on OAuth requests", () => {
+  test("postForm stamps X-Gusto-CLI-Install-Id when configured", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postForm(
+      { baseUrl: "https://api.test", fetchImpl, installId: "11111111-2222-4333-8444-555555555555" },
+      "/v1/mcp/oauth/token",
+      { grant_type: "authorization_code", code: "c" },
+    );
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBe("11111111-2222-4333-8444-555555555555");
+  });
+
+  test("postJson stamps X-Gusto-CLI-Install-Id when configured", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response(JSON.stringify({ client_id: "x", client_secret: "y" }), { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postJson(
+      { baseUrl: "https://api.test", fetchImpl, installId: "11111111-2222-4333-8444-555555555555" },
+      "/v1/mcp/oauth/register",
+      { client_type: "cli" },
+    );
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBe("11111111-2222-4333-8444-555555555555");
+  });
+
+  test("omits X-Gusto-CLI-Install-Id when installId is undefined", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postJson({ baseUrl: "https://api.test", fetchImpl }, "/v1/mcp/oauth/register", {});
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Install-Id"]).toBeUndefined();
+  });
+});
+
 describe("User-Agent on OAuth requests", () => {
   function capturingFetch(captured: { init?: RequestInit }): typeof fetch {
     return ((_url: string | URL | Request, init?: RequestInit) => {

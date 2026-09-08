@@ -13,12 +13,17 @@ export async function spawnCapture(
   env: Record<string, string>,
   opts: { stdin?: string } = {},
 ): Promise<Run> {
+  const hasStdin = opts.stdin !== undefined;
   const proc = Bun.spawn(cmd, {
     stdout: "pipe",
     stderr: "pipe",
     env,
-    stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : undefined,
+    stdin: hasStdin ? "pipe" : undefined,
   });
+  if (hasStdin && proc.stdin) {
+    proc.stdin.write(opts.stdin!);
+    proc.stdin.end();
+  }
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   const exitCode = await proc.exited;
   return { stdout, stderr, exitCode };
