@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { confirmationGate } from "./confirm.ts";
+import { agentWriteGate, confirmationGate } from "./confirm.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 
@@ -78,5 +78,33 @@ describe("confirmationGate", () => {
 
   test("--dry-run wins when --confirm is also set (preview never gates)", () => {
     expect(confirmationGate(flags({ agent: true }), "POST", TARGET, { confirm: true, dryRun: true })).toBeNull();
+  });
+});
+
+const LOCAL_WRITE = "replacing the gusto binary at /home/dev/.gusto/bin/gusto";
+
+describe("agentWriteGate", () => {
+  test("blocks a non-HTTP write in agent mode with the same contract as confirmationGate", () => {
+    const result = agentWriteGate(flags({ agent: true }), LOCAL_WRITE, {});
+    expect(result?.ok).toBe(false);
+    if (result?.ok === false) {
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("confirmation_required");
+      expect(result.error.message).toContain(LOCAL_WRITE);
+      expect(result.error.details).toEqual({ retry_with: ["--confirm"], preview_with: ["--dry-run"] });
+    }
+  });
+
+  test("lets --confirm and --dry-run through", () => {
+    expect(agentWriteGate(flags({ agent: true }), LOCAL_WRITE, { confirm: true })).toBeNull();
+    expect(agentWriteGate(flags({ agent: true }), LOCAL_WRITE, { dryRun: true })).toBeNull();
+  });
+
+  test("does not gate in human mode", () => {
+    expect(agentWriteGate(flags({ human: true }), LOCAL_WRITE, {})).toBeNull();
+  });
+
+  test("treats piped stdout as agent mode and gates", () => {
+    expect(agentWriteGate(flags(), LOCAL_WRITE, {}, false)?.ok).toBe(false);
   });
 });

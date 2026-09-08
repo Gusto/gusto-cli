@@ -1,4 +1,4 @@
-import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
+import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import { isObject } from "./predicates.ts";
@@ -11,9 +11,18 @@ function errorExtras(err: { body: unknown; requestId?: string }): { details?: un
   };
 }
 
-/** Pull a scope name out of a 403 body when the server names one (RFC 6750 `scope`). */
+/** Pull a scope name out of a 403 body when the server names one: RFC 6750's top-level `scope`
+ * first, falling back to the `missing_scope_name` Gusto's own `missing_oauth_scopes` error entry
+ * carries in its metadata (absent on older API responses). */
 function scopeFromBody(body: unknown): string | undefined {
-  return isObject(body) && typeof body.scope === "string" ? body.scope : undefined;
+  if (!isObject(body)) return undefined;
+  if (typeof body.scope === "string") return body.scope;
+  if (!Array.isArray(body.errors)) return undefined;
+  const scopeError = body.errors.find((e) => isObject(e) && e.category === "missing_oauth_scopes");
+  if (!isObject(scopeError) || !isObject(scopeError.metadata)) return undefined;
+  return typeof scopeError.metadata.missing_scope_name === "string"
+    ? scopeError.metadata.missing_scope_name
+    : undefined;
 }
 
 /** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
@@ -29,27 +38,125 @@ function isInsufficientScope(body: unknown): boolean {
   return body.error === "insufficient_scope";
 }
 
+/** Collect the human-readable messages out of an API error body, recursing into the nested
+ * `errors[].errors[]` shape the API uses for record-level errors. The API owns the wording -
+ * this only lifts it somewhere the caller will read, since `ApiError.message` is just the
+ * request line. Returns `[]` for bodies that explain nothing. */
+function serverMessages(body: unknown): string[] {
+  const found: string[] = [];
+  const visit = (node: unknown): void => {
+    if (!isObject(node)) return;
+    let text: string | undefined;
+    if (typeof node.message === "string") text = node.message;
+    else if (typeof node.error === "string") text = node.error;
+    if (text !== undefined) {
+      // Keep `error_key`: it names the offending field, and the API reuses one message across
+      // fields, so dropping it collapses a multi-field 422 to "can't be blank; can't be blank".
+      found.push(typeof node.error_key === "string" ? `${node.error_key}: ${text}` : text);
+    }
+    if (!Array.isArray(node.errors)) return;
+    for (const nested of node.errors) {
+      // A bare string entry is the message itself. Only honored inside `errors` - a
+      // whole-body string is an unparsed response (an HTML error page from a proxy,
+      // say) and does not belong in `message`.
+      if (typeof nested === "string") found.push(nested);
+      else visit(nested);
+    }
+  };
+  visit(body);
+  return Array.from(new Set(found));
+}
+
+/** Report a 401 as authentication failure, with recovery based on the credential source. */
+function credentialRejected(err: ApiError): CommandResult<never> {
+  const { auth } = err;
+  return {
+    ok: false,
+    exitCode: ExitCode.Auth,
+    error: {
+      code: "credential_rejected",
+      message: `${rejectedCredential(auth)} (${err.message})`,
+      ...(auth ? { environment: auth.environment } : {}),
+      ...errorExtras(err),
+    },
+  };
+}
+
+/** Name the refused credential and the recovery available for that source. */
+function rejectedCredential(auth: AuthContext | undefined): string {
+  if (auth === undefined) {
+    return "the credential this command used was rejected by the API. If it came from `gusto auth login`, sign in again; if it came from GUSTO_ACCESS_TOKEN or --token-stdin, that token is invalid or expired.";
+  }
+  const env = auth.environment;
+  switch (auth.tokenSource) {
+    case "session":
+      return `the stored ${env} session was rejected by the API - its access token is stale or was revoked. Run \`gusto auth login --env ${env}\` to sign in again; that mints a new grant and replaces the refresh token in that slot.`;
+    case "env":
+      return `the token in GUSTO_ACCESS_TOKEN was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
+    case "stdin":
+      return `the token piped via --token-stdin was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
+    // The one case where the credential is seconds old and ours: the login exchange returned a token
+    // and the immediate `token_info` read on it came back 401, so the server refused what it had just
+    // issued. None of the advice above applies - there is no stored session yet (the save happens
+    // after this read) and no caller-supplied token to go fix. Rerunning the login is the only action,
+    // and unlike a rejected stored session it costs nothing, since no credential was persisted to
+    // replace. Naming the endpoint matters here: a 401 from a *scoped* command in the same session
+    // means something else entirely.
+    case "login":
+      return `the ${env} token just minted by \`gusto auth login\` was rejected by the API when reading /v1/token_info. The server refused a credential it minted moments earlier, so the sign-in did not complete and nothing was stored - run \`gusto auth login --env ${env}\` again.`;
+  }
+}
+
+/** Scope recovery follows the credential source for the same reason a rejected credential does:
+ * logging in can replace a stored session, but it cannot change an explicit token that will keep
+ * winning on the next command. */
+function insufficientScopeMessage(scope: string | undefined, auth: AuthContext | undefined): string {
+  const needs = scope ? ` (${scope})` : "";
+  const preamble = `your token is missing the OAuth scope${needs} this command needs.`;
+  if (auth === undefined) {
+    return `${preamble} Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`;
+  }
+  switch (auth.tokenSource) {
+    case "session":
+    case "login":
+      return `${preamble} Re-run \`gusto auth login --env ${auth.environment}\` and grant it; run \`gusto auth whoami --env ${auth.environment}\` to see what you have.`;
+    case "env":
+      return `${preamble} Replace GUSTO_ACCESS_TOKEN with a token that grants it; run \`gusto auth whoami --env ${auth.environment}\` to inspect the active token.`;
+    case "stdin":
+      return `${preamble} Pipe a token that grants it via --token-stdin; pipe the same token to \`gusto auth whoami --token-stdin --env ${auth.environment}\` to inspect it.`;
+  }
+}
+
 export function toResult(err: unknown): CommandResult<never> {
   if (err instanceof ApiError) {
+    if (err.status === 401) return credentialRejected(err);
     if (err.status === 403 && isInsufficientScope(err.body)) {
       const scope = scopeFromBody(err.body);
-      const needs = scope ? ` (${scope})` : "";
       return {
         ok: false,
         exitCode: ExitCode.Auth,
         error: {
           code: "insufficient_scope",
-          message: `your token is missing the OAuth scope${needs} this command needs. Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`,
+          message: insufficientScopeMessage(scope, err.auth),
+          // Carried for the same reason every other auth failure carries it: scopes are granted per
+          // credential, and the credential is per environment, so "which scopes do I have" has no
+          // answer that isn't scoped to one. This case is older than the codes below and predates the
+          // field, so it read as the exception to a rule it actually belongs to.
+          ...(err.auth ? { environment: err.auth.environment } : {}),
           ...errorExtras(err),
         },
       };
     }
+    // Lead with what the API said and keep the request line as a suffix. Unprefixed,
+    // `err.message` is only "GET <url> -> 422", which buries the one actionable sentence
+    // two levels deep in `details` where callers branching on the envelope won't see it.
+    const explained = serverMessages(err.body);
     return {
       ok: false,
       exitCode: err.exitCode,
       error: {
         code: err.status >= 500 ? "api_server_error" : "api_client_error",
-        message: err.message,
+        message: explained.length > 0 ? `${explained.join("; ")} (${err.message})` : err.message,
         ...errorExtras(err),
       },
     };
@@ -145,6 +252,7 @@ export function partialFailure(spec: {
     error: {
       code: spec.code,
       message: `${spec.message}: ${base.error.message}`,
+      ...(base.error.environment !== undefined ? { environment: base.error.environment } : {}),
       details: {
         ...spec.completed,
         completed: Object.keys(spec.completed),

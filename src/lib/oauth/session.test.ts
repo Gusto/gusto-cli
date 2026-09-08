@@ -1,54 +1,127 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "../api-client.ts";
 import { ExitCode } from "../exit-codes.ts";
-import { NoSessionError, ensureClientCreds, getValidUserToken, withUserToken } from "./session.ts";
+import { NoSessionError, ensureClientCreds, resolveSessionToken, withUserToken } from "./session.ts";
 import { memoryStore, mockHttp as http } from "./test-support.ts";
 
-describe("getValidUserToken", () => {
-  test("returns the stored token when not near expiry", async () => {
+describe("resolveSessionToken", () => {
+  const creds = { clientId: "c", clientSecret: "s" };
+
+  test("absent when there is no slot for the environment", async () => {
+    const outcome = await resolveSessionToken(memoryStore(), "sandbox", http({ status: 200 }), () => 1_000);
+    expect(outcome.kind).toBe("absent");
+  });
+
+  test("absent when the slot exists but carries no access token", async () => {
+    // A slot holding only DCR client creds - the shape ensureClientCreds leaves behind when a login
+    // was started and never completed.
+    const store = memoryStore({ sandbox: creds });
+    const outcome = await resolveSessionToken(store, "sandbox", http({ status: 200 }), () => 1_000);
+    expect(outcome.kind).toBe("absent");
+  });
+
+  test("ok, with the token, when it is not near expiry", async () => {
     const store = memoryStore({ sandbox: { accessToken: "at", expiresAt: 10_000_000 } });
-    expect(await getValidUserToken(store, "sandbox", http({ status: 200 }), () => 1_000)).toBe("at");
+    const outcome = await resolveSessionToken(store, "sandbox", http({ status: 200 }), () => 1_000);
+    expect(outcome).toEqual({ kind: "ok", token: "at" });
   });
 
-  test("returns null when there is no session", async () => {
-    expect(await getValidUserToken(memoryStore(), "sandbox", http({ status: 200 }), () => 1_000)).toBeNull();
-  });
-
-  test("refreshes + persists when near expiry", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
-    });
-    const token = await getValidUserToken(
+  test("ok, with the refreshed token persisted, when a within-skew refresh succeeds", async () => {
+    const store = memoryStore({ sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 2_000 } });
+    const outcome = await resolveSessionToken(
       store,
       "sandbox",
       http({ status: 200, body: { access_token: "new", refresh_token: "rt2", expires_in: 3600 } }),
       () => 1_990, // within the 60s skew of expiresAt
     );
-    expect(token).toBe("new");
+    expect(outcome).toEqual({ kind: "ok", token: "new" });
     expect(store.data.sandbox?.accessToken).toBe("new");
     expect(store.data.sandbox?.refreshToken).toBe("rt2");
   });
 
-  test("falls back to the current token when proactive refresh fails but it isn't expired yet", async () => {
-    const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 2_000 },
-    });
-    // now=1_990: within skew (refresh attempted) but not past expiry; refresh 400s.
-    const token = await getValidUserToken(
+  test("expired when past expiry with no refresh token", async () => {
+    const store = memoryStore({ sandbox: { accessToken: "old", expiresAt: 1_980 } });
+    const outcome = await resolveSessionToken(store, "sandbox", http({ status: 200 }), () => 1_990);
+    expect(outcome).toEqual({ kind: "expired", expiresAt: 1_980 });
+  });
+
+  test("expired when past expiry with a refresh token but no client creds to use it", async () => {
+    // Nothing can authenticate the refresh call, so there is no refresh to attempt.
+    const store = memoryStore({ sandbox: { accessToken: "old", refreshToken: "rt", expiresAt: 1_980 } });
+    const outcome = await resolveSessionToken(store, "sandbox", http({ status: 200 }), () => 1_990);
+    expect(outcome.kind).toBe("expired");
+  });
+
+  test("refresh_failed, carrying the cause, when the server rejects the refresh", async () => {
+    const store = memoryStore({ sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 1_980 } });
+    const outcome = await resolveSessionToken(
       store,
       "sandbox",
       http({ status: 400, body: { error: "invalid_grant" } }),
       () => 1_990,
     );
-    expect(token).toBe("old");
+    expect(outcome.kind).toBe("refresh_failed");
+    if (outcome.kind !== "refresh_failed") throw new Error("unreachable");
+    expect(outcome.cause.status).toBe(400);
+    expect(outcome.cause.body).toEqual({ error: "invalid_grant" });
   });
 
-  test("rethrows when refresh fails and the token is already expired", async () => {
+  test("uses a session another process refreshed while this refresh was rejected", async () => {
     const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "old", refreshToken: "rt", expiresAt: 1_980 },
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 1_980 },
     });
-    // now=1_990 is past expiry, so the stale token can't be used.
-    await expect(getValidUserToken(store, "sandbox", http({ status: 400 }), () => 1_990)).rejects.toBeDefined();
+    const fetchImpl = (async (): Promise<Response> => {
+      await store.save("sandbox", {
+        ...creds,
+        accessToken: "new",
+        refreshToken: "rt2",
+        expiresAt: 3_600_000,
+      });
+      return new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const outcome = await resolveSessionToken(
+      store,
+      "sandbox",
+      { baseUrl: "https://api.test", fetchImpl },
+      () => 1_990,
+    );
+
+    expect(outcome).toEqual({ kind: "ok", token: "new" });
+  });
+
+  test("leaves the stored refresh token in place when the refresh is rejected", async () => {
+    // The whole point of distinguishing this state: the refresh token is still the way back in, so
+    // nothing here may discard it.
+    const store = memoryStore({ sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 1_980 } });
+    await resolveSessionToken(store, "sandbox", http({ status: 400 }), () => 1_990);
+    expect(store.data.sandbox?.refreshToken).toBe("rt");
+  });
+
+  test("ok when a within-skew refresh fails but the token has not actually expired", async () => {
+    const store = memoryStore({ sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 2_000 } });
+    const outcome = await resolveSessionToken(store, "sandbox", http({ status: 400 }), () => 1_990);
+    expect(outcome).toEqual({ kind: "ok", token: "old" });
+  });
+
+  test("an absent expiresAt means unknown, not expired - the token passes through", async () => {
+    // Only a 401 from the API can disprove a token with no recorded expiry; refusing to send it
+    // would strand a session that works.
+    const store = memoryStore({ sandbox: { accessToken: "at" } });
+    const outcome = await resolveSessionToken(store, "sandbox", http({ status: 200 }), () => 9_999_999);
+    expect(outcome).toEqual({ kind: "ok", token: "at" });
+  });
+
+  test("a non-OAuth failure propagates rather than becoming a credential state", async () => {
+    const broken = {
+      load: () => Promise.reject(new Error("EACCES: permission denied")),
+      save: () => Promise.resolve(),
+      clear: () => Promise.resolve(),
+    };
+    await expect(resolveSessionToken(broken, "sandbox", http({ status: 200 }), () => 1_000)).rejects.toThrow("EACCES");
   });
 });
 

@@ -1,23 +1,125 @@
 import { describe, expect, test } from "bun:test";
-import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
+import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { partialFailure, toResult } from "./handle-api-error.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 
 describe("toResult", () => {
   test("4xx ApiError maps to api_client_error and carries body + request_id", () => {
-    const err = new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "Unprocessable", "req-123");
+    const err = new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "Unprocessable", {
+      requestId: "req-123",
+    });
     const result = toResult(err);
     expect(result).toEqual({
       ok: false,
       exitCode: ExitCode.ApiClient,
       error: {
         code: "api_client_error",
-        message: "Unprocessable",
+        message: "bad email (Unprocessable)",
         details: { errors: ["bad email"] },
         request_id: "req-123",
       },
     });
+  });
+
+  // `ApiError.message` is only the request line, so an API that explained itself needs its
+  // explanation lifted into `error.message`. Body shapes below are the ones the API actually
+  // emits: a flat shape for parameter errors, a nested one for record-level errors.
+  test("leads with the API's own message for a parameter error, keeping the request line", () => {
+    const body = {
+      errors: [{ error_key: "start_date", category: "invalid_parameter", message: "Date range too long, max 1 year" }],
+    };
+    const err = new ApiError(422, body, ExitCode.ApiClient, "GET /v1/companies/c-1/payrolls -> 422");
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe(
+      "start_date: Date range too long, max 1 year (GET /v1/companies/c-1/payrolls -> 422)",
+    );
+    // The structured body is still there untouched for callers that want the key/category.
+    expect(result.error.details).toEqual(body);
+  });
+
+  test("recurses into nested record errors", () => {
+    const body = {
+      errors: [
+        {
+          error_key: "required_questions",
+          errors: [{ error_key: "response", message: "Please ensure a correct response type is provided." }],
+        },
+      ],
+    };
+    const err = new ApiError(422, body, ExitCode.ApiClient, "PUT /x -> 422");
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe("response: Please ensure a correct response type is provided. (PUT /x -> 422)");
+  });
+
+  test("joins multiple messages", () => {
+    const body = { errors: [{ message: "first problem" }, { message: "second problem" }] };
+    const err = new ApiError(422, body, ExitCode.ApiClient, "POST /x -> 422");
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe("first problem; second problem (POST /x -> 422)");
+  });
+
+  // The API reuses one message across fields, so without `error_key` a multi-field 422 reads
+  // "can't be blank; can't be blank" - repeated, and naming none of the fields that failed.
+  test("names the field on each message when the body carries error_key", () => {
+    const body = {
+      errors: [
+        { error_key: "first_name", message: "can't be blank" },
+        { error_key: "last_name", message: "can't be blank" },
+        { error_key: "email", message: "is invalid" },
+      ],
+    };
+    const result = toResult(new ApiError(422, body, ExitCode.ApiClient, "POST /v1/employees -> 422"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe(
+      "first_name: can't be blank; last_name: can't be blank; email: is invalid (POST /v1/employees -> 422)",
+    );
+  });
+
+  test("collapses messages that repeat verbatim", () => {
+    const body = { errors: [{ message: "is invalid" }, { message: "is invalid" }] };
+    const result = toResult(new ApiError(422, body, ExitCode.ApiClient, "POST /x -> 422"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe("is invalid (POST /x -> 422)");
+  });
+
+  test("reads a bare top-level error string", () => {
+    const err = new ApiError(422, { error: "EIN is already in use" }, ExitCode.ApiClient, "POST /x -> 422");
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toBe("EIN is already in use (POST /x -> 422)");
+  });
+
+  test("falls back to the request line when the body explains nothing", () => {
+    for (const body of [{ detail: "gateway said no" }, {}, null, []]) {
+      const result = toResult(new ApiError(422, body, ExitCode.ApiClient, "GET /x -> 422"));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toBe("GET /x -> 422");
+    }
+  });
+
+  // An unparseable response body reaches us as the raw string, so a proxy's HTML error page
+  // must not end up spliced into `message`. Bare strings count only inside `errors`.
+  test("ignores a whole-body string but reads a bare string inside errors", () => {
+    const html = toResult(new ApiError(502, "<html><body>gateway timeout</body></html>", ExitCode.ApiServer, "GET /x"));
+    if (html.ok) throw new Error("unreachable");
+    expect(html.error.message).toBe("GET /x");
+
+    const nested = toResult(new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "POST /x -> 422"));
+    if (nested.ok) throw new Error("unreachable");
+    expect(nested.error.message).toBe("bad email (POST /x -> 422)");
+  });
+
+  test("does not disturb the insufficient_scope branch", () => {
+    const body = { errors: [{ category: "missing_oauth_scopes", message: "missing scopes" }], scope: "payrolls:read" };
+    const result = toResult(new ApiError(403, body, ExitCode.ApiClient, "GET /x -> 403"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.message).toContain("payrolls:read");
   });
 
   test("5xx ApiError maps to api_server_error", () => {
@@ -76,7 +178,125 @@ describe("toResult", () => {
   });
 });
 
+// A 401 means the credential was sent and refused, so it belongs to the auth family (exit 3) rather
+// than the ordinary 4xx bucket - and the only useful wording names *which* credential, which is why
+// the client stamps its `AuthContext` onto the error.
+describe("toResult 401 handling", () => {
+  const unauthorized = (auth?: AuthContext) =>
+    new ApiError(401, { error: "unauthorized" }, ExitCode.ApiClient, "GET /v1/me -> 401", { requestId: "req-9", auth });
+
+  test("exits Auth, not ApiClient, so one branch catches every credential problem", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "production" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+  });
+
+  test("carries the environment, the body, and the request id", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.details).toEqual({ error: "unauthorized" });
+    expect(result.error.request_id).toBe("req-9");
+  });
+
+  test("a rejected session is told to sign in again, for the environment that failed", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+    // The request line survives: a 401 can land mid-walk, and which call failed is worth knowing.
+    expect(result.error.message).toContain("GET /v1/me -> 401");
+  });
+
+  test.each([
+    ["env" as const, "GUSTO_ACCESS_TOKEN"],
+    ["stdin" as const, "--token-stdin"],
+  ])("a rejected %s token names it and does not suggest logging in", (tokenSource, named) => {
+    // `auth login` would rotate a stored session the failing command never used, so an explicitly
+    // supplied token has to be reported as the caller's to fix.
+    const result = toResult(unauthorized({ tokenSource, environment: "production" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain(named);
+    expect(result.error.message).not.toContain("gusto auth login");
+  });
+
+  test("a rejected just-minted login token names the sign-in, not a stored credential", () => {
+    // The `token_info` read inside `auth login` is the one 401 whose credential is seconds old and
+    // ours. None of the other three recoveries apply: nothing is stored yet (the save happens after
+    // this read) and there is no caller-supplied value to go fix.
+    const result = toResult(unauthorized({ tokenSource: "login", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("/v1/token_info");
+    expect(result.error.message).toContain("nothing was stored");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+    // Must not read as a rejected stored session, whose login costs a live refresh token.
+    expect(result.error.message).not.toContain("stored sandbox session");
+  });
+
+  test("no wording suggests a bare retry, since nothing re-authenticates on its own", () => {
+    for (const tokenSource of ["session", "env", "stdin"] as const) {
+      const result = toResult(unauthorized({ tokenSource, environment: "production" }));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).not.toContain("retry");
+    }
+  });
+
+  test("still classifies as an auth failure when the client carried no context", () => {
+    // Covers a 401 from a client built without one: the code and exit stay put, and the message has
+    // to describe all three sources rather than send the caller at the wrong one.
+    const result = toResult(unauthorized());
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect("environment" in result.error).toBe(false);
+    expect(result.error.message).toContain("GUSTO_ACCESS_TOKEN");
+    expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test("a 403 without a scope reason stays an ordinary 4xx", () => {
+    // Guards the boundary: only 401 moves to the auth family, not every 4xx near it.
+    const result = toResult(new ApiError(403, { error: "forbidden" }, ExitCode.ApiClient, "GET /x -> 403"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("api_client_error");
+  });
+});
+
 describe("toResult 403 scope handling", () => {
+  // Scopes are granted per credential and a credential is per environment, so this failure is no
+  // less environment-specific than the 401 above. It predates the field, which is the only reason it
+  // ever read as the exception.
+  test("insufficient_scope carries the environment when the client had a context", () => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+      { auth: { tokenSource: "session", environment: "sandbox" } },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.environment).toBe("sandbox");
+  });
+
+  test("insufficient_scope omits the environment when the client carried no context", () => {
+    // Absent rather than guessed: a wrong environment is worse than none for a caller branching on it.
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect("environment" in result.error).toBe(false);
+  });
+
   test("insufficient_scope 403 maps to a scope remediation message", () => {
     const err = new ApiError(
       403,
@@ -91,6 +311,25 @@ describe("toResult 403 scope handling", () => {
     expect(result.error.code).toBe("insufficient_scope");
     expect(result.error.message).toContain("employees:manage");
     expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test.each([
+    ["env" as const, "GUSTO_ACCESS_TOKEN"],
+    ["stdin" as const, "--token-stdin"],
+  ])("insufficient_scope for an explicit %s token tells the caller to replace that token", (tokenSource, named) => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "employees:manage" },
+      ExitCode.ApiClient,
+      "POST /v1/companies/x/employees -> 403",
+      { auth: { tokenSource, environment: "sandbox" } },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain(named);
+    expect(result.error.message).toContain("employees:manage");
+    // A stored login cannot repair an explicit token, which wins on every subsequent command.
+    expect(result.error.message).not.toContain("gusto auth login");
   });
 
   test("the real Gusto missing_oauth_scopes 403 body maps to insufficient_scope", () => {
@@ -116,6 +355,57 @@ describe("toResult 403 scope handling", () => {
     expect(result.exitCode).toBe(ExitCode.Auth);
     expect(result.error.code).toBe("insufficient_scope");
     expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test("a Gusto missing_oauth_scopes 403 with metadata.missing_scope_name names the scope", () => {
+    // Same shape as the generic body above, plus metadata naming the scope.
+    const err = new ApiError(
+      403,
+      {
+        errors: [
+          {
+            error_key: "request",
+            category: "missing_oauth_scopes",
+            message:
+              "You do not have the 'company_benefits:read' OAuth scope required for this request. Please reach out to developer@gusto.com for assistance.",
+            metadata: { missing_scope_name: "company_benefits:read" },
+          },
+        ],
+      },
+      ExitCode.ApiClient,
+      "GET /v1/companies/x/benefits -> 403",
+    );
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.message).toContain("company_benefits:read");
+    expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test("the scope name is read off the missing_oauth_scopes entry even when it isn't errors[0]", () => {
+    const err = new ApiError(
+      403,
+      {
+        errors: [
+          { error_key: "request", category: "forbidden", message: "nope" },
+          {
+            error_key: "request",
+            category: "missing_oauth_scopes",
+            message: "You do not have the 'company_benefits:read' OAuth scope required for this request.",
+            metadata: { missing_scope_name: "company_benefits:read" },
+          },
+        ],
+      },
+      ExitCode.ApiClient,
+      "GET /v1/companies/x/benefits -> 403",
+    );
+    const result = toResult(err);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.message).toContain("company_benefits:read");
   });
 
   test("a non-scope 403 still flows through as a client error", () => {
@@ -203,14 +493,14 @@ describe("partialFailure", () => {
       exitCode: ExitCode.ApiClient,
       error: {
         code: "bank_verification_failed",
-        message: "bank account created but verify failed: PUT /x -> 422",
+        message: "bank account created but verify failed: nope (PUT /x -> 422)",
         details: {
           bank_account: "ba-1",
           completed: ["bank_account"],
           // The server's 422 body is preserved (structured) under failed.error.details.
           failed: {
             domain: "verify",
-            error: { code: "api_client_error", message: "PUT /x -> 422", details: { errors: ["nope"] } },
+            error: { code: "api_client_error", message: "nope (PUT /x -> 422)", details: { errors: ["nope"] } },
           },
         },
       },
@@ -228,6 +518,26 @@ describe("partialFailure", () => {
     });
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
+  });
+
+  test.each([
+    [401, { error: "unauthorized" }, "credential_rejected"],
+    [403, { error: "insufficient_scope" }, "insufficient_scope"],
+  ])("an auth failure at HTTP %i keeps environment on the outer partial-failure envelope", (status, body, code) => {
+    const err = new ApiError(status, body, ExitCode.ApiClient, `GET /follow-up -> ${status}`, {
+      auth: { tokenSource: "session", environment: "sandbox" },
+    });
+    const result = partialFailure({
+      code: "compliance_nudge_fetch_failed",
+      message: "work address changed but tax requirements failed",
+      err,
+      completed: { work_address: { uuid: "wa-1" } },
+      failedDomain: "tax_requirements",
+    });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.environment).toBe("sandbox");
+    expect((result.error.details as { failed: { error: { code: string } } }).failed.error.code).toBe(code);
   });
 
   test("lists every completed domain and echoes its data", () => {

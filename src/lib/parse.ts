@@ -28,6 +28,18 @@ export function parsePositiveNumber(raw: string): PositiveNumberResult {
   return { ok: true, value: num };
 }
 
+/** Plain positive integer: digits only, no sign, no decimal point. */
+const POSITIVE_INT = /^\d+$/;
+
+/** Parse a string as a positive integer (`0` and decimals are rejected). Shared by every
+ * page/per/limit-style flag so their validation and error wording can't drift. */
+export function parsePositiveInt(raw: string): PositiveNumberResult {
+  if (!POSITIVE_INT.test(raw) || Number(raw) < 1) {
+    return { ok: false, reason: `must be a positive integer, got: ${raw}` };
+  }
+  return { ok: true, value: Number(raw) };
+}
+
 /** Plain non-negative decimal: digits with an optional fractional part, nothing else. */
 const NON_NEGATIVE_DECIMAL = /^\d+(\.\d+)?$/;
 
@@ -62,6 +74,36 @@ export function isValidIsoDate(value: string): boolean {
 export function isValidIso8601(value: string): boolean {
   if (!ISO_8601.test(value)) return false;
   return !Number.isNaN(new Date(value).getTime());
+}
+
+const STATE_CODE = /^[a-zA-Z]{2}$/;
+
+/** True for a two-letter code (e.g. `MD`). Format-level check only - whether it's a real
+ * US state/territory is the API's job, so this doesn't hardcode an enumerable list. */
+export function isValidStateCode(value: string): boolean {
+  return STATE_CODE.test(value);
+}
+
+// Canonical 8-4-4-4-12 hex, not version-pinned
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+/** True for a canonical UUID of any version, excluding the nil UUID. */
+export function isValidUuid(value: string): boolean {
+  return UUID.test(value) && value !== NIL_UUID;
+}
+
+/** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
+const ECHOED_VALUE_MAX_LENGTH = 60;
+
+export function uuidReason(value: string): string {
+  const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
+  return `must be a valid UUID, got: ${JSON.stringify(echoed)}`;
+}
+
+export function pushUuidBlockedOn(field: string, value: string | undefined, blocked: BlockedOn[]): void {
+  if (value !== undefined && !isValidUuid(value)) blocked.push({ field, reason: uuidReason(value) });
 }
 
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry

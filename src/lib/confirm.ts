@@ -31,9 +31,23 @@ export function confirmationGate(
   opts: ConfirmOpts,
   stdoutIsTty = process.stdout.isTTY === true,
 ): CommandResult<never> | null {
+  if (!WRITE_METHODS.has(method.toUpperCase())) return null;
+  return agentWriteGate(globals, `${method} ${target}`, opts, stdoutIsTty);
+}
+
+/** The gate over a free-form description, for writes with no method or endpoint to name -
+ * `gusto upgrade` replaces the binary the agent is executing and wants the same treatment.
+ *
+ * `description` becomes the subject of "is a write running in agent mode", so phrase it as a noun
+ * (`POST /v1/...`, `replacing the gusto binary at ...`). */
+export function agentWriteGate(
+  globals: GlobalFlags,
+  description: string,
+  opts: ConfirmOpts,
+  stdoutIsTty = process.stdout.isTTY === true,
+): CommandResult<never> | null {
   if (opts.dryRun) return null;
   if (opts.confirm) return null;
-  if (!WRITE_METHODS.has(method.toUpperCase())) return null;
   if (resolveOutputMode(globals, stdoutIsTty) !== "agent") return null;
 
   return {
@@ -42,8 +56,8 @@ export function confirmationGate(
     error: {
       code: "confirmation_required",
       message:
-        `${method} ${target} is a write running in agent mode. Surface it to the operator and ` +
-        `re-run with --confirm once they approve. Preview the request first with --dry-run.`,
+        `${description} is a write running in agent mode. Surface it to the operator and ` +
+        `re-run with --confirm once they approve. Preview it first with --dry-run.`,
       details: { retry_with: ["--confirm"], preview_with: ["--dry-run"] },
     },
   };

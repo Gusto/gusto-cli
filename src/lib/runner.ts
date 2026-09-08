@@ -9,6 +9,7 @@ import {
   emit,
   outputOptionsFrom,
 } from "./output.ts";
+import { uuidReason } from "./parse.ts";
 
 export interface CommandContext {
   command: string;
@@ -162,18 +163,25 @@ async function run<T>(
   return deps.exit(code);
 }
 
-/** A validation failure (exit 7) carrying a caller-supplied message and blocked_on list. */
-export function validationFailure(message: string, blocked: BlockedOn[]): CommandResult<never> {
+/** A validation failure (exit 7) carrying a caller-supplied message and blocked_on list. `hint` is
+ * optional and should name the way out of *this* failure - omit it rather than offer a generic one. */
+export function validationFailure(message: string, blocked: BlockedOn[], hint?: string): CommandResult<never> {
   return {
     ok: false,
     exitCode: ExitCode.Validation,
-    error: { code: "validation", message, blocked_on: blocked },
+    error: { code: "validation", message, blocked_on: blocked, ...(hint !== undefined ? { hint } : {}) },
   };
 }
 
 /** Standard "missing required arguments" validation failure with a blocked_on list. */
 export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
   return validationFailure("missing required arguments", blocked);
+}
+
+/** Standard validation failure for an identifier argument that isn't a usable UUID.
+ * `hint` is printed verbatim, so any command in it must run as-is - no unfilled placeholders. */
+export function invalidUuid(field: string, value: string, hint?: string): CommandResult<never> {
+  return validationFailure("invalid arguments", [{ field, reason: uuidReason(value) }], hint);
 }
 
 /** Indented, newline-joined list of field names for a stderr hint, or a placeholder when empty. */

@@ -1,12 +1,13 @@
 import type { Command } from "commander";
 import { ApiError } from "../lib/api-client.ts";
-import { withCompanyContext } from "../lib/api-context.ts";
-import { errMsg } from "../lib/errors.ts";
+import { fetchCompanyResource, fetchResource, withCompanyContext } from "../lib/api-context.ts";
+import { errMsg, malformedResponse } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { fetchCompanyLocations } from "../lib/locations.ts";
 import { kvLines, table } from "../lib/human.ts";
-import { type CommandHandler, runReadCommand } from "../lib/runner.ts";
-import { withContextOptions } from "../lib/cli-options.ts";
+import { type CommandHandler, runReadCommand, validationFailure } from "../lib/runner.ts";
+import { ALL_OPT, CURSOR_OPT, TOKEN_STDIN_OPT, withContextOptions } from "../lib/cli-options.ts";
+import { parsePaginationFlags, type PaginationFlags } from "../lib/pagination.ts";
 
 interface CompanyShowOpts {
   companyUuid?: string;
@@ -33,6 +34,160 @@ export function registerCompanyCommand(parent: Command): void {
   ).action((opts: CompanyShowOpts) =>
     runReadCommand("gusto company locations", readGlobalFlags(parent.opts()), companyLocationsHandler(opts)),
   );
+
+  withContextOptions(
+    cmd.command("earning-types").description("List the company's earning types (default and custom)"),
+  ).action((opts: CompanyShowOpts) =>
+    runReadCommand("gusto company earning-types", readGlobalFlags(parent.opts()), companyEarningTypesHandler(opts)),
+  );
+
+  withContextOptions(cmd.command("custom-fields").description("List the company's custom fields")).action(
+    (opts: CompanyShowOpts) =>
+      runReadCommand("gusto company custom-fields", readGlobalFlags(parent.opts()), companyCustomFieldsHandler(opts)),
+  );
+
+  const forms = cmd.command("forms").description("List and inspect the company's forms");
+
+  withContextOptions(forms.command("list").description("List the company's forms"))
+    .option(...CURSOR_OPT)
+    .option("--limit <n>", "Maximum forms to return across pages")
+    .option(...ALL_OPT)
+    .action((opts: CompanyFormsListOpts) =>
+      runReadCommand("gusto company forms list", readGlobalFlags(parent.opts()), companyFormsListHandler(opts)),
+    );
+
+  forms
+    .command("show <form_uuid>")
+    // Agents reach for `get` first and hit "unknown command" and stop - alias it to show.
+    .alias("get")
+    .description("Read a single form record")
+    .option(...TOKEN_STDIN_OPT)
+    .action((formUuid: string, opts: FormReadOpts) =>
+      runReadCommand(
+        "gusto company forms show",
+        readGlobalFlags(parent.opts()),
+        companyFormShowHandler(formUuid, opts),
+      ),
+    );
+
+  forms
+    .command("pdf <form_uuid>")
+    .description("Get a form's signed PDF document URL")
+    .option(...TOKEN_STDIN_OPT)
+    .action((formUuid: string, opts: FormReadOpts) =>
+      runReadCommand("gusto company forms pdf", readGlobalFlags(parent.opts()), companyFormPdfHandler(formUuid, opts)),
+    );
+
+  withContextOptions(cmd.command("signatories").description("List the company's signatories")).action(
+    (opts: CompanyResourceReadOpts) =>
+      runReadCommand("gusto company signatories", readGlobalFlags(parent.opts()), companySignatoriesHandler(opts)),
+  );
+
+  withContextOptions(cmd.command("federal-taxes").description("Read the company's federal tax details")).action(
+    (opts: CompanyResourceReadOpts) =>
+      runReadCommand("gusto company federal-taxes", readGlobalFlags(parent.opts()), companyFederalTaxesHandler(opts)),
+  );
+}
+
+interface CompanyResourceReadOpts {
+  companyUuid?: string;
+  tokenStdin?: boolean;
+}
+
+interface FormReadOpts {
+  tokenStdin?: boolean;
+}
+
+type CompanyFormsListOpts = CompanyResourceReadOpts & PaginationFlags;
+
+interface FormRecord {
+  uuid: string;
+  title?: string;
+  type?: string;
+  year?: number | null;
+  quarter?: number | null;
+  requires_signing?: boolean;
+  document_content_type?: string;
+  employee_uuid?: string | null;
+  contractor_uuid?: string | null;
+}
+
+interface FormPdfUrl {
+  uuid?: string;
+  document_url: string | null;
+}
+
+export function companyFormsListHandler(opts: CompanyFormsListOpts): CommandHandler {
+  return async ({ globals }) => {
+    const pg = parsePaginationFlags(opts);
+    if (!pg.ok) return validationFailure(pg.message, pg.blocked);
+    return withCompanyContext(globals, { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid }, async (ctx) => {
+      const { items, next } = await ctx.client.paginate<FormRecord>(`/v1/companies/${ctx.companyUuid}/forms`, pg.body);
+      return { ok: true, data: items, next: pg.body.surfaceNext ? next : undefined };
+    });
+  };
+}
+
+export function companyFormShowHandler(formUuid: string, opts: FormReadOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource<FormRecord>(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/forms/${encodeURIComponent(formUuid)}`,
+    );
+}
+
+export function companyFormPdfHandler(formUuid: string, opts: FormReadOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchResource<FormPdfUrl>(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/forms/${encodeURIComponent(formUuid)}/pdf`,
+    );
+}
+
+export function companySignatoriesHandler(opts: CompanyResourceReadOpts): CommandHandler {
+  return async ({ globals }) => {
+    const res = await fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/signatories`,
+    );
+    if (res.ok && !Array.isArray(res.data)) {
+      return malformedResponse("/v1/companies/{company_uuid}/signatories returned a non-array body");
+    }
+    return res;
+  };
+}
+
+export function companyFederalTaxesHandler(opts: CompanyResourceReadOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/federal_tax_details`,
+    );
+}
+
+/** GET /v1/companies/{id}/earning_types. Returns the body unchanged (`{ default, custom }`),
+ * matching the equivalent `gusto api request` GET. */
+export function companyEarningTypesHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/earning_types`,
+    );
+}
+
+/** GET /v1/companies/{id}/custom_fields. Returns the body unchanged (`{ custom_fields }`). */
+export function companyCustomFieldsHandler(opts: CompanyShowOpts): CommandHandler {
+  return async ({ globals }) =>
+    fetchCompanyResource(
+      globals,
+      { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
+      (ctx) => `/v1/companies/${ctx.companyUuid}/custom_fields`,
+    );
 }
 
 export function companyLocationsHandler(opts: CompanyShowOpts): CommandHandler {

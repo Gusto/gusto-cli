@@ -3,14 +3,20 @@ import {
   type EmployeeListData,
   type EmployeeListSummary,
   employeeAddressesHandler,
+  employeeCustomFieldsHandler,
   employeeHistoryHandler,
   employeeJobsHandler,
   employeeListHandler,
   employeeRehireHandler,
+  employeeShowHandler,
+  employeeStatusHandler,
   employeeTerminateCancelHandler,
   employeeTerminateHandler,
   employeeTerminationsHandler,
+  employeeUpdateHandler,
   homeAddressHandler,
+  updateHomeAddressHandler,
+  updateWorkAddressHandler,
   workAddressHandler,
 } from "./employee.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
@@ -22,10 +28,17 @@ import {
   pagedRouter,
   routeFetch,
   stubGlobalFetch,
+  TEST_COMPANY_UUID,
 } from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
 afterEach(() => restore());
+
+// Identifier arguments are validated before any request, so these have to be well-formed uuids
+// rather than short slugs. Obviously-synthetic shape, matching the rest of the repo's fixtures.
+const EMP_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
+const WA_UUID = "9b8c7d6e-0000-4111-2222-333344445555";
+const HA_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
 
 const FIXTURE = [
   { uuid: "a1", onboarding_status: "onboarding_completed" },
@@ -64,7 +77,7 @@ describe("employeeListHandler", () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: FIXTURE }));
     restore = fetchStub.restore;
     await employeeListHandler({ ...auth })(ctx);
-    expect(fetchStub.calls[0]?.url).toContain("/v1/companies/co-1/employees");
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/employees`);
   });
 
   test("an invalid --status short-circuits to a validation error without calling the API", async () => {
@@ -127,37 +140,37 @@ describe("employeeListHandler pagination", () => {
 
 describe("employee lifecycle reads", () => {
   test("history hits /v1/employees/{uuid}/employment_history and returns the body verbatim", async () => {
-    const body = { employee_uuid: "emp-1", terminations: [{ uuid: "term-1" }], rehires: [] };
+    const body = { employee_uuid: EMP_UUID, terminations: [{ uuid: "term-1" }], rehires: [] };
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
     restore = fetchStub.restore;
-    const d = okData(await employeeHistoryHandler("emp-1", {})(ctx));
+    const d = okData(await employeeHistoryHandler(EMP_UUID, {})(ctx));
     expect(d).toEqual(body);
-    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/employment_history");
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/employees/${EMP_UUID}/employment_history`);
   });
 
   test("terminations hits /v1/employees/{uuid}/terminations and returns the list verbatim", async () => {
     const body = [{ uuid: "term-1", effective_date: "2026-01-31" }];
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
     restore = fetchStub.restore;
-    const result = await employeeTerminationsHandler("emp-1", {})(ctx);
+    const result = await employeeTerminationsHandler(EMP_UUID, {})(ctx);
     if (!result.ok) throw new Error("expected ok");
     expect(result.data).toEqual(body);
-    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/terminations");
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/employees/${EMP_UUID}/terminations`);
   });
 
   test("rehire hits /v1/employees/{uuid}/rehire and returns the body verbatim", async () => {
     const body = { uuid: "rehire-1", effective_date: "2026-06-01" };
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
     restore = fetchStub.restore;
-    const d = okData(await employeeRehireHandler("emp-1", {})(ctx));
+    const d = okData(await employeeRehireHandler(EMP_UUID, {})(ctx));
     expect(d).toEqual(body);
-    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/rehire");
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/employees/${EMP_UUID}/rehire`);
   });
 
   test("terminations returns an empty list for a never-terminated employee", async () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
     restore = fetchStub.restore;
-    const result = await employeeTerminationsHandler("emp-1", {})(ctx);
+    const result = await employeeTerminationsHandler(EMP_UUID, {})(ctx);
     if (!result.ok) throw new Error("expected ok");
     expect(result.data).toEqual([]);
   });
@@ -168,19 +181,21 @@ describe("employee lifecycle reads", () => {
     ["rehire", employeeRehireHandler],
   ])("an API error fails the command (%s)", async (_name, handler) => {
     restore = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } })).restore;
-    const result = await handler("emp-1", {})(ctx);
+    const result = await handler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
   });
 });
 
 describe("employeeAddressesHandler", () => {
+  const EMP_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
+
   test("combines work and home addresses under stable keys", async () => {
     const fetchStub = routeFetch([
       { match: "/work_addresses", status: 200, body: [{ uuid: "wa-1", street_1: "1 Main" }] },
       { match: "/home_addresses", status: 200, body: [{ uuid: "ha-1", street_1: "2 Elm" }] },
     ]);
     restore = fetchStub.restore;
-    const d = okData(await employeeAddressesHandler("emp-1", {})(ctx));
+    const d = okData(await employeeAddressesHandler(EMP_UUID, {})(ctx));
     expect(d.work_addresses).toEqual([{ uuid: "wa-1", street_1: "1 Main" }]);
     expect(d.home_addresses).toEqual([{ uuid: "ha-1", street_1: "2 Elm" }]);
   });
@@ -191,10 +206,10 @@ describe("employeeAddressesHandler", () => {
       { match: "/home_addresses", status: 200, body: [] },
     ]);
     restore = fetchStub.restore;
-    await employeeAddressesHandler("emp-1", {})(ctx);
+    await employeeAddressesHandler(EMP_UUID, {})(ctx);
     const urls = fetchStub.calls.map((c) => c.url);
-    expect(urls.some((u) => u.includes("/v1/employees/emp-1/work_addresses"))).toBe(true);
-    expect(urls.some((u) => u.includes("/v1/employees/emp-1/home_addresses"))).toBe(true);
+    expect(urls.some((u) => u.includes(`/v1/employees/${EMP_UUID}/work_addresses`))).toBe(true);
+    expect(urls.some((u) => u.includes(`/v1/employees/${EMP_UUID}/home_addresses`))).toBe(true);
   });
 
   test("a home-address failure fails the whole command with a home-scoped message", async () => {
@@ -203,10 +218,10 @@ describe("employeeAddressesHandler", () => {
       { match: "/home_addresses", status: 404, body: { error: "not found" } },
     ]);
     restore = fetchStub.restore;
-    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    const result = await employeeAddressesHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.message).toContain("home addresses for employee emp-1");
+    expect(result.error.message).toContain(`home addresses for employee ${EMP_UUID}`);
   });
 
   test("a work-address failure wins and names the work side, even though both GETs fire", async () => {
@@ -215,10 +230,10 @@ describe("employeeAddressesHandler", () => {
       { match: "/home_addresses", status: 200, body: [] },
     ]);
     restore = fetchStub.restore;
-    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    const result = await employeeAddressesHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.message).toContain("work addresses for employee emp-1");
+    expect(result.error.message).toContain(`work addresses for employee ${EMP_UUID}`);
     // Runs in parallel now, so both endpoints are hit (no short-circuit).
     expect(fetchStub.calls).toHaveLength(2);
   });
@@ -229,7 +244,7 @@ describe("employeeAddressesHandler", () => {
       { match: "/home_addresses", status: 200, body: [] },
     ]);
     restore = fetchStub.restore;
-    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    const result = await employeeAddressesHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("malformed_response");
@@ -241,28 +256,49 @@ describe("employeeAddressesHandler", () => {
       { match: "/home_addresses", status: 200, body: { not: "an array" } },
     ]);
     restore = fetchStub.restore;
-    const result = await employeeAddressesHandler("emp-1", {})(ctx);
+    const result = await employeeAddressesHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("malformed_response");
+  });
+
+  test("the nil uuid is rejected before either request is sent", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("00000000-0000-0000-0000-000000000000", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["employee_uuid"]);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test("the rejection points at the command that produces a real uuid", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
+    restore = fetchStub.restore;
+    const result = await employeeAddressesHandler("<employee_uuid>", {})(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toContain("gusto employee list");
+    expect(fetchStub.calls).toHaveLength(0);
   });
 });
 
 describe("single address gets", () => {
   test("work-address hits /v1/work_addresses/{uuid} and returns the body verbatim", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { uuid: "wa-1", street_1: "1 Main" } }));
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { uuid: WA_UUID, street_1: "1 Main" } }));
     restore = fetchStub.restore;
-    const d = okData(await workAddressHandler("wa-1", {})(ctx));
-    expect(d).toEqual({ uuid: "wa-1", street_1: "1 Main" });
-    expect(fetchStub.calls[0]?.url).toContain("/v1/work_addresses/wa-1");
+    const d = okData(await workAddressHandler(WA_UUID, {})(ctx));
+    expect(d).toEqual({ uuid: WA_UUID, street_1: "1 Main" });
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/work_addresses/${WA_UUID}`);
   });
 
   test("home-address hits /v1/home_addresses/{uuid} and returns the body verbatim", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { uuid: "ha-1", street_1: "2 Elm" } }));
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { uuid: HA_UUID, street_1: "2 Elm" } }));
     restore = fetchStub.restore;
-    const d = okData(await homeAddressHandler("ha-1", {})(ctx));
-    expect(d).toEqual({ uuid: "ha-1", street_1: "2 Elm" });
-    expect(fetchStub.calls[0]?.url).toContain("/v1/home_addresses/ha-1");
+    const d = okData(await homeAddressHandler(HA_UUID, {})(ctx));
+    expect(d).toEqual({ uuid: HA_UUID, street_1: "2 Elm" });
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/home_addresses/${HA_UUID}`);
   });
 });
 
@@ -271,24 +307,16 @@ describe("employeeJobsHandler", () => {
     const body = [{ uuid: "job-1", title: "Engineer" }];
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body }));
     restore = fetchStub.restore;
-    const result = await employeeJobsHandler("emp-1", {})(ctx);
+    const result = await employeeJobsHandler(EMP_UUID, {})(ctx);
     if (!result.ok) throw new Error("expected ok");
-    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/emp-1/jobs");
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/employees/${EMP_UUID}/jobs`);
     expect(result.data).toEqual(body);
-  });
-
-  test("encodes a uuid with URL-significant characters into a single segment", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: [] }));
-    restore = fetchStub.restore;
-    await employeeJobsHandler("a/b?c#d", {})(ctx);
-    expect(fetchStub.calls[0]?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/jobs");
-    expect(fetchStub.calls[0]?.url).not.toContain("a/b?c");
   });
 
   test("a non-array 2xx body is rejected as malformed", async () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { not: "an array" } }));
     restore = fetchStub.restore;
-    const result = await employeeJobsHandler("emp-1", {})(ctx);
+    const result = await employeeJobsHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("malformed_response");
@@ -302,7 +330,7 @@ describe("employeeTerminateHandler", () => {
   test("--example prints a canned POST payload without calling the API", async () => {
     const s = stubGlobalFetch(() => ({ status: 500 }));
     restore = s.restore;
-    const d = okData(await employeeTerminateHandler("emp-1", { ...auth, example: true })(ctx));
+    const d = okData(await employeeTerminateHandler(EMP_UUID, { ...auth, example: true })(ctx));
     expect(d.method).toBe("POST");
     expect(d.path).toBe("/v1/employees/{employee_id}/terminations");
     expect(d.body).toMatchObject({ run_termination_payroll: false });
@@ -313,7 +341,7 @@ describe("employeeTerminateHandler", () => {
   test("a missing --effective-date is refused pre-flight with a blocked_on list, no API call", async () => {
     const s = stubGlobalFetch(() => ({ status: 500 }));
     restore = s.restore;
-    const result = await employeeTerminateHandler("emp-1", {})(ctx);
+    const result = await employeeTerminateHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
@@ -324,7 +352,7 @@ describe("employeeTerminateHandler", () => {
   test("a malformed --effective-date is refused pre-flight with a blocked_on list, no API call", async () => {
     const s = stubGlobalFetch(() => ({ status: 500 }));
     restore = s.restore;
-    const result = await employeeTerminateHandler("emp-1", { ...auth, effectiveDate: "08-01-2026" })(ctx);
+    const result = await employeeTerminateHandler(EMP_UUID, { ...auth, effectiveDate: "08-01-2026" })(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
@@ -333,7 +361,7 @@ describe("employeeTerminateHandler", () => {
   });
 
   test("dry-run builds the termination body and hits the employee-scoped path", async () => {
-    const result = await employeeTerminateHandler("emp-1", {
+    const result = await employeeTerminateHandler(EMP_UUID, {
       ...auth,
       effectiveDate: "2026-08-01",
       dryRun: true,
@@ -342,13 +370,13 @@ describe("employeeTerminateHandler", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.data).toEqual({
       method: "POST",
-      path: "/v1/employees/emp-1/terminations",
+      path: `/v1/employees/${EMP_UUID}/terminations`,
       body: { effective_date: "2026-08-01", run_termination_payroll: false },
     });
   });
 
   test("--run-termination-payroll flips the off-cycle flag in the body", async () => {
-    const result = await employeeTerminateHandler("emp-1", {
+    const result = await employeeTerminateHandler(EMP_UUID, {
       ...auth,
       effectiveDate: "2026-08-01",
       runTerminationPayroll: true,
@@ -364,7 +392,7 @@ describe("employeeTerminateHandler", () => {
   test("an agent-mode terminate without --confirm is blocked and sends nothing", async () => {
     const s = stubGlobalFetch(() => ({ status: 201, body: {} }));
     restore = s.restore;
-    const result = await employeeTerminateHandler("emp-1", { ...auth, effectiveDate: "2026-08-01" })(ctx);
+    const result = await employeeTerminateHandler(EMP_UUID, { ...auth, effectiveDate: "2026-08-01" })(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Blocked);
@@ -374,28 +402,289 @@ describe("employeeTerminateHandler", () => {
 
   test("--confirm POSTs the termination to the employee endpoint", async () => {
     const s = stubGlobalFetch((u) =>
-      u.includes("/v1/employees/emp-1/terminations") ? { status: 201, body: { active: true } } : { status: 404 },
+      u.includes(`/v1/employees/${EMP_UUID}/terminations`) ? { status: 201, body: { active: true } } : { status: 404 },
     );
     restore = s.restore;
-    const result = await employeeTerminateHandler("emp-1", {
+    const result = await employeeTerminateHandler(EMP_UUID, {
       ...auth,
       effectiveDate: "2026-08-01",
       confirm: true,
     })(ctx);
     expect(result.ok).toBe(true);
     const post = s.calls.find((c) => c.method === "POST");
-    expect(post?.url).toContain("/v1/employees/emp-1/terminations");
+    expect(post?.url).toContain(`/v1/employees/${EMP_UUID}/terminations`);
     expect(post?.body).toEqual({ effective_date: "2026-08-01", run_termination_payroll: false });
   });
+});
 
-  test("encodes a uuid with URL-significant characters into a single path segment", async () => {
-    const s = stubGlobalFetch(() => ({ status: 201, body: {} }));
+describe("employeeUpdateHandler", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const activeAddress = { uuid: "wa-1", version: "v1", active: true, state: "PA" };
+  const mdLocation = { uuid: "loc-md", state: "MD", active: true };
+
+  function happyPathRoutes(overrides: Partial<Record<string, { status: number; body?: unknown }>> = {}) {
+    return routeFetch([
+      {
+        match: `/v1/employees/${EMP_UUID}/work_addresses`,
+        status: 200,
+        body: [activeAddress],
+        ...overrides.addresses,
+      },
+      {
+        match: `/v1/companies/${TEST_COMPANY_UUID}/locations`,
+        status: 200,
+        body: [mdLocation],
+        ...overrides.locations,
+      },
+      {
+        match: "/v1/work_addresses/wa-1",
+        status: 200,
+        body: { ...activeAddress, state: "MD", location_uuid: "loc-md", version: "v2" },
+        ...overrides.put,
+      },
+      {
+        match: `/v1/companies/${TEST_COMPANY_UUID}/tax_requirements/MD`,
+        status: 200,
+        body: {
+          state: "MD",
+          requirement_sets: [
+            { key: "registrations", requirements: [{ key: "withholding_number", editable: true, value: null }] },
+          ],
+        },
+        ...overrides.tax,
+      },
+    ]);
+  }
+
+  test("--example prints a canned PUT payload without calling the API", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
     restore = s.restore;
-    await employeeTerminateHandler("a/b?c#d", { ...auth, effectiveDate: "2026-08-01", confirm: true })(ctx);
-    const post = s.calls.find((c) => c.method === "POST");
-    // The raw `/`, `?`, `#` must be percent-encoded so they can't retarget the write.
-    expect(post?.url).toContain("/v1/employees/a%2Fb%3Fc%23d/terminations");
-    expect(post?.url).not.toContain("a/b?c");
+    const d = okData(await employeeUpdateHandler(EMP_UUID, { ...auth, example: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(d.path).toBe("/v1/work_addresses/{work_address_uuid}");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("a missing --work-state is refused pre-flight with a blocked_on list, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["work-state"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an invalid --work-state format is refused pre-flight, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "Maryland" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["work-state"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an invalid --effective-date is refused pre-flight, no API call", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, {
+      ...auth,
+      workState: "MD",
+      effectiveDate: "08-01-2026",
+    })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual(["effective-date"]);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("an agent-mode update without --confirm is blocked and sends nothing", async () => {
+    const s = stubGlobalFetch(() => ({ status: 500 }));
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD" })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("confirmation_required");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("no active work address on file returns a domain error", async () => {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [{ ...activeAddress, active: false }] },
+    ]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("no_active_work_address");
+  });
+
+  test("already working from the target state is a no-op and never queries locations or tax requirements", async () => {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "PA", confirm: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("--dry-run against an already-matching state still returns the no-op result, not a fake preview", async () => {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "PA", dryRun: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(d.method).toBeUndefined();
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("a lowercase --work-state matching the current (uppercase) state is still a no-op", async () => {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [{ ...activeAddress, state: "PA" }] },
+    ]);
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "pa", confirm: true })(ctx));
+    expect(d.changed).toBe(false);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("no active company location in the target state returns a domain error and never PUTs", async () => {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [activeAddress] },
+      {
+        match: `/v1/companies/${TEST_COMPANY_UUID}/locations`,
+        status: 200,
+        body: [{ uuid: "loc-ca", state: "CA", active: true }],
+      },
+    ]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("no_company_location_for_state");
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("dry-run resolves the location and builds the PUT body without sending it or fetching the tax nudge", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", dryRun: true })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual({
+      method: "PUT",
+      path: "/v1/work_addresses/wa-1",
+      body: { version: "v1", location_uuid: "loc-md" },
+    });
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(s.calls.some((c) => c.url.includes("tax_requirements"))).toBe(false);
+  });
+
+  test("--effective-date is included in the dry-run body when given", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, {
+      ...auth,
+      workState: "MD",
+      effectiveDate: "2026-08-01",
+      dryRun: true,
+    })(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as { body: Record<string, unknown> }).body).toMatchObject({ effective_date: "2026-08-01" });
+  });
+
+  test("--confirm PUTs the resolved work address and includes the compliance nudge", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx));
+    expect(d.changed).toBe(true);
+    expect((d.work_address as Record<string, unknown>).state).toBe("MD");
+    expect(d.compliance).toMatchObject({
+      state: "MD",
+      outstanding: [{ key: "withholding_number", label: undefined, payroll_blocking: false }],
+    });
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/v1/work_addresses/wa-1");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("picks the matching location out of several, not just the first in the list", async () => {
+    const s = happyPathRoutes({
+      locations: {
+        status: 200,
+        body: [
+          { uuid: "loc-ca", state: "CA", active: true },
+          { uuid: "loc-md", state: "MD", active: true },
+          { uuid: "loc-ny", state: "NY", active: true },
+        ],
+      },
+    });
+    restore = s.restore;
+    await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("a lowercase --work-state resolves to the matching location and the uppercased nudge path", async () => {
+    const s = happyPathRoutes();
+    restore = s.restore;
+    await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "md", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+    expect(s.calls.some((c) => c.url.includes("tax_requirements/MD"))).toBe(true);
+  });
+
+  test("matches a location whose stored state is lowercase", async () => {
+    const s = happyPathRoutes({ locations: { status: 200, body: [{ uuid: "loc-md", state: "md", active: true }] } });
+    restore = s.restore;
+    await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ version: "v1", location_uuid: "loc-md" });
+  });
+
+  test("a non-array work_addresses body is rejected as malformed, no locations/PUT/nudge calls", async () => {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: { not: "an array" } },
+    ]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("a rejected PUT (e.g. a stale version) fails the command instead of reporting a phantom success", async () => {
+    const s = happyPathRoutes({ put: { status: 422, body: { errors: [{ message: "stale version" }] } } });
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(s.calls.some((c) => c.url.includes("tax_requirements"))).toBe(false);
+  });
+
+  test("a failed tax-requirements nudge fetch fails the command as a partial failure, not a phantom success", async () => {
+    const s = happyPathRoutes({ tax: { status: 404, body: { errors: [{ message: "not found" }] } } });
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("compliance_nudge_fetch_failed");
+    const details = result.error.details as Record<string, unknown>;
+    expect(details.completed).toEqual(["work_address"]);
+    expect((details.work_address as Record<string, unknown>).state).toBe("MD");
+    expect((details.failed as Record<string, unknown>).domain).toBe("tax_requirements");
   });
 });
 
@@ -404,17 +693,17 @@ describe("employeeTerminateCancelHandler", () => {
   afterEach(() => restore());
 
   test("dry-run echoes the bodyless DELETE against the employee endpoint", async () => {
-    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, dryRun: true })(ctx);
+    const result = await employeeTerminateCancelHandler(EMP_UUID, { ...auth, dryRun: true })(ctx);
     expect(result).toEqual({
       ok: true,
-      data: { method: "DELETE", path: "/v1/employees/emp-1/terminations" },
+      data: { method: "DELETE", path: `/v1/employees/${EMP_UUID}/terminations` },
     });
   });
 
   test("an agent-mode cancel without --confirm is blocked and sends nothing", async () => {
     const s = stubGlobalFetch(() => ({ status: 204 }));
     restore = s.restore;
-    const result = await employeeTerminateCancelHandler("emp-1", {})(ctx);
+    const result = await employeeTerminateCancelHandler(EMP_UUID, {})(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Blocked);
@@ -424,13 +713,13 @@ describe("employeeTerminateCancelHandler", () => {
 
   test("--confirm DELETEs the termination and returns the empty response body", async () => {
     const s = stubGlobalFetch((u) =>
-      u.includes("/v1/employees/emp-1/terminations") ? { status: 204 } : { status: 404 },
+      u.includes(`/v1/employees/${EMP_UUID}/terminations`) ? { status: 204 } : { status: 404 },
     );
     restore = s.restore;
-    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    const result = await employeeTerminateCancelHandler(EMP_UUID, { ...auth, confirm: true })(ctx);
     expect(result).toEqual({ ok: true, data: null });
     const del = s.calls.find((c) => c.method === "DELETE");
-    expect(del?.url).toContain("/v1/employees/emp-1/terminations");
+    expect(del?.url).toContain(`/v1/employees/${EMP_UUID}/terminations`);
   });
 
   // A not_found 404 is either "nothing scheduled to cancel" or a bad uuid. The API's own message
@@ -441,7 +730,7 @@ describe("employeeTerminateCancelHandler", () => {
     const body = { errors: [{ category: "not_found", message: "The employee has not been terminated." }] };
     const s = stubGlobalFetch(() => ({ status: 404, body }));
     restore = s.restore;
-    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    const result = await employeeTerminateCancelHandler(EMP_UUID, { ...auth, confirm: true })(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.hint).toContain("a real termination may still be scheduled");
@@ -456,9 +745,98 @@ describe("employeeTerminateCancelHandler", () => {
       body: { errors: [{ category: "invalid_attributes", message: "nope" }] },
     }));
     restore = s.restore;
-    const result = await employeeTerminateCancelHandler("emp-1", { ...auth, confirm: true })(ctx);
+    const result = await employeeTerminateCancelHandler(EMP_UUID, { ...auth, confirm: true })(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.hint).toBeUndefined();
+  });
+});
+
+describe("employeeCustomFieldsHandler", () => {
+  test("GETs the employee custom_fields and passes the body through", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: { custom_fields: [{ uuid: "cf-1", value: "L" }] } }));
+    restore = fetchStub.restore;
+    const d = okData(await employeeCustomFieldsHandler(EMP_UUID, {})(ctx));
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/employees/${EMP_UUID}/custom_fields`);
+    expect(d.custom_fields).toEqual([{ uuid: "cf-1", value: "L" }]);
+  });
+
+  test("surfaces an API error as a failed CommandResult", async () => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 404, body: { error: "not found" } }));
+    restore = fetchStub.restore;
+    const result = await employeeCustomFieldsHandler(EMP_UUID, {})(ctx);
+    expect(result.ok).toBe(false);
+  });
+});
+
+// One case per handler that takes an identifier, so a new one can't be added without its guard.
+// Path-significant characters are the worst input: a raw `/`, `?`, or `#` reaching the path would
+// retarget the request. The handlers still encodeURIComponent as a second line of defense, but
+// with the guard in front, such a value no longer gets that far - hence the no-request assertion
+// rather than an encoding one. Empty opts is enough to reach every guard: it sits after the
+// `--example` short-circuit but before the required-flag checks and the confirmation gate.
+describe("identifier validation", () => {
+  const BAD = "a/b?c#d";
+
+  // Duplicated on purpose to catch regressions.
+  const HINTS: Record<string, string> = {
+    employee_uuid: "run `gusto employee list` to get a real employee_uuid",
+    address_uuid:
+      "address uuids come from the `employee addresses` command; run `gusto employee list` first to get the employee_uuid it needs",
+  };
+
+  test.each([
+    ["show", (u: string) => employeeShowHandler(u, {}), "employee_uuid"],
+    ["status", (u: string) => employeeStatusHandler(u, {}), "employee_uuid"],
+    ["custom-fields", (u: string) => employeeCustomFieldsHandler(u, {}), "employee_uuid"],
+    ["addresses", (u: string) => employeeAddressesHandler(u, {}), "employee_uuid"],
+    ["history", (u: string) => employeeHistoryHandler(u, {}), "employee_uuid"],
+    ["terminations", (u: string) => employeeTerminationsHandler(u, {}), "employee_uuid"],
+    ["rehire", (u: string) => employeeRehireHandler(u, {}), "employee_uuid"],
+    ["jobs", (u: string) => employeeJobsHandler(u, {}), "employee_uuid"],
+    ["work-address", (u: string) => workAddressHandler(u, {}), "address_uuid"],
+    ["home-address", (u: string) => homeAddressHandler(u, {}), "address_uuid"],
+    ["update-home-address", (u: string) => updateHomeAddressHandler(u, {}), "address_uuid"],
+    ["update-work-address", (u: string) => updateWorkAddressHandler(u, {}), "address_uuid"],
+    ["update", (u: string) => employeeUpdateHandler(u, {}), "employee_uuid"],
+    ["terminate", (u: string) => employeeTerminateHandler(u, {}), "employee_uuid"],
+    ["cancel-termination", (u: string) => employeeTerminateCancelHandler(u, {}), "employee_uuid"],
+  ])("%s rejects a malformed identifier without sending a request", async (_name, build, field) => {
+    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = fetchStub.restore;
+    const result = await build(BAD)(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual([field]);
+    expect(fetchStub.calls).toHaveLength(0);
+    expect(result.error.hint).toBe(HINTS[field]);
+    expect(result.error.hint).not.toMatch(/<[a-z_]+>/);
+  });
+
+  test.each([
+    [
+      "update-home-address",
+      (u: string) => updateHomeAddressHandler(u, { example: true }),
+      "/v1/home_addresses/{home_address_uuid}",
+    ],
+    [
+      "update-work-address",
+      (u: string) => updateWorkAddressHandler(u, { example: true }),
+      "/v1/work_addresses/{work_address_uuid}",
+    ],
+    [
+      "update",
+      (u: string) => employeeUpdateHandler(u, { ...auth, example: true }),
+      "/v1/work_addresses/{work_address_uuid}",
+    ],
+    [
+      "terminate",
+      (u: string) => employeeTerminateHandler(u, { ...auth, example: true }),
+      "/v1/employees/{employee_id}/terminations",
+    ],
+  ])("%s --example prints its payload without reaching the guard", async (_name, build, path) => {
+    const d = okData(await build(BAD)(ctx));
+    expect(d.path).toBe(path);
   });
 });

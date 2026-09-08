@@ -1,11 +1,23 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
 import pkg from "../package.json" with { type: "json" };
 
 const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
+
+// Employee commands validate their identifier before resolving auth, so any row that expects to
+// reach the auth check needs a well-formed uuid rather than a short slug.
+const EMPLOYEE_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
+const ADDRESS_UUID = "9b8c7d6e-0000-4111-2222-333344445555";
+const CONTRACTOR_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
+const CONTRACTOR_PAYMENT_UUID = "5e6f7a8b-0000-4111-2222-333344445555";
+const CONTRACTOR_PAYMENT_GROUP_UUID = "9c0d1e2f-0000-4111-2222-333344445555";
+const TIME_SHEET_UUID = "7a6b5c4d-0000-4111-2222-333344445555";
+const COMPANY_UUID = "3c2b1a09-0000-4111-2222-333344445555";
+const PAY_SCHEDULE_UUID = "1a2b3c4d-0000-4111-2222-333344445556";
+const PAYROLL_UUID = "5e6f7a8b-0000-4111-2222-333344445557";
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -47,6 +59,8 @@ describe("compiled binary", () => {
       "company",
       "employee",
       "contractor",
+      "contractor-payment",
+      "contractor-payment-group",
       "department",
       "job",
       "compensation",
@@ -57,6 +71,7 @@ describe("compiled binary", () => {
       "auth",
       "skill",
       "config",
+      "upgrade",
       "api",
     ]) {
       expect(result.stdout).toContain(cmd);
@@ -91,24 +106,81 @@ describe("auth required commands without a token", () => {
   });
 
   test("employee status <uuid> without a token returns no_access_token (exit 3)", async () => {
-    const result = await run(["employee", "status", "emp-123"]);
+    const result = await run(["employee", "status", EMPLOYEE_UUID]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
   // The six new employee reads dispatch their handlers (reaching the auth check, exit 3) rather than
   // hitting commander's "unknown command" (exit 2) - proof each new subcommand is wired.
+  // Every employee command validates its identifier before resolving auth, so these rows need
+  // well-formed uuids to reach the auth check at all.
   test.each([
-    ["history", ["employee", "history", "emp-123"]],
-    ["terminations", ["employee", "terminations", "emp-123"]],
-    ["rehire", ["employee", "rehire", "emp-123"]],
-    ["addresses", ["employee", "addresses", "emp-123"]],
-    ["work-address", ["employee", "work-address", "wa-123"]],
-    ["home-address", ["employee", "home-address", "ha-123"]],
+    ["history", ["employee", "history", EMPLOYEE_UUID]],
+    ["terminations", ["employee", "terminations", EMPLOYEE_UUID]],
+    ["rehire", ["employee", "rehire", EMPLOYEE_UUID]],
+    ["addresses", ["employee", "addresses", EMPLOYEE_UUID]],
+    ["work-address", ["employee", "work-address", ADDRESS_UUID]],
+    ["home-address", ["employee", "home-address", ADDRESS_UUID]],
   ])("employee %s <uuid> without a token returns no_access_token (exit 3)", async (_name, argv) => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  // Exit 7 rather than the exit 3 above: the uuid is rejected before auth is even resolved, which
+  // is the point - a value that can't name a record needs no credentials to be turned away.
+  test("employee addresses with the all-zeros uuid is rejected as invalid (exit 7)", async () => {
+    const result = await run(["employee", "addresses", "00000000-0000-0000-0000-000000000000"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toEqual([
+      { field: "employee_uuid", reason: expect.stringContaining("must be a valid UUID") },
+    ]);
+    expect(envelope.error.hint).toContain("gusto employee list");
+  });
+
+  // The contractor-payment reads validate their identifier (and, for `contractor-payment list`,
+  // its required --start-date/--end-date) before resolving auth - same as the employee rows
+  // above - so these need well-formed values to reach the auth check at all.
+  test.each([
+    ["contractor payments <uuid>", ["contractor", "payments", CONTRACTOR_UUID]],
+    ["contractor-payment show <uuid>", ["contractor-payment", "show", CONTRACTOR_PAYMENT_UUID]],
+    [
+      "contractor-payment list",
+      ["contractor-payment", "list", "--start-date", "2026-01-01", "--end-date", "2026-12-31"],
+    ],
+    ["contractor-payment-group show <uuid>", ["contractor-payment-group", "show", CONTRACTOR_PAYMENT_GROUP_UUID]],
+    ["contractor-payment-group list", ["contractor-payment-group", "list"]],
+  ])("%s without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  test("contractor-payment list without --start-date/--end-date is rejected as invalid (exit 7)", async () => {
+    const result = await run(["contractor-payment", "list"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+  });
+
+  test.each([
+    ["contractor payments <uuid>", ["contractor", "payments", "00000000-0000-0000-0000-000000000000"]],
+    ["contractor-payment show <uuid>", ["contractor-payment", "show", "00000000-0000-0000-0000-000000000000"]],
+    [
+      "contractor-payment-group show <uuid>",
+      ["contractor-payment-group", "show", "00000000-0000-0000-0000-000000000000"],
+    ],
+  ])("%s with the all-zeros uuid is rejected as invalid (exit 7)", async (_name, argv) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
   });
 
   test("pay-schedule list dispatches its handler instead of erroring", async () => {
@@ -160,12 +232,12 @@ describe("auth required commands without a token", () => {
   // guess dispatches the show handler (exit 3 without a token) instead of commander's unknown-command
   // (exit 2) that would stop it. company + pay-schedule are covered above; the rest here.
   test.each([
-    ["employee", ["employee", "get", "employee-uuid-123"]],
-    ["contractor", ["contractor", "get", "contractor-uuid-123"]],
+    ["employee", ["employee", "get", EMPLOYEE_UUID]],
+    ["contractor", ["contractor", "get", CONTRACTOR_UUID]],
     ["department", ["department", "get", "department-uuid-123"]],
     ["payroll", ["payroll", "get", "payroll-uuid-123"]],
     ["ledger", ["ledger", "get", "payroll-uuid-123"]],
-    ["timesheet", ["timesheet", "get", "time-sheet-uuid-123"]],
+    ["timesheet", ["timesheet", "get", TIME_SHEET_UUID]],
     ["job", ["job", "get", "job-uuid-123"]],
     ["compensation", ["compensation", "get", "comp-uuid-123"]],
   ])("%s get (alias for show) dispatches the show handler instead of erroring", async (_name, argv) => {
@@ -174,10 +246,66 @@ describe("auth required commands without a token", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
 
+  // Each row passes one date flag and omits the rest, so exit 7 (validation reached) proves commander
+  // accepted it, not exit 2 (never registered) - which unit tests miss, passing options pre-parsed.
+  test.each([
+    ["--pay-period-start", ["timesheet", "sync", "--pay-period-start", "2026-06-01"], "start-date"],
+    ["--pay-period-end", ["timesheet", "sync", "--pay-period-end", "2026-06-15"], "end-date"],
+    ["--start-date", ["timesheet", "sync", "--start-date", "2026-06-01"], "start-date"],
+    ["--end-date", ["timesheet", "sync", "--end-date", "2026-06-15"], "end-date"],
+  ])("timesheet sync %s is recognized and only the omitted flags block (exit 7)", async (_name, argv, satisfied) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).not.toContain(satisfied);
+  });
+
+  // Dates omitted on purpose: exit 7 means commander accepted the flag, exit 2 would mean it did not.
+  test("timesheet list --company-uuid is registered", async () => {
+    const result = await run(["timesheet", "list", "--company-uuid", COMPANY_UUID]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).toEqual(["start-date", "end-date"]);
+  });
+
+  test("timesheet sync and list use the same date flag names", async () => {
+    const [sync, list] = await Promise.all([
+      run(["timesheet", "sync", "--help"]),
+      run(["timesheet", "list", "--help"]),
+    ]);
+    for (const help of [sync.stdout, list.stdout]) {
+      expect(help).toContain("--start-date <date>");
+      expect(help).toContain("--end-date <date>");
+      expect(help).not.toContain("--pay-period-start");
+      expect(help).not.toContain("--pay-period-end");
+    }
+    expect(list.stdout).toContain("--company-uuid <uuid>");
+  });
+
   test("department list without a token returns no_access_token (exit 3)", async () => {
     // A brand-new non-alias subcommand: assert it dispatches (reaches the auth check, exit 3) rather
     // than commander's unknown-command (exit 2), proving it is wired into the compiled binary.
     const result = await run(["department", "list"]);
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  // The company forms/signatories/federal-tax reads: assert each dispatches (reaches the auth check,
+  // exit 3) rather than commander's unknown-command (exit 2), proving they are wired into the binary.
+  test.each([
+    ["company forms list", ["company", "forms", "list"]],
+    ["company forms show", ["company", "forms", "show", "form-uuid-123"]],
+    ["company forms get (alias)", ["company", "forms", "get", "form-uuid-123"]],
+    ["company forms pdf", ["company", "forms", "pdf", "form-uuid-123"]],
+    ["company signatories", ["company", "signatories"]],
+    ["company federal-taxes", ["company", "federal-taxes"]],
+  ])("%s without a token returns no_access_token (exit 3)", async (_name, argv) => {
+    const result = await run(argv);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
@@ -227,7 +355,7 @@ describe("auth required commands without a token", () => {
   });
 
   test("employee jobs <uuid> without a token returns no_access_token (exit 3)", async () => {
-    const result = await run(["employee", "jobs", "emp-123"]);
+    const result = await run(["employee", "jobs", EMPLOYEE_UUID]);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
   });
@@ -562,6 +690,79 @@ describe("skill commands work without auth", () => {
   });
 });
 
+// Every case here pins GUSTO_CLI_VERSION so the release lookup never leaves the machine, and
+// GUSTO_INSTALL_DIR so the compiled binary under test is never the thing being replaced.
+describe("upgrade works without auth and without touching the network", () => {
+  let installDir: string;
+
+  beforeEach(() => {
+    installDir = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-upgrade-"));
+  });
+
+  afterEach(() => {
+    rmSync(installDir, { recursive: true, force: true });
+  });
+
+  test("already up to date is a success, not an error", async () => {
+    // The installed binary has to actually be there and report this version - upgrade reads it from
+    // the file at install_path, not from the running process. Copying the binary under test in is
+    // the cheapest way to get a target whose --version matches pkg.version.
+    copyFileSync(BIN_PATH, path.join(installDir, "gusto"));
+    const result = await run(["upgrade"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: `v${pkg.version}`,
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.status).toBe("up_to_date");
+    expect(envelope.data.from).toBe(pkg.version);
+  });
+
+  // The pin deliberately matches the running process's version while the install dir is empty, so
+  // comparing against the wrong side of the swap reads as up-to-date about a binary that isn't there.
+  test("does not claim up-to-date when no binary is installed at the target", async () => {
+    const result = await run(["upgrade", "--dry-run"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: `v${pkg.version}`,
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.data.status).toBe("available");
+    expect(envelope.data.from).toBeNull();
+    expect(envelope.data.to).toBe(pkg.version);
+  });
+
+  test("a real upgrade in agent mode is blocked until --confirm (exit 8)", async () => {
+    const result = await run(["upgrade"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: "v9.9.9",
+    });
+    expect(result.exitCode).toBe(8);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("confirmation_required");
+    expect(existsSync(path.join(installDir, "gusto"))).toBe(false);
+  });
+
+  test("--dry-run reports an available upgrade without --confirm", async () => {
+    const installed = path.join(installDir, "gusto");
+    copyFileSync(BIN_PATH, installed);
+    const before = statSync(installed).mtimeMs;
+
+    const result = await run(["upgrade", "--dry-run"], {
+      GUSTO_INSTALL_DIR: installDir,
+      GUSTO_CLI_VERSION: "v9.9.9",
+    });
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data).toMatchObject({ status: "available", from: pkg.version, to: "9.9.9" });
+    // Preview only: the installed binary is read for its version but never rewritten.
+    expect(statSync(installed).mtimeMs).toBe(before);
+  });
+});
+
 describe("--fields filters success output", () => {
   test("api request --dry-run --fields method,path keeps only those keys", async () => {
     const result = await run([
@@ -616,14 +817,49 @@ describe("api request", () => {
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("invalid_json");
   });
 
+  test.each([
+    [
+      "timesheet sync",
+      [
+        "timesheet",
+        "sync",
+        "--pay-schedule-uuid",
+        PAY_SCHEDULE_UUID,
+        "--start-date",
+        "2026-06-01",
+        "--end-date",
+        "2026-06-15",
+      ],
+    ],
+    ["payroll calculate", ["payroll", "calculate", PAYROLL_UUID, "--confirm"]],
+  ])("%s --dry-run reports a malformed GUSTO_COMPANY_UUID rather than previewing", async (_name, argv) => {
+    const result = await run([...argv, "--dry-run"], { GUSTO_ACCESS_TOKEN: "tok", GUSTO_COMPANY_UUID: "co-1" });
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("invalid_company_uuid");
+  });
+
+  test.each([
+    ["with a token", { GUSTO_ACCESS_TOKEN: "tok", GUSTO_COMPANY_UUID: "co-1" }],
+    ["without one", { GUSTO_COMPANY_UUID: "co-1" }],
+  ])("--dry-run %s reports a malformed GUSTO_COMPANY_UUID instead of echoing the placeholder", async (_case, env) => {
+    const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], env);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("invalid_company_uuid");
+    expect(envelope.error.message).toContain("GUSTO_COMPANY_UUID");
+  });
+
   test("--dry-run substitutes {company_uuid} from GUSTO_COMPANY_UUID into the path", async () => {
     const result = await run(["api", "request", "GET", "/v1/companies/{company_uuid}/employees", "--dry-run"], {
       GUSTO_ACCESS_TOKEN: "tok",
-      GUSTO_COMPANY_UUID: "co-1",
+      GUSTO_COMPANY_UUID: COMPANY_UUID,
     });
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
-    expect(envelope.data.path).toBe("/v1/companies/co-1/employees");
+    expect(envelope.data.path).toBe(`/v1/companies/${COMPANY_UUID}/employees`);
     expect(envelope.data.note).toBeUndefined();
   });
 
@@ -703,13 +939,13 @@ describe("token-stdin authentication", () => {
         "--token-stdin",
         "--dry-run",
       ],
-      { GUSTO_COMPANY_UUID: "co-1" },
+      { GUSTO_COMPANY_UUID: COMPANY_UUID },
       "piped-secret-token\n",
     );
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
-    expect(envelope.data.path).toBe("/v1/companies/co-1/pay_schedules");
+    expect(envelope.data.path).toBe(`/v1/companies/${COMPANY_UUID}/pay_schedules`);
     expect(envelope.data.note).toBeUndefined();
   });
 
@@ -728,7 +964,7 @@ describe("token-stdin authentication", () => {
         "2026-06-26",
         "--dry-run",
       ],
-      { GUSTO_COMPANY_UUID: "co-1" },
+      { GUSTO_COMPANY_UUID: COMPANY_UUID },
     );
     expect(result.exitCode).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
@@ -738,7 +974,7 @@ describe("token-stdin authentication", () => {
 });
 
 describe("the pulled employee/contractor write surface is gone", () => {
-  // AINT-713 dropped these from the production surface; commander should reject them
+  // These were dropped from the production surface; commander should reject them
   // outright (exit 2) rather than reach a handler.
   for (const args of [
     ["employee", "add", "personal-details"],
@@ -763,4 +999,123 @@ describe("the pulled employee/contractor write surface is gone", () => {
       expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
     }
   });
+});
+
+// An unusable production slot next to a working sandbox slot - a state a machine can rest in for
+// weeks, since nothing about a failure in one environment hints at the session in the other.
+// Driven through the compiled binary with its own isolated XDG_CONFIG_HOME - the shared
+// ISOLATED_CONFIG above must stay session-free, since most tests here assert no_access_token.
+//
+// Both slots are expired *without* a refresh token by default, so every assertion below is
+// reachable with zero network calls: nothing has a refresh to attempt or a token worth spending. The
+// hint tests move one slot's expiry into the future - which only ever changes the *other* slot's
+// error, so still no request goes out.
+describe("per-environment credential slots", () => {
+  let configHome: string;
+
+  // Year 2100, i.e. unexpired for the life of this test.
+  const UNEXPIRED = 4_102_444_800_000;
+
+  const writeCredentials = (expiry: { production?: number; sandbox?: number } = {}): void => {
+    mkdirSync(path.join(configHome, "gusto"), { recursive: true });
+    writeFileSync(
+      path.join(configHome, "gusto", "credentials.toml"),
+      [
+        "[production]",
+        'accessToken = "prod-tok"',
+        `expiresAt = ${expiry.production ?? 1000}`,
+        "",
+        "[sandbox]",
+        'accessToken = "sandbox-tok"',
+        `expiresAt = ${expiry.sandbox ?? 1000}`,
+        "",
+      ].join("\n"),
+    );
+  };
+
+  const whoami = async (
+    args: string[] = [],
+    env: Record<string, string> = {},
+  ): Promise<Record<string, string | undefined>> => {
+    const result = await run(["auth", "whoami", "--json", ...args], { XDG_CONFIG_HOME: configHome, ...env });
+    expect(result.exitCode).toBe(3);
+    return JSON.parse(result.stdout.trim()).error;
+  };
+
+  beforeEach(() => {
+    configHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-envslot-"));
+    writeCredentials();
+  });
+
+  afterEach(() => rmSync(configHome, { recursive: true, force: true }));
+
+  test("an expired session is session_expired and names production", async () => {
+    const error = await whoami();
+    expect(error.code).toBe("session_expired");
+    expect(error.environment).toBe("production");
+    expect(error.message).toContain("credentials.toml");
+    // Sandbox is expired too, so there is nothing to point at - a hint here would send the caller
+    // from one wall to the next.
+    expect(error.hint).toBeUndefined();
+  });
+
+  test("an expired production session points at a sandbox slot that would work", async () => {
+    writeCredentials({ sandbox: UNEXPIRED });
+    const error = await whoami();
+    expect(error.code).toBe("session_expired");
+    expect(error.hint).toContain("--env sandbox");
+  });
+
+  test("--env sandbox reads the other slot and says so", async () => {
+    writeCredentials({ production: UNEXPIRED });
+    const error = await whoami(["--env", "sandbox"]);
+    expect(error.environment).toBe("sandbox");
+    expect(error.hint).toContain("--env production");
+  });
+
+  test("`config set environment` changes which slot a bare command reads", async () => {
+    // The recovery the cross-environment hint recommends, so it has to actually work.
+    const set = await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: configHome });
+    expect(set.exitCode).toBe(0);
+    expect((await whoami()).environment).toBe("sandbox");
+  });
+
+  test("GUSTO_ENVIRONMENT outranks the config file, and --env outranks both", async () => {
+    await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: configHome });
+    expect((await whoami([], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("production");
+    expect((await whoami(["--env", "sandbox"], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("sandbox");
+  });
+
+  test("a corrupt config warns on stderr and falls back, leaving stdout a clean envelope", async () => {
+    // The warning has to reach a human without corrupting the one stream an agent parses, and the run
+    // has to continue: aborting here would also block `config reset`, the command that fixes it.
+    // `environment = "sandbox"` would have redirected the run had the file parsed, so the fallback to
+    // production is what proves the whole config was dropped rather than partially applied.
+    writeFileSync(path.join(configHome, "gusto", "config.toml"), 'environment = "sandbox"\n[[[broken\n');
+    const result = await run(["auth", "whoami", "--json"], { XDG_CONFIG_HOME: configHome });
+    expect(result.exitCode).toBe(3);
+    expect(result.stderr).toContain("warning: ignoring user config");
+    expect(JSON.parse(result.stdout.trim()).error.environment).toBe("production");
+  });
+
+  test("auth login --help documents the built-in production default when no environment is configured", async () => {
+    const result = await run(["auth", "login", "--help"], { XDG_CONFIG_HOME: configHome });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("--env <sandbox|production>");
+    expect(result.stdout).toContain("Defaults to production when no override is set");
+    expect(result.stdout).toContain("stored per environment");
+  });
+
+  test.each(["sandbox", "production"] as const)(
+    "auth login --help reports the configured %s default",
+    async (environment) => {
+      const set = await run(["config", "set", "environment", environment], { XDG_CONFIG_HOME: configHome });
+      expect(set.exitCode).toBe(0);
+
+      const result = await run(["auth", "login", "--help"], { XDG_CONFIG_HOME: configHome });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`Your configured default is ${environment}`);
+      expect(result.stdout).toContain("--env and GUSTO_ENVIRONMENT override it");
+    },
+  );
 });

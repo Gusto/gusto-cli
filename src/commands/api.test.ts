@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { TEST_CONTEXT as ctx, okData as data, stubGlobalFetch } from "../lib/test-support.ts";
+import { TEST_CONTEXT as ctx, okData as data, stubGlobalFetch, TEST_COMPANY_UUID } from "../lib/test-support.ts";
 import { apiRequestHandler } from "./api.ts";
 
 describe("api request {company_uuid} substitution", () => {
@@ -8,32 +8,32 @@ describe("api request {company_uuid} substitution", () => {
     const d = data(
       await apiRequestHandler("GET", "/v1/companies/{company_uuid}/employees", {
         dryRun: true,
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
       })(ctx),
     );
     expect(d.method).toBe("GET");
-    expect(d.path).toBe("/v1/companies/co-1/employees");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/employees`);
   });
 
   test("dry-run substitutes every occurrence of the placeholder", async () => {
     const d = data(
       await apiRequestHandler("GET", "/v1/companies/{company_uuid}/x/{company_uuid}", {
         dryRun: true,
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
       })(ctx),
     );
-    expect(d.path).toBe("/v1/companies/co-1/x/co-1");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/x/${TEST_COMPANY_UUID}`);
   });
 
   test("a real request sends to the substituted path", async () => {
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: { ok: true } }]);
     try {
       const result = await apiRequestHandler("GET", "/v1/companies/{company_uuid}/employees", {
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
       })(ctx);
       expect(result.ok).toBe(true);
       expect(calls).toHaveLength(1);
-      expect(calls[0]?.url).toContain("/v1/companies/co-1/employees");
+      expect(calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/employees`);
       expect(calls[0]?.url).not.toContain("{company_uuid}");
     } finally {
       restore();
@@ -79,7 +79,9 @@ describe("api request --company-uuid on a path with no placeholder", () => {
   test("warns that the flag was ignored", async () => {
     const warnings: string[] = [];
     const d = data(
-      await apiRequestHandler("GET", "/v1/me", { companyUuid: "co-1", dryRun: true }, (m) => warnings.push(m))(ctx),
+      await apiRequestHandler("GET", "/v1/me", { companyUuid: TEST_COMPANY_UUID, dryRun: true }, (m) =>
+        warnings.push(m),
+      )(ctx),
     );
     expect(d.path).toBe("/v1/me");
     expect(warnings).toHaveLength(1);
@@ -98,14 +100,14 @@ describe("api request --company-uuid on a path with no placeholder", () => {
     await apiRequestHandler(
       "GET",
       "/v1/companies/{company_uuid}/employees",
-      { companyUuid: "co-1", dryRun: true },
+      { companyUuid: TEST_COMPANY_UUID, dryRun: true },
       (m) => warnings.push(m),
     )(ctx);
     expect(warnings).toHaveLength(0);
   });
 });
 
-const PATH = "/v1/companies/co-1/federal_tax_details";
+const PATH = `/v1/companies/${TEST_COMPANY_UUID}/federal_tax_details`;
 
 describe("api request --auto-version", () => {
   test("PUT GETs the current resource, injects its version, then PUTs", async () => {
@@ -219,7 +221,8 @@ describe("api request --auto-version", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("version_unresolved");
-      expect(result.exitCode).toBe(ExitCode.Validation);
+      // Blocked, not Validation: the server omitted `version`, so it isn't --data's to fix.
+      expect(result.exitCode).toBe(ExitCode.Blocked);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
     } finally {
@@ -236,8 +239,45 @@ describe("api request --auto-version", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.code).toBe("api_client_error");
+      expect(result.error.message).toContain("nothing was written"); // the write never went out
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
+    } finally {
+      restore();
+    }
+  });
+
+  test("a lost version race on the write maps to version_conflict", async () => {
+    const { calls, restore } = stubGlobalFetch([
+      { status: 200, body: { version: "v-current" } }, // version GET
+      { status: 409, body: { errors: [{ category: "invalid_resource_version", message: "stale" }] } }, // PUT
+    ]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { autoVersion: true, confirm: true, data: '{"x":1}' })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("version_conflict");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(calls).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a write with no version at all still maps to version_conflict, without claiming one was read", async () => {
+    // No --auto-version and no `version` in --data: a versioned endpoint compares against nil and
+    // rejects, so the same 409 arrives having never done a version GET. The message must fit that.
+    const { calls, restore } = stubGlobalFetch([
+      { status: 409, body: { errors: [{ category: "invalid_resource_version", message: "missing" }] } },
+    ]);
+    try {
+      const result = await apiRequestHandler("PUT", PATH, { confirm: true, data: '{"city":"Denver"}' })(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("version_conflict");
+      expect(result.error.message).toContain("or none was sent");
+      expect(calls).toHaveLength(1); // the PUT only - no version GET happened
+      expect(calls[0]?.method).toBe("PUT");
     } finally {
       restore();
     }
@@ -280,12 +320,12 @@ describe("api request --auto-version", () => {
       const result = await apiRequestHandler("PUT", "/v1/companies/{company_uuid}/federal_tax_details", {
         autoVersion: true,
         confirm: true,
-        companyUuid: "co-9",
+        companyUuid: "8b9c0d1e-0000-4111-2222-333344445555",
         data: '{"x":1}',
       })(ctx);
       expect(result.ok).toBe(true);
       expect(calls).toHaveLength(2);
-      expect(calls[0]?.url).toContain("/v1/companies/co-9/federal_tax_details");
+      expect(calls[0]?.url).toContain("/v1/companies/8b9c0d1e-0000-4111-2222-333344445555/federal_tax_details");
       expect(calls[0]?.url).not.toContain("{company_uuid}");
       expect(calls[1]?.body).toMatchObject({ x: 1, version: "v-current" });
     } finally {
@@ -362,7 +402,7 @@ describe("api request write confirmation gate", () => {
       u.includes("/employees") ? { status: 201, body: { uuid: "ee-1" } } : { status: 404 },
     );
     try {
-      const result = await apiRequestHandler("POST", "/v1/companies/co-1/employees", {
+      const result = await apiRequestHandler("POST", `/v1/companies/${TEST_COMPANY_UUID}/employees`, {
         confirm: true,
         data: '{"first_name":"Jane"}',
       })(ctx);

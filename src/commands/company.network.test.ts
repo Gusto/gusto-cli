@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { companyLocationsHandler, companyShowHandler } from "./company.ts";
+import {
+  companyCustomFieldsHandler,
+  companyEarningTypesHandler,
+  companyLocationsHandler,
+  companyShowHandler,
+} from "./company.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import {
   type Route,
@@ -7,6 +12,7 @@ import {
   TEST_CONTEXT as ctx,
   okData as data,
   routeFetch as setupRouteFetch,
+  TEST_COMPANY_UUID,
 } from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
@@ -25,7 +31,11 @@ describe("companyShowHandler", () => {
         status: 200,
         body: [{ frequency: "Every other week", anchor_pay_date: "2026-02-13" }],
       },
-      { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved", ein: "12-3456789" } },
+      {
+        match: `/companies/${TEST_COMPANY_UUID}`,
+        status: 200,
+        body: { name: "Acme", company_status: "Approved", ein: "12-3456789" },
+      },
     ]);
 
     const d = data(await companyShowHandler(auth)(ctx));
@@ -39,7 +49,7 @@ describe("companyShowHandler", () => {
   test("a failed primary company GET is a real failure, not a buried partial_error", async () => {
     routeFetch([
       { match: "/pay_schedules", status: 200, body: [] },
-      { match: "/companies/co-1", status: 404, body: { error: "not found" } }, // primary company GET fails (404 = not retried)
+      { match: `/companies/${TEST_COMPANY_UUID}`, status: 404, body: { error: "not found" } }, // primary company GET fails (404 = not retried)
     ]);
     const result = await companyShowHandler(auth)(ctx);
     expect(result.ok).toBe(false);
@@ -51,7 +61,7 @@ describe("companyShowHandler", () => {
   test("company succeeds but a secondary pay_schedules GET fails: ok:true with partial_errors", async () => {
     routeFetch([
       { match: "/pay_schedules", status: 404, body: { error: "not found" } }, // 404 = not retried
-      { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved" } },
+      { match: `/companies/${TEST_COMPANY_UUID}`, status: 200, body: { name: "Acme", company_status: "Approved" } },
     ]);
     const result = await companyShowHandler(auth)(ctx);
     expect(result.ok).toBe(true);
@@ -64,7 +74,7 @@ describe("companyShowHandler", () => {
   test("payment_configs endpoint is never called", async () => {
     const { calls, restore: r } = setupRouteFetch([
       { match: "/pay_schedules", status: 200, body: [{ frequency: "Every week", anchor_pay_date: "2026-02-06" }] },
-      { match: "/companies/co-1", status: 200, body: { name: "Acme", company_status: "Approved" } },
+      { match: `/companies/${TEST_COMPANY_UUID}`, status: 200, body: { name: "Acme", company_status: "Approved" } },
     ]);
     restore = r;
     const d = data(await companyShowHandler(auth)(ctx));
@@ -101,6 +111,45 @@ describe("companyLocationsHandler", () => {
   test("surfaces an API error as a failed CommandResult (not silently wrapped)", async () => {
     routeFetch([{ match: "/locations", status: 404, body: { error: "not found" } }]);
     const result = await companyLocationsHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("companyEarningTypesHandler", () => {
+  test("GETs the company earning_types and passes the body through", async () => {
+    const { calls, restore: r } = setupRouteFetch([
+      { match: "/earning_types", status: 200, body: { default: [{ uuid: "et-1", name: "Bonus" }], custom: [] } },
+    ]);
+    restore = r;
+    const d = data(await companyEarningTypesHandler(auth)(ctx));
+    expect(calls.find((c) => c.method === "GET")?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/earning_types`);
+    expect(d.default).toEqual([{ uuid: "et-1", name: "Bonus" }]);
+    expect(d.custom).toEqual([]);
+  });
+
+  test("surfaces an API error as a failed CommandResult", async () => {
+    const { restore: r } = setupRouteFetch([{ match: "/earning_types", status: 404, body: { error: "not found" } }]);
+    restore = r;
+    const result = await companyEarningTypesHandler(auth)(ctx);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("companyCustomFieldsHandler", () => {
+  test("GETs the company custom_fields and passes the body through", async () => {
+    const { calls, restore: r } = setupRouteFetch([
+      { match: "/custom_fields", status: 200, body: { custom_fields: [{ uuid: "cf-1", name: "T-shirt size" }] } },
+    ]);
+    restore = r;
+    const d = data(await companyCustomFieldsHandler(auth)(ctx));
+    expect(calls.find((c) => c.method === "GET")?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/custom_fields`);
+    expect(d.custom_fields).toEqual([{ uuid: "cf-1", name: "T-shirt size" }]);
+  });
+
+  test("surfaces an API error as a failed CommandResult", async () => {
+    const { restore: r } = setupRouteFetch([{ match: "/custom_fields", status: 404, body: { error: "not found" } }]);
+    restore = r;
+    const result = await companyCustomFieldsHandler(auth)(ctx);
     expect(result.ok).toBe(false);
   });
 });

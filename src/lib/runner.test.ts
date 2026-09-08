@@ -3,6 +3,7 @@ import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import {
   type CommandHandler,
+  invalidUuid,
   missingArgs,
   notImplementedHandler,
   runCommand,
@@ -286,6 +287,12 @@ describe("validationFailure", () => {
       error: { code: "validation", message: "missing or invalid arguments", blocked_on: blocked },
     });
   });
+
+  test("carries a hint through when one is given", () => {
+    const result = validationFailure("nope", [], "do this instead");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.hint).toBe("do this instead");
+  });
 });
 
 describe("missingArgs", () => {
@@ -297,6 +304,46 @@ describe("missingArgs", () => {
       exitCode: ExitCode.Validation,
       error: { code: "validation", message: "missing required arguments", blocked_on: blocked },
     });
+  });
+});
+
+describe("invalidUuid", () => {
+  const EMPLOYEE_HINT = "run `gusto employee list` to get a real employee_uuid";
+
+  test("names the field, echoes the value, and surfaces the hint as written", () => {
+    const result = invalidUuid("employee_uuid", "emp-1", EMPLOYEE_HINT);
+    expect(result).toEqual({
+      ok: false,
+      exitCode: ExitCode.Validation,
+      error: {
+        code: "validation",
+        message: "invalid arguments",
+        blocked_on: [{ field: "employee_uuid", reason: 'must be a valid UUID, got: "emp-1"' }],
+        hint: "run `gusto employee list` to get a real employee_uuid",
+      },
+    });
+  });
+
+  test("truncates a value past the cap, keeping the first 60 characters", () => {
+    const result = invalidUuid("employee_uuid", "x".repeat(100), EMPLOYEE_HINT);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${"x".repeat(60)}..."`);
+  });
+
+  test("leaves a value exactly at the cap untouched", () => {
+    const atCap = "x".repeat(60);
+    const result = invalidUuid("employee_uuid", atCap, EMPLOYEE_HINT);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${atCap}"`);
+  });
+
+  test("omits the hint field entirely when no hint is given", () => {
+    const result = invalidUuid("time_sheet_uuid", "ts-1");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).not.toHaveProperty("hint");
+    expect(result.error.blocked_on).toEqual([
+      { field: "time_sheet_uuid", reason: 'must be a valid UUID, got: "ts-1"' },
+    ]);
   });
 });
 

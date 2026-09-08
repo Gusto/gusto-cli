@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { ApiError } from "../api-client.ts";
+import { toResult } from "../handle-api-error.ts";
 import { type SignInUrlEvent, companyUuidFromTokenInfo, formatUrlForTerminal, login, openOrPrint } from "./login.ts";
 import { memoryStore, mockFetch } from "./test-support.ts";
 
@@ -110,6 +112,42 @@ describe("login", () => {
     expect(store.data.sandbox?.accessToken).toBe("user-at");
     expect(store.data.sandbox?.refreshToken).toBe("rt");
     expect(store.data.sandbox?.companyUuid).toBe("comp-9");
+  });
+
+  // The only auth failure raised from inside the login flow, and so the only one whose client isn't
+  // built from a resolved context. It still has to name the environment and say what happened, rather
+  // than fall through to the wording that covers the three sources a *command* resolves.
+  test("a 401 on the token_info read names the sign-in and the environment", async () => {
+    const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } });
+    const { fetch: apiFetch } = mockFetch([
+      { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange
+      { status: 401, body: { error: "unauthorized" } }, // token_info refuses the token just minted
+    ]);
+
+    const err = await login("sandbox", {
+      store,
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      browserAvailable: () => true,
+      openBrowser: driveCallback().openBrowser,
+      print: () => {},
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).auth).toEqual({ tokenSource: "login", environment: "sandbox" });
+
+    // What the command surfaces: the environment is populated, so the claim that every auth failure
+    // carries one holds on this path too.
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("/v1/token_info");
+
+    // Nothing was persisted - the message says so, and the store agrees.
+    expect(store.data.sandbox?.accessToken).toBeUndefined();
   });
 
   test("noBrowser prints the sign-in URL instead of opening a browser", async () => {
@@ -357,6 +395,43 @@ describe("login", () => {
     ).rejects.toThrow();
 
     expect(cleared).toBe(true);
+  });
+
+  test("a failed login leaves an existing session's tokens untouched", async () => {
+    // What makes it safe to tell a caller with a `token_refresh_failed` error to retry instead of
+    // logging in: an abandoned or failed login is not destructive, so the credential it would have
+    // replaced is still there afterward. `store.save` runs only after the exchange and token_info
+    // both succeed; keep it that way, or a login that dies halfway takes the session with it.
+    const store = memoryStore({
+      sandbox: {
+        clientId: "cid",
+        clientSecret: "sec",
+        accessToken: "existing-at",
+        refreshToken: "existing-rt",
+        expiresAt: 5_000,
+        companyUuid: "comp-1",
+      },
+    });
+    const { fetch: apiFetch } = mockFetch([{ status: 400, body: { error: "invalid_grant" } }]);
+
+    await expect(
+      login("sandbox", {
+        store,
+        http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+        browserAvailable: () => true,
+        openBrowser: driveCallback().openBrowser,
+        print: () => {},
+      }),
+    ).rejects.toThrow();
+
+    expect(store.data.sandbox).toEqual({
+      clientId: "cid",
+      clientSecret: "sec",
+      accessToken: "existing-at",
+      refreshToken: "existing-rt",
+      expiresAt: 5_000,
+      companyUuid: "comp-1",
+    });
   });
 
   test("browser tab shows a failure page when the token exchange returns non-200", async () => {

@@ -6,6 +6,8 @@ export interface LocationRec {
   uuid: string;
   primary?: boolean;
   filing_address?: boolean;
+  state?: string;
+  active?: boolean;
 }
 
 /** GET /v1/companies/{company_uuid}/locations. Returns a `CommandResult` so
@@ -31,4 +33,13 @@ export async function fetchCompanyLocations(
 export function pickPrimaryLocation(locations: LocationRec[]): LocationRec | undefined {
   if (locations.length === 0) return undefined;
   return locations.find((l) => l.primary === true) ?? locations.find((l) => l.filing_address === true) ?? locations[0];
+}
+
+/** Find an active company location in `state` (case-insensitive). A location with no
+ * `active` flag is treated as active - the field is only ever set false, never omitted
+ * to mean false. Used to resolve `--work-state <ST>` to the `location_uuid` an employee's
+ * work address must reference. */
+export function findLocationForState(locations: LocationRec[], state: string): LocationRec | undefined {
+  const target = state.toUpperCase();
+  return locations.find((l) => l.active !== false && l.state?.toUpperCase() === target);
 }

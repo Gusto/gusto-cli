@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ApiClient } from "./api-client.ts";
-import { getAndInjectVersion, withVersion } from "./versioning.ts";
+import { ExitCode } from "./exit-codes.ts";
+import type { CommandResult } from "./runner.ts";
+import {
+  clarifyVersionConflict,
+  clarifyVersionReadFailure,
+  getAndInjectVersion,
+  versionUnresolvedError,
+  withVersion,
+} from "./versioning.ts";
 
 /** Minimal stub: a `get` that returns a fixed body and records the paths it was called with. */
 function stubClient(getBody: unknown): { client: Pick<ApiClient, "get">; paths: string[] } {
@@ -61,5 +69,115 @@ describe("getAndInjectVersion", () => {
     const { client } = stubClient({ no_version_here: true });
     const result = await getAndInjectVersion(client, "/v1/thing", { a: 1 });
     expect(result).toEqual({ ok: false, reason: "version_unresolved" });
+  });
+});
+
+describe("versionUnresolvedError", () => {
+  test("exits Blocked and carries the caller's recovery clause", () => {
+    // Blocked, not Validation: the server omitted `version`, so it isn't the caller's flags to fix.
+    expect(versionUnresolvedError("/v1/thing", "pass it explicitly in --data")).toEqual({
+      ok: false,
+      exitCode: ExitCode.Blocked,
+      error: {
+        code: "version_unresolved",
+        message: "no `version` field in the GET /v1/thing response; pass it explicitly in --data",
+      },
+    });
+  });
+});
+
+describe("clarifyVersionReadFailure", () => {
+  const authFailure: CommandResult = {
+    ok: false,
+    exitCode: ExitCode.Auth,
+    error: { code: "insufficient_scope", message: "missing scope", request_id: "req-1" },
+  };
+
+  test("prefixes the message but keeps the code, exit, and extras", () => {
+    const result = clarifyVersionReadFailure(authFailure, "/v1/thing");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth); // an auth problem on the GET is still an auth problem
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.request_id).toBe("req-1");
+    expect(result.error.message).toBe(
+      "reading the current version from GET /v1/thing failed, so nothing was written: missing scope",
+    );
+  });
+
+  test("passes a success through untouched", () => {
+    const ok: CommandResult = { ok: true, data: { a: 1 } };
+    expect(clarifyVersionReadFailure(ok, "/v1/thing")).toBe(ok);
+  });
+});
+
+describe("clarifyVersionConflict", () => {
+  const rejected = (details: unknown): CommandResult => ({
+    ok: false,
+    exitCode: ExitCode.ApiClient,
+    error: { code: "api_client_error", message: "PUT /v1/thing -> 409", details, request_id: "req-1" },
+  });
+
+  test("re-codes the API's invalid_resource_version rejection to a Blocked version_conflict", () => {
+    const details = { errors: [{ category: "invalid_resource_version", message: "stale" }] };
+    const result = clarifyVersionConflict(rejected(details));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("version_conflict");
+    // Covers both causes: `api request` also reaches this with no version sent at all, so the wording
+    // must not claim a version was read.
+    expect(result.error.message).toContain("or none was sent");
+    expect(result.error.message).toContain("GET the record for its current");
+    expect(result.error.details).toEqual(details); // the raw body survives for debugging
+    expect(result.error.request_id).toBe("req-1");
+  });
+
+  test("leaves a rejection with a different category alone", () => {
+    const original = rejected({ errors: [{ category: "invalid_operation" }] });
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  // Regression: this runs inside a catch block, so a throw on a malformed body escapes as
+  // internal_error (exit 1) instead of the api_client_error envelope the catch is there to build.
+  test("leaves a hash-shaped errors body alone instead of throwing", () => {
+    const original = rejected({ errors: { version: ["is stale"] } });
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("skips a null entry in the errors array instead of throwing", () => {
+    const original = rejected({ errors: [null, { category: "invalid_operation" }] });
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("still matches when a null entry precedes the real conflict entry", () => {
+    const result = clarifyVersionConflict(rejected({ errors: [null, { category: "invalid_resource_version" }] }));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("version_conflict");
+  });
+
+  test("leaves a non-object details alone instead of throwing", () => {
+    const original = rejected("upstream returned HTML");
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("leaves a rejection with no errors array alone", () => {
+    const original = rejected({ message: "nope" });
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("leaves a non-ApiClient failure alone (a network blip is not a conflict)", () => {
+    const original: CommandResult = {
+      ok: false,
+      exitCode: ExitCode.Network,
+      error: { code: "network_error", message: "connection reset" },
+    };
+    expect(clarifyVersionConflict(original)).toBe(original);
+  });
+
+  test("passes a success through untouched", () => {
+    const ok: CommandResult = { ok: true, data: { a: 1 } };
+    expect(clarifyVersionConflict(ok)).toBe(ok);
   });
 });

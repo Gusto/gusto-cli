@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import type { BlockedOn } from "./output.ts";
 import {
   isValidIso8601,
   isValidIsoDate,
+  isValidStateCode,
+  isValidUuid,
   parseNonNegativeNumber,
+  parsePositiveInt,
   parsePositiveNumber,
   resolveTimeoutMs,
   splitTokens,
   validateEnum,
+  pushUuidBlockedOn,
 } from "./parse.ts";
 
 describe("splitTokens", () => {
@@ -62,6 +67,31 @@ describe("parsePositiveNumber", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toContain("1e1000");
+  });
+});
+
+describe("parsePositiveInt", () => {
+  test("accepts a positive integer", () => {
+    expect(parsePositiveInt("42")).toEqual({ ok: true, value: 42 });
+  });
+
+  test("rejects zero", () => {
+    expect(parsePositiveInt("0").ok).toBe(false);
+  });
+
+  test("rejects a decimal", () => {
+    expect(parsePositiveInt("1.5").ok).toBe(false);
+  });
+
+  test("rejects a negative number", () => {
+    expect(parsePositiveInt("-1").ok).toBe(false);
+  });
+
+  test("rejects a non-numeric string", () => {
+    const result = parsePositiveInt("abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("must be a positive integer, got: abc");
   });
 });
 
@@ -122,6 +152,27 @@ describe("isValidIsoDate", () => {
   });
 });
 
+describe("isValidStateCode", () => {
+  test("accepts a two-letter code regardless of case", () => {
+    expect(isValidStateCode("MD")).toBe(true);
+    expect(isValidStateCode("md")).toBe(true);
+  });
+
+  test("rejects a full state name", () => {
+    expect(isValidStateCode("Maryland")).toBe(false);
+  });
+
+  test("rejects a one-letter or three-letter value", () => {
+    expect(isValidStateCode("M")).toBe(false);
+    expect(isValidStateCode("MDD")).toBe(false);
+  });
+
+  test("rejects digits or symbols", () => {
+    expect(isValidStateCode("M1")).toBe(false);
+    expect(isValidStateCode("--")).toBe(false);
+  });
+});
+
 describe("isValidIso8601", () => {
   test("accepts a UTC timestamp", () => {
     expect(isValidIso8601("2026-06-01T09:00:00Z")).toBe(true);
@@ -159,6 +210,83 @@ describe("resolveTimeoutMs", () => {
     expect(resolveTimeoutMs("-1")).toEqual({ ok: false });
     expect(resolveTimeoutMs("abc")).toEqual({ ok: false });
     expect(resolveTimeoutMs("Infinity")).toEqual({ ok: false });
+  });
+});
+
+describe("isValidUuid", () => {
+  const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
+
+  test("a canonical uuid passes", () => {
+    expect(isValidUuid(VALID)).toBe(true);
+  });
+
+  test("uppercase hex passes (the format is case-insensitive)", () => {
+    expect(isValidUuid(VALID.toUpperCase())).toBe(true);
+  });
+
+  test("surrounding whitespace is rejected", () => {
+    expect(isValidUuid(`  ${VALID}\n`)).toBe(false);
+  });
+
+  test("uuids of any version pass", () => {
+    expect(isValidUuid("1a2b3c4d-0000-1111-2222-333344445555")).toBe(true); // v1
+    expect(isValidUuid("9b8c7d6e-0000-7111-2222-333344445555")).toBe(true); // v7
+  });
+
+  test("the nil uuid is rejected", () => {
+    expect(isValidUuid("00000000-0000-0000-0000-000000000000")).toBe(false);
+  });
+
+  test("a short slug is rejected", () => {
+    expect(isValidUuid("emp-1")).toBe(false);
+  });
+
+  test("an unsubstituted template token is rejected", () => {
+    expect(isValidUuid("<employee_uuid>")).toBe(false);
+    expect(isValidUuid("{employee_uuid}")).toBe(false);
+  });
+
+  test("empty and whitespace-only values are rejected", () => {
+    expect(isValidUuid("")).toBe(false);
+    expect(isValidUuid("   ")).toBe(false);
+  });
+
+  test("wrong segment lengths are rejected", () => {
+    expect(isValidUuid("3f2a8c1d-0000-4111-2222-33334444555")).toBe(false);
+    expect(isValidUuid("3f2a8c1d000041112222333344445555")).toBe(false);
+  });
+
+  test("an invalid character is rejected in a well-formed uuid", () => {
+    expect(isValidUuid(VALID.replace("3f2a8c1d-", "3f2a8c1z-"))).toBe(false);
+  });
+
+  test("internal whitespace is rejected", () => {
+    expect(isValidUuid("3f2a8c1d-0000-4111-2222-33334444 5555")).toBe(false);
+  });
+});
+
+describe("pushUuidBlockedOn", () => {
+  const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
+  const push = (value: string | undefined): BlockedOn[] => {
+    const blocked: BlockedOn[] = [];
+    pushUuidBlockedOn("job-uuid", value, blocked);
+    return blocked;
+  };
+
+  test("undefined appends nothing (an absent flag is not validated)", () => {
+    expect(push(undefined)).toEqual([]);
+  });
+
+  test("a valid uuid appends nothing", () => {
+    expect(push(VALID)).toEqual([]);
+  });
+
+  test("a non-uuid appends an entry naming the field and echoing the value", () => {
+    expect(push("job-1")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: "job-1"' }]);
+  });
+
+  test("an empty string is rejected rather than treated as absent", () => {
+    expect(push("")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: ""' }]);
   });
 });
 
