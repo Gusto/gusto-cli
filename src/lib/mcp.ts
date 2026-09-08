@@ -1,4 +1,5 @@
 import { type AuthOpts, type ResolvedTokenSource, buildApiClient, resolveAuthToken } from "./api-context.ts";
+import { resolveInstallIdHeader } from "./config.ts";
 import { defaultEnv, resolveMcpBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { Environment, GlobalFlags } from "./global-flags.ts";
@@ -46,6 +47,7 @@ export async function callMcpTool(
   const client = buildApiClient(globals, {
     baseUrl: resolveMcpBaseUrl(globals.env),
     token: resolved.token,
+    installId: await resolveInstallIdHeader(),
     auth: { tokenSource: resolved.source, environment },
   });
 
