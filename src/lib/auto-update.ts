@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as FS_CONST } from "node:fs";
-import { chmod, mkdir, open, rename, unlink } from "node:fs/promises";
+import { mkdir, open, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import type { AutoUpdate } from "./config.ts";
@@ -83,11 +83,12 @@ export async function writeState(state: UpdateState, file: string = stateFilePat
 
   // Temp-then-rename, not truncate-in-place: `readState` maps a truncated file to `{}`, which it
   // can't tell from a first run, so a kill mid-write would erase a pending stage and orphan the
-  // binary it pointed at. Unique per call - both `preAction` callers write this file.
-  const temp = `${file}.${randomUUID()}.tmp`;
+  // binary it pointed at. Same shape as `writeConfig` next door, including the mode at creation
+  // rather than a follow-up chmod - a chmod leaves the file readable at the umask default in
+  // between. Unique per call, since both `preAction` callers write this file.
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await Bun.write(temp, stringify(out));
-    await chmod(temp, 0o600);
+    await writeFile(temp, stringify(out), { mode: 0o600 });
     await rename(temp, file);
   } catch (err) {
     await unlink(temp).catch(() => {});
