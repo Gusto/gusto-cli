@@ -226,8 +226,8 @@ describe("feedbackNudge — throttle + opt-out", () => {
     expect(await feedbackNudge(frictionInputs, deps(NOW))).toBeNull();
   });
 
-  test("`feedback_nudge = never` disables the nudge entirely", async () => {
-    await writeConfig({ feedback_nudge: "never" }, paths);
+  test("`feedback_nudge = off` disables the nudge entirely", async () => {
+    await writeConfig({ feedback_nudge: "off" }, paths);
     const nudge = await feedbackNudge(
       { command: "gusto api request", globals: agentFlags, code: ExitCode.Success },
       deps(),
@@ -235,8 +235,8 @@ describe("feedbackNudge — throttle + opt-out", () => {
     expect(nudge).toBeNull();
   });
 
-  test("`feedback_nudge = always` leaves the nudge enabled", async () => {
-    await writeConfig({ feedback_nudge: "always" }, paths);
+  test("`feedback_nudge = on` leaves the nudge enabled", async () => {
+    await writeConfig({ feedback_nudge: "on" }, paths);
     const nudge = await feedbackNudge(
       { command: "gusto api request", globals: agentFlags, code: ExitCode.Success },
       deps(),
@@ -314,7 +314,7 @@ describe("feedbackNudge via runCommand — stderr-only side channel", () => {
     const handler: CommandHandler = async () => ({ ok: true, data: { hello: "world" } });
 
     const withNudge = await runCaptured("gusto api request", handler); // escape_hatch → nudge
-    await writeConfig({ feedback_nudge: "never" }, paths); // opt out for the second run
+    await writeConfig({ feedback_nudge: "off" }, paths); // opt out for the second run
     const withoutNudge = await runCaptured("gusto api request", handler);
 
     expect(withNudge.stdout).toBe(withoutNudge.stdout);
@@ -335,6 +335,17 @@ describe("feedbackNudge via runCommand — stderr-only side channel", () => {
     const ctx = contextFrom(stderr);
     expect(ctx.trigger).toBe("friction");
     expect(ctx.error_code).toBe("unknown_fields");
+  });
+
+  test("does not nudge when --dry-run leads to a runner-synthesized unknown_fields failure", async () => {
+    const handler: CommandHandler = async () => ({ ok: true, data: { method: "PUT", path: "/v1/example" } });
+    const { stderr } = await runCaptured("gusto employee update", handler, {
+      ...agentFlags,
+      dryRun: true,
+      fields: { mode: "select", keys: ["nope"] },
+    });
+
+    expect(stderr).not.toContain("gusto feedback");
   });
 
   test("nudges on the early fields_discovery_unsupported rejection (mutating command, bare --fields)", async () => {

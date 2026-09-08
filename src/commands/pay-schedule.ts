@@ -66,7 +66,7 @@ export function registerPayScheduleCommand(parent: Command): void {
     .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: PayScheduleCreateOpts) =>
-      runCommand("gusto pay-schedule create", readGlobalFlags(parent.opts()), payScheduleCreateHandler(opts)),
+      runCommand("gusto pay-schedule create", readGlobalFlags(parent.opts(), opts), payScheduleCreateHandler(opts)),
     );
 
   cmd

@@ -36,7 +36,7 @@ export function registerFeedbackCommand(parent: Command): void {
     .option(...DRY_RUN_OPT)
     .option(...TOKEN_STDIN_OPT)
     .action((opts: FeedbackOpts) =>
-      runCommand("gusto feedback", readGlobalFlags(parent.opts()), feedbackHandler(opts)),
+      runCommand("gusto feedback", readGlobalFlags(parent.opts(), opts), feedbackHandler(opts)),
     );
 }
 
@@ -94,7 +94,7 @@ export function feedbackHandler(opts: FeedbackOpts, readStdin: StdinReader = rea
     if (context) body.context = context;
 
     if (opts.dryRun) {
-      return { ok: true, dryRun: true, data: { tool: "submit_feedback", arguments: body } };
+      return { ok: true, data: { tool: "submit_feedback", arguments: body } };
     }
 
     return callMcpTool(globals, { tokenStdin: opts.tokenStdin }, "submit_feedback", body);

@@ -141,14 +141,6 @@ describe("feedbackHandler", () => {
     });
     expect(fetchStub.calls).toHaveLength(0);
   });
-
-  test("dry-run marks the result as a dry-run (so the feedback nudge stays suppressed)", async () => {
-    const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
-    restore = fetchStub.restore;
-    const result = await feedbackHandler({ message: "hi", dryRun: true }, noStdin)(ctx);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.dryRun).toBe(true);
-  });
 });
 
 describe("registerFeedbackCommand --category discoverability", () => {

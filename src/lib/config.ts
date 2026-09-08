@@ -14,7 +14,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
 ] as const;
 
 export type SkillsAutoInstall = "ask" | "always" | "never";
-export type FeedbackNudge = "ask" | "always" | "never";
+export type FeedbackNudge = "on" | "off";
 
 export interface UserConfig {
   environment?: Environment;
@@ -26,7 +26,7 @@ export interface UserConfig {
 const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
-const FEEDBACK_NUDGE_VALUES: readonly FeedbackNudge[] = ["ask", "always", "never"] as const;
+const FEEDBACK_NUDGE_VALUES: readonly FeedbackNudge[] = ["on", "off"] as const;
 
 // `json` is the advertised alias for `agent` (see the `--json` / `--agent` global flags).
 // Accept it as a `format` value and persist it as `agent` so the config mirrors the flags.

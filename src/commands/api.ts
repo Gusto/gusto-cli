@@ -65,7 +65,7 @@ Examples:
 `,
     )
     .action((method: string, path: string, opts: ApiRequestOpts) =>
-      runCommand("gusto api request", readGlobalFlags(parent.opts()), apiRequestHandler(method, path, opts)),
+      runCommand("gusto api request", readGlobalFlags(parent.opts(), opts), apiRequestHandler(method, path, opts)),
     );
 }
 
@@ -142,7 +142,6 @@ export function apiRequestHandler(
     // send time (matching the setup/add commands) rather than firing the version GET now.
     const dryRunResult = (finalPath: string): CommandResult => ({
       ok: true,
-      dryRun: true,
       data: autoVersionPending
         ? { method, path: finalPath, body, note: "dry-run: version is read from the current resource at send time" }
         : { method, path: finalPath, body },
@@ -193,7 +192,7 @@ export function apiRequestHandler(
     });
     if (!ctx.ok) {
       if (opts.dryRun) {
-        return { ok: true, dryRun: true, data: { method, path, body, note: "dry-run: token/company not required" } };
+        return { ok: true, data: { method, path, body, note: "dry-run: token/company not required" } };
       }
       return ctx.result;
     }

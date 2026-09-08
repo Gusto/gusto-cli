@@ -60,7 +60,7 @@ export async function feedbackNudge(inputs: NudgeInputs, deps: NudgeDeps): Promi
   const classified = classify(inputs);
   if (!classified) return null;
 
-  // Opt-out: `feedback_nudge = "never"` disables entirely. A missing/malformed config just means
+  // Opt-out: `feedback_nudge = "off"` disables entirely. A missing/malformed config just means
   // "not opted out" — never let a bad config file suppress or crash the nudge path.
   if (await isOptedOut(deps)) return null;
 
@@ -71,12 +71,12 @@ export async function feedbackNudge(inputs: NudgeInputs, deps: NudgeDeps): Promi
   return render(inputs, classified);
 }
 
-/** `feedback_nudge = "never"` disables the nudge. A missing or malformed config reads as "not opted
+/** `feedback_nudge = "off"` disables the nudge. A missing or malformed config reads as "not opted
  * out" rather than crashing or silently suppressing. */
 async function isOptedOut(deps: NudgeDeps): Promise<boolean> {
   try {
     const cfg = await readConfig(deps.configPaths());
-    return cfg.feedback_nudge === "never";
+    return cfg.feedback_nudge === "off";
   } catch {
     return false;
   }

@@ -264,7 +264,7 @@ Examples:
     .action((addressUuid: string, opts: HomeAddressUpdateCmdOpts) =>
       runCommand(
         "gusto employee update-home-address",
-        readGlobalFlags(parent.opts()),
+        readGlobalFlags(parent.opts(), opts),
         updateHomeAddressHandler(addressUuid, opts),
       ),
     );
@@ -298,7 +298,7 @@ Examples:
     .action((addressUuid: string, opts: WorkAddressUpdateCmdOpts) =>
       runCommand(
         "gusto employee update-work-address",
-        readGlobalFlags(parent.opts()),
+        readGlobalFlags(parent.opts(), opts),
         updateWorkAddressHandler(addressUuid, opts),
       ),
     );
@@ -340,7 +340,11 @@ preview it with --dry-run, then re-run with --confirm once the operator approves
 `,
     )
     .action((employeeUuid: string, opts: EmployeeUpdateOpts) =>
-      runCommand("gusto employee update", readGlobalFlags(parent.opts()), employeeUpdateHandler(employeeUuid, opts)),
+      runCommand(
+        "gusto employee update",
+        readGlobalFlags(parent.opts(), opts),
+        employeeUpdateHandler(employeeUuid, opts),
+      ),
     );
 
   cmd
@@ -417,7 +421,7 @@ may be the only compliant option.
     .action((employeeUuid: string, opts: EmployeeTerminateOpts) =>
       runCommand(
         "gusto employee terminate",
-        readGlobalFlags(parent.opts()),
+        readGlobalFlags(parent.opts(), opts),
         employeeTerminateHandler(employeeUuid, opts),
       ),
     );
@@ -441,7 +445,7 @@ preview with --dry-run, then re-run with --confirm once the operator approves.
     .action((employeeUuid: string, opts: EmployeeTerminateCancelOpts) =>
       runCommand(
         "gusto employee cancel-termination",
-        readGlobalFlags(parent.opts()),
+        readGlobalFlags(parent.opts(), opts),
         employeeTerminateCancelHandler(employeeUuid, opts),
       ),
     );

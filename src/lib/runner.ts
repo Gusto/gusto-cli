@@ -24,10 +24,6 @@ export type CommandResult<T = unknown> =
       ok: true;
       data: T;
       next?: string;
-      /** Set by a command's `--dry-run` short-circuit branch so the runner can tell a previewed
-       * request from a real one — used to suppress the feedback nudge on dry-runs (nothing happened
-       * worth nudging about). Agent/JSON output ignores it; it never reaches the envelope. */
-      dryRun?: boolean;
       /** Optional renderer for `--human` output, as a thunk over this result's data. Applied only
        * when stdout is human mode and no `--fields` projection is in play (a projection changes the
        * data shape the renderer expects). Agent/JSON output ignores it entirely. A thunk keeps this
@@ -97,7 +93,7 @@ async function run<T>(
   // `--fields` projection can turn an ok:true handler result into a usage error, and a thrown handler
   // into an internal_error, neither of which is visible on the raw handler result.
   let emittedError: EnvelopeError | undefined;
-  let dryRun = false;
+  const dryRun = globals.dryRun === true;
 
   // Discovery (bare `--fields`) is a read-only usage helper. On a mutating command it would
   // otherwise run the handler — performing the write — just to introspect the result's shape,
@@ -115,7 +111,6 @@ async function run<T>(
   } else {
     try {
       const result = await handler({ command, globals, sinks });
-      if (result.ok && result.dryRun === true) dryRun = true;
       if (!result.ok) {
         emittedError = result.error;
         emit(output, { ok: false, error: result.error }, deps.sinks);

@@ -75,8 +75,27 @@ describe("compiled binary", () => {
   });
 
   test("unknown command exits 2", async () => {
-    const result = await run(["this-command-does-not-exist"]);
-    expect(result.exitCode).toBe(2);
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-parse-nudge-"));
+    try {
+      const result = await run(["this-command-does-not-exist"], { XDG_CONFIG_HOME: isolated });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  test("parse failures from auth login stay exempt from feedback nudges after global options", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-auth-parse-nudge-"));
+    try {
+      const result = await run(["--env", "sandbox", "auth", "login", "--not-an-option"], {
+        XDG_CONFIG_HOME: isolated,
+      });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   test("--env validates choices", async () => {
@@ -776,6 +795,21 @@ describe("--fields filters success output", () => {
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
     expect(Object.keys(envelope.data)).toEqual(["method", "path"]);
+  });
+
+  test("api request --dry-run does not nudge when --fields names an unknown key", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-dry-run-nudge-"));
+    try {
+      const result = await run(
+        ["api", "request", "POST", "/v1/things", "--data", "{}", "--dry-run", "--fields", "nope"],
+        { XDG_CONFIG_HOME: isolated },
+      );
+      expect(result.exitCode).toBe(2);
+      expect(JSON.parse(result.stdout.trim()).error.code).toBe("unknown_fields");
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   test("pay-schedule create --fields (no value) rejects discovery on a write command, exit 2", async () => {

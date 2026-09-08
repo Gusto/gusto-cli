@@ -84,10 +84,12 @@ describe("normalizeValue", () => {
     expect(validateValue("skills_auto_install", "never")).toBeNull();
     expect(validateValue("skills_auto_install", "sometimes")).not.toBeNull();
   });
-  test("feedback_nudge must be ask, always, or never", () => {
-    expect(validateValue("feedback_nudge", "ask")).toBeNull();
-    expect(validateValue("feedback_nudge", "always")).toBeNull();
-    expect(validateValue("feedback_nudge", "never")).toBeNull();
+  test("feedback_nudge must be on or off", () => {
+    expect(validateValue("feedback_nudge", "on")).toBeNull();
+    expect(validateValue("feedback_nudge", "off")).toBeNull();
+    expect(validateValue("feedback_nudge", "ask")).not.toBeNull();
+    expect(validateValue("feedback_nudge", "always")).not.toBeNull();
+    expect(validateValue("feedback_nudge", "never")).not.toBeNull();
     expect(validateValue("feedback_nudge", "sometimes")).not.toBeNull();
   });
 });
@@ -110,8 +112,8 @@ describe("read/write/reset", () => {
   });
 
   test("feedback_nudge round-trips and rejects invalid values from disk", async () => {
-    await writeConfig({ feedback_nudge: "never" }, paths);
-    expect(await readConfig(paths)).toEqual({ feedback_nudge: "never" });
+    await writeConfig({ feedback_nudge: "off" }, paths);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
     await Bun.write(paths.file, `feedback_nudge = "sometimes"\n`);
     expect(await readConfig(paths)).toEqual({});
   });

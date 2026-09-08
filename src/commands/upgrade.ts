@@ -48,7 +48,7 @@ https://github.com/Gusto/gusto-cli/releases and replace the one you're running.
 `,
     )
     .action((opts: UpgradeCommandOpts) =>
-      runCommand("gusto upgrade", readGlobalFlags(parent.opts()), upgradeHandler(opts)),
+      runCommand("gusto upgrade", readGlobalFlags(parent.opts(), opts), upgradeHandler(opts)),
     );
 }
 

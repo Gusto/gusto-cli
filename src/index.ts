@@ -20,7 +20,8 @@ import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { registerUpgradeCommand } from "./commands/upgrade.ts";
 import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
 import { readConfig } from "./lib/config.ts";
-import { ExitCode } from "./lib/exit-codes.ts";
+import { ExitCode, type ExitCodeValue } from "./lib/exit-codes.ts";
+import { feedbackNudgeWithDefaults } from "./lib/feedback-nudge.ts";
 import type { Environment, GlobalFlags } from "./lib/global-flags.ts";
 import { type StreamSinks, defaultSinks, emit, outputOptionsFrom } from "./lib/output.ts";
 import { VERSION } from "./lib/version.ts";
@@ -110,7 +111,7 @@ function installSignalHandlers(): void {
   process.on("SIGTERM", onSignal);
 }
 
-function exitCodeForCommanderError(err: CommanderError): number {
+function exitCodeForCommanderError(err: CommanderError): ExitCodeValue {
   switch (err.code) {
     case "commander.helpDisplayed":
     case "commander.help":
@@ -134,7 +135,33 @@ function usageFlags(argv: string[]): GlobalFlags {
     human: argv.includes("--human"),
     json: argv.includes("--json"),
     verbose: false,
+    dryRun: argv.includes("--dry-run"),
   };
+}
+
+/** Resolve only registered command names from argv, never positional values, for the nudge's
+ * allowlisted command slug and suppression rules. */
+function commandPathFromArgv(program: Command, argv: string[]): string {
+  let current = program;
+  const names = [program.name()];
+
+  const tokens = argv.slice(2);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i] ?? "";
+    if (token === "--env") {
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    const child = current.commands.find(
+      (candidate) => candidate.name() === token || candidate.aliases().includes(token),
+    );
+    if (!child) break;
+    names.push(child.name());
+    current = child;
+  }
+
+  return names.join(" ");
 }
 
 /** The persisted `environment`, read before commander is built so it can become the `--env` default.
@@ -171,10 +198,24 @@ async function main(argv: string[]): Promise<void> {
       // a usage error - re-emit it through the standard envelope so agents get a parseable
       // {ok:false} on stdout with valid_commands/did_you_mean instead of a bare stderr line.
       if (code !== ExitCode.Success) {
-        emit(outputOptionsFrom(usageFlags(argv)), {
+        const flags = usageFlags(argv);
+        const error = usageErrorEnvelope(err.code, err.message, program, argv.slice(2));
+        emit(outputOptionsFrom(flags), {
           ok: false,
-          error: usageErrorEnvelope(err.code, err.message, program, argv.slice(2)),
+          error,
         });
+        try {
+          const nudge = await feedbackNudgeWithDefaults({
+            command: commandPathFromArgv(program, argv),
+            globals: flags,
+            code,
+            error,
+            dryRun: flags.dryRun,
+          });
+          if (nudge) defaultSinks.stderr.write(nudge);
+        } catch {
+          // never fail a command over its feedback nudge
+        }
       }
       process.exit(code);
     }
