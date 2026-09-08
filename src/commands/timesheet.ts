@@ -1,16 +1,17 @@
 import { type Command, Option } from "commander";
-import { createCompanyResource, fetchResource } from "../lib/api-context.ts";
+import { createCompanyResource, fetchResource, invalidCompanyUuid } from "../lib/api-context.ts";
 import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
-import { getCompanyUuid } from "../lib/env.ts";
+import { defaultEnv, getCompanyUuid } from "../lib/env.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
 import type { BlockedOn } from "../lib/output.ts";
-import { isValidIso8601, isValidIsoDate, parsePositiveNumber } from "../lib/parse.ts";
+import { isValidIso8601, isValidIsoDate, isValidUuid, parsePositiveNumber, pushUuidBlockedOn } from "../lib/parse.ts";
 import {
   type CommandHandler,
   type CommandResult,
   type ValidationResult,
+  invalidUuid,
   runCommand,
   runReadCommand,
   validationFailure,
@@ -76,6 +77,8 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
     blocked.push({ field: "employee-uuid", reason: "pass only one of --employee-uuid or --contractor-uuid" });
   } else if (!entityUuid) {
     blocked.push({ field: "employee-uuid", reason: "required (or pass --contractor-uuid)" });
+  } else {
+    pushUuidBlockedOn(isEmployee ? "employee-uuid" : "contractor-uuid", entityUuid, blocked);
   }
 
   // The API requires a job for employee time sheets (TimeTracking::TimeSheet validates
@@ -83,6 +86,7 @@ export function validateTimesheetCreate(opts: TimesheetCreateInput): TimesheetCr
   let entity: TimesheetEntity | undefined;
   if (isEmployee) {
     if (opts.jobUuid) {
+      pushUuidBlockedOn("job-uuid", opts.jobUuid, blocked);
       entity = { entity_type: "Employee", job_uuid: opts.jobUuid };
     } else {
       blocked.push({ field: "job-uuid", reason: "required for employee time sheets" });
@@ -205,6 +209,7 @@ export function validateTimesheetSync(opts: TimesheetSyncInput): TimesheetSyncVa
   const blocked: BlockedOn[] = [];
   const { payScheduleUuid } = opts;
   if (!payScheduleUuid) blocked.push({ field: "pay-schedule-uuid", reason: "required" });
+  else pushUuidBlockedOn("pay-schedule-uuid", payScheduleUuid, blocked);
 
   const startDate = readSyncDate(opts, START_DATE_FLAG, blocked);
   const endDate = readSyncDate(opts, END_DATE_FLAG, blocked);
@@ -458,8 +463,15 @@ export function clarifyEmptyTimesheetSync(result: CommandResult): CommandResult 
 }
 
 export function timesheetShowHandler(timeSheetUuid: string, opts: TimesheetShowOpts): CommandHandler {
-  return async ({ globals }) =>
-    fetchResource(globals, { tokenStdin: opts.tokenStdin }, () => `/v1/time_tracking/time_sheets/${timeSheetUuid}`);
+  return async ({ globals }) => {
+    // No hint: `timesheet list` returns these uuids only for companies on third-party time tracking
+    if (!isValidUuid(timeSheetUuid)) return invalidUuid("time_sheet_uuid", timeSheetUuid);
+    return fetchResource(
+      globals,
+      { tokenStdin: opts.tokenStdin },
+      () => `/v1/time_tracking/time_sheets/${timeSheetUuid}`,
+    );
+  };
 }
 
 export function timesheetListHandler(opts: TimesheetListOpts): CommandHandler {
@@ -467,8 +479,11 @@ export function timesheetListHandler(opts: TimesheetListOpts): CommandHandler {
     const validation = validateTimesheetList(opts);
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
 
-    const companyUuid = getCompanyUuid(opts.companyUuid);
-    const args = companyUuid ? { ...validation.body, company_uuid: companyUuid } : validation.body;
+    const supplied = getCompanyUuid(opts.companyUuid);
+    if (supplied && !isValidUuid(supplied.value)) {
+      return invalidCompanyUuid(supplied.value, supplied.source, defaultEnv(globals.env));
+    }
+    const args = supplied ? { ...validation.body, company_uuid: supplied.value } : validation.body;
 
     return callMcpTool(globals, { tokenStdin: opts.tokenStdin }, "list_time_records", args);
   };

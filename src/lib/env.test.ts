@@ -4,6 +4,7 @@ import {
   defaultEnv,
   getAccessToken,
   getCompanyUuid,
+  isTelemetryEnabled,
   resolveApiVersion,
   resolveBaseUrl,
   resolveMcpBaseUrl,
@@ -140,10 +141,36 @@ describe("getAccessToken", () => {
 });
 
 describe("getCompanyUuid", () => {
-  test("override beats env", () => {
-    expect(getCompanyUuid("OVERRIDE", { GUSTO_COMPANY_UUID: "ENV" })).toBe("OVERRIDE");
+  test("override beats env, and reports the flag as the source", () => {
+    expect(getCompanyUuid("OVERRIDE", { GUSTO_COMPANY_UUID: "ENV" })).toEqual({ value: "OVERRIDE", source: "flag" });
+  });
+  test("falls back to the env var and reports it as the source", () => {
+    expect(getCompanyUuid(undefined, { GUSTO_COMPANY_UUID: "ENV" })).toEqual({ value: "ENV", source: "env" });
+  });
+  test("an empty override is reported as the flag rather than falling through to env", () => {
+    expect(getCompanyUuid("", { GUSTO_COMPANY_UUID: "ENV" })).toEqual({ value: "", source: "flag" });
   });
   test("returns null when both empty", () => {
     expect(getCompanyUuid(undefined, {})).toBeNull();
+  });
+});
+
+describe("isTelemetryEnabled", () => {
+  test("defaults to true when GUSTO_TELEMETRY is unset", () => {
+    expect(isTelemetryEnabled({})).toBe(true);
+  });
+  test("stays true on an empty value", () => {
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "" })).toBe(true);
+  });
+  test("returns false for 0 / false / no (case-insensitive)", () => {
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "0" })).toBe(false);
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "false" })).toBe(false);
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "FALSE" })).toBe(false);
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "no" })).toBe(false);
+  });
+  test("stays true for explicitly truthy values", () => {
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "1" })).toBe(true);
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "true" })).toBe(true);
+    expect(isTelemetryEnabled({ GUSTO_TELEMETRY: "yes" })).toBe(true);
   });
 });

@@ -1,6 +1,14 @@
 import { ApiClient, type AuthContext, type ResolvedTokenSource, stderrRequestObserver } from "./api-client.ts";
+import { resolveInstallIdHeader } from "./config.ts";
 import { confirmationGate } from "./confirm.ts";
-import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
+import {
+  type CompanySource,
+  defaultEnv,
+  getAccessToken,
+  getCompanyUuid,
+  resolveApiVersion,
+  resolveBaseUrl,
+} from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
@@ -9,6 +17,7 @@ import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
 import { type SessionOutcome, resolveSessionToken, sessionUsable } from "./oauth/session.ts";
 import { type TokenStore, credentialsFile, resolveStore } from "./oauth/token-store.ts";
 import type { EnvelopeError } from "./output.ts";
+import { isValidUuid, uuidReason } from "./parse.ts";
 import { isObject } from "./predicates.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
@@ -67,18 +76,27 @@ export interface ApiContextOpts extends AuthOpts {
  * as a follow-up. */
 export function buildApiClient(
   globals: GlobalFlags,
-  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream; auth?: AuthContext },
+  opts: {
+    baseUrl: string;
+    token: string;
+    installId?: string;
+    stderr?: NodeJS.WritableStream;
+    auth?: AuthContext;
+  },
 ): ApiClient {
   return new ApiClient({
     baseUrl: opts.baseUrl,
     token: opts.token,
     apiVersion: resolveApiVersion(),
+    installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
     auth: opts.auth,
   });
 }
 
-type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
+export type ResolveFailure = "credentials" | "invalid_input";
+
+type Resolved<T> = { ok: true; ctx: T } | { ok: false; reason: ResolveFailure; result: CommandResult<never> };
 
 export type ResolvedToken =
   | { ok: true; token: string; source: ResolvedTokenSource }
@@ -241,6 +259,39 @@ async function otherEnvHint(env: Environment, opts: AuthOpts): Promise<string | 
   }
 }
 
+const COMPANY_SOURCES: Record<CompanySource, { origin: (env: Environment) => string; recovery: string }> = {
+  flag: {
+    origin: () => "--company-uuid",
+    recovery: "pass a valid --company-uuid",
+  },
+  env: {
+    origin: () => "GUSTO_COMPANY_UUID",
+    recovery: "correct GUSTO_COMPANY_UUID in your environment, or override it with --company-uuid",
+  },
+  session: {
+    origin: slotDescription,
+    recovery: "run `gusto auth login` again, or pass --company-uuid",
+  },
+};
+
+export function invalidCompanyUuid(
+  value: string,
+  source: CompanySource,
+  environment: Environment,
+): CommandResult<never> {
+  return {
+    ok: false,
+    exitCode: ExitCode.Validation,
+    error: {
+      code: "invalid_company_uuid",
+      message:
+        `company UUID from ${COMPANY_SOURCES[source].origin(environment)} ${uuidReason(value)}: ` +
+        `${COMPANY_SOURCES[source].recovery}.`,
+      environment,
+    },
+  };
+}
+
 export function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts & { requireCompany: false },
@@ -250,13 +301,23 @@ export async function resolveApiContext(
   globals: GlobalFlags,
   opts: ApiContextOpts = { requireCompany: true },
 ): Promise<Resolved<ApiContext>> {
+  const supplied = opts.requireCompany === false ? null : getCompanyUuid(opts.companyOverride);
+  if (supplied && !isValidUuid(supplied.value)) {
+    return {
+      ok: false,
+      reason: "invalid_input",
+      result: invalidCompanyUuid(supplied.value, supplied.source, defaultEnv(globals.env)),
+    };
+  }
+
   const resolved = await resolveAuthToken(globals, opts);
-  if (!resolved.ok) return resolved;
+  if (!resolved.ok) return { ok: false, reason: "credentials", result: resolved.result };
   const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
   const environment = defaultEnv(globals.env);
-  const client = buildApiClient(globals, { baseUrl, token, auth: { tokenSource, environment } });
+  const installId = await resolveInstallIdHeader();
+  const client = buildApiClient(globals, { baseUrl, token, installId, auth: { tokenSource, environment } });
 
   if (opts.requireCompany === false) {
     return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };
@@ -264,14 +325,22 @@ export async function resolveApiContext(
 
   // Only borrow the session's company when the token came from the session; an
   // env/stdin token must not silently target an unrelated login's company.
-  const fallbackCompany = tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
-  const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
-  if (!companyUuid) {
+  const fallbackCompany = !supplied && tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
+  const company = supplied ?? (fallbackCompany ? ({ value: fallbackCompany, source: "session" } as const) : null);
+  if (company && !isValidUuid(company.value)) {
+    return {
+      ok: false,
+      reason: "invalid_input",
+      result: invalidCompanyUuid(company.value, company.source, environment),
+    };
+  }
+  if (!company) {
     // A company is stored per credential slot, so which environment answered decides whether one was
     // available at all. Named in the message as well as the field: human-mode output prints the
     // message and the hint, never `environment`, so a field alone would hide it from half the callers.
     return {
       ok: false,
+      reason: "credentials",
       result: {
         ok: false,
         exitCode: ExitCode.Validation,
@@ -284,14 +353,14 @@ export async function resolveApiContext(
     };
   }
 
-  return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: true, companyUuid } };
+  return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: true, companyUuid: company.value } };
 }
 
 /** The stored login session resolved to a token, or the reason it couldn't be. An unreadable or
  * corrupt credentials file is a real error rather than a credential state, so it surfaces. */
 async function sessionOutcome(globals: GlobalFlags, opts: AuthOpts, env: Environment): Promise<SessionOutcome> {
   const store = opts.store ?? resolveStore();
-  const http = opts.http ?? oauthHttp(globals);
+  const http = opts.http ?? (await oauthHttp(globals));
   return resolveSessionToken(store, env, http, opts.now);
 }
 
@@ -349,7 +418,7 @@ async function companyResourceRequest(
   });
   const bodyShape = includeBody ? { body } : {};
   if (!ctx.ok) {
-    if (opts.dryRun) {
+    if (opts.dryRun && ctx.reason === "credentials") {
       return {
         ok: true,
         data: {

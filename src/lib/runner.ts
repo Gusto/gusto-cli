@@ -9,6 +9,7 @@ import {
   emit,
   outputOptionsFrom,
 } from "./output.ts";
+import { uuidReason } from "./parse.ts";
 
 export interface CommandContext {
   command: string;
@@ -177,18 +178,10 @@ export function missingArgs(blocked: BlockedOn[]): CommandResult<never> {
   return validationFailure("missing required arguments", blocked);
 }
 
-/** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
-const ECHOED_VALUE_MAX_LENGTH = 60;
-
 /** Standard validation failure for an identifier argument that isn't a usable UUID.
  * `hint` is printed verbatim, so any command in it must run as-is - no unfilled placeholders. */
-export function invalidUuid(field: string, value: string, hint: string): CommandResult<never> {
-  const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
-  return validationFailure(
-    "invalid arguments",
-    [{ field, reason: `must be a valid UUID, got: ${JSON.stringify(echoed)}` }],
-    hint,
-  );
+export function invalidUuid(field: string, value: string, hint?: string): CommandResult<never> {
+  return validationFailure("invalid arguments", [{ field, reason: uuidReason(value) }], hint);
 }
 
 /** Indented, newline-joined list of field names for a stderr hint, or a placeholder when empty. */

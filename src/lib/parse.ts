@@ -94,6 +94,18 @@ export function isValidUuid(value: string): boolean {
   return UUID.test(value) && value !== NIL_UUID;
 }
 
+/** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
+const ECHOED_VALUE_MAX_LENGTH = 60;
+
+export function uuidReason(value: string): string {
+  const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
+  return `must be a valid UUID, got: ${JSON.stringify(echoed)}`;
+}
+
+export function pushUuidBlockedOn(field: string, value: string | undefined, blocked: BlockedOn[]): void {
+  if (value !== undefined && !isValidUuid(value)) blocked.push({ field, reason: uuidReason(value) });
+}
+
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry
  * for any unrecognized token (or null if all are valid). `multi` splits the
  * value on commas for the comma-separated multi-value params; empty tokens

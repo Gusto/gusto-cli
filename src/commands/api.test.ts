@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ExitCode } from "../lib/exit-codes.ts";
-import { TEST_CONTEXT as ctx, okData as data, stubGlobalFetch } from "../lib/test-support.ts";
+import { TEST_CONTEXT as ctx, okData as data, stubGlobalFetch, TEST_COMPANY_UUID } from "../lib/test-support.ts";
 import { apiRequestHandler } from "./api.ts";
 
 describe("api request {company_uuid} substitution", () => {
@@ -8,32 +8,32 @@ describe("api request {company_uuid} substitution", () => {
     const d = data(
       await apiRequestHandler("GET", "/v1/companies/{company_uuid}/employees", {
         dryRun: true,
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
       })(ctx),
     );
     expect(d.method).toBe("GET");
-    expect(d.path).toBe("/v1/companies/co-1/employees");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/employees`);
   });
 
   test("dry-run substitutes every occurrence of the placeholder", async () => {
     const d = data(
       await apiRequestHandler("GET", "/v1/companies/{company_uuid}/x/{company_uuid}", {
         dryRun: true,
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
       })(ctx),
     );
-    expect(d.path).toBe("/v1/companies/co-1/x/co-1");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/x/${TEST_COMPANY_UUID}`);
   });
 
   test("a real request sends to the substituted path", async () => {
     const { calls, restore } = stubGlobalFetch([{ status: 200, body: { ok: true } }]);
     try {
       const result = await apiRequestHandler("GET", "/v1/companies/{company_uuid}/employees", {
-        companyUuid: "co-1",
+        companyUuid: TEST_COMPANY_UUID,
       })(ctx);
       expect(result.ok).toBe(true);
       expect(calls).toHaveLength(1);
-      expect(calls[0]?.url).toContain("/v1/companies/co-1/employees");
+      expect(calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/employees`);
       expect(calls[0]?.url).not.toContain("{company_uuid}");
     } finally {
       restore();
@@ -79,7 +79,9 @@ describe("api request --company-uuid on a path with no placeholder", () => {
   test("warns that the flag was ignored", async () => {
     const warnings: string[] = [];
     const d = data(
-      await apiRequestHandler("GET", "/v1/me", { companyUuid: "co-1", dryRun: true }, (m) => warnings.push(m))(ctx),
+      await apiRequestHandler("GET", "/v1/me", { companyUuid: TEST_COMPANY_UUID, dryRun: true }, (m) =>
+        warnings.push(m),
+      )(ctx),
     );
     expect(d.path).toBe("/v1/me");
     expect(warnings).toHaveLength(1);
@@ -98,14 +100,14 @@ describe("api request --company-uuid on a path with no placeholder", () => {
     await apiRequestHandler(
       "GET",
       "/v1/companies/{company_uuid}/employees",
-      { companyUuid: "co-1", dryRun: true },
+      { companyUuid: TEST_COMPANY_UUID, dryRun: true },
       (m) => warnings.push(m),
     )(ctx);
     expect(warnings).toHaveLength(0);
   });
 });
 
-const PATH = "/v1/companies/co-1/federal_tax_details";
+const PATH = `/v1/companies/${TEST_COMPANY_UUID}/federal_tax_details`;
 
 describe("api request --auto-version", () => {
   test("PUT GETs the current resource, injects its version, then PUTs", async () => {
@@ -318,12 +320,12 @@ describe("api request --auto-version", () => {
       const result = await apiRequestHandler("PUT", "/v1/companies/{company_uuid}/federal_tax_details", {
         autoVersion: true,
         confirm: true,
-        companyUuid: "co-9",
+        companyUuid: "8b9c0d1e-0000-4111-2222-333344445555",
         data: '{"x":1}',
       })(ctx);
       expect(result.ok).toBe(true);
       expect(calls).toHaveLength(2);
-      expect(calls[0]?.url).toContain("/v1/companies/co-9/federal_tax_details");
+      expect(calls[0]?.url).toContain("/v1/companies/8b9c0d1e-0000-4111-2222-333344445555/federal_tax_details");
       expect(calls[0]?.url).not.toContain("{company_uuid}");
       expect(calls[1]?.body).toMatchObject({ x: 1, version: "v-current" });
     } finally {
@@ -400,7 +402,7 @@ describe("api request write confirmation gate", () => {
       u.includes("/employees") ? { status: 201, body: { uuid: "ee-1" } } : { status: 404 },
     );
     try {
-      const result = await apiRequestHandler("POST", "/v1/companies/co-1/employees", {
+      const result = await apiRequestHandler("POST", `/v1/companies/${TEST_COMPANY_UUID}/employees`, {
         confirm: true,
         data: '{"first_name":"Jane"}',
       })(ctx);

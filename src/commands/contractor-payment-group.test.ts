@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { pagedRouter, routeFetch, stubGlobalFetch, TEST_AUTH, TEST_CONTEXT } from "../lib/test-support.ts";
+import {
+  pagedRouter,
+  routeFetch,
+  stubGlobalFetch,
+  TEST_AUTH,
+  TEST_CONTEXT,
+  TEST_COMPANY_UUID,
+} from "../lib/test-support.ts";
 import { contractorPaymentGroupListHandler, contractorPaymentGroupShowHandler } from "./contractor-payment-group.ts";
 
 const GROUP_UUID = "33333333-3333-3333-3333-333333333333";
@@ -44,7 +51,7 @@ describe("contractorPaymentGroupListHandler pagination", () => {
     const { calls, restore: r } = routeFetch([{ match: "/contractor_payment_groups", status: 200, body: [] }]);
     restore = r;
     await contractorPaymentGroupListHandler({ ...TEST_AUTH })(TEST_CONTEXT);
-    expect(calls[0]?.url).toContain("/v1/companies/co-1/contractor_payment_groups");
+    expect(calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/contractor_payment_groups`);
   });
 
   test("passes --start-date/--end-date through as query params", async () => {

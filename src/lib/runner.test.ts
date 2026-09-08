@@ -336,6 +336,15 @@ describe("invalidUuid", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${atCap}"`);
   });
+
+  test("omits the hint field entirely when no hint is given", () => {
+    const result = invalidUuid("time_sheet_uuid", "ts-1");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).not.toHaveProperty("hint");
+    expect(result.error.blocked_on).toEqual([
+      { field: "time_sheet_uuid", reason: 'must be a valid UUID, got: "ts-1"' },
+    ]);
+  });
 });
 
 describe("notImplementedHandler", () => {

@@ -191,7 +191,7 @@ export function apiRequestHandler(
       companyOverride: opts.companyUuid,
     });
     if (!ctx.ok) {
-      if (opts.dryRun) {
+      if (opts.dryRun && ctx.reason === "credentials") {
         return { ok: true, data: { method, path, body, note: "dry-run: token/company not required" } };
       }
       return ctx.result;

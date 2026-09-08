@@ -7,6 +7,8 @@ import {
   blockedFields,
   okData as data,
   stubGlobalFetch,
+  TEST_COMPANY_UUID,
+  TEST_OVERRIDE_COMPANY_UUID,
 } from "../lib/test-support.ts";
 import {
   payrollBlockersHandler,
@@ -46,14 +48,14 @@ describe("payrollPrepareHandler", () => {
     expect((d.employee_compensations as { employee_uuid: string }[])[0]?.employee_uuid).toBe("ee-1");
 
     const put = s.calls.find((c) => c.method === "PUT");
-    expect(put?.url).toContain("/v1/companies/co-1/payrolls/pay-1/prepare");
+    expect(put?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1/prepare`);
   });
 
   test("dry-run describes the PUT and sends nothing", async () => {
     const s = stub(() => ({ status: 500 })); // any real call would fail the test
     const d = data(await payrollPrepareHandler("pay-1", { ...auth, dryRun: true })(ctx));
     expect(d.method).toBe("PUT");
-    expect(d.path).toBe("/v1/companies/co-1/payrolls/pay-1/prepare");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1/prepare`);
     // prepare has no request body, so dry-run must not invent one.
     expect(d.body).toBeUndefined();
     expect(s.calls).toHaveLength(0);
@@ -123,7 +125,7 @@ describe("payrollShowHandler", () => {
     expect(d.uuid).toBe("pay-1");
 
     const get = s.calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("/v1/companies/co-1/payrolls/pay-1");
+    expect(get?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1`);
   });
 
   test("passes --include through to the query string", async () => {
@@ -181,7 +183,7 @@ describe("payrollBlockersHandler", () => {
 
     const get = s.calls.find((c) => c.method === "GET");
     expect(get?.method).toBe("GET");
-    expect(get?.url).toContain("/v1/companies/co-1/payrolls/blockers");
+    expect(get?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/blockers`);
   });
 
   test("an empty array (no blockers) passes through as success", async () => {
@@ -194,9 +196,9 @@ describe("payrollBlockersHandler", () => {
 
   test("--company-uuid overrides the company in the path", async () => {
     const s = stub((u) => (u.includes("/payrolls/blockers") ? { status: 200, body: [] } : { status: 404 }));
-    await payrollBlockersHandler({ ...auth, companyUuid: "co-override" })(ctx);
+    await payrollBlockersHandler({ ...auth, companyUuid: TEST_OVERRIDE_COMPANY_UUID })(ctx);
     const get = s.calls.find((c) => c.method === "GET");
-    expect(get?.url).toContain("/v1/companies/co-override/payrolls/blockers");
+    expect(get?.url).toContain(`/v1/companies/${TEST_OVERRIDE_COMPANY_UUID}/payrolls/blockers`);
   });
 
   test("an API error surfaces as a failed result", async () => {
@@ -226,7 +228,7 @@ describe("payrollCalculateHandler", () => {
     const s = stub(() => ({ status: 500 })); // any real call would fail the test
     const d = data(await payrollCalculateHandler("pay-1", { ...auth, dryRun: true })(ctx));
     expect(d.method).toBe("PUT");
-    expect(d.path).toBe("/v1/companies/co-1/payrolls/pay-1/calculate");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1/calculate`);
     // calculate has no request body, so dry-run must not invent one.
     expect(d.body).toBeUndefined();
     expect(s.calls).toHaveLength(0);
@@ -296,7 +298,7 @@ describe("payrollUpdateHandler", () => {
     expect(d.uuid).toBe("pay-1");
 
     const put = s.calls.find((c) => c.method === "PUT");
-    expect(put?.url).toContain("/v1/companies/co-1/payrolls/pay-1");
+    expect(put?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1`);
     // The path must NOT be the prepare endpoint.
     expect(put?.url).not.toContain("/prepare");
     expect(put?.body).toEqual({
@@ -329,7 +331,7 @@ describe("payrollUpdateHandler", () => {
       await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(CSV))(ctx),
     );
     expect(d.method).toBe("PUT");
-    expect(d.path).toBe("/v1/companies/co-1/payrolls/pay-1");
+    expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1`);
     expect(d.body).toMatchObject({ employee_compensations: [{ employee_uuid: "ee-1" }] });
     expect(s.calls).toHaveLength(0);
   });

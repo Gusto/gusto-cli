@@ -6,7 +6,7 @@ import { malformedResponse } from "../lib/errors.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { detectNext, encodeCursor, parsePaginationFlags, withPageParams } from "../lib/pagination.ts";
-import { isValidIsoDate, isValidUuid } from "../lib/parse.ts";
+import { isValidIsoDate, isValidUuid, pushUuidBlockedOn } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import { type QueryParams, toQueryString } from "../lib/query.ts";
 import {
@@ -193,9 +193,7 @@ export function contractorPaymentListHandler(opts: ContractorPaymentListOpts): C
     else if (!isValidIsoDate(opts.endDate)) {
       blocked.push({ field: "end-date", reason: "must be a valid date in YYYY-MM-DD format" });
     }
-    if (opts.contractorUuid !== undefined && !isValidUuid(opts.contractorUuid)) {
-      blocked.push({ field: "contractor-uuid", reason: "must be a valid UUID" });
-    }
+    pushUuidBlockedOn("contractor-uuid", opts.contractorUuid, blocked);
     if (blocked.length > 0) return validationFailure("invalid arguments", blocked);
 
     const pg = parsePaginationFlags(opts);
