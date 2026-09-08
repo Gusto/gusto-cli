@@ -87,5 +87,6 @@ describe("contractorPaymentsHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(7);
     expect(stub.calls).toHaveLength(0);
+    expect(result.error.hint).toBe("run `gusto contractor list` to get a real contractor_uuid");
   });
 });

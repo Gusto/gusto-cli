@@ -323,8 +323,10 @@ describe("missingArgs", () => {
 });
 
 describe("invalidUuid", () => {
-  test("names the field, echoes the value, and points at the command that yields a real one", () => {
-    const result = invalidUuid("employee_uuid", "emp-1", "gusto employee list");
+  const EMPLOYEE_HINT = "run `gusto employee list` to get a real employee_uuid";
+
+  test("names the field, echoes the value, and surfaces the hint as written", () => {
+    const result = invalidUuid("employee_uuid", "emp-1", EMPLOYEE_HINT);
     expect(result).toEqual({
       ok: false,
       exitCode: ExitCode.Validation,
@@ -338,16 +340,25 @@ describe("invalidUuid", () => {
   });
 
   test("truncates a value past the cap, keeping the first 60 characters", () => {
-    const result = invalidUuid("employee_uuid", "x".repeat(100), "gusto employee list");
+    const result = invalidUuid("employee_uuid", "x".repeat(100), EMPLOYEE_HINT);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${"x".repeat(60)}..."`);
   });
 
   test("leaves a value exactly at the cap untouched", () => {
     const atCap = "x".repeat(60);
-    const result = invalidUuid("employee_uuid", atCap, "gusto employee list");
+    const result = invalidUuid("employee_uuid", atCap, EMPLOYEE_HINT);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.blocked_on?.[0]?.reason).toBe(`must be a valid UUID, got: "${atCap}"`);
+  });
+
+  test("omits the hint field entirely when no hint is given", () => {
+    const result = invalidUuid("time_sheet_uuid", "ts-1");
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).not.toHaveProperty("hint");
+    expect(result.error.blocked_on).toEqual([
+      { field: "time_sheet_uuid", reason: 'must be a valid UUID, got: "ts-1"' },
+    ]);
   });
 });
 

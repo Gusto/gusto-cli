@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { ApiError, BlockedDestinationError, NetworkError } from "./api-client.ts";
+import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { partialFailure, toResult } from "./handle-api-error.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 
 describe("toResult", () => {
   test("4xx ApiError maps to api_client_error and carries body + request_id", () => {
-    const err = new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "Unprocessable", "req-123");
+    const err = new ApiError(422, { errors: ["bad email"] }, ExitCode.ApiClient, "Unprocessable", {
+      requestId: "req-123",
+    });
     const result = toResult(err);
     expect(result).toEqual({
       ok: false,
@@ -176,7 +178,125 @@ describe("toResult", () => {
   });
 });
 
+// A 401 means the credential was sent and refused, so it belongs to the auth family (exit 3) rather
+// than the ordinary 4xx bucket - and the only useful wording names *which* credential, which is why
+// the client stamps its `AuthContext` onto the error.
+describe("toResult 401 handling", () => {
+  const unauthorized = (auth?: AuthContext) =>
+    new ApiError(401, { error: "unauthorized" }, ExitCode.ApiClient, "GET /v1/me -> 401", { requestId: "req-9", auth });
+
+  test("exits Auth, not ApiClient, so one branch catches every credential problem", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "production" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+  });
+
+  test("carries the environment, the body, and the request id", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.details).toEqual({ error: "unauthorized" });
+    expect(result.error.request_id).toBe("req-9");
+  });
+
+  test("a rejected session is told to sign in again, for the environment that failed", () => {
+    const result = toResult(unauthorized({ tokenSource: "session", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+    // The request line survives: a 401 can land mid-walk, and which call failed is worth knowing.
+    expect(result.error.message).toContain("GET /v1/me -> 401");
+  });
+
+  test.each([
+    ["env" as const, "GUSTO_ACCESS_TOKEN"],
+    ["stdin" as const, "--token-stdin"],
+  ])("a rejected %s token names it and does not suggest logging in", (tokenSource, named) => {
+    // `auth login` would rotate a stored session the failing command never used, so an explicitly
+    // supplied token has to be reported as the caller's to fix.
+    const result = toResult(unauthorized({ tokenSource, environment: "production" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain(named);
+    expect(result.error.message).not.toContain("gusto auth login");
+  });
+
+  test("a rejected just-minted login token names the sign-in, not a stored credential", () => {
+    // The `token_info` read inside `auth login` is the one 401 whose credential is seconds old and
+    // ours. None of the other three recoveries apply: nothing is stored yet (the save happens after
+    // this read) and there is no caller-supplied value to go fix.
+    const result = toResult(unauthorized({ tokenSource: "login", environment: "sandbox" }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("/v1/token_info");
+    expect(result.error.message).toContain("nothing was stored");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+    // Must not read as a rejected stored session, whose login costs a live refresh token.
+    expect(result.error.message).not.toContain("stored sandbox session");
+  });
+
+  test("no wording suggests a bare retry, since nothing re-authenticates on its own", () => {
+    for (const tokenSource of ["session", "env", "stdin"] as const) {
+      const result = toResult(unauthorized({ tokenSource, environment: "production" }));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).not.toContain("retry");
+    }
+  });
+
+  test("still classifies as an auth failure when the client carried no context", () => {
+    // Covers a 401 from a client built without one: the code and exit stay put, and the message has
+    // to describe all three sources rather than send the caller at the wrong one.
+    const result = toResult(unauthorized());
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect("environment" in result.error).toBe(false);
+    expect(result.error.message).toContain("GUSTO_ACCESS_TOKEN");
+    expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test("a 403 without a scope reason stays an ordinary 4xx", () => {
+    // Guards the boundary: only 401 moves to the auth family, not every 4xx near it.
+    const result = toResult(new ApiError(403, { error: "forbidden" }, ExitCode.ApiClient, "GET /x -> 403"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.code).toBe("api_client_error");
+  });
+});
+
 describe("toResult 403 scope handling", () => {
+  // Scopes are granted per credential and a credential is per environment, so this failure is no
+  // less environment-specific than the 401 above. It predates the field, which is the only reason it
+  // ever read as the exception.
+  test("insufficient_scope carries the environment when the client had a context", () => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+      { auth: { tokenSource: "session", environment: "sandbox" } },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.environment).toBe("sandbox");
+  });
+
+  test("insufficient_scope omits the environment when the client carried no context", () => {
+    // Absent rather than guessed: a wrong environment is worse than none for a caller branching on it.
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect("environment" in result.error).toBe(false);
+  });
+
   test("insufficient_scope 403 maps to a scope remediation message", () => {
     const err = new ApiError(
       403,
@@ -191,6 +311,25 @@ describe("toResult 403 scope handling", () => {
     expect(result.error.code).toBe("insufficient_scope");
     expect(result.error.message).toContain("employees:manage");
     expect(result.error.message).toContain("gusto auth login");
+  });
+
+  test.each([
+    ["env" as const, "GUSTO_ACCESS_TOKEN"],
+    ["stdin" as const, "--token-stdin"],
+  ])("insufficient_scope for an explicit %s token tells the caller to replace that token", (tokenSource, named) => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "employees:manage" },
+      ExitCode.ApiClient,
+      "POST /v1/companies/x/employees -> 403",
+      { auth: { tokenSource, environment: "sandbox" } },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain(named);
+    expect(result.error.message).toContain("employees:manage");
+    // A stored login cannot repair an explicit token, which wins on every subsequent command.
+    expect(result.error.message).not.toContain("gusto auth login");
   });
 
   test("the real Gusto missing_oauth_scopes 403 body maps to insufficient_scope", () => {
@@ -379,6 +518,26 @@ describe("partialFailure", () => {
     });
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.ApiServer);
+  });
+
+  test.each([
+    [401, { error: "unauthorized" }, "credential_rejected"],
+    [403, { error: "insufficient_scope" }, "insufficient_scope"],
+  ])("an auth failure at HTTP %i keeps environment on the outer partial-failure envelope", (status, body, code) => {
+    const err = new ApiError(status, body, ExitCode.ApiClient, `GET /follow-up -> ${status}`, {
+      auth: { tokenSource: "session", environment: "sandbox" },
+    });
+    const result = partialFailure({
+      code: "compliance_nudge_fetch_failed",
+      message: "work address changed but tax requirements failed",
+      err,
+      completed: { work_address: { uuid: "wa-1" } },
+      failedDomain: "tax_requirements",
+    });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.environment).toBe("sandbox");
+    expect((result.error.details as { failed: { error: { code: string } } }).failed.error.code).toBe(code);
   });
 
   test("lists every completed domain and echoes its data", () => {

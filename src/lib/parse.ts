@@ -28,6 +28,18 @@ export function parsePositiveNumber(raw: string): PositiveNumberResult {
   return { ok: true, value: num };
 }
 
+/** Plain positive integer: digits only, no sign, no decimal point. */
+const POSITIVE_INT = /^\d+$/;
+
+/** Parse a string as a positive integer (`0` and decimals are rejected). Shared by every
+ * page/per/limit-style flag so their validation and error wording can't drift. */
+export function parsePositiveInt(raw: string): PositiveNumberResult {
+  if (!POSITIVE_INT.test(raw) || Number(raw) < 1) {
+    return { ok: false, reason: `must be a positive integer, got: ${raw}` };
+  }
+  return { ok: true, value: Number(raw) };
+}
+
 /** Plain non-negative decimal: digits with an optional fractional part, nothing else. */
 const NON_NEGATIVE_DECIMAL = /^\d+(\.\d+)?$/;
 
@@ -80,6 +92,18 @@ const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 /** True for a canonical UUID of any version, excluding the nil UUID. */
 export function isValidUuid(value: string): boolean {
   return UUID.test(value) && value !== NIL_UUID;
+}
+
+/** Cap on the length of any value echoed back. Past 36 so a near-miss uuid still shows whole. */
+const ECHOED_VALUE_MAX_LENGTH = 60;
+
+export function uuidReason(value: string): string {
+  const echoed = value.length > ECHOED_VALUE_MAX_LENGTH ? `${value.slice(0, ECHOED_VALUE_MAX_LENGTH)}...` : value;
+  return `must be a valid UUID, got: ${JSON.stringify(echoed)}`;
+}
+
+export function pushUuidBlockedOn(field: string, value: string | undefined, blocked: BlockedOn[]): void {
+  if (value !== undefined && !isValidUuid(value)) blocked.push({ field, reason: uuidReason(value) });
 }
 
 /** Validate a flag value against a closed enum, returning a `blocked_on` entry

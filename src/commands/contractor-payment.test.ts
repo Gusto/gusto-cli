@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { routeFetch, stubGlobalFetch, TEST_AUTH, TEST_CONTEXT } from "../lib/test-support.ts";
-import { contractorPaymentListHandler, contractorPaymentShowHandler } from "./contractor-payment.ts";
+import { routeFetch, stubGlobalFetch, TEST_AUTH, TEST_CONTEXT, TEST_COMPANY_UUID } from "../lib/test-support.ts";
+import {
+  contractorPaymentListHandler,
+  contractorPaymentReceiptHandler,
+  contractorPaymentShowHandler,
+} from "./contractor-payment.ts";
 
 const PAYMENT_UUID = "22222222-2222-2222-2222-222222222222";
 const DATE_RANGE = { startDate: "2026-01-01", endDate: "2026-12-31" };
@@ -16,7 +20,7 @@ describe("contractorPaymentListHandler", () => {
     const result = await contractorPaymentListHandler({ ...TEST_AUTH, ...DATE_RANGE })(TEST_CONTEXT);
     if (!result.ok) throw new Error("expected ok");
     expect(result.data).toEqual(body);
-    expect(calls[0]?.url).toContain("/v1/companies/co-1/contractor_payments");
+    expect(calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/contractor_payments`);
     expect(calls[0]?.url).toContain("start_date=2026-01-01");
     expect(calls[0]?.url).toContain("end_date=2026-12-31");
   });
@@ -62,7 +66,11 @@ describe("contractorPaymentListHandler", () => {
       TEST_CONTEXT,
     );
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.exitCode).toBe(7);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(result.error.blocked_on).toEqual([
+      { field: "contractor-uuid", reason: 'must be a valid UUID, got: "not-a-uuid"' },
+    ]);
     expect(stub.calls).toHaveLength(0);
   });
 
@@ -120,7 +128,7 @@ describe("contractorPaymentShowHandler", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data).toEqual({ uuid: PAYMENT_UUID });
-    expect(calls[0]?.url).toContain(`/v1/companies/co-1/contractor_payments/${PAYMENT_UUID}`);
+    expect(calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/contractor_payments/${PAYMENT_UUID}`);
   });
 
   test("rejects a malformed contractor_payment_uuid without sending a request", async () => {
@@ -130,6 +138,32 @@ describe("contractorPaymentShowHandler", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(7);
+    expect(stub.calls).toHaveLength(0);
+    expect(result.error.hint).toBe("run `gusto contractor-payment list` to get a real contractor_payment_uuid");
+  });
+});
+
+describe("contractorPaymentReceiptHandler", () => {
+  test("hits the bare /v1/contractor_payments/{uuid}/receipt path (not company-scoped) and passes the body through", async () => {
+    const body = { contractor_payment_uuid: PAYMENT_UUID, totals: { company_debit: "50.00" } };
+    const { calls, restore: r } = routeFetch([{ match: "/receipt", status: 200, body }]);
+    restore = r;
+    const result = await contractorPaymentReceiptHandler(PAYMENT_UUID, {})(TEST_CONTEXT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data).toEqual(body);
+    expect(calls[0]?.url).toContain(`/v1/contractor_payments/${PAYMENT_UUID}/receipt`);
+    expect(calls[0]?.url).not.toContain("/companies/");
+  });
+
+  test("rejects a malformed contractor_payment_uuid without sending a request", async () => {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    restore = stub.restore;
+    const result = await contractorPaymentReceiptHandler("not-a-uuid", {})(TEST_CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(7);
+    expect(result.error.hint).toBe("run `gusto contractor-payment list` to get a real contractor_payment_uuid");
     expect(stub.calls).toHaveLength(0);
   });
 });

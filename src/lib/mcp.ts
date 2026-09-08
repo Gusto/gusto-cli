@@ -1,7 +1,7 @@
-import { type AuthOpts, buildApiClient, resolveAuthToken } from "./api-context.ts";
-import { resolveMcpBaseUrl } from "./env.ts";
+import { type AuthOpts, type ResolvedTokenSource, buildApiClient, resolveAuthToken } from "./api-context.ts";
+import { defaultEnv, resolveMcpBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import type { CommandResult } from "./runner.ts";
 
@@ -17,6 +17,11 @@ interface JsonRpcError {
 
 interface JsonRpcSuccess {
   result: object;
+}
+
+interface ResolvedAuthContext {
+  tokenSource: ResolvedTokenSource;
+  environment: Environment;
 }
 
 // Mirrors the JSON-RPC error codes returned by the Gusto MCP endpoint.
@@ -37,9 +42,11 @@ export async function callMcpTool(
   const resolved = await resolveAuthToken(globals, opts);
   if (!resolved.ok) return resolved.result;
 
+  const environment = defaultEnv(globals.env);
   const client = buildApiClient(globals, {
     baseUrl: resolveMcpBaseUrl(globals.env),
     token: resolved.token,
+    auth: { tokenSource: resolved.source, environment },
   });
 
   const body = {
@@ -51,14 +58,14 @@ export async function callMcpTool(
 
   try {
     const response = await client.post<unknown>("/", body);
-    return interpretJsonRpc(response.body, toolName);
+    return interpretJsonRpc(response.body, toolName, { tokenSource: resolved.source, environment });
   } catch (err) {
     return toResult(err);
   }
 }
 
-function interpretJsonRpc(body: unknown, toolName: string): CommandResult {
-  if (isJsonRpcError(body)) return mapRpcError(body, toolName);
+function interpretJsonRpc(body: unknown, toolName: string, auth: ResolvedAuthContext): CommandResult {
+  if (isJsonRpcError(body)) return mapRpcError(body, toolName, auth);
   if (isJsonRpcSuccess(body)) return unwrapResult(body);
   return {
     ok: false,
@@ -104,8 +111,13 @@ function unwrapResult(rpc: JsonRpcSuccess): CommandResult {
   return { ok: true, data: textBlocks.map((b) => parseTextBlock(b.text)) };
 }
 
-function mapRpcError(rpc: JsonRpcError, toolName: string): CommandResult<never> {
+/** Auth context is only attached to the two auth-family codes below. A scope is granted per
+ * credential and a credential is per environment, so those two need both fields to identify the
+ * failing token and prescribe a recovery that can replace it. Being JSON-RPC rather than HTTP, they
+ * never pass through an `ApiError`, so the context the client stamps can't reach them. */
+function mapRpcError(rpc: JsonRpcError, toolName: string, auth: ResolvedAuthContext): CommandResult<never> {
   const { code, message, data } = rpc.error;
+  const { environment } = auth;
   // `||` (not `??`) so an empty-string `details` falls back to `message` instead of swallowing it.
   const display = (data?.details || message) ?? "";
   switch (code) {
@@ -116,13 +128,25 @@ function mapRpcError(rpc: JsonRpcError, toolName: string): CommandResult<never> 
         exitCode: ExitCode.Auth,
         error: {
           code: "mcp_tool_not_found",
-          message: `'${toolName}' is not available to this token. This usually means the token is missing the required OAuth scope. Re-run \`gusto auth login\` and grant the scope, or run \`gusto auth whoami\` to inspect what you have.${display ? ` Details: ${display}` : ""}`,
+          message: `'${toolName}' is not available to this ${environment} token. This usually means the token is missing the required OAuth scope. ${mcpScopeRecovery(auth)}${display ? ` Details: ${display}` : ""}`,
+          environment,
         },
       };
     case RPC_INVALID_PARAMS:
       return { ok: false, exitCode: ExitCode.ApiClient, error: { code: "mcp_invalid_params", message: display } };
     case RPC_AUTH:
-      return { ok: false, exitCode: ExitCode.Auth, error: { code: "mcp_unauthorized", message: display } };
+      // `display` is useful gateway context, but it cannot replace the local recovery: only this
+      // process knows which credential source won and therefore whether login, an environment-token
+      // replacement, or a new piped token can fix the failure.
+      return {
+        ok: false,
+        exitCode: ExitCode.Auth,
+        error: {
+          code: "mcp_unauthorized",
+          message: `${display ? `${display}. ` : ""}${mcpRejectedCredential(auth)}`,
+          environment,
+        },
+      };
     case RPC_NOT_FOUND:
       return { ok: false, exitCode: ExitCode.ApiClient, error: { code: "mcp_not_found", message: display } };
     case RPC_BAD_REQUEST:
@@ -137,5 +161,27 @@ function mapRpcError(rpc: JsonRpcError, toolName: string): CommandResult<never> 
       return { ok: false, exitCode: ExitCode.ApiServer, error: { code: "mcp_internal_error", message: display } };
     default:
       return { ok: false, exitCode: ExitCode.ApiServer, error: { code: "mcp_error", message: display } };
+  }
+}
+
+function mcpScopeRecovery(auth: ResolvedAuthContext): string {
+  switch (auth.tokenSource) {
+    case "session":
+      return `Re-run \`gusto auth login --env ${auth.environment}\` and grant the scope, or run \`gusto auth whoami --env ${auth.environment}\` to inspect what you have.`;
+    case "env":
+      return `Replace GUSTO_ACCESS_TOKEN with a token that grants the scope, or run \`gusto auth whoami --env ${auth.environment}\` to inspect it.`;
+    case "stdin":
+      return `Pipe a token that grants the scope via --token-stdin; pipe the same token to \`gusto auth whoami --token-stdin --env ${auth.environment}\` to inspect it.`;
+  }
+}
+
+function mcpRejectedCredential(auth: ResolvedAuthContext): string {
+  switch (auth.tokenSource) {
+    case "session":
+      return `the stored ${auth.environment} session was refused by the MCP gateway. Re-run \`gusto auth login --env ${auth.environment}\` to sign in again, or run \`gusto auth whoami --env ${auth.environment}\` to inspect it.`;
+    case "env":
+      return `the token in GUSTO_ACCESS_TOKEN was refused by the ${auth.environment} MCP gateway. Replace that token, or run \`gusto auth whoami --env ${auth.environment}\` to inspect it.`;
+    case "stdin":
+      return `the token piped via --token-stdin was refused by the ${auth.environment} MCP gateway. Pipe a replacement token, or pipe the same token to \`gusto auth whoami --token-stdin --env ${auth.environment}\` to inspect it.`;
   }
 }

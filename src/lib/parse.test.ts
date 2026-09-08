@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import type { BlockedOn } from "./output.ts";
 import {
   isValidIso8601,
   isValidIsoDate,
   isValidStateCode,
   isValidUuid,
   parseNonNegativeNumber,
+  parsePositiveInt,
   parsePositiveNumber,
   resolveTimeoutMs,
   splitTokens,
   validateEnum,
+  pushUuidBlockedOn,
 } from "./parse.ts";
 
 describe("splitTokens", () => {
@@ -64,6 +67,31 @@ describe("parsePositiveNumber", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toContain("1e1000");
+  });
+});
+
+describe("parsePositiveInt", () => {
+  test("accepts a positive integer", () => {
+    expect(parsePositiveInt("42")).toEqual({ ok: true, value: 42 });
+  });
+
+  test("rejects zero", () => {
+    expect(parsePositiveInt("0").ok).toBe(false);
+  });
+
+  test("rejects a decimal", () => {
+    expect(parsePositiveInt("1.5").ok).toBe(false);
+  });
+
+  test("rejects a negative number", () => {
+    expect(parsePositiveInt("-1").ok).toBe(false);
+  });
+
+  test("rejects a non-numeric string", () => {
+    const result = parsePositiveInt("abc");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("must be a positive integer, got: abc");
   });
 });
 
@@ -234,6 +262,31 @@ describe("isValidUuid", () => {
 
   test("internal whitespace is rejected", () => {
     expect(isValidUuid("3f2a8c1d-0000-4111-2222-33334444 5555")).toBe(false);
+  });
+});
+
+describe("pushUuidBlockedOn", () => {
+  const VALID = "3f2a8c1d-0000-4111-2222-333344445555";
+  const push = (value: string | undefined): BlockedOn[] => {
+    const blocked: BlockedOn[] = [];
+    pushUuidBlockedOn("job-uuid", value, blocked);
+    return blocked;
+  };
+
+  test("undefined appends nothing (an absent flag is not validated)", () => {
+    expect(push(undefined)).toEqual([]);
+  });
+
+  test("a valid uuid appends nothing", () => {
+    expect(push(VALID)).toEqual([]);
+  });
+
+  test("a non-uuid appends an entry naming the field and echoing the value", () => {
+    expect(push("job-1")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: "job-1"' }]);
+  });
+
+  test("an empty string is rejected rather than treated as absent", () => {
+    expect(push("")).toEqual([{ field: "job-uuid", reason: 'must be a valid UUID, got: ""' }]);
   });
 });
 
