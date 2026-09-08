@@ -1368,10 +1368,12 @@ describe("runBackgroundCheck", () => {
 
   // `--internal-background-update` is a flag anyone can type, and `index.ts` dispatches it upstream
   // of every other check - so the refusals in `maybeSpawnBackgroundCheck` are not enough on their
-  // own. Without these, an origin override stages a fork's binary with a valid state entry,
-  // checksummed against that fork's own SHA256SUMS, and the next ordinary invocation installs it.
+  // own. Without these, an origin override stages a binary from a caller-named origin with a valid
+  // state entry, checksummed against that origin's own SHA256SUMS, and the next ordinary invocation
+  // installs it. Both overrides, because `assetBaseUrl` honours either one.
   test.each([
     ["an origin repo override", { GUSTO_CLI_REPO: "someone/fork" }],
+    ["a base-URL origin override", { GUSTO_CLI_BASE_URL: "http://127.0.0.1:1" }],
     ["a pinned version", { GUSTO_CLI_VERSION: "v0.3.0" }],
   ])("stages nothing when invoked directly with %s", async (_label, override) => {
     const { stateFile, installDir, installedPath } = setup({ installedBody: '#!/bin/sh\necho "0.2.0"\n' });

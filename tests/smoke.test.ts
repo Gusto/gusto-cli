@@ -1322,22 +1322,31 @@ describe("per-environment credential slots", () => {
   );
 });
 
-// The whole feature, end to end, with real compiled binaries and real processes: a background
-// child that downloads and verifies an actual release asset, then a later invocation that installs
-// it. Everything else stubs `fetch`, `spawn` or `versionOf` somewhere, so this is the only place
-// the production path runs as production.
+// The whole feature, end to end, with real compiled binaries and real processes: a real download
+// verified against a real `SHA256SUMS`, and a real swap installing a real staged file. Everything
+// else stubs `fetch`, `spawn` or `versionOf` somewhere, so this is the only place either half
+// runs as production.
 //
-// What it pins, measured rather than assumed: the staging-name split and the swap notice. Not
-// SKIP_AUTO_UPDATE_ENV - no stage exists when the exec-check runs, so the nested run exits at its
-// first check; that guard is pinned in upgrade.test.ts.
+// The download half goes through `gusto upgrade`, the command `GUSTO_CLI_BASE_URL` is *for*: the
+// background child refuses an origin override now (the second test pins that), so it can no
+// longer be pointed at a fixture server. `stageUpdate`'s own staging - the background name, the
+// `keep: true` contract - stays covered in lib/auto-update.test.ts with an injected `fetchImpl`.
+//
+// What the swap half pins, measured rather than assumed: the staging-name split and the swap
+// notice. Not SKIP_AUTO_UPDATE_ENV - no stage exists when the exec-check runs, so the nested run
+// exits at its first check; that guard is pinned in upgrade.test.ts.
 describe("auto-update end to end against a served release", () => {
   let work: string;
   let installDir: string;
   let configHome: string;
   let installed: string;
   let server: ReturnType<typeof Bun.serve> | undefined;
+  /** Requests the fixture actually served, so "refused before the network" is measured rather
+   * than inferred from an empty install dir. */
+  let served = 0;
 
   beforeEach(() => {
+    served = 0;
     work = realpathSync(mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-e2e-")));
     installDir = path.join(work, "install");
     configHome = path.join(work, "config");
@@ -1363,6 +1372,7 @@ describe("auto-update end to end against a served release", () => {
     server = Bun.serve({
       port: 0,
       fetch(req) {
+        served += 1;
         const name = new URL(req.url).pathname.replace(/^\//, "");
         if (name === "SHA256SUMS") return new Response(`${sum}  ${asset}\n`);
         if (name === asset) return new Response(bytes);
@@ -1383,38 +1393,82 @@ describe("auto-update end to end against a served release", () => {
 
   const statePath = (): string => path.join(configHome, "gusto", "update-state.toml");
 
-  test("a background check stages a verified release, and the next command installs it", async () => {
+  test("gusto upgrade downloads a served release, verifies it, and installs it", async () => {
     const base = serveRelease();
 
-    // The child is invoked directly, the way the detached spawn invokes it. It does the real
-    // download, the real checksum, and the real exec-check.
+    // The real download, the real `SHA256SUMS` fetch, the real checksum and the real exec-check,
+    // all through a compiled binary against a real server. `--confirm` because agent mode gates
+    // replacing the binary like any other write. Unpinned, so with the base URL set
+    // `resolveTargetTag` returns no tag and the install is unconditional - the point of the override.
+    const result = await invoke(["upgrade", "--confirm"], { GUSTO_CLI_BASE_URL: base });
+
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data).toMatchObject({ status: "upgraded", to: pkg.version, checksum: "verified" });
+    expect(served).toBeGreaterThan(0);
+    // The served bytes, not assumed ones - and the interactive staging name is clear again.
+    expect(readFileSync(installed).equals(readFileSync(BIN_PATH))).toBe(true);
+    expect(existsSync(path.join(installDir, ".gusto-upgrade"))).toBe(false);
+  }, 120_000);
+
+  // Why the download above no longer goes through the background child.
+  // `--internal-background-update` is dispatched before commander runs at all, so it never reaches
+  // the confirmation gate `upgrade` goes through - yet it leaves a stage a later invocation installs
+  // unprompted. A caller-named origin serves the asset *and* the `SHA256SUMS` it is checked against,
+  // so the checksum says nothing about where the bytes came from. The child has to refuse the
+  // override outright: before the network, with no state entry and no file left behind.
+  test("the background child refuses a custom download origin and stages nothing", async () => {
+    const base = serveRelease();
+
     const child = await invoke(["--internal-background-update"], { GUSTO_CLI_BASE_URL: base });
+
     expect(child.exitCode).toBe(0);
     expect(child.stdout).toBe("");
+    expect(served).toBe(0);
+    expect(existsSync(statePath())).toBe(false);
+    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(false);
+  }, 120_000);
 
-    const staged = readFileSync(statePath(), "utf8");
-    expect(staged).toContain(`staged_version = "${pkg.version}"`);
-    // Its own staging name, so an interactive `gusto upgrade` can never contend for the file.
-    expect(staged).toContain(".gusto-background-upgrade");
-    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(true);
+  test("an ordinary command installs a pending stage, announces it once, and then goes quiet", async () => {
+    // Built here rather than downloaded, now that the child won't take a fixture origin: real bytes
+    // at the real background staging name with a real checksum, which is all the swap reads. A
+    // working binary, because the next invocation runs whatever landed. `staged_from` is this
+    // build's version, so the freshness check sees a stage matching what is installed.
+    const stagedBody = readFileSync(BIN_PATH);
+    const stagedPath = path.join(installDir, ".gusto-background-upgrade");
+    writeFileSync(stagedPath, stagedBody, { mode: 0o755 });
+    writeFileSync(
+      statePath(),
+      [
+        `staged_version = "9.9.9"`,
+        `staged_checksum = "${createHash("sha256").update(stagedBody).digest("hex")}"`,
+        `staged_path = "${stagedPath}"`,
+        `staged_install_path = "${installed}"`,
+        `staged_from = "${pkg.version}"`,
+        "",
+      ].join("\n"),
+    );
 
-    // Now the swap, on an ordinary command. Unpinned, since a pin suppresses the swap outright -
-    // but with the base URL still pointed at the fixture server, because unpinning also re-arms the
-    // background *trigger*: no stage is pending any more and nothing has written `last_checked`, so
-    // every gate would pass and this would spawn a real detached child against live github and
-    // download a release into a directory `afterEach` is about to delete (and race the assertion
-    // below if it ever won). `swapStagedUpdate` never reads the base URL, so this weakens nothing
-    // here - it only makes the trigger bail, which is what `run()` uses the default pin for.
-    const swap = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
+    // Unpinned, since a pin suppresses the swap outright - but with a base URL set, because
+    // unpinning re-arms the background *trigger*: nothing is pending once the swap is done and
+    // nothing has written `last_checked`, so every gate would pass and a real detached child would
+    // go at live github. `maybeSpawnBackgroundCheck` bails on an origin override and
+    // `swapStagedUpdate` never reads one, so this weakens nothing measured here. Unroutable rather
+    // than the fixture, since nothing should be fetched either way.
+    const offline = { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: "http://127.0.0.1:1" };
+    const swap = await invoke(["config", "list", "--human"], offline);
     expect(swap.exitCode).toBe(0);
-    expect(swap.stderr).toContain("auto-updated");
+    expect(swap.stderr).toContain(`auto-updated: ${pkg.version} -> 9.9.9`);
     // stdout carries the command's own output and nothing else - the contract agents rely on.
     expect(swap.stdout).not.toContain("auto-updated");
     expect(readFileSync(statePath(), "utf8")).not.toContain("staged_version");
-    expect(existsSync(path.join(installDir, ".gusto-background-upgrade"))).toBe(false);
+    expect(existsSync(stagedPath)).toBe(false);
+    // The bytes really moved: the stage was a copy of this build, so the target still runs.
+    expect(readFileSync(installed).equals(stagedBody)).toBe(true);
 
     // Nothing pending now, so an identical command says nothing at all.
-    const again = await invoke(["config", "list", "--human"], { GUSTO_CLI_VERSION: "", GUSTO_CLI_BASE_URL: base });
+    const again = await invoke(["config", "list", "--human"], offline);
     expect(again.stderr).not.toContain("auto-updated");
   }, 120_000);
 

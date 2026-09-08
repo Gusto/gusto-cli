@@ -413,11 +413,20 @@ export async function runBackgroundCheck(
   // of every other check, so guarding only the spawn left the origin guard describing an attack it
   // didn't prevent.
   //
-  // `GUSTO_CLI_BASE_URL` is deliberately not refused here even though the trigger refuses it: with
-  // a base URL there is no tag, so `to` is null, `staged_version` is never recorded, and the swap
-  // returns at its first guard. It cannot produce an installable stage, and leaving it usable is
-  // what lets the tests drive this offline.
+  // Both origin overrides now, for one reason: the child inherits them, and `assetBaseUrl` reads
+  // them for the asset *and* for `SHA256SUMS`, so a stage built from a caller-named origin is
+  // verified only against that origin's own sums and passes every downstream check.
+  // `GUSTO_CLI_BASE_URL` is the wider of the two - it needs no `owner/repo` shape, and it may be
+  // plain http - and this path is dispatched upstream of commander, so unlike `gusto upgrade`
+  // there is no confirmation gate to make the choice a deliberate one. README already documents
+  // an origin override as turning auto-update off; until now only the trigger honoured that.
+  //
+  // The base URL used to be let through on the grounds that it leaves `resolveTargetTag` with no
+  // tag, so nothing installable could be recorded. That was wrong: `stageUpdate` reports
+  // `to: reported` - the version read by *executing* the download, not the tag - so
+  // `staged_version` is set and the next ordinary invocation swaps that binary in.
   if (isPinned(env)) return;
+  if (env.GUSTO_CLI_BASE_URL !== undefined && env.GUSTO_CLI_BASE_URL.length > 0) return;
   if (env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0) return;
   if (!isSelfExecutable(deps.execPath ?? process.execPath)) return;
   // Checked up front as well as after the download. The env can't change under a process that is
