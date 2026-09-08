@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Run, spawnCapture } from "./support";
@@ -240,6 +240,47 @@ describe("auth required commands without a token", () => {
     const result = await run(argv);
     expect(result.exitCode).toBe(3);
     expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
+  });
+
+  // Each row passes one date flag and omits the rest, so exit 7 (validation reached) proves commander
+  // accepted it, not exit 2 (never registered) - which unit tests miss, passing options pre-parsed.
+  test.each([
+    ["--pay-period-start", ["timesheet", "sync", "--pay-period-start", "2026-06-01"], "start-date"],
+    ["--pay-period-end", ["timesheet", "sync", "--pay-period-end", "2026-06-15"], "end-date"],
+    ["--start-date", ["timesheet", "sync", "--start-date", "2026-06-01"], "start-date"],
+    ["--end-date", ["timesheet", "sync", "--end-date", "2026-06-15"], "end-date"],
+  ])("timesheet sync %s is recognized and only the omitted flags block (exit 7)", async (_name, argv, satisfied) => {
+    const result = await run(argv);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.ok).toBe(false);
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).not.toContain(satisfied);
+  });
+
+  // Dates omitted on purpose: exit 7 means commander accepted the flag, exit 2 would mean it did not.
+  test("timesheet list --company-uuid is registered", async () => {
+    const result = await run(["timesheet", "list", "--company-uuid", "co-1"]);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    const fields = envelope.error.blocked_on.map((b: { field: string }) => b.field);
+    expect(fields).toEqual(["start-date", "end-date"]);
+  });
+
+  test("timesheet sync and list use the same date flag names", async () => {
+    const [sync, list] = await Promise.all([
+      run(["timesheet", "sync", "--help"]),
+      run(["timesheet", "list", "--help"]),
+    ]);
+    for (const help of [sync.stdout, list.stdout]) {
+      expect(help).toContain("--start-date <date>");
+      expect(help).toContain("--end-date <date>");
+      expect(help).not.toContain("--pay-period-start");
+      expect(help).not.toContain("--pay-period-end");
+    }
+    expect(list.stdout).toContain("--company-uuid <uuid>");
   });
 
   test("department list without a token returns no_access_token (exit 3)", async () => {
@@ -919,4 +960,123 @@ describe("the pulled employee/contractor write surface is gone", () => {
       expect(JSON.parse(result.stdout.trim()).error.code).toBe("no_access_token");
     }
   });
+});
+
+// An unusable production slot next to a working sandbox slot - a state a machine can rest in for
+// weeks, since nothing about a failure in one environment hints at the session in the other.
+// Driven through the compiled binary with its own isolated XDG_CONFIG_HOME - the shared
+// ISOLATED_CONFIG above must stay session-free, since most tests here assert no_access_token.
+//
+// Both slots are expired *without* a refresh token by default, so every assertion below is
+// reachable with zero network calls: nothing has a refresh to attempt or a token worth spending. The
+// hint tests move one slot's expiry into the future - which only ever changes the *other* slot's
+// error, so still no request goes out.
+describe("per-environment credential slots", () => {
+  let configHome: string;
+
+  // Year 2100, i.e. unexpired for the life of this test.
+  const UNEXPIRED = 4_102_444_800_000;
+
+  const writeCredentials = (expiry: { production?: number; sandbox?: number } = {}): void => {
+    mkdirSync(path.join(configHome, "gusto"), { recursive: true });
+    writeFileSync(
+      path.join(configHome, "gusto", "credentials.toml"),
+      [
+        "[production]",
+        'accessToken = "prod-tok"',
+        `expiresAt = ${expiry.production ?? 1000}`,
+        "",
+        "[sandbox]",
+        'accessToken = "sandbox-tok"',
+        `expiresAt = ${expiry.sandbox ?? 1000}`,
+        "",
+      ].join("\n"),
+    );
+  };
+
+  const whoami = async (
+    args: string[] = [],
+    env: Record<string, string> = {},
+  ): Promise<Record<string, string | undefined>> => {
+    const result = await run(["auth", "whoami", "--json", ...args], { XDG_CONFIG_HOME: configHome, ...env });
+    expect(result.exitCode).toBe(3);
+    return JSON.parse(result.stdout.trim()).error;
+  };
+
+  beforeEach(() => {
+    configHome = mkdtempSync(path.join(tmpdir(), "gusto-cli-envslot-"));
+    writeCredentials();
+  });
+
+  afterEach(() => rmSync(configHome, { recursive: true, force: true }));
+
+  test("an expired session is session_expired and names production", async () => {
+    const error = await whoami();
+    expect(error.code).toBe("session_expired");
+    expect(error.environment).toBe("production");
+    expect(error.message).toContain("credentials.toml");
+    // Sandbox is expired too, so there is nothing to point at - a hint here would send the caller
+    // from one wall to the next.
+    expect(error.hint).toBeUndefined();
+  });
+
+  test("an expired production session points at a sandbox slot that would work", async () => {
+    writeCredentials({ sandbox: UNEXPIRED });
+    const error = await whoami();
+    expect(error.code).toBe("session_expired");
+    expect(error.hint).toContain("--env sandbox");
+  });
+
+  test("--env sandbox reads the other slot and says so", async () => {
+    writeCredentials({ production: UNEXPIRED });
+    const error = await whoami(["--env", "sandbox"]);
+    expect(error.environment).toBe("sandbox");
+    expect(error.hint).toContain("--env production");
+  });
+
+  test("`config set environment` changes which slot a bare command reads", async () => {
+    // The recovery the cross-environment hint recommends, so it has to actually work.
+    const set = await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: configHome });
+    expect(set.exitCode).toBe(0);
+    expect((await whoami()).environment).toBe("sandbox");
+  });
+
+  test("GUSTO_ENVIRONMENT outranks the config file, and --env outranks both", async () => {
+    await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: configHome });
+    expect((await whoami([], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("production");
+    expect((await whoami(["--env", "sandbox"], { GUSTO_ENVIRONMENT: "production" })).environment).toBe("sandbox");
+  });
+
+  test("a corrupt config warns on stderr and falls back, leaving stdout a clean envelope", async () => {
+    // The warning has to reach a human without corrupting the one stream an agent parses, and the run
+    // has to continue: aborting here would also block `config reset`, the command that fixes it.
+    // `environment = "sandbox"` would have redirected the run had the file parsed, so the fallback to
+    // production is what proves the whole config was dropped rather than partially applied.
+    writeFileSync(path.join(configHome, "gusto", "config.toml"), 'environment = "sandbox"\n[[[broken\n');
+    const result = await run(["auth", "whoami", "--json"], { XDG_CONFIG_HOME: configHome });
+    expect(result.exitCode).toBe(3);
+    expect(result.stderr).toContain("warning: ignoring user config");
+    expect(JSON.parse(result.stdout.trim()).error.environment).toBe("production");
+  });
+
+  test("auth login --help documents the built-in production default when no environment is configured", async () => {
+    const result = await run(["auth", "login", "--help"], { XDG_CONFIG_HOME: configHome });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("--env <sandbox|production>");
+    expect(result.stdout).toContain("Defaults to production when no override is set");
+    expect(result.stdout).toContain("stored per environment");
+  });
+
+  test.each(["sandbox", "production"] as const)(
+    "auth login --help reports the configured %s default",
+    async (environment) => {
+      const set = await run(["config", "set", "environment", environment], { XDG_CONFIG_HOME: configHome });
+      expect(set.exitCode).toBe(0);
+
+      const result = await run(["auth", "login", "--help"], { XDG_CONFIG_HOME: configHome });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`Your configured default is ${environment}`);
+      expect(result.stdout).toContain("--env and GUSTO_ENVIRONMENT override it");
+    },
+  );
 });

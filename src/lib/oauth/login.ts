@@ -91,7 +91,7 @@ export async function login(env: Environment, deps: LoginDeps): Promise<TokenInf
     }
     try {
       const tokens = await exchangeCode(http, { code, verifier, redirectUri: server.redirectUri, creds }, now());
-      const info = await fetchTokenInfo(http, tokens.accessToken);
+      const info = await fetchTokenInfo(http, tokens.accessToken, env);
       const companyUuid = companyUuidFromTokenInfo(info);
 
       // Rebuild from the new token (don't spread the prior session) so a stale
@@ -128,8 +128,15 @@ function startHeartbeat(print: (line: string) => void, deps: LoginDeps, now: () 
   return () => timers.clear(handle);
 }
 
-export async function fetchTokenInfo(http: OAuthHttpOptions, token: string): Promise<TokenInfo> {
-  const res = await oauthApiClient(http, token).get<TokenInfo>("/v1/token_info");
+/** `environment` is only ever reported, never used to route the request - `http.baseUrl` already
+ * points at the right host. It rides along so a 401 on this read can name the environment whose
+ * sign-in failed, like every other auth failure does. */
+export async function fetchTokenInfo(
+  http: OAuthHttpOptions,
+  token: string,
+  environment: Environment,
+): Promise<TokenInfo> {
+  const res = await oauthApiClient(http, token, environment).get<TokenInfo>("/v1/token_info");
   return res.body;
 }
 

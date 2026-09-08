@@ -38,6 +38,16 @@ const stdinAuth = (tok: string | null = "tok") => ({
 // higher-priority source (session/env) should win before stdin is touched.
 const forbiddenStdin = () => Promise.reject(new Error("stdin must not be read"));
 
+// A credential slot in the state that makes a refresh both possible and necessary: past `expiresAt`,
+// with a refresh token and the client creds needed to authenticate the refresh call.
+const expiredSlot = () => ({
+  clientId: "cli-id",
+  clientSecret: "cli-secret",
+  accessToken: "stale-tok",
+  refreshToken: "refresh-tok",
+  expiresAt: 5_000,
+});
+
 // A store whose load() rejects, to drive resolveToken's error handling.
 const throwingStore = (err: unknown): TokenStore => ({
   load: () => Promise.reject(err),
@@ -92,6 +102,17 @@ describe("resolveApiContext", () => {
     if (result.result.ok) throw new Error("unreachable");
     expect(result.result.exitCode).toBe(ExitCode.Validation);
     expect(result.result.error.code).toBe("no_company_uuid");
+  });
+
+  test("the missing-company failure names the environment in the message, not only the field", async () => {
+    // A company hangs off the credential slot, so the environment decides whether one was findable.
+    // Human-mode output prints the message and never `environment`, so the field alone hides it.
+    const result = await resolveApiContext(flags, { ...stdinAuth() });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.environment).toBe("production");
+    expect(result.result.error.message).toContain("production");
   });
 
   test("companyOverride passes through to the resolved context", async () => {
@@ -238,16 +259,301 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("a failed token refresh (OAuthError) degrades to no_access_token", async () => {
+  test("a rejected token refresh is token_refresh_failed, not no_access_token", async () => {
+    // A refresh token is on file and only the *refresh* failed, so this must not report absence:
+    // "no access token, run auth login" reads as "nothing here", when what is here decides the
+    // recovery.
     const result = await resolveApiContext(flags, {
       requireCompany: false,
-      store: throwingStore(new OAuthError(400, { error: "invalid_grant" }, "refresh failed")),
-      http: mockHttp({ status: 200 }),
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+      now: () => 10_000,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.exitCode).toBe(ExitCode.Auth);
+    expect(result.result.error.code).toBe("token_refresh_failed");
+    expect(result.result.error.environment).toBe("production");
+    expect(result.result.error.message).toContain("[production]");
+    expect(result.result.error.details).toEqual({ error: "invalid_grant" });
+  });
+
+  test("the refresh failure names the reason the server gave, not just its status", async () => {
+    // `OAuthError.message` is only "/path -> 400"; the cause is in the RFC 6749 body, and the
+    // message is what a caller reads before anything else.
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({
+        status: 400,
+        body: { error: "invalid_grant", error_description: "refresh token is invalid" },
+      }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("invalid_grant: refresh token is invalid");
+  });
+
+  // The retry advice is what makes `token_refresh_failed` worth its own code, and it is only sound
+  // when the server rejected the *attempt*. `invalid_grant` rejects the token, so the same retry
+  // fails identically - and it is the reason a dead refresh token actually comes back with.
+  test("a transient refresh failure says retry first and warns what a login would replace", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 503, body: { error: "temporarily_unavailable" } }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("retry the command first");
+    expect(result.result.error.message).toContain("still on file");
+  });
+
+  test("an invalid_grant refresh failure sends the caller to login instead of a doomed retry", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    // Still the same code: what changed is the recovery, not the state a caller branches on.
+    expect(result.result.error.code).toBe("token_refresh_failed");
+    expect(result.result.error.message).toContain("gusto auth login --env production");
+    expect(result.result.error.message).toContain("a retry fails the same way");
+    expect(result.result.error.message).not.toContain("retry the command first");
+  });
+
+  // A refresh presents two credentials - the refresh token as the grant, and the DCR client
+  // registration as Basic auth - and RFC 6749 §5.2 rejects them with different errors. Both are
+  // terminal, so neither may say "retry the command first", but only one is fixed by a plain login.
+  test.each([["invalid_client"], ["unauthorized_client"]])(
+    "%s is terminal and routes through logout, since a login reuses the same registration",
+    async (reason) => {
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot() }),
+        http: mockHttp({ status: 401, body: { error: reason } }),
+        now: () => 10_000,
+      });
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.code).toBe("token_refresh_failed");
+      expect(result.result.error.message).toContain("a retry fails the same way");
+      expect(result.result.error.message).not.toContain("retry the command first");
+      // `ensureClientCreds` reuses a stored registration rather than re-registering, so the slot has
+      // to be cleared first or the login fails exactly as the refresh just did.
+      expect(result.result.error.message).toContain("gusto auth logout --env production");
+      expect(result.result.error.message).toContain("gusto auth login --env production");
+      // Must not blame the refresh token: it may be perfectly good, and saying otherwise sends an
+      // operator looking at the wrong credential.
+      expect(result.result.error.message).not.toContain("rejected the refresh token");
+    },
+  );
+
+  test.each([["invalid_request"], ["unsupported_grant_type"], ["invalid_scope"]])(
+    "%s does not recommend repeating a refresh request the server rejected",
+    async (reason) => {
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot() }),
+        http: mockHttp({ status: 400, body: { error: reason } }),
+        now: () => 10_000,
+      });
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.code).toBe("token_refresh_failed");
+      expect(result.result.error.message).toContain(reason);
+      expect(result.result.error.message).toContain("same request will fail the same way");
+      expect(result.result.error.message).not.toContain("retry the command first");
+      expect(result.result.error.message).not.toContain("gusto auth login");
+    },
+  );
+
+  test("an unknown OAuth 4xx does not invent retry or login guidance", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 400, body: { error: "unrecognized_error" } }),
+      now: () => 10_000,
+    });
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("did not identify a recovery");
+    expect(result.result.error.message).not.toContain("retry the command first");
+    expect(result.result.error.message).not.toContain("gusto auth login");
+  });
+
+  test("the refresh token stays on file even when the server calls it invalid", async () => {
+    // The login is now recommended, but nothing here performs one, so the credential is still there
+    // for an operator who wants to look at it.
+    const store = memoryStore({ production: expiredSlot() });
+    await resolveApiContext(flags, {
+      requireCompany: false,
+      store,
+      http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+      now: () => 10_000,
+    });
+    expect(store.data.production?.refreshToken).toBe("refresh-tok");
+  });
+
+  test("a refresh failure with an unparseable body falls back to the request line", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: expiredSlot() }),
+      http: mockHttp({ status: 502 }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.code).toBe("token_refresh_failed");
+    expect(result.result.error.message).toContain("502");
+  });
+
+  test("an expired token with no refresh token is session_expired", async () => {
+    const result = await resolveApiContext(flags, {
+      requireCompany: false,
+      store: memoryStore({ production: { accessToken: "stale-tok", expiresAt: 5_000 } }),
+      http: mockHttp({ status: 200 }),
+      now: () => 10_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.code).toBe("session_expired");
+    expect(result.result.error.environment).toBe("production");
+    // Dated, so a caller can see how long it has been sitting there.
+    expect(result.result.error.message).toContain(new Date(5_000).toISOString());
+  });
+
+  test("an absent session reports no_access_token and names the environment it read", async () => {
+    const result = await resolveApiContext(flags, { requireCompany: false, ...noSession() });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
     expect(result.result.error.code).toBe("no_access_token");
+    expect(result.result.error.environment).toBe("production");
+    expect(result.result.error.message).toContain("[production]");
+  });
+
+  test("an absent explicit sandbox session keeps sandbox in the login recovery command", async () => {
+    const result = await resolveApiContext({ ...flags, env: "sandbox" }, { requireCompany: false, ...noSession() });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    if (result.result.ok) throw new Error("unreachable");
+    expect(result.result.error.message).toContain("gusto auth login --env sandbox");
+  });
+
+  test("an OAuthError from loading the store is not mistaken for a refresh failure", async () => {
+    // Only a refresh that the server rejected is `token_refresh_failed`. A store that can't be read
+    // is a broken machine, not a credential state, and must not be reported as either.
+    await expect(
+      resolveApiContext(flags, {
+        requireCompany: false,
+        store: throwingStore(new OAuthError(400, { error: "invalid_grant" }, "unreadable")),
+        http: mockHttp({ status: 200 }),
+      }),
+    ).rejects.toThrow("unreadable");
+  });
+
+  // A machine can sit in this shape indefinitely without anyone noticing: production expired while
+  // sandbox is fresh, one command away from working. What makes it worth a regression test is that
+  // the failing environment and the healthy one are invisible to each other unless we say so.
+  describe("expired production alongside a valid sandbox session", () => {
+    const bothEnvs = () =>
+      memoryStore({
+        production: expiredSlot(),
+        sandbox: { accessToken: "sandbox-tok", expiresAt: 10_000_000 },
+      });
+
+    test("the production failure points at the usable sandbox session", async () => {
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: bothEnvs(),
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.code).toBe("token_refresh_failed");
+      expect(result.result.error.hint).toContain("--env sandbox");
+      expect(result.result.error.hint).toContain("gusto config set environment sandbox");
+    });
+
+    test("reporting the hint leaves the sandbox slot untouched", async () => {
+      // Reading the other slot must never refresh it - that would rotate a token the caller never
+      // asked us to touch, just to produce a hint.
+      const store = bothEnvs();
+      await resolveApiContext(flags, {
+        requireCompany: false,
+        store,
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(store.data.sandbox).toEqual({ accessToken: "sandbox-tok", expiresAt: 10_000_000 });
+    });
+
+    test("the same store resolves cleanly under --env sandbox", async () => {
+      const result = await resolveApiContext(
+        { ...flags, env: "sandbox" },
+        { requireCompany: false, store: bothEnvs(), http: mockHttp({ status: 200 }), now: () => 10_000 },
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    test("no hint when the other slot holds an unusable session", async () => {
+      // A stored slot reads back whatever the file says, so an access token that expired weeks ago is
+      // still present. Hinting at it would send the caller to a second wall.
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({
+          production: expiredSlot(),
+          sandbox: { accessToken: "stale-sandbox-tok", expiresAt: 5_000 },
+        }),
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.hint).toBeUndefined();
+    });
+
+    test("hints at an expired other slot that can still refresh itself", async () => {
+      // Expired but renewable is usable: `--env sandbox` refreshes it on the way through.
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot(), sandbox: expiredSlot() }),
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.hint).toContain("--env sandbox");
+    });
+
+    test("no hint when the other slot is empty", async () => {
+      const result = await resolveApiContext(flags, {
+        requireCompany: false,
+        store: memoryStore({ production: expiredSlot() }),
+        http: mockHttp({ status: 400, body: { error: "invalid_grant" } }),
+        now: () => 10_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      if (result.result.ok) throw new Error("unreachable");
+      expect(result.result.error.hint).toBeUndefined();
+    });
   });
 
   test("an unexpected session error (e.g. unreadable file) is not swallowed", async () => {
@@ -576,6 +882,66 @@ describe("putResourceWithVersion", () => {
     } finally {
       fetchStub.restore();
     }
+  });
+});
+
+// The wiring that lets `credential_rejected` name a credential at all: `resolveApiContext` hands the
+// resolved source and environment to the client, which stamps them onto any error it throws. Asserted
+// end to end because a hand-built `ApiError` satisfies `toResult` whether or not that wiring holds.
+describe("a 401 from a resolved client", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const unauthorized = () => {
+    const s = stubGlobalFetch(() => ({ status: 401, body: { error: "unauthorized" } }));
+    restore = s.restore;
+  };
+
+  test("names the stored session and the environment it was resolved for", async () => {
+    unauthorized();
+    const result = await fetchResource(
+      { ...flags, env: "sandbox" },
+      {
+        store: memoryStore({ sandbox: { accessToken: "tok", expiresAt: 10_000_000 } }),
+        http: mockHttp({ status: 200 }),
+        now: () => 1_000,
+      },
+      () => "/v1/me",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.environment).toBe("sandbox");
+    expect(result.error.message).toContain("gusto auth login --env sandbox");
+  });
+
+  test("names --token-stdin when that is what was rejected, and offers no login", async () => {
+    unauthorized();
+    const result = await fetchResource(flags, { ...stdinAuth() }, () => "/v1/me");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("credential_rejected");
+    expect(result.error.message).toContain("--token-stdin");
+    expect(result.error.message).not.toContain("gusto auth login");
+  });
+
+  test("company-scoped writes report it the same way, not as a failed write", async () => {
+    unauthorized();
+    const result = await createCompanyResource(
+      flags,
+      "employees",
+      { first_name: "A" },
+      {
+        confirm: true,
+        companyUuid: "c-1",
+        ...stdinAuth(),
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Auth);
+    expect(result.error.code).toBe("credential_rejected");
   });
 });
 

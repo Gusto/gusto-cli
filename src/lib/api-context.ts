@@ -1,13 +1,15 @@
-import { ApiClient, stderrRequestObserver } from "./api-client.ts";
+import { ApiClient, type AuthContext, type ResolvedTokenSource, stderrRequestObserver } from "./api-client.ts";
 import { confirmationGate } from "./confirm.ts";
 import { defaultEnv, getAccessToken, getCompanyUuid, resolveApiVersion, resolveBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp } from "./oauth/context.ts";
-import { OAuthError, type OAuthHttpOptions } from "./oauth/endpoints.ts";
-import { getValidUserToken } from "./oauth/session.ts";
-import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
+import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
+import { type SessionOutcome, resolveSessionToken, sessionUsable } from "./oauth/session.ts";
+import { type TokenStore, credentialsFile, resolveStore } from "./oauth/token-store.ts";
+import type { EnvelopeError } from "./output.ts";
+import { isObject } from "./predicates.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
@@ -21,13 +23,13 @@ import {
 /** Reads a single piped access token (or null if none). Injectable for tests. */
 export type StdinReader = () => Promise<string | null>;
 
-/** Which credential supplied the resolved access token, in precedence order. */
-export type TokenSource = "stdin" | "env" | "session";
+/** Declared alongside `ApiError`, which carries it; re-exported for the auth-facing callers here. */
+export type { ResolvedTokenSource };
 
 interface ApiContextBase {
   client: ApiClient;
   baseUrl: string;
-  tokenSource: TokenSource;
+  tokenSource: ResolvedTokenSource;
 }
 
 export type ApiContext =
@@ -56,25 +58,30 @@ export interface ApiContextOpts extends AuthOpts {
  * surfaces can't drift on which client options they attach. `stderr` is injectable so tests
  * capture the log stream instead of writing to the real process stderr.
  *
+ * `auth` is forwarded so the client can stamp it on any `ApiError` it throws, which is what lets a
+ * 401 name the credential that was refused. A client built without it still classifies a 401 as an
+ * auth failure, just without naming the source.
+ *
  * Not routed through: `oauthApiClient` in `oauth/context.ts` (its own bearer client for
  * `token_info` during login) - so `auth login --verbose` won't emit the token_info line. Tracked
  * as a follow-up. */
 export function buildApiClient(
   globals: GlobalFlags,
-  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream },
+  opts: { baseUrl: string; token: string; stderr?: NodeJS.WritableStream; auth?: AuthContext },
 ): ApiClient {
   return new ApiClient({
     baseUrl: opts.baseUrl,
     token: opts.token,
     apiVersion: resolveApiVersion(),
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
+    auth: opts.auth,
   });
 }
 
 type Resolved<T> = { ok: true; ctx: T } | { ok: false; result: CommandResult<never> };
 
 export type ResolvedToken =
-  | { ok: true; token: string; source: TokenSource }
+  | { ok: true; token: string; source: ResolvedTokenSource }
   | { ok: false; result: CommandResult<never> };
 
 /** Resolve the access token using the precedence every CLI converges on - an
@@ -101,6 +108,7 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
           code: "no_access_token",
           message:
             "--token-stdin was passed but no token arrived on stdin. Pipe one (e.g. `echo $TOKEN | gusto ...`) or drop --token-stdin to fall back to GUSTO_ACCESS_TOKEN / the stored session.",
+          environment: defaultEnv(globals.env),
         },
       },
     };
@@ -108,20 +116,129 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
   const envToken = getAccessToken();
   if (envToken) return { ok: true, token: envToken, source: "env" };
 
-  const session = await sessionToken(globals, opts);
-  if (session) return { ok: true, token: session, source: "session" };
+  const env = defaultEnv(globals.env);
+  const outcome = await sessionOutcome(globals, opts, env);
+  if (outcome.kind === "ok") return { ok: true, token: outcome.token, source: "session" };
 
-  return {
+  return { ok: false, result: await sessionFailure(outcome, env, opts) };
+}
+
+/** Why the token endpoint refused, as it described it. `OAuthError.message` is only the request line
+ * ("/v1/mcp/oauth/token -> 400"), which names a status but not a cause; RFC 6749 puts the cause in
+ * the body. Lifted into the message because that is what a caller reads first - `details` still
+ * carries the whole body. */
+function oauthReason(err: OAuthError): string {
+  if (!isObject(err.body)) return err.message;
+  const { error, error_description: description } = err.body;
+  const parts = [error, description].filter((p): p is string => typeof p === "string" && p.length > 0);
+  return parts.length > 0 ? `${parts.join(": ")} - ${err.message}` : err.message;
+}
+
+/** Where the failing lookup read from, named so an agent doesn't have to infer it. */
+function slotDescription(env: Environment): string {
+  return `the [${env}] slot of ${credentialsFile()}`;
+}
+
+/** Classify refresh failures by recovery: retry, replace the grant, replace the client
+ * registration, fix the request, or avoid guessing. */
+type RefreshFailureReason = "transient" | "grant_rejected" | "client_rejected" | "request_rejected" | "unknown";
+
+function refreshFailureReason(err: OAuthError): RefreshFailureReason {
+  if (isObject(err.body)) {
+    switch (err.body.error) {
+      case "invalid_grant":
+        return "grant_rejected";
+      case "invalid_client":
+      case "unauthorized_client":
+        return "client_rejected";
+      case "invalid_request":
+      case "unsupported_grant_type":
+      case "invalid_scope":
+        return "request_rejected";
+      case "server_error":
+      case "temporarily_unavailable":
+        return "transient";
+    }
+  }
+  if (err.status === 0 || err.status >= 500) return "transient";
+  return "unknown";
+}
+
+/** Recommend the least expensive recovery supported by the server's reason. A rejected client
+ * registration requires logout before login because login otherwise reuses the stored registration. */
+function refreshFailureMessage(err: OAuthError, env: Environment, slot: string): string {
+  const preamble = `refreshing the ${env} session failed (${oauthReason(err)}).`;
+  switch (refreshFailureReason(err)) {
+    case "grant_rejected":
+      return `${preamble} The server rejected the refresh token in ${slot} as invalid, expired, or revoked, so a retry fails the same way. Run \`gusto auth login --env ${env}\` to sign in again - that replaces the refresh token, which is already dead.`;
+    case "client_rejected":
+      return `${preamble} The server rejected this CLI's client registration in ${slot}, not the refresh token, so a retry fails the same way. \`gusto auth login\` reuses that registration and would fail too - clear the slot first with \`gusto auth logout --env ${env}\`, then \`gusto auth login --env ${env}\` to register again. Nothing usable is lost: the credentials in that slot are what just got refused.`;
+    case "request_rejected":
+      return `${preamble} The token endpoint rejected the refresh request as invalid or unsupported, so the same request will fail the same way. The credentials in ${slot} are still on file; check \`gusto upgrade --dry-run\`, and report this error if the CLI is current.`;
+    case "transient":
+      return `${preamble} The refresh token in ${slot} is still on file and was not replaced - retry the command first. Only run \`gusto auth login --env ${env}\` if the retry fails too, since logging in replaces that refresh token.`;
+    case "unknown":
+      return `${preamble} The token endpoint did not identify a recovery, so the CLI will not guess that a retry or login can fix it. The credentials in ${slot} are still on file; check \`gusto upgrade --dry-run\`, and report this error if the CLI is current.`;
+  }
+}
+
+/** Map stored-session outcomes to stable auth error codes and recovery guidance. */
+async function sessionFailure(
+  outcome: Exclude<SessionOutcome, { kind: "ok" }>,
+  env: Environment,
+  opts: AuthOpts,
+): Promise<CommandResult<never>> {
+  const slot = slotDescription(env);
+  const hint = await otherEnvHint(env, opts);
+  const withContext = (error: EnvelopeError): CommandResult<never> => ({
     ok: false,
-    result: {
-      ok: false,
-      exitCode: ExitCode.Auth,
-      error: {
+    exitCode: ExitCode.Auth,
+    error: { ...error, environment: env, ...(hint ? { hint } : {}) },
+  });
+
+  switch (outcome.kind) {
+    case "absent":
+      return withContext({
         code: "no_access_token",
-        message: "no access token. Run `gusto auth login`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.",
-      },
-    },
-  };
+        message: `no access token for the ${env} environment (read ${slot}). Run \`gusto auth login --env ${env}\`, set GUSTO_ACCESS_TOKEN, or pipe one via --token-stdin.`,
+      });
+    case "expired":
+      return withContext({
+        code: "session_expired",
+        message: `the ${env} access token expired at ${new Date(outcome.expiresAt).toISOString()} and cannot be refreshed - no refresh token or client credentials in ${slot}. Run \`gusto auth login --env ${env}\` to sign in again.`,
+      });
+    case "refresh_failed":
+      return withContext({
+        code: "token_refresh_failed",
+        message: refreshFailureMessage(outcome.cause, env, slot),
+        ...(outcome.cause.body !== undefined && outcome.cause.body !== null ? { details: outcome.cause.body } : {}),
+        ...(outcome.cause.requestId ? { request_id: outcome.cause.requestId } : {}),
+      });
+  }
+}
+
+/** When the requested environment has no usable session, say so about the *other* one.
+ *
+ * Logging into sandbox and then dropping `--env` walks into a production wall with nothing
+ * connecting the failure to the environment, which is the likeliest reason to be here at all.
+ *
+ * `sessionUsable` decides, rather than a truthy access token: a stored slot carries whatever the file
+ * says, so a token that expired weeks ago reads as present, and hinting at it would send the caller
+ * to a second wall. It only reads the slot - never refreshes it - so producing a hint can't rotate a
+ * token nobody asked us to touch. Best-effort, like the stranded-session warning in
+ * `authLogoutHandler`: a failed read of the other slot must not change the error we already have to
+ * report. */
+async function otherEnvHint(env: Environment, opts: AuthOpts): Promise<string | undefined> {
+  const other: Environment = env === "production" ? "sandbox" : "production";
+  try {
+    const store = opts.store ?? resolveStore();
+    if (!(await sessionUsable(store, other, opts.now))) return undefined;
+    // The file is already named in the message this hint accompanies, so name only the slot.
+    return `a ${other} session is stored in the [${other}] slot of the same file. If you meant that environment, retry with \`--env ${other}\`, or make it the default with \`gusto config set environment ${other}\`.`;
+  } catch {
+    // the other-environment hint is best-effort; ignore read failures
+    return undefined;
+  }
 }
 
 export function resolveApiContext(
@@ -138,7 +255,8 @@ export async function resolveApiContext(
   const { token, source: tokenSource } = resolved;
 
   const baseUrl = resolveBaseUrl(globals.env);
-  const client = buildApiClient(globals, { baseUrl, token });
+  const environment = defaultEnv(globals.env);
+  const client = buildApiClient(globals, { baseUrl, token, auth: { tokenSource, environment } });
 
   if (opts.requireCompany === false) {
     return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };
@@ -149,6 +267,9 @@ export async function resolveApiContext(
   const fallbackCompany = tokenSource === "session" ? await sessionCompanyUuid(globals, opts) : null;
   const companyUuid = getCompanyUuid(opts.companyOverride) ?? fallbackCompany;
   if (!companyUuid) {
+    // A company is stored per credential slot, so which environment answered decides whether one was
+    // available at all. Named in the message as well as the field: human-mode output prints the
+    // message and the hint, never `environment`, so a field alone would hide it from half the callers.
     return {
       ok: false,
       result: {
@@ -156,8 +277,8 @@ export async function resolveApiContext(
         exitCode: ExitCode.Validation,
         error: {
           code: "no_company_uuid",
-          message:
-            "no company UUID. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via `gusto auth whoami`.",
+          message: `no company UUID for the ${environment} environment. Pass --company-uuid <uuid>, set GUSTO_COMPANY_UUID, or log in with a company-scoped token. Look it up via \`gusto auth whoami\`.`,
+          environment,
         },
       },
     };
@@ -166,18 +287,12 @@ export async function resolveApiContext(
   return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: true, companyUuid } };
 }
 
-/** The token from the stored login session, refreshed on near-expiry; null if none. */
-async function sessionToken(globals: GlobalFlags, opts: AuthOpts): Promise<string | null> {
+/** The stored login session resolved to a token, or the reason it couldn't be. An unreadable or
+ * corrupt credentials file is a real error rather than a credential state, so it surfaces. */
+async function sessionOutcome(globals: GlobalFlags, opts: AuthOpts, env: Environment): Promise<SessionOutcome> {
   const store = opts.store ?? resolveStore();
   const http = opts.http ?? oauthHttp(globals);
-  try {
-    return await getValidUserToken(store, defaultEnv(globals.env), http, opts.now);
-  } catch (err) {
-    // A failed token refresh means re-login - report "no token". Anything else
-    // (unreadable/corrupt session file, etc.) is a real error; let it surface.
-    if (err instanceof OAuthError) return null;
-    throw err;
-  }
+  return resolveSessionToken(store, env, http, opts.now);
 }
 
 /** Company fallback after --company-uuid/env: the companyUuid persisted from a

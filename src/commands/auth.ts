@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { createInterface } from "node:readline/promises";
-import { type StdinReader, type TokenSource, fetchAtPath, resolveApiContext } from "../lib/api-context.ts";
+import { type ResolvedTokenSource, type StdinReader, fetchAtPath, resolveApiContext } from "../lib/api-context.ts";
 import { TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { type ConfigPaths, readConfig, type SkillsAutoInstall, writeConfig } from "../lib/config.ts";
 import { defaultEnv, getAccessToken } from "../lib/env.ts";
@@ -37,8 +37,32 @@ interface LoginOpts {
   target?: string;
 }
 
-export function registerAuthCommand(parent: Command): void {
+/** `--env` is a program-level option, so commander never lists it on a subcommand's help - yet it
+ * is the flag that decides which credential slot these three commands read or write. The persisted
+ * environment is already loaded before commands are registered, so report it instead of claiming
+ * every user still has the built-in production default. */
+function environmentHelp(configuredEnvironment?: Environment): string {
+  const defaultDescription = configuredEnvironment
+    ? `Your configured default is ${configuredEnvironment};
+                               --env and GUSTO_ENVIRONMENT override it. Change it with
+                               \`gusto config set environment <env>\`.`
+    : `Defaults to production when no override is set;
+                               also settable via GUSTO_ENVIRONMENT or
+                               \`gusto config set environment <env>\`.`;
+
+  return `
+Environment:
+  --env <sandbox|production>   Which environment to act on. ${defaultDescription}
+
+  Credentials are stored per environment, in separate slots of one file. Signing in
+  to one environment leaves the other's session untouched, and \`logout\` only clears
+  the environment you name. \`gusto auth whoami\` reports which one is active.
+`;
+}
+
+export function registerAuthCommand(parent: Command, configuredEnvironment?: Environment): void {
   const cmd = parent.command("auth").description("OAuth identity (login, logout, whoami)");
+  const envHelp = environmentHelp(configuredEnvironment);
 
   cmd
     .command("login")
@@ -55,6 +79,7 @@ export function registerAuthCommand(parent: Command): void {
       "--target <tools>",
       "Install bundled skills into specific agent tools instead of auto-detecting from what is on this machine. Comma-separated list of claude, cursor, codex, cline, windsurf (or `all`). Also settable via GUSTO_SKILLS_TARGET. Overrides detection and a persisted `never` for this run.",
     )
+    .addHelpText("after", envHelp)
     .action((opts: LoginOpts) =>
       runCommand(
         "gusto auth login",
@@ -66,12 +91,14 @@ export function registerAuthCommand(parent: Command): void {
   cmd
     .command("logout")
     .description("Clear the locally stored OAuth session")
+    .addHelpText("after", envHelp)
     .action(() => runCommand("gusto auth logout", readGlobalFlags(parent.opts()), authLogoutHandler()));
 
   cmd
     .command("whoami")
     .description("Show token identity + granted scopes via /v1/token_info")
     .option(...TOKEN_STDIN_OPT)
+    .addHelpText("after", envHelp)
     .action((opts: AuthOpts) =>
       runReadCommand("gusto auth whoami", readGlobalFlags(parent.opts()), authWhoamiHandler(opts)),
     );
@@ -344,7 +371,7 @@ export function authLogoutHandler(deps: { store?: TokenStore } = {}): CommandHan
  * Exported so the label table itself is unit-testable - whoami's integration test
  * can't easily reach the `session` branch without a real session file, and the
  * concern is "label typo slipped through", which a direct const-map test catches. */
-export const CREDENTIAL_SOURCE_LABEL: Record<TokenSource, string> = {
+export const CREDENTIAL_SOURCE_LABEL: Record<ResolvedTokenSource, string> = {
   stdin: "--token-stdin",
   env: "GUSTO_ACCESS_TOKEN",
   session: "stored session",
@@ -368,6 +395,11 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
       ok: true,
       data: {
         ...result.data,
+        // The only place a *successful* command reports the active environment (failures carry it in
+        // `error.environment`). Without it, a caller that ran one command with `--env sandbox` and
+        // the next without it has no way to tell the two identities apart - and each environment has
+        // its own credential slot and its own company.
+        environment: defaultEnv(globals.env),
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
         capabilities: summarizeGrantedScopes(granted),
         ...(missing.length > 0 ? { missing_scopes: missing } : {}),

@@ -8,6 +8,8 @@ import {
   employeeJobsHandler,
   employeeListHandler,
   employeeRehireHandler,
+  employeeShowHandler,
+  employeeStatusHandler,
   employeeTerminateCancelHandler,
   employeeTerminateHandler,
   employeeTerminationsHandler,
@@ -766,27 +768,65 @@ describe("employeeCustomFieldsHandler", () => {
 describe("identifier validation", () => {
   const BAD = "a/b?c#d";
 
+  // Duplicated on purpose to catch regressions.
+  const HINTS: Record<string, string> = {
+    employee_uuid: "run `gusto employee list` to get a real employee_uuid",
+    address_uuid:
+      "address uuids come from the `employee addresses` command; run `gusto employee list` first to get the employee_uuid it needs",
+  };
+
   test.each([
-    ["custom-fields", (u: string) => employeeCustomFieldsHandler(u, {})],
-    ["addresses", (u: string) => employeeAddressesHandler(u, {})],
-    ["history", (u: string) => employeeHistoryHandler(u, {})],
-    ["terminations", (u: string) => employeeTerminationsHandler(u, {})],
-    ["rehire", (u: string) => employeeRehireHandler(u, {})],
-    ["jobs", (u: string) => employeeJobsHandler(u, {})],
-    ["work-address", (u: string) => workAddressHandler(u, {})],
-    ["home-address", (u: string) => homeAddressHandler(u, {})],
-    ["update-home-address", (u: string) => updateHomeAddressHandler(u, {})],
-    ["update-work-address", (u: string) => updateWorkAddressHandler(u, {})],
-    ["update", (u: string) => employeeUpdateHandler(u, {})],
-    ["terminate", (u: string) => employeeTerminateHandler(u, {})],
-    ["cancel-termination", (u: string) => employeeTerminateCancelHandler(u, {})],
-  ])("%s rejects a malformed identifier without sending a request", async (_name, build) => {
+    ["show", (u: string) => employeeShowHandler(u, {}), "employee_uuid"],
+    ["status", (u: string) => employeeStatusHandler(u, {}), "employee_uuid"],
+    ["custom-fields", (u: string) => employeeCustomFieldsHandler(u, {}), "employee_uuid"],
+    ["addresses", (u: string) => employeeAddressesHandler(u, {}), "employee_uuid"],
+    ["history", (u: string) => employeeHistoryHandler(u, {}), "employee_uuid"],
+    ["terminations", (u: string) => employeeTerminationsHandler(u, {}), "employee_uuid"],
+    ["rehire", (u: string) => employeeRehireHandler(u, {}), "employee_uuid"],
+    ["jobs", (u: string) => employeeJobsHandler(u, {}), "employee_uuid"],
+    ["work-address", (u: string) => workAddressHandler(u, {}), "address_uuid"],
+    ["home-address", (u: string) => homeAddressHandler(u, {}), "address_uuid"],
+    ["update-home-address", (u: string) => updateHomeAddressHandler(u, {}), "address_uuid"],
+    ["update-work-address", (u: string) => updateWorkAddressHandler(u, {}), "address_uuid"],
+    ["update", (u: string) => employeeUpdateHandler(u, {}), "employee_uuid"],
+    ["terminate", (u: string) => employeeTerminateHandler(u, {}), "employee_uuid"],
+    ["cancel-termination", (u: string) => employeeTerminateCancelHandler(u, {}), "employee_uuid"],
+  ])("%s rejects a malformed identifier without sending a request", async (_name, build, field) => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: {} }));
     restore = fetchStub.restore;
     const result = await build(BAD)(ctx);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(ExitCode.Validation);
+    expect(blockedFields(result)).toEqual([field]);
     expect(fetchStub.calls).toHaveLength(0);
+    expect(result.error.hint).toBe(HINTS[field]);
+    expect(result.error.hint).not.toMatch(/<[a-z_]+>/);
+  });
+
+  test.each([
+    [
+      "update-home-address",
+      (u: string) => updateHomeAddressHandler(u, { example: true }),
+      "/v1/home_addresses/{home_address_uuid}",
+    ],
+    [
+      "update-work-address",
+      (u: string) => updateWorkAddressHandler(u, { example: true }),
+      "/v1/work_addresses/{work_address_uuid}",
+    ],
+    [
+      "update",
+      (u: string) => employeeUpdateHandler(u, { ...auth, example: true }),
+      "/v1/work_addresses/{work_address_uuid}",
+    ],
+    [
+      "terminate",
+      (u: string) => employeeTerminateHandler(u, { ...auth, example: true }),
+      "/v1/employees/{employee_id}/terminations",
+    ],
+  ])("%s --example prints its payload without reaching the guard", async (_name, build, path) => {
+    const d = okData(await build(BAD)(ctx));
+    expect(d.path).toBe(path);
   });
 });

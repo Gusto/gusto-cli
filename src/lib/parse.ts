@@ -28,6 +28,18 @@ export function parsePositiveNumber(raw: string): PositiveNumberResult {
   return { ok: true, value: num };
 }
 
+/** Plain positive integer: digits only, no sign, no decimal point. */
+const POSITIVE_INT = /^\d+$/;
+
+/** Parse a string as a positive integer (`0` and decimals are rejected). Shared by every
+ * page/per/limit-style flag so their validation and error wording can't drift. */
+export function parsePositiveInt(raw: string): PositiveNumberResult {
+  if (!POSITIVE_INT.test(raw) || Number(raw) < 1) {
+    return { ok: false, reason: `must be a positive integer, got: ${raw}` };
+  }
+  return { ok: true, value: Number(raw) };
+}
+
 /** Plain non-negative decimal: digits with an optional fractional part, nothing else. */
 const NON_NEGATIVE_DECIMAL = /^\d+(\.\d+)?$/;
 

@@ -54,7 +54,10 @@ export class FileStore implements TokenStore {
   }
 }
 
-function credentialsFile(): string {
+/** Where the per-environment credential slots live. Exported so auth errors can name the actual
+ * file and section they read (`[production] in ~/.config/gusto/credentials.toml`) instead of
+ * leaving the caller to guess which of the two slots answered. */
+export function credentialsFile(): string {
   return `${configPaths().dir}/credentials.toml`;
 }
 

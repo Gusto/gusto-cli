@@ -1,3 +1,4 @@
+import { parsePositiveInt } from "./parse.ts";
 import type { ValidationResult } from "./runner.ts";
 
 export const DEFAULT_PER = 100;
@@ -75,16 +76,14 @@ export function parsePaginationFlags(opts: PaginationFlags): ValidationResult<Pa
   }
 
   if (hasLimit) {
-    const raw = opts.limit!;
-    const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
-    if (!Number.isInteger(n) || n < 1) {
-      return {
-        ok: false,
-        message: "invalid --limit",
-        blocked: [{ field: "limit", reason: `must be a positive integer, got: ${opts.limit}` }],
-      };
+    const parsed = parsePositiveInt(opts.limit!);
+    if (!parsed.ok) {
+      return { ok: false, message: "invalid --limit", blocked: [{ field: "limit", reason: parsed.reason }] };
     }
-    return { ok: true, body: { startPage: 1, per: Math.min(n, MAX_PER), maxItems: n, surfaceNext: false } };
+    return {
+      ok: true,
+      body: { startPage: 1, per: Math.min(parsed.value, MAX_PER), maxItems: parsed.value, surfaceNext: false },
+    };
   }
 
   if (hasAll) {
