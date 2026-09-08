@@ -63,7 +63,7 @@ export async function readConfig(paths: ConfigPaths = configPaths()): Promise<Us
 }
 
 export async function writeConfig(cfg: UserConfig, paths: ConfigPaths = configPaths()): Promise<void> {
-  const { mkdir, chmod, rename, rm } = await import("node:fs/promises");
+  const { mkdir, writeFile, rename, rm } = await import("node:fs/promises");
   await mkdir(paths.dir, { recursive: true, mode: 0o700 });
   // Write to a uniquely-named temp file and rename into place: POSIX rename on the same
   // filesystem is atomic, so a concurrent reader can never observe a half-written file.
@@ -71,8 +71,8 @@ export async function writeConfig(cfg: UserConfig, paths: ConfigPaths = configPa
   // processes with recycled PIDs) don't step on each other's temp file.
   const tmp = `${paths.file}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await Bun.write(tmp, stringify(stripUndefined(cfg)));
-    await chmod(tmp, 0o600);
+    // Mode at creation, not a follow-up chmod: never expose the file at the umask default.
+    await writeFile(tmp, stringify(stripUndefined(cfg)), { mode: 0o600 });
     await rename(tmp, paths.file);
   } catch (err) {
     // Best-effort tmp cleanup; don't shadow the real error.

@@ -171,6 +171,12 @@ describe("getOrCreateInstallId", () => {
     expect(await readConfig(paths)).toEqual({ format: "agent" });
   });
 
+  test("readConfig keeps an uppercase-hex install_id from disk", async () => {
+    const upper = "3F2504E0-4F89-41D3-9A0C-0305E82C3301";
+    await Bun.write(paths.file, `install_id = "${upper}"\n`);
+    expect(await readConfig(paths)).toEqual({ install_id: upper });
+  });
+
   test("corrupted install_id is regenerated on next getOrCreateInstallId", async () => {
     await Bun.write(paths.file, `install_id = "corrupted-value"\n`);
     const fresh = await getOrCreateInstallId(paths);
