@@ -28,6 +28,7 @@ import {
   pagedRouter,
   routeFetch,
   stubGlobalFetch,
+  TEST_COMPANY_UUID,
 } from "../lib/test-support.ts";
 
 let restore: () => void = () => {};
@@ -76,7 +77,7 @@ describe("employeeListHandler", () => {
     const fetchStub = stubGlobalFetch(() => ({ status: 200, body: FIXTURE }));
     restore = fetchStub.restore;
     await employeeListHandler({ ...auth })(ctx);
-    expect(fetchStub.calls[0]?.url).toContain("/v1/companies/co-1/employees");
+    expect(fetchStub.calls[0]?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/employees`);
   });
 
   test("an invalid --status short-circuits to a validation error without calling the API", async () => {
@@ -431,7 +432,12 @@ describe("employeeUpdateHandler", () => {
         body: [activeAddress],
         ...overrides.addresses,
       },
-      { match: "/v1/companies/co-1/locations", status: 200, body: [mdLocation], ...overrides.locations },
+      {
+        match: `/v1/companies/${TEST_COMPANY_UUID}/locations`,
+        status: 200,
+        body: [mdLocation],
+        ...overrides.locations,
+      },
       {
         match: "/v1/work_addresses/wa-1",
         status: 200,
@@ -439,7 +445,7 @@ describe("employeeUpdateHandler", () => {
         ...overrides.put,
       },
       {
-        match: "/v1/companies/co-1/tax_requirements/MD",
+        match: `/v1/companies/${TEST_COMPANY_UUID}/tax_requirements/MD`,
         status: 200,
         body: {
           state: "MD",
@@ -554,7 +560,11 @@ describe("employeeUpdateHandler", () => {
   test("no active company location in the target state returns a domain error and never PUTs", async () => {
     const s = routeFetch([
       { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [activeAddress] },
-      { match: "/v1/companies/co-1/locations", status: 200, body: [{ uuid: "loc-ca", state: "CA", active: true }] },
+      {
+        match: `/v1/companies/${TEST_COMPANY_UUID}/locations`,
+        status: 200,
+        body: [{ uuid: "loc-ca", state: "CA", active: true }],
+      },
     ]);
     restore = s.restore;
     const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);

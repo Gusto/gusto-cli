@@ -3,6 +3,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import type { CommandResult } from "../lib/runner.ts";
 import {
   TEST_AUTH as auth,
+  TEST_COMPANY_UUID,
   TEST_CONTEXT as ctx,
   captureSinks,
   okData,
@@ -21,10 +22,16 @@ import {
   warnDeprecatedSyncDateFlags,
 } from "./timesheet.ts";
 
+const EMPLOYEE_UUID = "9b8c7d6e-0000-1111-2222-333344445555";
+const CONTRACTOR_UUID = "5c4d3e2f-0000-1111-2222-333344445555";
+const JOB_UUID = "1f2e3d4c-0000-1111-2222-333344445555";
+const PAY_SCHEDULE_UUID = "1a2b3c4d-0000-1111-2222-333344445555";
+const TIME_SHEET_UUID = "7a6b5c4d-0000-1111-2222-333344445555";
+
 describe("validateTimesheetCreate", () => {
   const base = {
-    employeeUuid: "emp-1",
-    jobUuid: "job-1",
+    employeeUuid: EMPLOYEE_UUID,
+    jobUuid: JOB_UUID,
     start: "2026-06-01T09:00:00Z",
     timeZone: "America/New_York",
     regular: "8",
@@ -35,11 +42,11 @@ describe("validateTimesheetCreate", () => {
     expect(result).toEqual({
       ok: true,
       body: {
-        entity_uuid: "emp-1",
+        entity_uuid: EMPLOYEE_UUID,
         entity_type: "Employee",
         time_zone: "America/New_York",
         shift_started_at: "2026-06-01T09:00:00Z",
-        job_uuid: "job-1",
+        job_uuid: JOB_UUID,
         entries: [{ hours_worked: 8, pay_classification: "Regular" }],
       },
     });
@@ -47,7 +54,7 @@ describe("validateTimesheetCreate", () => {
 
   test("an employee without --job-uuid is blocked (job is required for employees)", () => {
     const result = validateTimesheetCreate({
-      employeeUuid: "emp-1",
+      employeeUuid: EMPLOYEE_UUID,
       start: "2026-06-01T09:00:00Z",
       timeZone: "America/New_York",
       regular: "8",
@@ -73,37 +80,33 @@ describe("validateTimesheetCreate", () => {
     ]);
   });
 
-  test("includes shift_ended_at and job_uuid when provided", () => {
-    const result = validateTimesheetCreate({
-      ...base,
-      end: "2026-06-01T17:00:00Z",
-      jobUuid: "job-9",
-    });
+  test("includes shift_ended_at and job_uuid in the body", () => {
+    const result = validateTimesheetCreate({ ...base, end: "2026-06-01T17:00:00Z" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.body.shift_ended_at).toBe("2026-06-01T17:00:00Z");
     if (result.body.entity_type !== "Employee") throw new Error("expected employee body");
-    expect(result.body.job_uuid).toBe("job-9");
+    expect(result.body.job_uuid).toBe(JOB_UUID);
   });
 
   test("--contractor-uuid sets entity_type Contractor and does NOT require a job", () => {
     const result = validateTimesheetCreate({
-      contractorUuid: "ctr-1",
+      contractorUuid: CONTRACTOR_UUID,
       start: "2026-06-01T09:00:00Z",
       timeZone: "America/New_York",
       regular: "8",
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    expect(result.body.entity_uuid).toBe("ctr-1");
+    expect(result.body.entity_uuid).toBe(CONTRACTOR_UUID);
     expect(result.body.entity_type).toBe("Contractor");
     expect(result.body).not.toHaveProperty("job_uuid");
   });
 
   test("a contractor with --job-uuid is rejected (contractors don't take a job)", () => {
     const result = validateTimesheetCreate({
-      contractorUuid: "ctr-1",
-      jobUuid: "job-1",
+      contractorUuid: CONTRACTOR_UUID,
+      jobUuid: JOB_UUID,
       start: "2026-06-01T09:00:00Z",
       timeZone: "America/New_York",
       regular: "8",
@@ -126,8 +129,8 @@ describe("validateTimesheetCreate", () => {
 
   test("passing both employee and contractor uuid is rejected as ambiguous", () => {
     const result = validateTimesheetCreate({
-      employeeUuid: "emp-1",
-      contractorUuid: "ctr-1",
+      employeeUuid: EMPLOYEE_UUID,
+      contractorUuid: CONTRACTOR_UUID,
       start: "2026-06-01T09:00:00Z",
       timeZone: "America/New_York",
       regular: "8",
@@ -139,7 +142,7 @@ describe("validateTimesheetCreate", () => {
 
   test("missing --time-zone blocks on time-zone", () => {
     const result = validateTimesheetCreate({
-      employeeUuid: "emp-1",
+      employeeUuid: EMPLOYEE_UUID,
       start: "2026-06-01T09:00:00Z",
       regular: "8",
     });
@@ -150,7 +153,7 @@ describe("validateTimesheetCreate", () => {
 
   test("missing --start blocks on start", () => {
     const result = validateTimesheetCreate({
-      employeeUuid: "emp-1",
+      employeeUuid: EMPLOYEE_UUID,
       timeZone: "America/New_York",
       regular: "8",
     });
@@ -161,7 +164,7 @@ describe("validateTimesheetCreate", () => {
 
   test("no hour flags at all blocks on hours", () => {
     const result = validateTimesheetCreate({
-      employeeUuid: "emp-1",
+      employeeUuid: EMPLOYEE_UUID,
       start: "2026-06-01T09:00:00Z",
       timeZone: "America/New_York",
     });
@@ -199,11 +202,55 @@ describe("validateTimesheetCreate", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "end" }));
   });
+
+  describe("uuid format", () => {
+    test("a non-uuid --employee-uuid is blocked and the value is echoed back", () => {
+      const result = validateTimesheetCreate({ ...base, employeeUuid: "emp-1" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.blocked).toContainEqual({
+        field: "employee-uuid",
+        reason: 'must be a valid UUID, got: "emp-1"',
+      });
+    });
+
+    test("a non-uuid --contractor-uuid blocks on contractor-uuid, not employee-uuid", () => {
+      const result = validateTimesheetCreate({
+        ...base,
+        employeeUuid: undefined,
+        jobUuid: undefined,
+        contractorUuid: "ctr-1",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.blocked).toContainEqual(expect.objectContaining({ field: "contractor-uuid" }));
+      expect(result.blocked).not.toContainEqual(expect.objectContaining({ field: "employee-uuid" }));
+    });
+
+    test("a non-uuid --job-uuid is blocked", () => {
+      const result = validateTimesheetCreate({ ...base, jobUuid: "job-1" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.blocked).toContainEqual(expect.objectContaining({ field: "job-uuid" }));
+    });
+
+    test("bad uuids and a bad timestamp all report in one envelope", () => {
+      const result = validateTimesheetCreate({
+        ...base,
+        employeeUuid: "emp-1",
+        jobUuid: "job-1",
+        start: "not-a-date",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.blocked.map((b) => b.field).sort()).toEqual(["employee-uuid", "job-uuid", "start"]);
+    });
+  });
 });
 
 describe("validateTimesheetSync", () => {
   const base = {
-    payScheduleUuid: "ps-1",
+    payScheduleUuid: PAY_SCHEDULE_UUID,
     startDate: "2026-06-01",
     endDate: "2026-06-15",
   };
@@ -214,7 +261,7 @@ describe("validateTimesheetSync", () => {
       ok: true,
       body: {
         kind: "regular",
-        pay_schedule_uuid: "ps-1",
+        pay_schedule_uuid: PAY_SCHEDULE_UUID,
         pay_period_start_date: "2026-06-01",
         pay_period_end_date: "2026-06-15",
       },
@@ -231,8 +278,18 @@ describe("validateTimesheetSync", () => {
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "pay-schedule-uuid" }));
   });
 
+  test("a non-uuid --pay-schedule-uuid is blocked and the value is echoed back", () => {
+    const result = validateTimesheetSync({ ...base, payScheduleUuid: "ps-1" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.blocked).toContainEqual({
+      field: "pay-schedule-uuid",
+      reason: 'must be a valid UUID, got: "ps-1"',
+    });
+  });
+
   test("missing period dates block on both", () => {
-    const result = validateTimesheetSync({ payScheduleUuid: "ps-1" });
+    const result = validateTimesheetSync({ payScheduleUuid: PAY_SCHEDULE_UUID });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
@@ -256,7 +313,7 @@ describe("validateTimesheetSync", () => {
   describe("deprecated --pay-period-* aliases", () => {
     test("the old spellings still populate the body", () => {
       const result = validateTimesheetSync({
-        payScheduleUuid: "ps-1",
+        payScheduleUuid: PAY_SCHEDULE_UUID,
         payPeriodStart: "2026-06-01",
         payPeriodEnd: "2026-06-15",
       });
@@ -268,7 +325,7 @@ describe("validateTimesheetSync", () => {
 
     test("one canonical flag and one alias mix freely", () => {
       const result = validateTimesheetSync({
-        payScheduleUuid: "ps-1",
+        payScheduleUuid: PAY_SCHEDULE_UUID,
         startDate: "2026-06-01",
         payPeriodEnd: "2026-06-15",
       });
@@ -278,7 +335,7 @@ describe("validateTimesheetSync", () => {
     });
 
     test("a malformed date via the alias blocks on the canonical field name", () => {
-      const result = validateTimesheetSync({ payScheduleUuid: "ps-1", payPeriodStart: "06/01/2026" });
+      const result = validateTimesheetSync({ payScheduleUuid: PAY_SCHEDULE_UUID, payPeriodStart: "06/01/2026" });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.blocked).toContainEqual(expect.objectContaining({ field: "start-date" }));
@@ -287,7 +344,7 @@ describe("validateTimesheetSync", () => {
 
     test("both spellings with conflicting values are blocked rather than silently resolved", () => {
       const result = validateTimesheetSync({
-        payScheduleUuid: "ps-1",
+        payScheduleUuid: PAY_SCHEDULE_UUID,
         startDate: "2026-06-01",
         payPeriodStart: "2026-07-01",
         endDate: "2026-06-15",
@@ -302,7 +359,7 @@ describe("validateTimesheetSync", () => {
 
     test("both spellings carrying the same value are unambiguous and pass", () => {
       const result = validateTimesheetSync({
-        payScheduleUuid: "ps-1",
+        payScheduleUuid: PAY_SCHEDULE_UUID,
         startDate: "2026-06-01",
         payPeriodStart: "2026-06-01",
         endDate: "2026-06-15",
@@ -342,8 +399,8 @@ describe("timesheetCreateHandler", () => {
     const data = okData(
       await timesheetCreateHandler({
         ...auth,
-        employeeUuid: "emp-1",
-        jobUuid: "job-1",
+        employeeUuid: EMPLOYEE_UUID,
+        jobUuid: JOB_UUID,
         start: "2026-06-01T09:00:00Z",
         timeZone: "America/New_York",
         regular: "8",
@@ -352,9 +409,9 @@ describe("timesheetCreateHandler", () => {
     );
     expect(data.method).toBe("POST");
     expect(data.body).toMatchObject({
-      entity_uuid: "emp-1",
+      entity_uuid: EMPLOYEE_UUID,
       entity_type: "Employee",
-      job_uuid: "job-1",
+      job_uuid: JOB_UUID,
       entries: [{ hours_worked: 8, pay_classification: "Regular" }],
     });
   });
@@ -368,8 +425,8 @@ describe("timesheetCreateHandler", () => {
 
   const validCreate = {
     ...auth,
-    employeeUuid: "emp-1",
-    jobUuid: "job-1",
+    employeeUuid: EMPLOYEE_UUID,
+    jobUuid: JOB_UUID,
     start: "2026-06-01T09:00:00Z",
     timeZone: "America/New_York",
     regular: "8",
@@ -391,13 +448,13 @@ describe("timesheetCreateHandler", () => {
 
   test("--confirm lets the create POST the time sheet", async () => {
     const { calls, restore } = stubGlobalFetch((u) =>
-      u.includes("/time_tracking/time_sheets") ? { status: 201, body: { uuid: "ts-1" } } : { status: 404 },
+      u.includes("/time_tracking/time_sheets") ? { status: 201, body: { uuid: TIME_SHEET_UUID } } : { status: 404 },
     );
     try {
       const result = await timesheetCreateHandler({ ...validCreate, confirm: true })(ctx);
       expect(result.ok).toBe(true);
       const post = calls.find((c) => c.method === "POST");
-      expect(post?.url).toContain("/v1/companies/co-1/time_tracking/time_sheets");
+      expect(post?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/time_tracking/time_sheets`);
     } finally {
       restore();
     }
@@ -416,7 +473,7 @@ describe("timesheetSyncHandler", () => {
     const data = okData(
       await timesheetSyncHandler({
         ...auth,
-        payScheduleUuid: "ps-1",
+        payScheduleUuid: PAY_SCHEDULE_UUID,
         startDate: "2026-06-01",
         endDate: "2026-06-15",
         dryRun: true,
@@ -425,7 +482,7 @@ describe("timesheetSyncHandler", () => {
     expect(data.method).toBe("POST");
     expect(data.body).toMatchObject({
       kind: "regular",
-      pay_schedule_uuid: "ps-1",
+      pay_schedule_uuid: PAY_SCHEDULE_UUID,
       pay_period_start_date: "2026-06-01",
       pay_period_end_date: "2026-06-15",
     });
@@ -443,7 +500,7 @@ describe("timesheetSyncHandler", () => {
     const data = okData(
       await timesheetSyncHandler({
         ...auth,
-        payScheduleUuid: "ps-1",
+        payScheduleUuid: PAY_SCHEDULE_UUID,
         payPeriodStart: "2026-06-01",
         payPeriodEnd: "2026-06-15",
         dryRun: true,
@@ -457,7 +514,7 @@ describe("timesheetSyncHandler", () => {
     const { sinks, stderr } = captureSinks();
     await timesheetSyncHandler({
       ...auth,
-      payScheduleUuid: "ps-1",
+      payScheduleUuid: PAY_SCHEDULE_UUID,
       startDate: "2026-06-01",
       endDate: "2026-06-15",
       dryRun: true,
@@ -467,7 +524,7 @@ describe("timesheetSyncHandler", () => {
 
   const validSync = {
     ...auth,
-    payScheduleUuid: "ps-1",
+    payScheduleUuid: PAY_SCHEDULE_UUID,
     startDate: "2026-06-01",
     endDate: "2026-06-15",
   };
@@ -494,7 +551,7 @@ describe("timesheetSyncHandler", () => {
       const result = await timesheetSyncHandler({ ...validSync, confirm: true })(ctx);
       expect(result.ok).toBe(true);
       const post = calls.find((c) => c.method === "POST");
-      expect(post?.url).toContain("/v1/companies/co-1/time_tracking/payroll_syncs");
+      expect(post?.url).toContain(`/v1/companies/${TEST_COMPANY_UUID}/time_tracking/payroll_syncs`);
     } finally {
       restore();
     }
@@ -545,24 +602,44 @@ describe("timesheetShowHandler", () => {
   test("GETs /v1/time_tracking/time_sheets/<uuid> and returns the body", async () => {
     const { calls, restore } = stubGlobalFetch(() => ({
       status: 200,
-      body: { uuid: "ts-1", status: "approved", entity_type: "Employee" },
+      body: { uuid: TIME_SHEET_UUID, status: "approved", entity_type: "Employee" },
     }));
     try {
-      const data = okData(await timesheetShowHandler("ts-1", {})(ctx));
-      expect(data).toMatchObject({ uuid: "ts-1", status: "approved" });
+      const data = okData(await timesheetShowHandler(TIME_SHEET_UUID, {})(ctx));
+      expect(data).toMatchObject({ uuid: TIME_SHEET_UUID, status: "approved" });
       expect(calls).toHaveLength(1);
       expect(calls[0]?.method).toBe("GET");
-      expect(calls[0]?.url).toContain("/v1/time_tracking/time_sheets/ts-1");
+      expect(calls[0]?.url).toContain(`/v1/time_tracking/time_sheets/${TIME_SHEET_UUID}`);
     } finally {
       restore();
     }
   });
 
   test("404 from the API surfaces as a CommandResult failure (not a throw)", async () => {
-    const { restore } = stubGlobalFetch(() => ({ status: 404, body: { errors: ["not found"] } }));
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 404, body: { errors: ["not found"] } }));
     try {
-      const result = await timesheetShowHandler("missing", {})(ctx);
+      const result = await timesheetShowHandler(TIME_SHEET_UUID, {})(ctx);
       expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.ApiClient);
+      expect(calls).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a non-uuid argument is rejected before any request", async () => {
+    const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: {} }));
+    try {
+      const result = await timesheetShowHandler("ts-1", {})(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.exitCode).toBe(ExitCode.Validation);
+      expect(result.error.blocked_on).toEqual([
+        { field: "time_sheet_uuid", reason: 'must be a valid UUID, got: "ts-1"' },
+      ]);
+      expect(result.error).not.toHaveProperty("hint");
+      expect(calls).toHaveLength(0);
     } finally {
       restore();
     }
@@ -622,21 +699,41 @@ describe("timesheetListHandler", () => {
     }
 
     test("the flag is forwarded as company_uuid", async () => {
-      expect(await listWith({ ...dates, companyUuid: "co-flag" })).toEqual({
+      expect(await listWith({ ...dates, companyUuid: TEST_COMPANY_UUID })).toEqual({
         start_date: "2026-06-01",
         end_date: "2026-06-15",
-        company_uuid: "co-flag",
+        company_uuid: TEST_COMPANY_UUID,
       });
     });
 
     test("GUSTO_COMPANY_UUID is used when the flag is absent", async () => {
-      expect(await listWith(dates, "co-env")).toMatchObject({ company_uuid: "co-env" });
+      expect(await listWith(dates, TEST_COMPANY_UUID)).toMatchObject({ company_uuid: TEST_COMPANY_UUID });
     });
 
-    test("the flag overrides GUSTO_COMPANY_UUID", async () => {
-      expect(await listWith({ ...dates, companyUuid: "co-flag" }, "co-env")).toMatchObject({
-        company_uuid: "co-flag",
+    test("the flag overrides GUSTO_COMPANY_UUID, including an unusable one", async () => {
+      expect(await listWith({ ...dates, companyUuid: TEST_COMPANY_UUID }, "co-env")).toMatchObject({
+        company_uuid: TEST_COMPANY_UUID,
       });
+    });
+
+    test.each([
+      ["the flag", { ...dates, companyUuid: "co-1" }, undefined, "--company-uuid"],
+      ["GUSTO_COMPANY_UUID", dates, "co-1", "GUSTO_COMPANY_UUID"],
+    ])("a non-uuid company from %s is rejected, naming that source", async (_name, opts, env, origin) => {
+      if (env !== undefined) process.env.GUSTO_COMPANY_UUID = env;
+      const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: {} }));
+      try {
+        const result = await timesheetListHandler(opts)(ctx);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.exitCode).toBe(ExitCode.Validation);
+        expect(result.error.code).toBe("invalid_company_uuid");
+        expect(result.error.message).toContain(`company UUID from ${origin}`);
+        expect(calls).toHaveLength(0);
+      } finally {
+        restore();
+        delete process.env.GUSTO_COMPANY_UUID;
+      }
     });
 
     test("with neither, company_uuid is omitted entirely", async () => {
