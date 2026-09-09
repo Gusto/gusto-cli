@@ -38,7 +38,7 @@ export function registerConfigCommand(parent: Command): void {
 
   cmd
     .command("set <key> <value>")
-    .description("Set a user config key (V1: environment, format)")
+    .description(`Set a user config key (one of: ${CONFIG_KEYS.join(", ")})`)
     .addHelpText(
       "after",
       `
