@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import pkg from "../../package.json" with { type: "json" };
 import { USER_AGENT, VERSION } from "./version.ts";
 
@@ -9,6 +10,13 @@ describe("VERSION", () => {
 
   test("is a bare semver with no leading v or build metadata", () => {
     expect(VERSION).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
+  });
+
+  test("matches the version in the README status", () => {
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    const statusVersion = readme.match(/^> \*\*Status: v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.\*\*/m)?.[1];
+
+    expect(statusVersion).toBe(pkg.version);
   });
 });
 
