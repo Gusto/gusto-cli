@@ -166,8 +166,8 @@ describe("reactiveRefresh", () => {
   });
 
   test("re-classifies the other process's session rather than trusting it blindly - one more refresh when it's itself still near-expiry", async () => {
-    // The other process's write beat ours, but its own session is still inside the skew window -
-    // trusting its accessToken directly would hand back a token that fails again almost immediately.
+    // The concurrent write's session is itself still near-expiry, so trusting its token directly
+    // would hand back one that fails again almost immediately.
     const store = memoryStore({
       sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
@@ -175,8 +175,6 @@ describe("reactiveRefresh", () => {
     const fetchImpl = (async () => {
       refreshCalls += 1;
       if (refreshCalls === 1) {
-        // Our own attempt: a concurrent process wins the race and leaves behind a session that is
-        // itself still near-expiry.
         await store.save("sandbox", { ...creds, accessToken: "stale2", refreshToken: "rt2", expiresAt: 1_030_000 });
         return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
       }

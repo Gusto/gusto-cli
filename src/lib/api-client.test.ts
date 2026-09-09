@@ -741,9 +741,8 @@ describe("ApiClient reactive refresh on a 401", () => {
   });
 
   test("a 401 that arrives after a concurrent refresh already finished retries directly, without a second refresh", async () => {
-    // B's first response is gated so it resolves only after A's entire 401 -> refresh -> retry
-    // cycle has completed - the "late straggler" case the in-flight-promise guard alone can't
-    // catch, since by then `inFlightRefresh` has already cleared.
+    // B's 401 is gated to land only after A's refresh has already finished - the one case the
+    // in-flight-refresh guard alone doesn't cover.
     let openGate!: () => void;
     const gate = new Promise<void>((resolve) => {
       openGate = resolve;
@@ -779,14 +778,14 @@ describe("ApiClient reactive refresh on a 401", () => {
       },
     });
 
-    const bPromise = client.get("/v1/b"); // starts, then blocks inside fetchImpl on `gate`
-    const a = await client.get("/v1/a"); // 401 -> refresh -> retry -> 200, fully resolves
+    const bPromise = client.get("/v1/b");
+    const a = await client.get("/v1/a");
     expect(a.body).toEqual({ ok: true });
     expect(refreshCalls).toBe(1);
 
-    openGate(); // deliver B's 401 now - this.token is already "refreshed-tok"
+    openGate();
     const b = await bPromise;
     expect(b.body).toEqual({ ok: true });
-    expect(refreshCalls).toBe(1); // B retried directly instead of starting a second refresh
+    expect(refreshCalls).toBe(1);
   });
 });

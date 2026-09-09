@@ -123,8 +123,6 @@ function insufficientScopeMessage(scope: string | undefined, auth: AuthContext |
 }
 
 export function toResult(err: unknown): CommandResult<never> {
-  // ApiClient's 401 retry hit a rejected refresh - report it like a pre-request refresh failure,
-  // not as a bare 401.
   if (err instanceof TokenRefreshFailedError) return tokenRefreshFailedResult(err.cause, err.env);
   if (err instanceof ApiError) {
     if (err.status === 401) return credentialRejected(err);

@@ -1026,6 +1026,7 @@ describe("reactive refresh on a 401", () => {
   });
 
   test("a session token with a future expiresAt that the server rejects anyway refreshes once and retries", async () => {
+    // Also confirms the refresh is persisted, so a later command doesn't repeat the round trip.
     const s = stubGlobalFetch([
       { status: 401, body: { error: "unauthorized" } },
       { status: 200, body: { ok: true } },
@@ -1044,8 +1045,7 @@ describe("reactive refresh on a 401", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data).toEqual({ ok: true });
-    expect(s.calls).toHaveLength(2); // the rejected attempt, then the retry with the refreshed token
-    // The refreshed pair is persisted, so the next command doesn't repeat the round trip.
+    expect(s.calls).toHaveLength(2);
     expect(store.data.production?.accessToken).toBe("fresh-tok");
   });
 

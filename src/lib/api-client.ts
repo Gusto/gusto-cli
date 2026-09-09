@@ -325,9 +325,6 @@ export class ApiClient {
     }
   }
 
-  /** Concurrent 401s on this client (e.g. two requests under one `Promise.all`) that are still
-   * pending when this runs share a single refresh, rather than each spending their own round trip
-   * and risking a rotated-token race with each other. */
   private refreshOnce(onUnauthorized: () => Promise<string | null>): Promise<string | null> {
     this.inFlightRefresh ??= onUnauthorized().finally(() => {
       this.inFlightRefresh = undefined;

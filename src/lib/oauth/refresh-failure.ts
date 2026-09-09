@@ -78,8 +78,6 @@ export function refreshFailureMessage(err: OAuthError, env: Environment, slot: s
   }
 }
 
-/** Build the `token_refresh_failed` error fields shared by the proactive (pre-request) and reactive
- * (401-triggered) refresh paths, so a caller can't report one differently from the other. */
 export function tokenRefreshFailedError(err: OAuthError, env: Environment): EnvelopeError {
   return {
     code: "token_refresh_failed",

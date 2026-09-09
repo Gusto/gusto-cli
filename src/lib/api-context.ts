@@ -168,8 +168,6 @@ async function sessionFailure(
         code: "session_expired",
         message: `the ${env} access token expired at ${new Date(outcome.expiresAt).toISOString()} and cannot be refreshed - no refresh token or client credentials in ${slot}. Run \`gusto auth login --env ${env}\` to sign in again.`,
       });
-    // Shared with the reactive (401-triggered) refresh failure `toResult` reports, so the two paths
-    // can't drift on wording - only this one also carries the other-environment hint.
     case "refresh_failed":
       return withContext(tokenRefreshFailedError(outcome.cause, env));
   }
@@ -260,9 +258,6 @@ export async function resolveApiContext(
     baseUrl,
     token,
     auth: { tokenSource, environment },
-    // Only a session-sourced token gets a reactive-refresh hook: an explicit --token-stdin/
-    // GUSTO_ACCESS_TOKEN token must keep failing loudly on a 401, never silently fall back to the
-    // stored session (the same precedence rule resolveAuthToken enforces up front).
     onUnauthorized:
       tokenSource === "session"
         ? () => reactiveRefresh(opts.store ?? resolveStore(), environment, opts.http ?? oauthHttp(globals), opts.now)

@@ -139,11 +139,9 @@ function sameAuthState(previous: StoredSession, latest: StoredSession | null): b
   );
 }
 
-/** The last refresh chance after a request 401s despite a locally valid-looking token -
- * `resolveSessionToken` already spent the proactive one before the request started. Resolves
- * `null`, not an error, when nothing is refreshable, so the original 401 stands unchanged. A
- * rejected refresh throws `TokenRefreshFailedError`, not the raw `OAuthError`, so every caller
- * reports it the same way without having to wrap it themselves. */
+/** The last refresh chance after a 401, since the proactive one already ran before the request
+ * started; throws `TokenRefreshFailedError` (not the raw `OAuthError`) so callers don't need to
+ * wrap it themselves. */
 export async function reactiveRefresh(
   store: TokenStore,
   env: "sandbox" | "production",
@@ -160,10 +158,8 @@ export async function reactiveRefresh(
   }
 }
 
-/** A second `gusto` process can win the same refresh in between our load and our failed attempt -
- * most sharply when the server rotates refresh tokens, since ours is now stale by construction.
- * Re-classifies whatever it finds instead of trusting it blindly, so a session that's itself still
- * near expiry gets one more refresh attempt rather than a token that would just fail again. */
+/** Another `gusto` process may have refreshed this session while ours failed - re-classify what's
+ * there instead of trusting it blindly, in case it's still near-expiry too. */
 async function reconcileAfterFailedRefresh(
   store: TokenStore,
   env: "sandbox" | "production",
