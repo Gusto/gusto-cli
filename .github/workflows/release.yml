@@ -4,8 +4,9 @@ on:
   push:
     tags: ["v*.*.*"]
 
-# Needs write access to create the GitHub Release and upload binaries.
+# Needs read access to promote CI artifacts and write access to publish them.
 permissions:
+  actions: read
   contents: write
 
 env:
@@ -13,7 +14,7 @@ env:
 
 jobs:
   release:
-    name: Build + publish binaries
+    name: Promote + publish binaries
     runs-on:
       group: gusto-ubuntu-default
     steps:
@@ -37,13 +38,41 @@ jobs:
             exit 1
           fi
 
-      - name: Build binaries
-        # bun's self-signature on compiled binaries pre-allocates a too-small
-        # LC_CODE_SIGNATURE slot, which corrupts a real Developer ID signature
-        # (oven-sh/bun#29120). Disable it so rcodesign can sign cleanly.
+      - name: Find successful CI run for tagged commit
+        id: ci
         env:
-          BUN_NO_CODESIGN_MACHO_BINARY: "1"
-        run: bun run build:all
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          ci_runs="$RUNNER_TEMP/ci-runs.json"
+          gh api --paginate --slurp --method GET \
+            "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$TAG_SHA" -f event=push -f status=success -f per_page=100 \
+            > "$ci_runs"
+
+          if ! run_id=$(jq -er --arg sha "$TAG_SHA" '
+            [.[] | .workflow_runs[] |
+              select(.head_sha == $sha and .event == "push" and
+                .status == "completed" and .conclusion == "success")]
+            | sort_by(.id) | last
+            | .id | select(type == "number" and . > 0 and floor == .)
+          ' "$ci_runs"); then
+            echo "No successful push CI run found for tagged commit $TAG_SHA" >&2
+            exit 1
+          fi
+
+          printf 'run-id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact binaries from CI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gusto-cli-binaries
+          path: dist
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.ci.outputs.run-id }}
 
       - name: Sign and notarize macOS binaries
         env:
