@@ -75,6 +75,70 @@ function optionTakesValue(command: Command, root: Command, token: string): boole
   return opt?.required === true || opt?.optional === true;
 }
 
+/** Resolve only registered command names from raw argv, never option or positional values. The
+ * option-value guard is shared with unknown-command diagnosis so both views of one invocation agree. */
+export function commandPathFromArgv(program: Command, args: readonly string[]): string {
+  let current = program;
+  const path = [program.name()];
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token.startsWith("-")) {
+      const next = args[i + 1];
+      if (
+        !token.includes("=") &&
+        next !== undefined &&
+        !next.startsWith("-") &&
+        optionTakesValue(current, program, token)
+      ) {
+        i++;
+      }
+      continue;
+    }
+    const child = current.commands.find((candidate) => matchesCommand(candidate, token));
+    if (!child) break;
+    path.push(child.name());
+    current = child;
+  }
+
+  return path.join(" ");
+}
+
+/** Read the last accepted value of a named option from raw argv, supporting both `--flag value` and
+ * `--flag=value`. Unlike command diagnosis, option precedence scans past positional parse failures;
+ * Commander allows global options after commands and uses the last occurrence. */
+export function optionValueFromArgv<T extends string>(
+  args: readonly string[],
+  optionName: string,
+  accepts: (value: string) => value is T,
+): T | undefined;
+export function optionValueFromArgv(args: readonly string[], optionName: string): string | undefined;
+export function optionValueFromArgv(
+  args: readonly string[],
+  optionName: string,
+  accepts: (value: string) => boolean = () => true,
+): string | undefined {
+  let value: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === "--") break;
+    if (token.startsWith("-")) {
+      if (token.startsWith(`${optionName}=`)) {
+        const candidate = token.slice(optionName.length + 1);
+        if (accepts(candidate)) value = candidate;
+        continue;
+      }
+      const next = args[i + 1];
+      if (token === optionName && next !== undefined && !next.startsWith("-")) {
+        if (accepts(next)) value = next;
+        i++;
+      }
+      continue;
+    }
+  }
+  return value;
+}
+
 export interface UnknownCommandDiagnosis {
   /** Space-joined path of the command that expected a subcommand, e.g. "gusto payroll". */
   parent: string;
@@ -159,6 +223,16 @@ function missingArgumentBlockedOn(message: string): BlockedOn[] {
   return (names.length > 0 ? names : ["argument"]).map((field) => ({ field, reason: "required" }));
 }
 
+/** Turn commander's invalid-option-choice wording into the same field-oriented validation shape as
+ * handler-level validation. The fallback preserves a useful blocked field if commander changes its
+ * message or reports an invalid positional argument instead. */
+function invalidArgumentBlockedOn(message: string): BlockedOn[] {
+  const cleaned = stripErrorPrefix(message);
+  const match = cleaned.match(/^option '--([^\s']+)[^']*' (.+)$/i);
+  if (!match) return [{ field: "argument", reason: cleaned }];
+  return [{ field: match[1], reason: match[2] }];
+}
+
 /** Commander prefixes its messages with "error: "; drop it so the envelope message reads cleanly. */
 function stripErrorPrefix(message: string): string {
   return message.replace(/^error:\s*/i, "");
@@ -192,6 +266,9 @@ export function usageErrorEnvelope(
   // commander-specific usage error - agents get one consistent contract for "you left out a field".
   if (commanderCode === "commander.missingArgument") {
     return { code: "validation", message: "missing required arguments", blocked_on: missingArgumentBlockedOn(message) };
+  }
+  if (commanderCode === "commander.invalidArgument") {
+    return { code: "validation", message: "invalid arguments", blocked_on: invalidArgumentBlockedOn(message) };
   }
   return { code: usageErrorCode(commanderCode), message: stripErrorPrefix(message), hint: USAGE_HELP_HINT };
 }

@@ -3,26 +3,30 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import { isTelemetryEnabled } from "./env.ts";
+import type { EnvSource } from "./env.ts";
 import type { Environment } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
-export type ConfigKey = "environment" | "format" | "skills_auto_install" | "feedback_nudge";
+export type ConfigKey = "environment" | "format" | "skills_auto_install" | "feedback_nudge" | "auto_update";
 
 export const CONFIG_KEYS: readonly ConfigKey[] = [
   "environment",
   "format",
   "skills_auto_install",
   "feedback_nudge",
+  "auto_update",
 ] as const;
 
 export type SkillsAutoInstall = "ask" | "always" | "never";
 export type FeedbackNudge = "on" | "off";
+export type AutoUpdate = "on" | "off";
 
 export interface UserConfig {
   environment?: Environment;
   format?: OutputMode;
   skills_auto_install?: SkillsAutoInstall;
   feedback_nudge?: FeedbackNudge;
+  auto_update?: AutoUpdate;
   /** Anonymous per-install UUID managed by getOrCreateInstallId; not user-configurable. */
   install_id?: string;
 }
@@ -31,6 +35,29 @@ const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
 const FEEDBACK_NUDGE_VALUES: readonly FeedbackNudge[] = ["on", "off"] as const;
+const AUTO_UPDATE_VALUES: readonly AutoUpdate[] = ["on", "off"] as const;
+
+/** The env override for `auto_update`, which wins over the config file. */
+export const AUTO_UPDATE_ENV = "GUSTO_CLI_AUTO_UPDATE";
+
+/** Normalises anything that might mean on or off. Only `on` reads as on; everything else present
+ * reads as off, because `on` is the default and so the only reason to set this at all is to turn it
+ * off - see the `auto_update` branch of `pickValid`. */
+function readAutoUpdate(value: string | boolean): AutoUpdate {
+  const text = typeof value === "boolean" ? (value ? "on" : "off") : String(value).trim();
+  return text.toLowerCase() === "on" ? "on" : "off";
+}
+
+/** Whether auto-update is on for this invocation, env first.
+ *
+ * The env form exists for the places a config file doesn't reach: an ephemeral container writes no
+ * `update-state.toml` and keeps no `config.toml`, so without this the only ways to stop a
+ * per-container release download were baking a config file into the image or pinning a version. */
+export function autoUpdateEnabled(cfg: Pick<UserConfig, "auto_update">, env: EnvSource = process.env): boolean {
+  const override = env[AUTO_UPDATE_ENV];
+  if (override !== undefined && override.length > 0) return readAutoUpdate(override) === "on";
+  return cfg.auto_update !== "off";
+}
 
 // Permissive UUID shape check — variant intentionally not pinned; we only care that on-disk
 // values look like real UUIDs so corruption is rejected.
@@ -154,6 +181,10 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       return (FEEDBACK_NUDGE_VALUES as readonly string[]).includes(value)
         ? null
         : `feedback_nudge must be one of: ${FEEDBACK_NUDGE_VALUES.join(", ")}`;
+    case "auto_update":
+      return (AUTO_UPDATE_VALUES as readonly string[]).includes(value)
+        ? null
+        : `auto_update must be one of: ${AUTO_UPDATE_VALUES.join(", ")}`;
     default: {
       // Exhaustiveness guard: adding a ConfigKey without a case here is a compile error,
       // not a silent validation bypass.
@@ -188,6 +219,17 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
     (FEEDBACK_NUDGE_VALUES as readonly string[]).includes(raw.feedback_nudge)
   ) {
     out.feedback_nudge = raw.feedback_nudge as FeedbackNudge;
+  }
+  // The one key whose failure direction matters: both readers test `=== "off"`, so a dropped value
+  // reads as on - "replace the binary" for someone trying to opt out. `auto_update = false` is the
+  // obvious hand-edit, and TOML parses it as a boolean a string check would discard. `on` is
+  // already the default, so anything unrecognised is read as off. `config set` stays strict.
+  if (raw.auto_update !== undefined) {
+    out.auto_update = readAutoUpdate(
+      typeof raw.auto_update === "boolean" || typeof raw.auto_update === "string"
+        ? raw.auto_update
+        : String(raw.auto_update),
+    );
   }
   // Drop corrupted values so getOrCreateInstallId regenerates on next call.
   if (typeof raw.install_id === "string" && INSTALL_ID_PATTERN.test(raw.install_id)) {

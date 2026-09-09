@@ -18,12 +18,19 @@ import { registerReportCommand } from "./commands/report.ts";
 import { registerSkillCommand } from "./commands/skill.ts";
 import { registerTimesheetCommand } from "./commands/timesheet.ts";
 import { registerUpgradeCommand } from "./commands/upgrade.ts";
-import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
-import { readConfig } from "./lib/config.ts";
+import {
+  BACKGROUND_UPDATE_FLAG,
+  maybeSpawnBackgroundCheck,
+  runBackgroundCheck,
+  swapStagedUpdate,
+} from "./lib/auto-update.ts";
+import { commandPathFromArgv, optionValueFromArgv, usageErrorEnvelope } from "./lib/command-diagnostics.ts";
+import { readConfig, type UserConfig } from "./lib/config.ts";
 import { ExitCode, type ExitCodeValue } from "./lib/exit-codes.ts";
 import { feedbackNudgeWithDefaults } from "./lib/feedback-nudge.ts";
 import type { Environment, GlobalFlags } from "./lib/global-flags.ts";
-import { type StreamSinks, defaultSinks, emit, outputOptionsFrom } from "./lib/output.ts";
+import { type StreamSinks, defaultSinks, emit, outputOptionsFrom, resolveOutputMode } from "./lib/output.ts";
+import { SKIP_AUTO_UPDATE_ENV } from "./lib/upgrade.ts";
 import { VERSION } from "./lib/version.ts";
 
 const HELP_FOOTER = `
@@ -120,6 +127,7 @@ function exitCodeForCommanderError(err: CommanderError): ExitCodeValue {
     // A missing required positional is a validation failure, not a generic usage error: CLAUDE.md
     // documents it as the exit-7 blocked_on case, matching the handler-level `missingArgs` path.
     case "commander.missingArgument":
+    case "commander.invalidArgument":
       return ExitCode.Validation;
     default:
       return ExitCode.CliUsage;
@@ -129,65 +137,73 @@ function exitCodeForCommanderError(err: CommanderError): ExitCodeValue {
 /** Minimal flags for picking the output mode when reporting a usage error. The mode-selecting flags
  * are global, so a raw-argv scan is reliable even when commander threw before finishing its parse
  * (an unknown subcommand aborts parsing before a trailing --json is recorded on program.opts()). */
-function usageFlags(argv: string[]): GlobalFlags {
+function usageFlags(argv: string[], configuredEnvironment?: Environment): GlobalFlags {
+  const isEnvironment = (value: string): value is Environment => value === "sandbox" || value === "production";
+  const explicitEnv = optionValueFromArgv(argv.slice(2), "--env", isEnvironment);
+  const ambientEnv = process.env.GUSTO_ENVIRONMENT;
   return {
     agent: argv.includes("--agent"),
     human: argv.includes("--human"),
     json: argv.includes("--json"),
     verbose: false,
     dryRun: argv.includes("--dry-run"),
+    env: explicitEnv ?? (ambientEnv !== undefined && isEnvironment(ambientEnv) ? ambientEnv : configuredEnvironment),
   };
 }
 
-/** Resolve only registered command names from argv, never positional values, for the nudge's
- * allowlisted command slug and suppression rules. */
-function commandPathFromArgv(program: Command, argv: string[]): string {
-  let current = program;
-  const names = [program.name()];
-
-  const tokens = argv.slice(2);
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i] ?? "";
-    if (token === "--env") {
-      i += 1;
-      continue;
-    }
-    if (token.startsWith("-")) continue;
-    const child = current.commands.find(
-      (candidate) => candidate.name() === token || candidate.aliases().includes(token),
-    );
-    if (!child) break;
-    names.push(child.name());
-    current = child;
-  }
-
-  return names.join(" ");
-}
-
-/** The persisted `environment`, read before commander is built so it can become the `--env` default.
+/** The persisted user config, read before commander is built so `environment` can become the
+ * `--env` default and `auto_update` can gate the background check below.
  *
  * A corrupt config file warns and is ignored rather than aborting the run: failing hard here would
  * also block `gusto config reset`, the one command that fixes it. The warning says the defaults were
  * dropped, so a user whose `environment = "sandbox"` is being ignored finds out from us instead of
  * from a production 401. */
-async function configuredEnvironment(sinks: StreamSinks = defaultSinks): Promise<Environment | undefined> {
+async function loadConfig(sinks: StreamSinks = defaultSinks): Promise<UserConfig> {
   try {
-    return (await readConfig()).environment;
+    return await readConfig();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // stderr, like every other diagnostic the CLI writes: stdout carries the envelope and nothing
     // else, so a warning there would corrupt the one stream an agent parses. Through the sinks rather
     // than `process.stderr` directly, matching the rest of the writers.
     sinks.stderr.write(
-      `warning: ignoring user config, so its defaults (including environment) are not applied: ${message}\n`,
+      `warning: ignoring user config, so its defaults (including environment and auto_update) are not applied: ${message}\n`,
     );
-    return undefined;
+    return {};
   }
 }
 
 async function main(argv: string[]): Promise<void> {
+  // The detached child's entire job, checked before anything else so its startup stays cheap.
+  // Matched against the exact argv shape the spawn produces rather than `argv.includes(...)`, which
+  // would also match a command whose own option value happened to equal this string.
+  const realArgs = argv.slice(2);
+  if (realArgs.length === 1 && realArgs[0] === BACKGROUND_UPDATE_FLAG) {
+    await runBackgroundCheck();
+    process.exit(ExitCode.Success);
+  }
+
   installSignalHandlers();
-  const program = buildProgram(await configuredEnvironment());
+  const cfg = await loadConfig();
+
+  // Set by `defaultVersionOf` on the binary it exec-checks: that binary's `main()` runs for real,
+  // and would otherwise act on the same `update-state.toml` the outer call is still working through.
+  const skipAutoUpdate = process.env[SKIP_AUTO_UPDATE_ENV] !== undefined;
+
+  const program = buildProgram(cfg.environment);
+
+  if (!skipAutoUpdate) {
+    // A hook rather than code before `parseAsync`: every handler calls `process.exit()` itself
+    // (see `lib/runner.ts`), so `parseAsync` never returns and there is no "after parse" to run in.
+    program.hook("preAction", async (_thisCommand, actionCommand) => {
+      // Excluded from both halves: swapping right before the `upgrade` handler would have
+      // `--dry-run` report a version other than what is now on disk, and the background download
+      // would duplicate the one being asked for.
+      if (actionCommand.name() === "upgrade") return;
+      await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv, cfg.environment)) });
+      await maybeSpawnBackgroundCheck({ cfg });
+    });
+  }
 
   try {
     await program.parseAsync(argv);
@@ -198,7 +214,7 @@ async function main(argv: string[]): Promise<void> {
       // a usage error - re-emit it through the standard envelope so agents get a parseable
       // {ok:false} on stdout with valid_commands/did_you_mean instead of a bare stderr line.
       if (code !== ExitCode.Success) {
-        const flags = usageFlags(argv);
+        const flags = usageFlags(argv, cfg.environment);
         const error = usageErrorEnvelope(err.code, err.message, program, argv.slice(2));
         emit(outputOptionsFrom(flags), {
           ok: false,
@@ -206,7 +222,7 @@ async function main(argv: string[]): Promise<void> {
         });
         try {
           const nudge = await feedbackNudgeWithDefaults({
-            command: commandPathFromArgv(program, argv),
+            command: commandPathFromArgv(program, argv.slice(2)),
             globals: flags,
             code,
             error,

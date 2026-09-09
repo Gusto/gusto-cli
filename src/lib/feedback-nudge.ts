@@ -1,7 +1,7 @@
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import { type ConfigPaths, configPaths as defaultConfigPaths, readConfig } from "./config.ts";
-import type { ExitCodeValue } from "./exit-codes.ts";
+import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { type EnvelopeError, outputOptionsFrom } from "./output.ts";
 import { VERSION } from "./version.ts";
@@ -95,6 +95,14 @@ function classify(inputs: NudgeInputs): Trigger | null {
 
   // A confirmation prompt (exit 8) is the write guardrail doing its job, not friction.
   if (error?.code === "confirmation_required") return null;
+
+  // Authentication and network failures have direct recovery paths outside the CLI implementation;
+  // they are not product defects and must not consume the once-per-day bug nudge.
+  if (inputs.code === ExitCode.Auth || inputs.code === ExitCode.Network) return null;
+
+  // Structured blocked_on details already tell the caller exactly what input to supply. Like the
+  // confirmation gate, this is a working guardrail rather than friction worth reporting as a bug.
+  if (error?.blocked_on !== undefined) return null;
 
   // A dry-run previewed a request without running it — nothing happened worth nudging about.
   if (dryRun) return null;

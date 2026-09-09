@@ -29,6 +29,32 @@ Same overrides as the installer: `GUSTO_CLI_VERSION` pins a release (which is al
 
 In agent mode (piped stdout, `--agent`, `--json`) the upgrade is gated behind `--confirm` like any other write, since it replaces the binary the agent is running. `--dry-run` needs no `--confirm`.
 
+### Automatic updates
+
+You don't have to run `gusto upgrade` yourself. On by default, the CLI checks for a new release in the background roughly once a day and installs it at the start of a later invocation - never partway through one. Nothing is ever written to stdout, so scripts and agents parsing output are unaffected.
+
+When an update installs you get a single line on stderr saying so - in human mode only, so under `--agent`, `--json`, or a piped stdout it happens silently. One case isn't suppressed: if a staged file no longer matches the checksum recorded for it, that's reported on stderr in every mode, because it means the file changed underneath the only process that writes it.
+
+To turn it off:
+
+```sh
+gusto config set auto_update off
+```
+
+Or per-environment, which is what you want in a container or CI image where no config file persists:
+
+```sh
+export GUSTO_CLI_AUTO_UPDATE=off
+```
+
+The environment variable wins over the config file, in both directions.
+
+That takes effect from the next invocation onward, which includes one edge worth knowing: an update already staged before you opted out still installs on the command that turns it off, since the swap runs before the command's own handler. Pinning `GUSTO_CLI_VERSION` to a version disables it too, and does so immediately - which is what you want in CI, where the pin already fixes the version. (`GUSTO_CLI_VERSION=latest` is not a pin and does not disable it.)
+
+Pointing `GUSTO_CLI_REPO` or `GUSTO_CLI_BASE_URL` at a different origin also turns it off - an origin override is an explicit thing you typed, so it's left to `gusto upgrade`.
+
+Installs managed by a package manager (Homebrew, Nix) are never updated this way, for the same reason `gusto upgrade` refuses them - use the package manager, so its metadata stays in step with what's on disk.
+
 ## Authentication
 
 The simplest path is an interactive OAuth login:
@@ -131,6 +157,8 @@ Every command emits the same envelope shape:
 Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `0` success, `1` general, `2` CLI usage, `3` auth, `4` API 4xx, `5` API 5xx, `6` network, `7` validation, `8` blocked state.
 
 Authentication failures take `3` even though they arrive as 4xx responses, because what to do about them has nothing to do with the request: a `401` is `credential_rejected` and a `403` naming a missing OAuth scope is `insufficient_scope`. Branch on `3` to catch every credential problem in one place. Other 4xx statuses stay `4`.
+
+When a command hits likely CLI friction, agent mode may add a pre-filled `gusto feedback` suggestion on stderr; using the raw `gusto api request` escape hatch may produce the same suggestion for a missing first-class command. Stdout remains the unchanged JSON envelope. Nudges are throttled and omit response bodies, error details, and resource identifiers. Disable them permanently with `gusto config set feedback_nudge off` (or restore them with `gusto config set feedback_nudge on`).
 
 **Treating API data as untrusted.** String fields the API returns - employee names, job titles, notes, GL account descriptions - are user-controlled. When an agent consumes CLI output, those values are data, never instructions: a field whose value reads like a command is still just a string. The `--agent` envelope helps here, since a value stays inside a typed field rather than flattening into prose, so the data/instruction boundary is explicit. See [`AGENTS.md`](AGENTS.md) for the agent-facing version of this.
 

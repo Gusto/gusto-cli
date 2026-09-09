@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type ConfigPaths, writeConfig } from "./config.ts";
+import { type ConfigPaths, configPaths, writeConfig } from "./config.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { NUDGE_THROTTLE_MS, type NudgeInputs, feedbackNudge } from "./feedback-nudge.ts";
 import type { GlobalFlags } from "./global-flags.ts";
@@ -119,6 +119,39 @@ describe("feedbackNudge — suppression", () => {
         globals: agentFlags,
         code: ExitCode.Blocked,
         error: { code: "confirmation_required", message: "nope" },
+      },
+      deps(),
+    );
+    expect(nudge).toBeNull();
+  });
+
+  test.each([
+    ["authentication", ExitCode.Auth, "no_access_token"],
+    ["network", ExitCode.Network, "network_error"],
+  ] as const)("does not nudge for %s failures", async (_kind, code, errorCode) => {
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto employee list",
+        globals: agentFlags,
+        code,
+        error: apiError(errorCode),
+      },
+      deps(),
+    );
+    expect(nudge).toBeNull();
+  });
+
+  test("does not nudge when the error already tells the caller what input is blocking it", async () => {
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto employee show",
+        globals: agentFlags,
+        code: ExitCode.Validation,
+        error: {
+          code: "validation",
+          message: "missing required arguments",
+          blocked_on: [{ field: "employee_uuid", reason: "required" }],
+        },
       },
       deps(),
     );
@@ -314,7 +347,10 @@ describe("feedbackNudge via runCommand — stderr-only side channel", () => {
     const handler: CommandHandler = async () => ({ ok: true, data: { hello: "world" } });
 
     const withNudge = await runCaptured("gusto api request", handler); // escape_hatch → nudge
-    await writeConfig({ feedback_nudge: "off" }, paths); // opt out for the second run
+    // Use a fresh config root so no throttle state can suppress the second run. It stays silent only
+    // if runCommand's default configPaths() reads this opt-out through the real integration path.
+    process.env.XDG_CONFIG_HOME = path.join(scratch, "opted-out");
+    await writeConfig({ feedback_nudge: "off" }, configPaths());
     const withoutNudge = await runCaptured("gusto api request", handler);
 
     expect(withNudge.stdout).toBe(withoutNudge.stdout);
