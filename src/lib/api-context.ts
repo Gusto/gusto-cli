@@ -1,4 +1,5 @@
 import { ApiClient, type AuthContext, type ResolvedTokenSource, stderrRequestObserver } from "./api-client.ts";
+import { resolveInstallIdHeader } from "./config.ts";
 import { confirmationGate } from "./confirm.ts";
 import {
   type CompanySource,
@@ -81,6 +82,7 @@ export function buildApiClient(
   opts: {
     baseUrl: string;
     token: string;
+    installId?: string;
     stderr?: NodeJS.WritableStream;
     auth?: AuthContext;
     onUnauthorized?: () => Promise<string | null>;
@@ -90,6 +92,7 @@ export function buildApiClient(
     baseUrl: opts.baseUrl,
     token: opts.token,
     apiVersion: resolveApiVersion(),
+    installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
     auth: opts.auth,
     onUnauthorized: opts.onUnauthorized,
@@ -254,13 +257,21 @@ export async function resolveApiContext(
 
   const baseUrl = resolveBaseUrl(globals.env);
   const environment = defaultEnv(globals.env);
+  const installId = await resolveInstallIdHeader();
   const client = buildApiClient(globals, {
     baseUrl,
     token,
+    installId,
     auth: { tokenSource, environment },
     onUnauthorized:
       tokenSource === "session"
-        ? () => reactiveRefresh(opts.store ?? resolveStore(), environment, opts.http ?? oauthHttp(globals), opts.now)
+        ? async () =>
+            reactiveRefresh(
+              opts.store ?? resolveStore(),
+              environment,
+              opts.http ?? (await oauthHttp(globals)),
+              opts.now,
+            )
         : undefined,
   });
 
@@ -305,7 +316,7 @@ export async function resolveApiContext(
  * corrupt credentials file is a real error rather than a credential state, so it surfaces. */
 async function sessionOutcome(globals: GlobalFlags, opts: AuthOpts, env: Environment): Promise<SessionOutcome> {
   const store = opts.store ?? resolveStore();
-  const http = opts.http ?? oauthHttp(globals);
+  const http = opts.http ?? (await oauthHttp(globals));
   return resolveSessionToken(store, env, http, opts.now);
 }
 

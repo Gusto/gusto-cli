@@ -38,7 +38,7 @@ export function registerConfigCommand(parent: Command): void {
 
   cmd
     .command("set <key> <value>")
-    .description("Set a user config key (V1: environment, format)")
+    .description(`Set a user config key (one of: ${CONFIG_KEYS.join(", ")})`)
     .addHelpText(
       "after",
       `
@@ -86,9 +86,10 @@ function configSetHandler(key: string, value: string): CommandHandler {
       };
     }
     const normalized = normalizeValue(validKey, value);
-    const cfg = await readConfig();
+    const paths = configPaths();
+    const cfg = await readConfig(paths);
     const updated: UserConfig = { ...cfg, [validKey]: normalized };
-    await writeConfig(updated);
+    await writeConfig(updated, paths);
     return { ok: true, data: { key: validKey, value: normalized } };
   };
 }
