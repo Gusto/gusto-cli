@@ -113,30 +113,21 @@ describe("callMcpTool — command header", () => {
   // `feedback` (and any callMcpTool command) rides the same buildApiClient path as the REST
   // surfaces, so its request carries X-Gusto-CLI-Command too. That's intended: the header
   // attributes each API request to the command that made it, and `feedback` is a real command.
-  // stubGlobalFetch's RecordedCall doesn't retain headers, so capture them off the RequestInit.
-  async function captureHeaders(globals: GlobalFlags): Promise<Record<string, string>> {
-    let headers: Record<string, string> = {};
-    const original = globalThis.fetch;
-    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      headers = (init?.headers as Record<string, string>) ?? {};
-      return new Response(JSON.stringify(successEnvelope({ source: "none" })), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
+  async function captureHeaders(globals: GlobalFlags): Promise<RequestInit["headers"]> {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ source: "none" }) }));
     try {
       const result = await callMcpTool({ ...globals, command: "gusto feedback" }, stdinAuth(), "submit_feedback", {
         message: "hello",
       });
       expect(result.ok).toBe(true);
+      return stub.calls[0]?.headers;
     } finally {
-      globalThis.fetch = original;
+      stub.restore();
     }
-    return headers;
   }
 
   test("the feedback (MCP) path carries X-Gusto-CLI-Command with the command slug", async () => {
-    const headers = await captureHeaders(sandbox);
+    const headers = (await captureHeaders(sandbox)) as Record<string, string>;
     expect(headers["X-Gusto-CLI-Command"]).toBe("feedback");
   });
 });

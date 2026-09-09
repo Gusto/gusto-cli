@@ -30,6 +30,7 @@ export interface OAuthHttpOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   installId?: string;
+  command?: string;
 }
 
 function joinUrl(baseUrl: string, path: string): string {

@@ -20,6 +20,16 @@ export interface GlobalFlags {
   command?: string;
 }
 
+/** Turn a full command path into the compact slug sent as `X-Gusto-CLI-Command`: strip a leading
+ * `"gusto "`, trim, lowercase, and collapse internal whitespace runs to a single `-`. */
+export function commandSlug(command: string): string {
+  return command
+    .replace(/^gusto /, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+}
+
 /** Resolve commander's `--fields [list]` value into a FieldSelection.
  * Absent → undefined; present with no/blank value → discover; otherwise a select on the keys. */
 function readFieldSelection(raw: unknown): FieldSelection | undefined {

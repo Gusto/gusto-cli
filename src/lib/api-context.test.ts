@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ApiClient, ApiError } from "./api-client.ts";
 import {
   buildApiClient,
-  commandSlug,
   createCompanyResource,
   fetchCompanyResource,
   fetchResource,
@@ -14,7 +13,8 @@ import {
   writeResource,
 } from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import { commandSlug, type GlobalFlags } from "./global-flags.ts";
+import { oauthHttp } from "./oauth/context.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import { memoryStore, mockHttp } from "./oauth/test-support.ts";
 import type { TokenStore } from "./oauth/token-store.ts";
@@ -62,7 +62,13 @@ const throwingStore = (err: unknown): TokenStore => ({
 
 // resolveApiContext reads token/company/base-url from process.env when no override is passed.
 // Snapshot and clear the relevant vars so tests don't depend on the dev's shell.
-const ENV_KEYS = ["GUSTO_ACCESS_TOKEN", "GUSTO_COMPANY_UUID", "GUSTO_API_BASE_URL", "GUSTO_API_VERSION"];
+const ENV_KEYS = [
+  "GUSTO_ACCESS_TOKEN",
+  "GUSTO_COMPANY_UUID",
+  "GUSTO_API_BASE_URL",
+  "GUSTO_API_VERSION",
+  "GUSTO_TELEMETRY",
+];
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -1226,40 +1232,54 @@ describe("commandSlug", () => {
 });
 
 describe("buildApiClient command header wiring", () => {
-  // Capture the request headers the client actually sends by stubbing global fetch before
-  // buildApiClient constructs the client (which captures `fetch` at construction).
-  async function callAndCaptureHeaders(globals: GlobalFlags): Promise<Record<string, string>> {
-    let headers: Record<string, string> = {};
-    const captureFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      headers = (init?.headers as Record<string, string>) ?? {};
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-    const original = globalThis.fetch;
-    globalThis.fetch = captureFetch;
+  async function callAndCaptureHeaders(globals: GlobalFlags): Promise<RequestInit["headers"]> {
+    const stub = stubGlobalFetch([{ status: 200, body: { ok: true } }]);
     try {
       const client = buildApiClient(globals, { baseUrl: "https://api.example.test", token: "t" });
       await client.get("/v1/me");
+      return stub.calls[0]?.headers;
     } finally {
-      globalThis.fetch = original;
+      stub.restore();
     }
-    return headers;
   }
 
   test("a structured command carries its slug as X-Gusto-CLI-Command", async () => {
-    const headers = await callAndCaptureHeaders({ ...flags, command: "gusto employee list" });
+    const headers = (await callAndCaptureHeaders({ ...flags, command: "gusto employee list" })) as Record<
+      string,
+      string
+    >;
     expect(headers["X-Gusto-CLI-Command"]).toBe("employee-list");
   });
 
   test("the `gusto api request` escape hatch carries its own slug", async () => {
-    const headers = await callAndCaptureHeaders({ ...flags, command: "gusto api request" });
+    const headers = (await callAndCaptureHeaders({ ...flags, command: "gusto api request" })) as Record<string, string>;
     expect(headers["X-Gusto-CLI-Command"]).toBe("api-request");
   });
 
   test("no command on globals sends no X-Gusto-CLI-Command header", async () => {
-    const headers = await callAndCaptureHeaders(flags);
+    const headers = (await callAndCaptureHeaders(flags)) as Record<string, string>;
     expect(headers["X-Gusto-CLI-Command"]).toBeUndefined();
+  });
+
+  test("GUSTO_TELEMETRY=0 suppresses X-Gusto-CLI-Command", async () => {
+    process.env.GUSTO_TELEMETRY = "0";
+    const headers = (await callAndCaptureHeaders({ ...flags, command: "gusto employee list" })) as Record<
+      string,
+      string
+    >;
+    expect(headers["X-Gusto-CLI-Command"]).toBeUndefined();
+  });
+});
+
+describe("oauthHttp command header wiring", () => {
+  test("carries the auth login command slug into the OAuth token_info client", async () => {
+    const http = await oauthHttp({ ...flags, command: "gusto auth login" });
+    expect(http.command).toBe("auth-login");
+  });
+
+  test("GUSTO_TELEMETRY=0 suppresses the OAuth token_info command header", async () => {
+    process.env.GUSTO_TELEMETRY = "0";
+    const http = await oauthHttp({ ...flags, command: "gusto auth login" });
+    expect(http.command).toBeUndefined();
   });
 });

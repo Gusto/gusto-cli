@@ -6,11 +6,12 @@ import {
   defaultEnv,
   getAccessToken,
   getCompanyUuid,
+  isTelemetryEnabled,
   resolveApiVersion,
   resolveBaseUrl,
 } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { Environment, GlobalFlags } from "./global-flags.ts";
+import { commandSlug, type Environment, type GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp } from "./oauth/context.ts";
 import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
@@ -90,21 +91,9 @@ export function buildApiClient(
     apiVersion: resolveApiVersion(),
     installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
-    command: globals.command ? commandSlug(globals.command) : undefined,
+    command: isTelemetryEnabled() && globals.command ? commandSlug(globals.command) : undefined,
     auth: opts.auth,
   });
-}
-
-/** Turn a full command path into the compact slug sent as `X-Gusto-CLI-Command`: strip a leading
- * `"gusto "`, trim, lowercase, and collapse internal whitespace runs to a single `-`. So
- * `"gusto employee list"` → `"employee-list"` and `"gusto api request"` → `"api-request"`. Keeps
- * server-side request-log breakdowns grouping cleanly by command. */
-export function commandSlug(command: string): string {
-  return command
-    .replace(/^gusto /, "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-");
 }
 
 export type ResolveFailure = "credentials" | "invalid_input";

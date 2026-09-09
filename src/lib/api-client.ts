@@ -144,7 +144,7 @@ export interface ApiClientOptions {
   observer?: RequestObserver;
   /** Slug of the CLI command driving these requests (e.g. `employee-list`). When set, sent as the
    * `X-Gusto-CLI-Command` header on every request so server-side observability can break CLI
-   * traffic down by command. Absent for surfaces with no command context (e.g. OAuth login). */
+   * traffic down by command. Omitted when command context is unavailable or telemetry is disabled. */
   command?: string;
   /** The credential this client authenticates with, stamped onto any `ApiError` it throws so a 401
    * can name what was refused. Omitted by clients built without a resolved context. */
