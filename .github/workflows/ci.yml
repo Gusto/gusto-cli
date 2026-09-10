@@ -134,12 +134,22 @@ jobs:
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2, pinned to the SHA on Gusto's org Actions allowlist
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - name: Smoke test CI-built binary
+      - name: Prepare CI-built binary
         env:
-          GUSTO_CLI_BIN_PATH: dist/${{ matrix.binary }}
+          ARTIFACT_BIN_PATH: dist/${{ matrix.binary }}
+        # The installer gives the platform asset its runtime name; mirror that
+        # installed shape so self-update behavior is covered by smoke tests too.
         run: |
-          chmod +x "$GUSTO_CLI_BIN_PATH"
-          bun test tests/smoke.test.ts
+          cp "$ARTIFACT_BIN_PATH" dist/gusto
+          chmod +x dist/gusto
+      - name: Ad-hoc sign CI-built macOS binary
+        if: runner.os == 'macOS'
+        # Release-shaped builds omit bun's self-signature so the Developer ID
+        # signature has enough room. An ad-hoc signature makes the downloaded
+        # binary executable for CI before release.yml applies the real signature.
+        run: codesign --force --sign - dist/gusto
+      - name: Smoke test CI-built binary
+        run: bun test tests/smoke.test.ts
 
   build:
     name: Build all platform binaries

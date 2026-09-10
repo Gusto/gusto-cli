@@ -16,7 +16,7 @@ import path from "node:path";
 import { type Run, spawnCapture } from "./support";
 import pkg from "../package.json" with { type: "json" };
 
-const BIN_PATH = path.resolve(process.env.GUSTO_CLI_BIN_PATH ?? path.join(import.meta.dir, "..", "dist", "gusto"));
+const BIN_PATH = path.resolve(import.meta.dir, "..", "dist", "gusto");
 
 // Employee commands validate their identifier before resolving auth, so any row that expects to
 // reach the auth check needs a well-formed uuid rather than a short slug.
@@ -61,7 +61,7 @@ function stripGustoEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 describe("compiled binary", () => {
   beforeAll(() => {
     if (!existsSync(BIN_PATH)) {
-      throw new Error(`Binary not found at ${BIN_PATH}. Run \`bun run build\` or set GUSTO_CLI_BIN_PATH.`);
+      throw new Error(`Binary not found at ${BIN_PATH}. Run \`bun run build\` first.`);
     }
   });
 
