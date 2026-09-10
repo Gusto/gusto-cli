@@ -18,13 +18,12 @@ function runCliStderr(args: string[], cwd: string = REPO): string {
   return Bun.spawnSync(["bun", SCRIPT, ...args], { cwd }).stderr.toString();
 }
 
-// Build a throwaway project the CLI can scan: workflows for bunVersion(), a root
-// manifest, and installed packages under node_modules.
+// Build a throwaway project the CLI can scan: the build workflow for bunVersion(),
+// a root manifest, and installed packages under node_modules.
 function makeProject(deps: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "lic-"));
   mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
   writeFileSync(join(dir, ".github", "workflows", "ci.yml"), "  BUN_VERSION: 1.3.14\n");
-  writeFileSync(join(dir, ".github", "workflows", "release.yml"), "  BUN_VERSION: 1.3.14\n");
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixture", dependencies: deps }));
   return dir;
 }
@@ -121,16 +120,12 @@ describe("isPackageRoot", () => {
 });
 
 describe("parseBunVersion", () => {
-  test("returns the version when ci.yml and release.yml agree", () => {
-    expect(parseBunVersion("BUN_VERSION: 1.3.14", "env:\n  BUN_VERSION: 1.3.14")).toBe("1.3.14");
+  test("returns the Bun version used to build the shipped binaries in ci.yml", () => {
+    expect(parseBunVersion("env:\n  BUN_VERSION: 1.3.14")).toBe("1.3.14");
   });
 
-  test("throws when the two workflows disagree", () => {
-    expect(() => parseBunVersion("BUN_VERSION: 1.3.14", "BUN_VERSION: 1.2.0")).toThrow(/mismatch/);
-  });
-
-  test("throws when a version is missing", () => {
-    expect(() => parseBunVersion("BUN_VERSION: 1.3.14", "nothing here")).toThrow();
+  test("throws when ci.yml does not declare a version", () => {
+    expect(() => parseBunVersion("nothing here")).toThrow(/ci\.yml/);
   });
 });
 
