@@ -14,9 +14,10 @@ describe("VERSION", () => {
 
   test("matches the version in the README status", () => {
     const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
-    const statusVersion = readme.match(/^> \*\*Status: v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.\*\*/m)?.[1];
+    const statusLine = readme.match(/^> \*\*Status: v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.\*\*/m);
 
-    expect(statusVersion).toBe(pkg.version);
+    expect(statusLine).not.toBeNull();
+    expect(statusLine![1]).toBe(pkg.version);
   });
 });
 
