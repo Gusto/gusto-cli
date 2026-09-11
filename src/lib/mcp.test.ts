@@ -388,6 +388,36 @@ describe("callMcpTool — HTTP-level failures (via ApiClient → toResult)", () 
     }
   });
 
+  test("a session token that 401s from the MCP gateway refreshes once and retries, same as a REST command", async () => {
+    const s = stubGlobalFetch([
+      { status: 401, body: { error: "unauthorized" } },
+      { status: 200, body: successEnvelope({ source: "refreshed" }) },
+    ]);
+    try {
+      const result = await callMcpTool(
+        sandbox,
+        {
+          store: memoryStore({
+            sandbox: {
+              clientId: "cli-id",
+              clientSecret: "cli-secret",
+              accessToken: "stale-tok",
+              refreshToken: "refresh-tok",
+              expiresAt: 4_102_444_800_000,
+            },
+          }),
+          http: mockHttp({ status: 200, body: { access_token: "fresh-tok", expires_in: 3600 } }),
+        },
+        "list_time_records",
+        { start_date: "2026-06-01", end_date: "2026-06-15" },
+      );
+      expect(result.ok).toBe(true);
+      expect(s.calls).toHaveLength(2);
+    } finally {
+      s.restore();
+    }
+  });
+
   test("a fetch throw (DNS/connection) maps to network_error / Network exit", async () => {
     const original = globalThis.fetch;
     globalThis.fetch = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
