@@ -23,7 +23,7 @@ body:
     attributes:
       label: CLI version
       description: Output of `gusto --version`.
-      placeholder: "0.1.0"
+      placeholder: "0.3.0"
     validations:
       required: true
   - type: dropdown
