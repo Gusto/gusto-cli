@@ -149,7 +149,7 @@ jobs:
         # binary executable for CI before release.yml applies the real signature.
         run: codesign --force --sign - dist/gusto
       - name: Smoke test CI-built binary
-        run: bun test tests/smoke.test.ts
+        run: bun run test:smoke:only
 
   build:
     name: Build all platform binaries
