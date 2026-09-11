@@ -58,6 +58,12 @@ function stripGustoEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
+function nudgeContext(stderr: string): Record<string, unknown> {
+  const context = stderr.match(/--context '([^']+)'/)?.[1];
+  if (context === undefined) throw new Error(`no feedback context in stderr: ${stderr}`);
+  return JSON.parse(context) as Record<string, unknown>;
+}
+
 describe("compiled binary", () => {
   beforeAll(() => {
     if (!existsSync(BIN_PATH)) {
@@ -98,13 +104,90 @@ describe("compiled binary", () => {
   });
 
   test("unknown command exits 2", async () => {
-    const result = await run(["this-command-does-not-exist"]);
-    expect(result.exitCode).toBe(2);
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-parse-nudge-"));
+    try {
+      const result = await run(["this-command-does-not-exist"], { XDG_CONFIG_HOME: isolated });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain("gusto feedback");
+      expect(result.stderr).toContain("--category feature_request");
+      expect(nudgeContext(result.stderr).command).toBe("unknown-command");
+      expect(JSON.parse(result.stdout.trim()).error.attempted_command).toBe("gusto this-command-does-not-exist");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  test("parse failures from auth login stay exempt from feedback nudges after global options", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-auth-parse-nudge-"));
+    try {
+      const result = await run(["--env", "sandbox", "auth", "login", "--not-an-option"], {
+        XDG_CONFIG_HOME: isolated,
+      });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  test("parse failures from config stay exempt when a global option consumes a separate value", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-config-parse-nudge-"));
+    try {
+      const result = await run(["--fields", "value", "config", "get", "environment", "--not-an-option"], {
+        XDG_CONFIG_HOME: isolated,
+      });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   test("--env validates choices", async () => {
     const result = await run(["--env", "staging", "auth", "whoami"]);
-    expect(result.exitCode).toBe(2);
+    expect(result.exitCode).toBe(7);
+    const envelope = JSON.parse(result.stdout.trim());
+    expect(envelope.error.code).toBe("validation");
+    expect(envelope.error.blocked_on).toContainEqual(expect.objectContaining({ field: "env" }));
+  });
+
+  test("a parse-time nudge records an explicit sandbox environment", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-env-nudge-"));
+    try {
+      const result = await run(["--env", "sandbox", "frobnicate", "list"], { XDG_CONFIG_HOME: isolated });
+      expect(result.exitCode).toBe(2);
+      expect(nudgeContext(result.stderr).environment).toBe("sandbox");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ["environment variable", ["frobnicate", "list"], { GUSTO_ENVIRONMENT: "sandbox" }],
+    ["last repeated flag", ["--env", "production", "--env", "sandbox", "frobnicate", "list"], {}],
+    ["trailing global flag", ["frobnicate", "list", "--env", "sandbox"], {}],
+  ] as const)("a parse-time nudge honors the %s environment source", async (_source, args, extraEnv) => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-env-precedence-"));
+    try {
+      const result = await run([...args], { XDG_CONFIG_HOME: isolated, ...extraEnv });
+      expect(result.exitCode).toBe(2);
+      expect(nudgeContext(result.stderr).environment).toBe("sandbox");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  test("a parse-time nudge falls back to the persisted environment", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-env-config-nudge-"));
+    try {
+      const set = await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: isolated });
+      expect(set.exitCode).toBe(0);
+      const result = await run(["frobnicate", "list"], { XDG_CONFIG_HOME: isolated });
+      expect(result.exitCode).toBe(2);
+      expect(nudgeContext(result.stderr).environment).toBe("sandbox");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });
 
@@ -115,6 +198,7 @@ describe("auth required commands without a token", () => {
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(false);
     expect(envelope.error.code).toBe("no_access_token");
+    expect(result.stderr).not.toContain("gusto feedback");
   });
 
   test("auth whoami without token returns no_access_token", async () => {
@@ -401,11 +485,17 @@ describe("usage errors are self-correcting envelopes in agent mode", () => {
   });
 
   test("a typo'd top-level command suggests the nearest match", async () => {
-    const result = await run(["compant"]);
-    expect(result.exitCode).toBe(2);
-    const env = JSON.parse(result.stdout.trim());
-    expect(env.error.code).toBe("unknown_command");
-    expect(env.error.did_you_mean).toBe("company");
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-typo-nudge-"));
+    try {
+      const result = await run(["compant"], { XDG_CONFIG_HOME: isolated });
+      expect(result.exitCode).toBe(2);
+      const env = JSON.parse(result.stdout.trim());
+      expect(env.error.code).toBe("unknown_command");
+      expect(env.error.did_you_mean).toBe("company");
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   test("an unknown option is a structured unknown_option envelope pointing at --help, not the hatch", async () => {
@@ -426,6 +516,14 @@ describe("usage errors are self-correcting envelopes in agent mode", () => {
     const env = JSON.parse(result.stdout.trim());
     expect(env.error.code).toBe("validation");
     expect(env.error.blocked_on).toEqual([{ field: "contractor_uuid", reason: "required" }]);
+  });
+
+  test("an invalid feedback category returns a blocked_on validation envelope (exit 7)", async () => {
+    const result = await run(["feedback", "--message", "hi", "--category", "bugg"]);
+    expect(result.exitCode).toBe(7);
+    const env = JSON.parse(result.stdout.trim());
+    expect(env.error.code).toBe("validation");
+    expect(env.error.blocked_on).toContainEqual(expect.objectContaining({ field: "category" }));
   });
 
   test("a command group with no subcommand still prints help (exit 0), not an envelope", async () => {
@@ -1021,6 +1119,21 @@ describe("--fields filters success output", () => {
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.ok).toBe(true);
     expect(Object.keys(envelope.data)).toEqual(["method", "path"]);
+  });
+
+  test("api request --dry-run does not nudge when --fields names an unknown key", async () => {
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-dry-run-nudge-"));
+    try {
+      const result = await run(
+        ["api", "request", "POST", "/v1/things", "--data", "{}", "--dry-run", "--fields", "nope"],
+        { XDG_CONFIG_HOME: isolated },
+      );
+      expect(result.exitCode).toBe(2);
+      expect(JSON.parse(result.stdout.trim()).error.code).toBe("unknown_fields");
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   test("pay-schedule create --fields (no value) rejects discovery on a write command, exit 2", async () => {

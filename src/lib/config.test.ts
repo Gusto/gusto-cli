@@ -31,6 +31,7 @@ describe("validateKey", () => {
     expect(validateKey("environment")).toBe("environment");
     expect(validateKey("format")).toBe("format");
     expect(validateKey("skills_auto_install")).toBe("skills_auto_install");
+    expect(validateKey("feedback_nudge")).toBe("feedback_nudge");
     expect(validateKey("auto_update")).toBe("auto_update");
   });
   test("rejects unknown keys", () => {
@@ -86,6 +87,15 @@ describe("normalizeValue", () => {
     expect(validateValue("skills_auto_install", "never")).toBeNull();
     expect(validateValue("skills_auto_install", "sometimes")).not.toBeNull();
   });
+  test("feedback_nudge must be on or off", () => {
+    expect(validateValue("feedback_nudge", "on")).toBeNull();
+    expect(validateValue("feedback_nudge", "off")).toBeNull();
+    expect(validateValue("feedback_nudge", "ask")).not.toBeNull();
+    expect(validateValue("feedback_nudge", "always")).not.toBeNull();
+    expect(validateValue("feedback_nudge", "never")).not.toBeNull();
+    expect(validateValue("feedback_nudge", "sometimes")).not.toBeNull();
+  });
+
   test("auto_update must be on or off", () => {
     expect(validateValue("auto_update", "on")).toBeNull();
     expect(validateValue("auto_update", "off")).toBeNull();
@@ -108,6 +118,23 @@ describe("read/write/reset", () => {
     expect(await readConfig(paths)).toEqual({ skills_auto_install: "always" });
     await Bun.write(paths.file, `skills_auto_install = "sometimes"\n`);
     expect(await readConfig(paths)).toEqual({});
+  });
+
+  test("feedback_nudge round-trips, and an unparseable value reads as off rather than on", async () => {
+    await writeConfig({ feedback_nudge: "off" }, paths);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+
+    await Bun.write(paths.file, `feedback_nudge = false\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+    await Bun.write(paths.file, `feedback_nudge = true\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "on" });
+
+    await Bun.write(paths.file, `feedback_nudge = "sometimes"\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+    await Bun.write(paths.file, `feedback_nudge = "OFF"\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+    await Bun.write(paths.file, `feedback_nudge = "  on  "\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "on" });
   });
 
   // Unlike every other key here, a value this one can't parse must not fall back to the default:

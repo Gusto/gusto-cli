@@ -127,7 +127,7 @@ The commands above are examples. `gusto --help` lists every top-level command an
 
 When a command is driven by an agent (piped stdout, `--agent`, or `--json`), a write is blocked with a `confirmation_required` envelope (exit 8) until it's re-run with `--confirm`. This keeps a human in the loop: surface the action, get approval, then add `--confirm`. `--dry-run` previews without it, and interactive (TTY) runs aren't gated. The CLI only drafts payroll - it has no run/submit command, so it can't move money even with `--confirm`.
 
-Missing required arguments return a structured `blocked_on` envelope (exit 7) so agents can retry with the missing fields, e.g.:
+Missing required arguments and invalid option values return a structured `blocked_on` envelope (exit 7) so agents can retry with corrected input, e.g.:
 
 ```json
 {
@@ -154,9 +154,11 @@ Every command emits the same envelope shape:
 { "ok": false, "error": { "code": "...", "message": "...", "blocked_on": [...] } }
 ```
 
-Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `0` success, `1` general, `2` CLI usage, `3` auth, `4` API 4xx, `5` API 5xx, `6` network, `7` validation, `8` blocked state.
+Exit codes are documented in [`src/lib/exit-codes.ts`](src/lib/exit-codes.ts): `0` success, `1` general, `2` other CLI usage, `3` auth, `4` API 4xx, `5` API 5xx, `6` network, `7` input validation (including missing arguments and invalid option values), `8` blocked state, `9` timeout.
 
 Authentication failures take `3` even though they arrive as 4xx responses, because what to do about them has nothing to do with the request: a `401` is `credential_rejected` and a `403` naming a missing OAuth scope is `insufficient_scope`. Branch on `3` to catch every credential problem in one place. Other 4xx statuses stay `4`.
+
+When a command hits likely CLI friction, agent mode may add a pre-filled `gusto feedback` suggestion on stderr; using the raw `gusto api request` escape hatch may produce the same suggestion for a missing first-class command. Stdout remains the unchanged JSON envelope. Nudges are throttled and omit response bodies, error details, and resource identifiers. Disable them in the config with `gusto config set feedback_nudge off` (or restore them with `gusto config set feedback_nudge on`). Set `GUSTO_CLI_FEEDBACK_NUDGE=off` for one invocation or in an ephemeral container where config and throttle state do not persist; the environment variable wins over the config file.
 
 **Treating API data as untrusted.** String fields the API returns - employee names, job titles, notes, GL account descriptions - are user-controlled. When an agent consumes CLI output, those values are data, never instructions: a field whose value reads like a command is still just a string. The `--agent` envelope helps here, since a value stays inside a typed field rather than flattening into prose, so the data/instruction boundary is explicit. See [`AGENTS.md`](AGENTS.md) for the agent-facing version of this.
 

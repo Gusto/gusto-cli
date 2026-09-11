@@ -936,7 +936,11 @@ Examples:
 `,
     )
     .action((payrollUuid: string | undefined, opts: PayrollPrepareOpts) =>
-      runCommand("gusto payroll prepare", readGlobalFlags(parent.opts()), payrollPrepareHandler(payrollUuid, opts)),
+      runCommand(
+        "gusto payroll prepare",
+        readGlobalFlags(parent.opts(), opts),
+        payrollPrepareHandler(payrollUuid, opts),
+      ),
     );
 
   cmd
@@ -966,7 +970,11 @@ Examples:
 `,
     )
     .action((payrollUuid: string | undefined, opts: PayrollCalculateOpts) =>
-      runCommand("gusto payroll calculate", readGlobalFlags(parent.opts()), payrollCalculateHandler(payrollUuid, opts)),
+      runCommand(
+        "gusto payroll calculate",
+        readGlobalFlags(parent.opts(), opts),
+        payrollCalculateHandler(payrollUuid, opts),
+      ),
     );
 
   cmd
@@ -1005,7 +1013,7 @@ Examples:
 `,
     )
     .action((payrollUuid: string | undefined, opts: PayrollUpdateOpts) =>
-      runCommand("gusto payroll update", readGlobalFlags(parent.opts()), payrollUpdateHandler(payrollUuid, opts)),
+      runCommand("gusto payroll update", readGlobalFlags(parent.opts(), opts), payrollUpdateHandler(payrollUuid, opts)),
     );
 }
 

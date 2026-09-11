@@ -24,9 +24,10 @@ import {
   runBackgroundCheck,
   swapStagedUpdate,
 } from "./lib/auto-update.ts";
-import { usageErrorEnvelope } from "./lib/command-diagnostics.ts";
+import { commandPathFromArgv, optionValueFromArgv, usageErrorEnvelope } from "./lib/command-diagnostics.ts";
 import { readConfig, type UserConfig } from "./lib/config.ts";
-import { ExitCode } from "./lib/exit-codes.ts";
+import { ExitCode, type ExitCodeValue } from "./lib/exit-codes.ts";
+import { feedbackNudgeWithDefaults } from "./lib/feedback-nudge.ts";
 import type { Environment, GlobalFlags } from "./lib/global-flags.ts";
 import { type StreamSinks, defaultSinks, emit, outputOptionsFrom, resolveOutputMode } from "./lib/output.ts";
 import { SKIP_AUTO_UPDATE_ENV } from "./lib/upgrade.ts";
@@ -117,7 +118,7 @@ function installSignalHandlers(): void {
   process.on("SIGTERM", onSignal);
 }
 
-function exitCodeForCommanderError(err: CommanderError): number {
+function exitCodeForCommanderError(err: CommanderError): ExitCodeValue {
   switch (err.code) {
     case "commander.helpDisplayed":
     case "commander.help":
@@ -126,6 +127,7 @@ function exitCodeForCommanderError(err: CommanderError): number {
     // A missing required positional is a validation failure, not a generic usage error: CLAUDE.md
     // documents it as the exit-7 blocked_on case, matching the handler-level `missingArgs` path.
     case "commander.missingArgument":
+    case "commander.invalidArgument":
       return ExitCode.Validation;
     default:
       return ExitCode.CliUsage;
@@ -135,12 +137,17 @@ function exitCodeForCommanderError(err: CommanderError): number {
 /** Minimal flags for picking the output mode when reporting a usage error. The mode-selecting flags
  * are global, so a raw-argv scan is reliable even when commander threw before finishing its parse
  * (an unknown subcommand aborts parsing before a trailing --json is recorded on program.opts()). */
-function usageFlags(argv: string[]): GlobalFlags {
+function usageFlags(argv: string[], configuredEnvironment?: Environment): GlobalFlags {
+  const isEnvironment = (value: string): value is Environment => value === "sandbox" || value === "production";
+  const explicitEnv = optionValueFromArgv(argv.slice(2), "--env", isEnvironment);
+  const ambientEnv = process.env.GUSTO_ENVIRONMENT;
   return {
     agent: argv.includes("--agent"),
     human: argv.includes("--human"),
     json: argv.includes("--json"),
     verbose: false,
+    dryRun: argv.includes("--dry-run"),
+    env: explicitEnv ?? (ambientEnv !== undefined && isEnvironment(ambientEnv) ? ambientEnv : configuredEnvironment),
   };
 }
 
@@ -193,7 +200,7 @@ async function main(argv: string[]): Promise<void> {
       // `--dry-run` report a version other than what is now on disk, and the background download
       // would duplicate the one being asked for.
       if (actionCommand.name() === "upgrade") return;
-      await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv)) });
+      await swapStagedUpdate({ cfg, sinks: defaultSinks, mode: resolveOutputMode(usageFlags(argv, cfg.environment)) });
       await maybeSpawnBackgroundCheck({ cfg });
     });
   }
@@ -207,10 +214,24 @@ async function main(argv: string[]): Promise<void> {
       // a usage error - re-emit it through the standard envelope so agents get a parseable
       // {ok:false} on stdout with valid_commands/did_you_mean instead of a bare stderr line.
       if (code !== ExitCode.Success) {
-        emit(outputOptionsFrom(usageFlags(argv)), {
+        const flags = usageFlags(argv, cfg.environment);
+        const error = usageErrorEnvelope(err.code, err.message, program, argv.slice(2));
+        emit(outputOptionsFrom(flags), {
           ok: false,
-          error: usageErrorEnvelope(err.code, err.message, program, argv.slice(2)),
+          error,
         });
+        try {
+          const nudge = await feedbackNudgeWithDefaults({
+            command: commandPathFromArgv(program, argv.slice(2)),
+            globals: flags,
+            code,
+            error,
+            dryRun: flags.dryRun,
+          });
+          if (nudge) defaultSinks.stderr.write(nudge);
+        } catch {
+          // never fail a command over its feedback nudge
+        }
       }
       process.exit(code);
     }

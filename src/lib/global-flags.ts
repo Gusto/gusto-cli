@@ -12,6 +12,8 @@ export interface GlobalFlags {
   human: boolean;
   json: boolean;
   verbose: boolean;
+  /** True when the invocation carries a command-level `--dry-run` flag. */
+  dryRun?: boolean;
   env?: Environment;
   fields?: FieldSelection;
 }
@@ -25,12 +27,13 @@ function readFieldSelection(raw: unknown): FieldSelection | undefined {
   return keys.length === 0 ? { mode: "discover" } : { mode: "select", keys };
 }
 
-export function readGlobalFlags(opts: OptionValues): GlobalFlags {
+export function readGlobalFlags(opts: OptionValues, commandOpts: OptionValues = {}): GlobalFlags {
   return {
     agent: opts.agent === true,
     human: opts.human === true,
     json: opts.json === true,
     verbose: opts.verbose === true,
+    dryRun: commandOpts.dryRun === true,
     // Already resolved by commander: `--env` > GUSTO_ENVIRONMENT (via `.env()`) > the config-file
     // default (via `.default()`, installed in `buildProgram`). Undefined when none was set, which
     // `defaultEnv` reads as production.

@@ -7,22 +7,25 @@ import type { EnvSource } from "./env.ts";
 import type { Environment } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
-export type ConfigKey = "environment" | "format" | "skills_auto_install" | "auto_update";
+export type ConfigKey = "environment" | "format" | "skills_auto_install" | "feedback_nudge" | "auto_update";
 
 export const CONFIG_KEYS: readonly ConfigKey[] = [
   "environment",
   "format",
   "skills_auto_install",
+  "feedback_nudge",
   "auto_update",
 ] as const;
 
 export type SkillsAutoInstall = "ask" | "always" | "never";
+export type FeedbackNudge = "on" | "off";
 export type AutoUpdate = "on" | "off";
 
 export interface UserConfig {
   environment?: Environment;
   format?: OutputMode;
   skills_auto_install?: SkillsAutoInstall;
+  feedback_nudge?: FeedbackNudge;
   auto_update?: AutoUpdate;
   /** Anonymous per-install UUID managed by getOrCreateInstallId; not user-configurable. */
   install_id?: string;
@@ -31,15 +34,18 @@ export interface UserConfig {
 const ENV_VALUES: readonly Environment[] = ["sandbox", "production"] as const;
 const FORMAT_VALUES: readonly OutputMode[] = ["agent", "human"] as const;
 const SKILLS_AUTO_INSTALL_VALUES: readonly SkillsAutoInstall[] = ["ask", "always", "never"] as const;
+const FEEDBACK_NUDGE_VALUES: readonly FeedbackNudge[] = ["on", "off"] as const;
 const AUTO_UPDATE_VALUES: readonly AutoUpdate[] = ["on", "off"] as const;
 
 /** The env override for `auto_update`, which wins over the config file. */
 export const AUTO_UPDATE_ENV = "GUSTO_CLI_AUTO_UPDATE";
+/** The env override for `feedback_nudge`, which wins over the config file. */
+export const FEEDBACK_NUDGE_ENV = "GUSTO_CLI_FEEDBACK_NUDGE";
 
 /** Normalises anything that might mean on or off. Only `on` reads as on; everything else present
- * reads as off, because `on` is the default and so the only reason to set this at all is to turn it
- * off - see the `auto_update` branch of `pickValid`. */
-function readAutoUpdate(value: string | boolean): AutoUpdate {
+ * reads as off, because `on` is the default and so the only reason to set either opt-out key is to
+ * turn it off - see their branches in `pickValid`. */
+function readOnOff(value: string | boolean): "on" | "off" {
   const text = typeof value === "boolean" ? (value ? "on" : "off") : String(value).trim();
   return text.toLowerCase() === "on" ? "on" : "off";
 }
@@ -51,8 +57,15 @@ function readAutoUpdate(value: string | boolean): AutoUpdate {
  * per-container release download were baking a config file into the image or pinning a version. */
 export function autoUpdateEnabled(cfg: Pick<UserConfig, "auto_update">, env: EnvSource = process.env): boolean {
   const override = env[AUTO_UPDATE_ENV];
-  if (override !== undefined && override.length > 0) return readAutoUpdate(override) === "on";
+  if (override !== undefined && override.length > 0) return readOnOff(override) === "on";
   return cfg.auto_update !== "off";
+}
+
+/** Whether feedback nudges are on for this invocation, env first. */
+export function feedbackNudgeEnabled(cfg: Pick<UserConfig, "feedback_nudge">, env: EnvSource = process.env): boolean {
+  const override = env[FEEDBACK_NUDGE_ENV];
+  if (override !== undefined && override.length > 0) return readOnOff(override) === "on";
+  return cfg.feedback_nudge !== "off";
 }
 
 // Permissive UUID shape check — variant intentionally not pinned; we only care that on-disk
@@ -173,6 +186,10 @@ export function validateValue(key: ConfigKey, value: string): string | null {
       return (SKILLS_AUTO_INSTALL_VALUES as readonly string[]).includes(value)
         ? null
         : `skills_auto_install must be one of: ${SKILLS_AUTO_INSTALL_VALUES.join(", ")}`;
+    case "feedback_nudge":
+      return (FEEDBACK_NUDGE_VALUES as readonly string[]).includes(value)
+        ? null
+        : `feedback_nudge must be one of: ${FEEDBACK_NUDGE_VALUES.join(", ")}`;
     case "auto_update":
       return (AUTO_UPDATE_VALUES as readonly string[]).includes(value)
         ? null
@@ -206,12 +223,18 @@ function pickValid(raw: Record<string, unknown>): UserConfig {
   ) {
     out.skills_auto_install = raw.skills_auto_install as SkillsAutoInstall;
   }
-  // The one key whose failure direction matters: both readers test `=== "off"`, so a dropped value
-  // reads as on - "replace the binary" for someone trying to opt out. `auto_update = false` is the
-  // obvious hand-edit, and TOML parses it as a boolean a string check would discard. `on` is
-  // already the default, so anything unrecognised is read as off. `config set` stays strict.
+  // These opt-out keys fail closed. The obvious hand-edit is a TOML boolean, and an unrecognised
+  // value must not be dropped because both consumers treat a missing value as on. `config set`
+  // remains strict; this normalization only protects direct edits.
+  if (raw.feedback_nudge !== undefined) {
+    out.feedback_nudge = readOnOff(
+      typeof raw.feedback_nudge === "boolean" || typeof raw.feedback_nudge === "string"
+        ? raw.feedback_nudge
+        : String(raw.feedback_nudge),
+    );
+  }
   if (raw.auto_update !== undefined) {
-    out.auto_update = readAutoUpdate(
+    out.auto_update = readOnOff(
       typeof raw.auto_update === "boolean" || typeof raw.auto_update === "string"
         ? raw.auto_update
         : String(raw.auto_update),
