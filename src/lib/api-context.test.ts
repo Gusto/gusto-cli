@@ -1106,6 +1106,9 @@ describe("reactive refresh on a 401", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("credential_rejected");
     expect(s.calls).toHaveLength(2); // exactly one retry - no refresh loop
+    // The rejected token is the refreshed replacement, not the original - "stale" would be wrong.
+    expect(result.error.message).toContain("refreshed during this command");
+    expect(result.error.message).not.toContain("stale");
   });
 
   test("an explicit --token-stdin token that 401s never attempts a refresh, even with a refreshable session on file", async () => {

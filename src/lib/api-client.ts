@@ -13,6 +13,9 @@ export type ResolvedTokenSource = Exclude<TokenSource, "login">;
 export interface AuthContext {
   tokenSource: TokenSource;
   environment: Environment;
+  /** True once a reactive refresh has replaced this request's token - so a later rejection can be
+   * reported as the new token failing too, not as the original one being stale. */
+  refreshed?: boolean;
 }
 
 export class ApiError extends Error {
@@ -184,7 +187,7 @@ export class ApiClient {
   private readonly maxRetries: number;
   private readonly retrySleepMs: (attempt: number) => number;
   private readonly observer?: RequestObserver;
-  private readonly auth?: AuthContext;
+  private auth?: AuthContext;
   private readonly onUnauthorized?: () => Promise<string | null>;
   private inFlightRefresh?: Promise<string | null>;
 
@@ -325,6 +328,9 @@ export class ApiClient {
         if (refreshed === null) throw err;
         this.token = refreshed;
       }
+      // A 401 on this retry is the new token failing, not the original one being stale - the
+      // wording a rejection gets from here on should say so.
+      if (this.auth) this.auth = { ...this.auth, refreshed: true };
       return await this.requestAttempt<T>(method, path, body, opts);
     }
   }
