@@ -109,6 +109,29 @@ describe("callMcpTool — env routing + envelope", () => {
   });
 });
 
+describe("callMcpTool — command header", () => {
+  // `feedback` (and any callMcpTool command) rides the same buildApiClient path as the REST
+  // surfaces, so its request carries X-Gusto-CLI-Command too. That's intended: the header
+  // attributes each API request to the command that made it, and `feedback` is a real command.
+  async function captureHeaders(globals: GlobalFlags): Promise<RequestInit["headers"]> {
+    const stub = stubGlobalFetch(() => ({ status: 200, body: successEnvelope({ source: "none" }) }));
+    try {
+      const result = await callMcpTool({ ...globals, command: "gusto feedback" }, stdinAuth(), "submit_feedback", {
+        message: "hello",
+      });
+      expect(result.ok).toBe(true);
+      return stub.calls[0]?.headers;
+    } finally {
+      stub.restore();
+    }
+  }
+
+  test("the feedback (MCP) path carries X-Gusto-CLI-Command with the command slug", async () => {
+    const headers = (await captureHeaders(sandbox)) as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("feedback");
+  });
+});
+
 describe("callMcpTool — success unwrap", () => {
   test("unwraps result.content[0].text and returns the parsed JSON as data", async () => {
     const payload = { source: "third_party", timesheets: [{ id: "ts-1" }] };

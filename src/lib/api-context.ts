@@ -1,5 +1,5 @@
 import { ApiClient, type AuthContext, type ResolvedTokenSource, stderrRequestObserver } from "./api-client.ts";
-import { resolveInstallIdHeader } from "./config.ts";
+import { resolveCommandHeader, resolveInstallIdHeader } from "./config.ts";
 import { confirmationGate } from "./confirm.ts";
 import {
   type CompanySource,
@@ -90,6 +90,7 @@ export function buildApiClient(
     apiVersion: resolveApiVersion(),
     installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
+    command: resolveCommandHeader(globals),
     auth: opts.auth,
   });
 }

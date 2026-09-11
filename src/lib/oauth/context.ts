@@ -1,5 +1,5 @@
 import { ApiClient } from "../api-client.ts";
-import { resolveInstallIdHeader } from "../config.ts";
+import { resolveCommandHeader, resolveInstallIdHeader } from "../config.ts";
 import { resolveApiVersion, resolveBaseUrl } from "../env.ts";
 import type { Environment, GlobalFlags } from "../global-flags.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
@@ -9,6 +9,7 @@ export async function oauthHttp(globals: GlobalFlags): Promise<OAuthHttpOptions>
   return {
     baseUrl: resolveBaseUrl(globals.env),
     installId: await resolveInstallIdHeader(),
+    command: resolveCommandHeader(globals),
   };
 }
 
@@ -26,6 +27,7 @@ export function oauthApiClient(http: OAuthHttpOptions, token: string, environmen
     token,
     apiVersion: resolveApiVersion(),
     installId: http.installId,
+    command: http.command,
     fetchImpl: http.fetchImpl,
     maxRetries: 0,
     auth: { tokenSource: "login", environment },

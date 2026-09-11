@@ -116,6 +116,34 @@ describe("install ID on OAuth requests", () => {
   });
 });
 
+describe("command on OAuth requests", () => {
+  test("postForm stamps X-Gusto-CLI-Command when configured", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postForm({ baseUrl: "https://api.test", fetchImpl, command: "employee-list" }, OAUTH_PATHS.token, {
+      grant_type: "refresh_token",
+    });
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("employee-list");
+  });
+
+  test("postJson stamps X-Gusto-CLI-Command when configured", async () => {
+    const captured: { init?: RequestInit } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      captured.init = init;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    await postJson({ baseUrl: "https://api.test", fetchImpl, command: "auth-login" }, OAUTH_PATHS.register, {
+      client_type: "cli",
+    });
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("auth-login");
+  });
+});
+
 describe("User-Agent on OAuth requests", () => {
   function capturingFetch(captured: { init?: RequestInit }): typeof fetch {
     return ((_url: string | URL | Request, init?: RequestInit) => {

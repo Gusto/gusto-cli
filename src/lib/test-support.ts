@@ -68,6 +68,7 @@ export interface RecordedCall {
   method: string;
   url: string;
   body: unknown;
+  headers?: RequestInit["headers"];
 }
 
 /** A routed mock response: serve `MockResponse` on any URL containing `match`. */
@@ -99,7 +100,20 @@ export function stubGlobalFetch(plan: MockResponse[] | ((url: string) => MockRes
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = url.toString();
     const bodyStr = typeof init?.body === "string" ? init.body : undefined;
-    calls.push({ method: init?.method ?? "GET", url: u, body: bodyStr ? JSON.parse(bodyStr) : undefined });
+    let body: unknown;
+    if (bodyStr !== undefined) {
+      try {
+        body = JSON.parse(bodyStr);
+      } catch {
+        body = bodyStr;
+      }
+    }
+    calls.push({
+      method: init?.method ?? "GET",
+      url: u,
+      body,
+      headers: init?.headers,
+    });
     const r = Array.isArray(plan) ? (plan[Math.min(calls.length - 1, plan.length - 1)] ?? { status: 200 }) : plan(u);
     return new Response(r.body !== undefined ? JSON.stringify(r.body) : "", {
       status: r.status,

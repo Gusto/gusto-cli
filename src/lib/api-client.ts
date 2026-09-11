@@ -142,6 +142,10 @@ export interface ApiClientOptions {
   /** Optional per-request observer; called once per attempt on success and failure. When set,
    * powers `--verbose` stderr logging. */
   observer?: RequestObserver;
+  /** Slug of the CLI command driving these requests (e.g. `employee-list`). When set, sent as the
+   * `X-Gusto-CLI-Command` header on every request so server-side observability can break CLI
+   * traffic down by command. Omitted when command context is unavailable or telemetry is disabled. */
+  command?: string;
   /** The credential this client authenticates with, stamped onto any `ApiError` it throws so a 401
    * can name what was refused. Omitted by clients built without a resolved context. */
   auth?: AuthContext;
@@ -181,6 +185,7 @@ export class ApiClient {
   private readonly maxRetries: number;
   private readonly retrySleepMs: (attempt: number) => number;
   private readonly observer?: RequestObserver;
+  private readonly command?: string;
   private readonly auth?: AuthContext;
 
   constructor(opts: ApiClientOptions) {
@@ -194,6 +199,7 @@ export class ApiClient {
     // Exponential backoff: 1s, 2s, 4s, 8s. Tests override to skip waits.
     this.retrySleepMs = opts.retrySleepMs ?? ((attempt) => 2 ** attempt * 1000);
     this.observer = opts.observer;
+    this.command = opts.command;
     this.auth = opts.auth;
   }
 
@@ -388,6 +394,7 @@ export class ApiClient {
       "X-Gusto-API-Version": this.apiVersion,
       "User-Agent": USER_AGENT,
     };
+    if (this.command) headers["X-Gusto-CLI-Command"] = this.command;
     if (this.installId !== undefined) {
       headers["X-Gusto-CLI-Install-Id"] = this.installId;
     }

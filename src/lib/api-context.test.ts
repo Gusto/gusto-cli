@@ -13,7 +13,8 @@ import {
   writeResource,
 } from "./api-context.ts";
 import { ExitCode } from "./exit-codes.ts";
-import type { GlobalFlags } from "./global-flags.ts";
+import { commandSlug, type GlobalFlags } from "./global-flags.ts";
+import { oauthHttp } from "./oauth/context.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
 import { memoryStore, mockHttp } from "./oauth/test-support.ts";
 import type { TokenStore } from "./oauth/token-store.ts";
@@ -61,7 +62,13 @@ const throwingStore = (err: unknown): TokenStore => ({
 
 // resolveApiContext reads token/company/base-url from process.env when no override is passed.
 // Snapshot and clear the relevant vars so tests don't depend on the dev's shell.
-const ENV_KEYS = ["GUSTO_ACCESS_TOKEN", "GUSTO_COMPANY_UUID", "GUSTO_API_BASE_URL", "GUSTO_API_VERSION"];
+const ENV_KEYS = [
+  "GUSTO_ACCESS_TOKEN",
+  "GUSTO_COMPANY_UUID",
+  "GUSTO_API_BASE_URL",
+  "GUSTO_API_VERSION",
+  "GUSTO_TELEMETRY",
+];
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -274,6 +281,32 @@ describe("resolveApiContext - stored session fallback", () => {
       now: () => 1_000,
     });
     expect(result.ok).toBe(true);
+  });
+
+  test("a REST command stamps its command slug on the session refresh request", async () => {
+    const fetchStub = stubGlobalFetch([
+      {
+        status: 200,
+        body: { access_token: "fresh-tok", refresh_token: "fresh-refresh", expires_in: 3600 },
+      },
+    ]);
+    try {
+      const result = await resolveApiContext(
+        { ...flags, command: "gusto employee list" },
+        {
+          requireCompany: false,
+          store: memoryStore({ production: { ...expiredSlot(), expiresAt: 20_000 } }),
+          now: () => 10_000,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      const refresh = fetchStub.calls.find((call) => call.url.endsWith("/v1/mcp/oauth/token"));
+      expect(new URLSearchParams(String(refresh?.body)).get("grant_type")).toBe("refresh_token");
+      expect((refresh?.headers as Record<string, string> | undefined)?.["X-Gusto-CLI-Command"]).toBe("employee-list");
+    } finally {
+      fetchStub.restore();
+    }
   });
 
   test("a rejected token refresh is token_refresh_failed, not no_access_token", async () => {
@@ -1206,5 +1239,73 @@ describe("buildApiClient --verbose wiring", () => {
   test("verbose=false attaches no observer and produces no stderr output", async () => {
     const chunks = await callAndCaptureStderr(false);
     expect(chunks).toEqual([]);
+  });
+});
+
+describe("commandSlug", () => {
+  test("strips the leading `gusto ` and hyphenates the rest", () => {
+    expect(commandSlug("gusto api request")).toBe("api-request");
+    expect(commandSlug("gusto employee list")).toBe("employee-list");
+  });
+
+  test("lowercases and collapses runs of whitespace to a single hyphen", () => {
+    expect(commandSlug("gusto  Employee   List")).toBe("employee-list");
+  });
+
+  test("a single-word command with no `gusto ` prefix passes through", () => {
+    expect(commandSlug("upgrade")).toBe("upgrade");
+  });
+});
+
+describe("buildApiClient command header wiring", () => {
+  async function callAndCaptureHeaders(globals: GlobalFlags): Promise<RequestInit["headers"]> {
+    const stub = stubGlobalFetch([{ status: 200, body: { ok: true } }]);
+    try {
+      const client = buildApiClient(globals, { baseUrl: "https://api.example.test", token: "t" });
+      await client.get("/v1/me");
+      return stub.calls[0]?.headers;
+    } finally {
+      stub.restore();
+    }
+  }
+
+  test("a structured command carries its slug as X-Gusto-CLI-Command", async () => {
+    const headers = (await callAndCaptureHeaders({ ...flags, command: "gusto employee list" })) as Record<
+      string,
+      string
+    >;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("employee-list");
+  });
+
+  test("the `gusto api request` escape hatch carries its own slug", async () => {
+    const headers = (await callAndCaptureHeaders({ ...flags, command: "gusto api request" })) as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBe("api-request");
+  });
+
+  test("no command on globals sends no X-Gusto-CLI-Command header", async () => {
+    const headers = (await callAndCaptureHeaders(flags)) as Record<string, string>;
+    expect(headers["X-Gusto-CLI-Command"]).toBeUndefined();
+  });
+
+  test("GUSTO_TELEMETRY=0 suppresses X-Gusto-CLI-Command", async () => {
+    process.env.GUSTO_TELEMETRY = "0";
+    const headers = (await callAndCaptureHeaders({ ...flags, command: "gusto employee list" })) as Record<
+      string,
+      string
+    >;
+    expect(headers["X-Gusto-CLI-Command"]).toBeUndefined();
+  });
+});
+
+describe("oauthHttp command header wiring", () => {
+  test("carries the auth login command slug into the OAuth token_info client", async () => {
+    const http = await oauthHttp({ ...flags, command: "gusto auth login" });
+    expect(http.command).toBe("auth-login");
+  });
+
+  test("GUSTO_TELEMETRY=0 suppresses the OAuth token_info command header", async () => {
+    process.env.GUSTO_TELEMETRY = "0";
+    const http = await oauthHttp({ ...flags, command: "gusto auth login" });
+    expect(http.command).toBeUndefined();
   });
 });

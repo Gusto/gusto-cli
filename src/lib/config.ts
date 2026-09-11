@@ -4,7 +4,7 @@ import path from "node:path";
 import { parse, stringify } from "smol-toml";
 import { isTelemetryEnabled } from "./env.ts";
 import type { EnvSource } from "./env.ts";
-import type { Environment } from "./global-flags.ts";
+import { commandSlug, type Environment, type GlobalFlags } from "./global-flags.ts";
 import type { OutputMode } from "./output.ts";
 
 export type ConfigKey = "environment" | "format" | "skills_auto_install" | "auto_update";
@@ -153,6 +153,15 @@ async function resolveInstallIdOnce(paths: ConfigPaths): Promise<string | undefi
   } catch {
     return undefined;
   }
+}
+
+/** The command slug to stamp on outbound requests, honoring the same GUSTO_TELEMETRY opt-out as
+ * the anonymous install ID. Centralized here so every API client construction path shares the gate. */
+export function resolveCommandHeader(
+  globals: Pick<GlobalFlags, "command">,
+  env: EnvSource = process.env as EnvSource,
+): string | undefined {
+  return isTelemetryEnabled(env) && globals.command ? commandSlug(globals.command) : undefined;
 }
 
 export function validateKey(key: string): ConfigKey | null {

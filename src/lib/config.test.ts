@@ -8,6 +8,7 @@ import {
   normalizeValue,
   readConfig,
   resetConfig,
+  resolveCommandHeader,
   resolveInstallIdHeader,
   validateKey,
   validateValue,
@@ -266,5 +267,19 @@ describe("resolveInstallIdHeader", () => {
     await Bun.write(badDir, "");
     const broken: ConfigPaths = { dir: badDir, file: path.join(badDir, "config.toml") };
     expect(await resolveInstallIdHeader(broken)).toBeUndefined();
+  });
+});
+
+describe("resolveCommandHeader", () => {
+  test("returns the command slug when telemetry is enabled", () => {
+    expect(resolveCommandHeader({ command: "gusto employee list" }, {})).toBe("employee-list");
+  });
+
+  test("returns undefined when GUSTO_TELEMETRY opts out", () => {
+    expect(resolveCommandHeader({ command: "gusto employee list" }, { GUSTO_TELEMETRY: "0" })).toBeUndefined();
+  });
+
+  test("returns undefined when no command context is available", () => {
+    expect(resolveCommandHeader({}, {})).toBeUndefined();
   });
 });
