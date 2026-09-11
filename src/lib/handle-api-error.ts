@@ -1,15 +1,10 @@
 import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
+import { TokenRefreshFailedError, tokenRefreshFailedResult } from "./oauth/refresh-failure.ts";
+import { errorExtras } from "./output.ts";
 import { isObject } from "./predicates.ts";
 import type { CommandResult } from "./runner.ts";
-
-function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
-  return {
-    ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
-    ...(err.requestId ? { request_id: err.requestId } : {}),
-  };
-}
 
 /** Pull a scope name out of a 403 body when the server names one: RFC 6750's top-level `scope`
  * first, falling back to the `missing_scope_name` Gusto's own `missing_oauth_scopes` error entry
@@ -90,6 +85,11 @@ function rejectedCredential(auth: AuthContext | undefined): string {
   const env = auth.environment;
   switch (auth.tokenSource) {
     case "session":
+      // A reactive refresh already ran once this command's original token 401'd - the "stale"
+      // framing below is wrong for the replacement it minted, which is seconds old.
+      if (auth.refreshed) {
+        return `the ${env} session was refreshed during this command, and the API rejected the replacement token too - the refresh token itself may be revoked, or ${env} may be the wrong environment for this credential. Run \`gusto auth login --env ${env}\` to sign in again.`;
+      }
       return `the stored ${env} session was rejected by the API - its access token is stale or was revoked. Run \`gusto auth login --env ${env}\` to sign in again; that mints a new grant and replaces the refresh token in that slot.`;
     case "env":
       return `the token in GUSTO_ACCESS_TOKEN was rejected by the API. It is invalid, expired, or issued for an environment other than ${env}.`;
@@ -128,6 +128,7 @@ function insufficientScopeMessage(scope: string | undefined, auth: AuthContext |
 }
 
 export function toResult(err: unknown): CommandResult<never> {
+  if (err instanceof TokenRefreshFailedError) return tokenRefreshFailedResult(err.cause, err.env);
   if (err instanceof ApiError) {
     if (err.status === 401) return credentialRejected(err);
     if (err.status === 403 && isInsufficientScope(err.body)) {

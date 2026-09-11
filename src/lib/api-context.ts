@@ -13,12 +13,12 @@ import { ExitCode } from "./exit-codes.ts";
 import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp } from "./oauth/context.ts";
-import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
-import { type SessionOutcome, resolveSessionToken, sessionUsable } from "./oauth/session.ts";
-import { type TokenStore, credentialsFile, resolveStore } from "./oauth/token-store.ts";
+import type { OAuthHttpOptions } from "./oauth/endpoints.ts";
+import { slotDescription, tokenRefreshFailedError } from "./oauth/refresh-failure.ts";
+import { type SessionOutcome, reactiveRefresh, resolveSessionToken, sessionUsable } from "./oauth/session.ts";
+import { type TokenStore, resolveStore } from "./oauth/token-store.ts";
 import type { EnvelopeError } from "./output.ts";
 import { isValidUuid, uuidReason } from "./parse.ts";
-import { isObject } from "./predicates.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
 import { readTokenFromStdin } from "./stdin.ts";
@@ -71,6 +71,9 @@ export interface ApiContextOpts extends AuthOpts {
  * 401 name the credential that was refused. A client built without it still classifies a 401 as an
  * auth failure, just without naming the source.
  *
+ * `onUnauthorized` is the reactive-refresh hook: only `resolveApiContext` builds one, and only for
+ * a session-sourced token - see its call site.
+ *
  * Not routed through: `oauthApiClient` in `oauth/context.ts` (its own bearer client for
  * `token_info` during login) - so `auth login --verbose` won't emit the token_info line. Tracked
  * as a follow-up. */
@@ -82,6 +85,7 @@ export function buildApiClient(
     installId?: string;
     stderr?: NodeJS.WritableStream;
     auth?: AuthContext;
+    onUnauthorized?: () => Promise<string | null>;
   },
 ): ApiClient {
   return new ApiClient({
@@ -91,6 +95,7 @@ export function buildApiClient(
     installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
     auth: opts.auth,
+    onUnauthorized: opts.onUnauthorized,
   });
 }
 
@@ -141,65 +146,6 @@ export async function resolveAuthToken(globals: GlobalFlags, opts: AuthOpts): Pr
   return { ok: false, result: await sessionFailure(outcome, env, opts) };
 }
 
-/** Why the token endpoint refused, as it described it. `OAuthError.message` is only the request line
- * ("/v1/mcp/oauth/token -> 400"), which names a status but not a cause; RFC 6749 puts the cause in
- * the body. Lifted into the message because that is what a caller reads first - `details` still
- * carries the whole body. */
-function oauthReason(err: OAuthError): string {
-  if (!isObject(err.body)) return err.message;
-  const { error, error_description: description } = err.body;
-  const parts = [error, description].filter((p): p is string => typeof p === "string" && p.length > 0);
-  return parts.length > 0 ? `${parts.join(": ")} - ${err.message}` : err.message;
-}
-
-/** Where the failing lookup read from, named so an agent doesn't have to infer it. */
-function slotDescription(env: Environment): string {
-  return `the [${env}] slot of ${credentialsFile()}`;
-}
-
-/** Classify refresh failures by recovery: retry, replace the grant, replace the client
- * registration, fix the request, or avoid guessing. */
-type RefreshFailureReason = "transient" | "grant_rejected" | "client_rejected" | "request_rejected" | "unknown";
-
-function refreshFailureReason(err: OAuthError): RefreshFailureReason {
-  if (isObject(err.body)) {
-    switch (err.body.error) {
-      case "invalid_grant":
-        return "grant_rejected";
-      case "invalid_client":
-      case "unauthorized_client":
-        return "client_rejected";
-      case "invalid_request":
-      case "unsupported_grant_type":
-      case "invalid_scope":
-        return "request_rejected";
-      case "server_error":
-      case "temporarily_unavailable":
-        return "transient";
-    }
-  }
-  if (err.status === 0 || err.status >= 500) return "transient";
-  return "unknown";
-}
-
-/** Recommend the least expensive recovery supported by the server's reason. A rejected client
- * registration requires logout before login because login otherwise reuses the stored registration. */
-function refreshFailureMessage(err: OAuthError, env: Environment, slot: string): string {
-  const preamble = `refreshing the ${env} session failed (${oauthReason(err)}).`;
-  switch (refreshFailureReason(err)) {
-    case "grant_rejected":
-      return `${preamble} The server rejected the refresh token in ${slot} as invalid, expired, or revoked, so a retry fails the same way. Run \`gusto auth login --env ${env}\` to sign in again - that replaces the refresh token, which is already dead.`;
-    case "client_rejected":
-      return `${preamble} The server rejected this CLI's client registration in ${slot}, not the refresh token, so a retry fails the same way. \`gusto auth login\` reuses that registration and would fail too - clear the slot first with \`gusto auth logout --env ${env}\`, then \`gusto auth login --env ${env}\` to register again. Nothing usable is lost: the credentials in that slot are what just got refused.`;
-    case "request_rejected":
-      return `${preamble} The token endpoint rejected the refresh request as invalid or unsupported, so the same request will fail the same way. The credentials in ${slot} are still on file; check \`gusto upgrade --dry-run\`, and report this error if the CLI is current.`;
-    case "transient":
-      return `${preamble} The refresh token in ${slot} is still on file and was not replaced - retry the command first. Only run \`gusto auth login --env ${env}\` if the retry fails too, since logging in replaces that refresh token.`;
-    case "unknown":
-      return `${preamble} The token endpoint did not identify a recovery, so the CLI will not guess that a retry or login can fix it. The credentials in ${slot} are still on file; check \`gusto upgrade --dry-run\`, and report this error if the CLI is current.`;
-  }
-}
-
 /** Map stored-session outcomes to stable auth error codes and recovery guidance. */
 async function sessionFailure(
   outcome: Exclude<SessionOutcome, { kind: "ok" }>,
@@ -226,12 +172,7 @@ async function sessionFailure(
         message: `the ${env} access token expired at ${new Date(outcome.expiresAt).toISOString()} and cannot be refreshed - no refresh token or client credentials in ${slot}. Run \`gusto auth login --env ${env}\` to sign in again.`,
       });
     case "refresh_failed":
-      return withContext({
-        code: "token_refresh_failed",
-        message: refreshFailureMessage(outcome.cause, env, slot),
-        ...(outcome.cause.body !== undefined && outcome.cause.body !== null ? { details: outcome.cause.body } : {}),
-        ...(outcome.cause.requestId ? { request_id: outcome.cause.requestId } : {}),
-      });
+      return withContext(tokenRefreshFailedError(outcome.cause, env));
   }
 }
 
@@ -317,7 +258,22 @@ export async function resolveApiContext(
   const baseUrl = resolveBaseUrl(globals.env);
   const environment = defaultEnv(globals.env);
   const installId = await resolveInstallIdHeader();
-  const client = buildApiClient(globals, { baseUrl, token, installId, auth: { tokenSource, environment } });
+  const client = buildApiClient(globals, {
+    baseUrl,
+    token,
+    installId,
+    auth: { tokenSource, environment },
+    onUnauthorized:
+      tokenSource === "session"
+        ? async () =>
+            reactiveRefresh(
+              opts.store ?? resolveStore(),
+              environment,
+              opts.http ?? (await oauthHttp(globals)),
+              opts.now,
+            )
+        : undefined,
+  });
 
   if (opts.requireCompany === false) {
     return { ok: true, ctx: { client, baseUrl, tokenSource, hasCompany: false } };

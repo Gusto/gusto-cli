@@ -1,18 +1,11 @@
-import { ApiError } from "../api-client.ts";
 import { OAuthError, type OAuthHttpOptions } from "./endpoints.ts";
 import { registerCliClient } from "./dcr.ts";
 import { refreshToken } from "./pkce.ts";
+import { TokenRefreshFailedError } from "./refresh-failure.ts";
 import type { TokenStore } from "./token-store.ts";
 import { type ClientCreds, type StoredSession, hasClientCreds } from "./types.ts";
 
 export const REFRESH_SKEW_MS = 60_000;
-
-export class NoSessionError extends Error {
-  constructor() {
-    super("not logged in. Run `gusto auth login` (or set GUSTO_ACCESS_TOKEN).");
-    this.name = "NoSessionError";
-  }
-}
 
 export async function ensureClientCreds(
   store: TokenStore,
@@ -107,9 +100,8 @@ async function resolveSessionTokenAttempt(
     return { kind: "ok", token: await refreshAndStore(store, env, http, state.session, state.refreshToken, now()) };
   } catch (err) {
     // Proactive (within-skew) refresh failed while the token is still genuinely valid, so the
-    // failure isn't actionable yet - use it. There is no reactive refresh: a token that turns out
-    // to be dead comes back 401 and is reported as `credential_rejected`, not swapped for a fresh
-    // one. This is the last chance to refresh, so passing it through bets on the token's clock.
+    // failure isn't actionable yet - use it, betting on the token's clock. If it's actually dead,
+    // the 401 that comes back triggers `onUnauthorized`'s reactive refresh instead.
     const expiresAt = state.session.expiresAt;
     if (expiresAt != null && now() < expiresAt) return { kind: "ok", token: state.token };
     if (err instanceof OAuthError) {
@@ -146,33 +138,59 @@ function sameAuthState(previous: StoredSession, latest: StoredSession | null): b
   );
 }
 
-/** Run `fn` with the session's token, refreshing on near-expiry and once more if the call comes back
- * 401. `NoSessionError` for the two states that need a login (nothing on file, expired with no way to
- * renew); the `OAuthError` itself when a refresh ran and the server rejected it, since a caller that
- * can't tell that state from absence would answer a still-usable refresh token with a login.
- *
- * No production caller yet - reactive refresh belongs per-request inside `ApiClient`, not around a
- * whole operation, which would replay a paginated walk or a poll. Commands resolve their token
- * through `resolveSessionToken` instead, which reports the three failure states apart. */
-export async function withUserToken<T>(
+/** The last refresh chance after a 401, since the proactive one already ran before the request
+ * started; throws `TokenRefreshFailedError` (not the raw `OAuthError`) so callers don't need to
+ * wrap it themselves. */
+export async function reactiveRefresh(
   store: TokenStore,
   env: "sandbox" | "production",
   http: OAuthHttpOptions,
-  fn: (token: string) => Promise<T>,
   now: () => number = Date.now,
-): Promise<T> {
-  const outcome = await resolveSessionToken(store, env, http, now);
-  if (outcome.kind === "refresh_failed") throw outcome.cause;
-  if (outcome.kind !== "ok") throw new NoSessionError();
-  const token = outcome.token;
+): Promise<string | null> {
+  const session = await store.load(env);
+  if (!session?.refreshToken || !hasClientCreds(session)) return null;
   try {
-    return await fn(token);
+    return await refreshAndStore(store, env, http, session, session.refreshToken, now());
   } catch (err) {
-    if (!(err instanceof ApiError) || err.status !== 401) throw err;
-    const session = await store.load(env);
-    if (!session?.refreshToken || !hasClientCreds(session)) throw err;
-    const refreshed = await refreshAndStore(store, env, http, session, session.refreshToken, now());
-    return fn(refreshed);
+    if (!(err instanceof OAuthError)) throw err;
+    return await reconcileAfterFailedRefresh(store, env, http, now, session, err);
+  }
+}
+
+/** Another `gusto` process may have refreshed this session while ours failed - re-classify what's
+ * there instead of trusting it blindly, in case it's still near-expiry too. */
+async function reconcileAfterFailedRefresh(
+  store: TokenStore,
+  env: "sandbox" | "production",
+  http: OAuthHttpOptions,
+  now: () => number,
+  previous: StoredSession,
+  err: OAuthError,
+): Promise<string | null> {
+  const failed = () => new TokenRefreshFailedError(err, env);
+  let latest: StoredSession | null;
+  try {
+    latest = await store.load(env);
+  } catch {
+    throw failed();
+  }
+  if (latest === null || sameAuthState(previous, latest)) throw failed();
+
+  const state = classifySession(latest, now());
+  switch (state.kind) {
+    case "ok":
+      return state.token;
+    case "refreshable":
+      try {
+        return await refreshAndStore(store, env, http, state.session, state.refreshToken, now());
+      } catch (second) {
+        // This attempt's own failure, not the one that led here - a transient blip on this second
+        // try must not be reported as the first attempt's (possibly unrelated) rejection reason.
+        throw second instanceof OAuthError ? new TokenRefreshFailedError(second, env) : second;
+      }
+    case "absent":
+    case "expired":
+      throw failed();
   }
 }
 
