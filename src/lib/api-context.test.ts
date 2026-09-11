@@ -283,6 +283,32 @@ describe("resolveApiContext - stored session fallback", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("a REST command stamps its command slug on the session refresh request", async () => {
+    const fetchStub = stubGlobalFetch([
+      {
+        status: 200,
+        body: { access_token: "fresh-tok", refresh_token: "fresh-refresh", expires_in: 3600 },
+      },
+    ]);
+    try {
+      const result = await resolveApiContext(
+        { ...flags, command: "gusto employee list" },
+        {
+          requireCompany: false,
+          store: memoryStore({ production: { ...expiredSlot(), expiresAt: 20_000 } }),
+          now: () => 10_000,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      const refresh = fetchStub.calls.find((call) => call.url.endsWith("/v1/mcp/oauth/token"));
+      expect(new URLSearchParams(String(refresh?.body)).get("grant_type")).toBe("refresh_token");
+      expect((refresh?.headers as Record<string, string> | undefined)?.["X-Gusto-CLI-Command"]).toBe("employee-list");
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
   test("a rejected token refresh is token_refresh_failed, not no_access_token", async () => {
     // A refresh token is on file and only the *refresh* failed, so this must not report absence:
     // "no access token, run auth login" reads as "nothing here", when what is here decides the

@@ -1,17 +1,16 @@
 import { ApiClient, type AuthContext, type ResolvedTokenSource, stderrRequestObserver } from "./api-client.ts";
-import { resolveInstallIdHeader } from "./config.ts";
+import { resolveCommandHeader, resolveInstallIdHeader } from "./config.ts";
 import { confirmationGate } from "./confirm.ts";
 import {
   type CompanySource,
   defaultEnv,
   getAccessToken,
   getCompanyUuid,
-  isTelemetryEnabled,
   resolveApiVersion,
   resolveBaseUrl,
 } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
-import { commandSlug, type Environment, type GlobalFlags } from "./global-flags.ts";
+import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
 import { oauthHttp } from "./oauth/context.ts";
 import type { OAuthError, OAuthHttpOptions } from "./oauth/endpoints.ts";
@@ -91,7 +90,7 @@ export function buildApiClient(
     apiVersion: resolveApiVersion(),
     installId: opts.installId,
     observer: globals.verbose ? stderrRequestObserver(opts.stderr ?? process.stderr) : undefined,
-    command: isTelemetryEnabled() && globals.command ? commandSlug(globals.command) : undefined,
+    command: resolveCommandHeader(globals),
     auth: opts.auth,
   });
 }

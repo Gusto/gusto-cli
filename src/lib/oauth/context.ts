@@ -1,7 +1,7 @@
 import { ApiClient } from "../api-client.ts";
-import { resolveInstallIdHeader } from "../config.ts";
-import { isTelemetryEnabled, resolveApiVersion, resolveBaseUrl } from "../env.ts";
-import { commandSlug, type Environment, type GlobalFlags } from "../global-flags.ts";
+import { resolveCommandHeader, resolveInstallIdHeader } from "../config.ts";
+import { resolveApiVersion, resolveBaseUrl } from "../env.ts";
+import type { Environment, GlobalFlags } from "../global-flags.ts";
 import type { OAuthHttpOptions } from "./endpoints.ts";
 
 /** Async because it resolves the anonymous install_id from the on-disk config. */
@@ -9,7 +9,7 @@ export async function oauthHttp(globals: GlobalFlags): Promise<OAuthHttpOptions>
   return {
     baseUrl: resolveBaseUrl(globals.env),
     installId: await resolveInstallIdHeader(),
-    command: isTelemetryEnabled() && globals.command ? commandSlug(globals.command) : undefined,
+    command: resolveCommandHeader(globals),
   };
 }
 

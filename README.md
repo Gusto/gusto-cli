@@ -88,6 +88,17 @@ Environment resolution, highest precedence first: `--env` > `GUSTO_ENVIRONMENT` 
 
 Each environment keeps its **own** credential slot, both in one `credentials.toml` under your config directory. Signing in to sandbox leaves your production session untouched and vice versa, and `gusto auth logout` only clears the environment you name. `gusto auth whoami` reports the active `environment` alongside the credential source, so you can always ask the CLI which one it is talking to.
 
+### Usage metadata
+
+API requests include an anonymous per-install UUID (`X-Gusto-CLI-Install-Id`) and the command that
+made the request (`X-Gusto-CLI-Command`, such as `employee-list`). This covers regular API calls and
+OAuth registration, token exchange, token refresh, and token inspection requests. To omit both
+headers for an invocation, set `GUSTO_TELEMETRY=0` (the values `false` and `no` also opt out):
+
+```sh
+GUSTO_TELEMETRY=0 gusto employee list
+```
+
 ### When auth fails
 
 Auth failures exit `3` and name the environment (`error.environment`). Stored-session failures also name the credential slot they read:
