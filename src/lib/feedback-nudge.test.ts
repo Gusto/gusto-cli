@@ -128,6 +128,8 @@ describe("feedbackNudge — suppression", () => {
   test.each([
     ["authentication", ExitCode.Auth, "no_access_token"],
     ["network", ExitCode.Network, "network_error"],
+    ["API server", ExitCode.ApiServer, "api_server_error"],
+    ["timeout", ExitCode.Timeout, "timeout"],
   ] as const)("does not nudge for %s failures", async (_kind, code, errorCode) => {
     const nudge = await feedbackNudge(
       {

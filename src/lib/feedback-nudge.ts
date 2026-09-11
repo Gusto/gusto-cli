@@ -96,9 +96,16 @@ function classify(inputs: NudgeInputs): Trigger | null {
   // A confirmation prompt (exit 8) is the write guardrail doing its job, not friction.
   if (error?.code === "confirmation_required") return null;
 
-  // Authentication and network failures have direct recovery paths outside the CLI implementation;
-  // they are not product defects and must not consume the once-per-day bug nudge.
-  if (inputs.code === ExitCode.Auth || inputs.code === ExitCode.Network) return null;
+  // Authentication, network, API-server, and timeout failures have direct recovery paths outside
+  // the CLI implementation; they are not product defects and must not consume the once-per-day bug
+  // nudge.
+  if (
+    inputs.code === ExitCode.Auth ||
+    inputs.code === ExitCode.Network ||
+    inputs.code === ExitCode.ApiServer ||
+    inputs.code === ExitCode.Timeout
+  )
+    return null;
 
   // Structured blocked_on details already tell the caller exactly what input to supply. Like the
   // confirmation gate, this is a working guardrail rather than friction worth reporting as a bug.
