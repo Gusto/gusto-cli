@@ -225,6 +225,7 @@ describe("usageErrorEnvelope", () => {
     ]);
     expect(env.code).toBe("unknown_command");
     expect(env.message).toBe("unknown command 'shwo' for 'gusto payroll'");
+    expect(env.attempted_command).toBe("gusto payroll shwo");
     expect(env.valid_commands).toEqual(["list", "show"]);
     expect(env.did_you_mean).toBe("show");
     expect(env.hint).toBe(API_HATCH_HINT);
@@ -236,6 +237,7 @@ describe("usageErrorEnvelope", () => {
       "blork",
     ]);
     expect(env.code).toBe("unknown_command");
+    expect(env.attempted_command).toBe("gusto company blork");
     expect(env.valid_commands).toEqual(["show", "locations"]);
     expect(env.did_you_mean).toBeUndefined();
   });

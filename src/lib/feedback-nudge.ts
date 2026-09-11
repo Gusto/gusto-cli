@@ -1,6 +1,12 @@
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
-import { type ConfigPaths, configPaths as defaultConfigPaths, readConfig } from "./config.ts";
+import {
+  FEEDBACK_NUDGE_ENV,
+  type ConfigPaths,
+  configPaths as defaultConfigPaths,
+  feedbackNudgeEnabled,
+  readConfig,
+} from "./config.ts";
 import { ExitCode, type ExitCodeValue } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
 import { type EnvelopeError, outputOptionsFrom } from "./output.ts";
@@ -60,8 +66,7 @@ export async function feedbackNudge(inputs: NudgeInputs, deps: NudgeDeps): Promi
   const classified = classify(inputs);
   if (!classified) return null;
 
-  // Opt-out: `feedback_nudge = "off"` disables entirely. A missing/malformed config just means
-  // "not opted out" — never let a bad config file suppress or crash the nudge path.
+  // Opt-out: the env override wins over config, and config read failures fail closed.
   if (await isOptedOut(deps)) return null;
 
   // Only now — with a nudge otherwise warranted — do we touch disk for the throttle.
@@ -71,14 +76,16 @@ export async function feedbackNudge(inputs: NudgeInputs, deps: NudgeDeps): Promi
   return render(inputs, classified);
 }
 
-/** `feedback_nudge = "off"` disables the nudge. A missing or malformed config reads as "not opted
- * out" rather than crashing or silently suppressing. */
+/** The env override wins over config. A malformed or unreadable config fails closed: someone trying
+ * to opt out should not get nudges because their hand-edited config cannot be parsed. */
 async function isOptedOut(deps: NudgeDeps): Promise<boolean> {
+  const override = process.env[FEEDBACK_NUDGE_ENV];
+  if (override !== undefined && override.length > 0) return !feedbackNudgeEnabled({}, process.env);
   try {
     const cfg = await readConfig(deps.configPaths());
-    return cfg.feedback_nudge === "off";
+    return !feedbackNudgeEnabled(cfg, {});
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -96,13 +103,15 @@ function classify(inputs: NudgeInputs): Trigger | null {
   // A confirmation prompt (exit 8) is the write guardrail doing its job, not friction.
   if (error?.code === "confirmation_required") return null;
 
-  // Authentication, network, API-server, and timeout failures have direct recovery paths outside
-  // the CLI implementation; they are not product defects and must not consume the once-per-day bug
-  // nudge.
+  // Authentication, network, API-server, validation, blocked-precondition, and timeout failures
+  // already identify a recovery outside the CLI implementation. They are not product defects and
+  // must not consume the once-per-day bug nudge.
   if (
     inputs.code === ExitCode.Auth ||
     inputs.code === ExitCode.Network ||
     inputs.code === ExitCode.ApiServer ||
+    inputs.code === ExitCode.Validation ||
+    inputs.code === ExitCode.Blocked ||
     inputs.code === ExitCode.Timeout
   )
     return null;
@@ -113,6 +122,10 @@ function classify(inputs: NudgeInputs): Trigger | null {
 
   // A dry-run previewed a request without running it — nothing happened worth nudging about.
   if (dryRun) return null;
+
+  // A close typo already has an actionable correction. An unknown command with no suggestion is
+  // evidence that a first-class command may be missing, like use of the raw API escape hatch.
+  if (error?.code === "unknown_command") return error.did_you_mean === undefined ? "escape_hatch" : null;
 
   // The raw REST escape hatch signals a missing first-class command, whether it succeeded or failed.
   if (command === "gusto api request") return "escape_hatch";
@@ -128,8 +141,9 @@ function classify(inputs: NudgeInputs): Trigger | null {
   return null;
 }
 
-/** Best-effort per-category throttle. Returns true when a nudge may fire (and records the timestamp),
- * false when one fired for this category inside the window. A disk error never blocks the nudge. */
+/** Best-effort per-category throttle. Returns true only after the timestamp is persisted. If state
+ * cannot be written, suppress the nudge so an un-throttleable environment never gets unlimited
+ * suggestions. */
 async function checkAndRecordThrottle(trigger: Trigger, deps: NudgeDeps): Promise<boolean> {
   const category = CATEGORY_FOR[trigger];
   const dir = deps.configPaths().dir;
@@ -146,8 +160,7 @@ async function checkAndRecordThrottle(trigger: Trigger, deps: NudgeDeps): Promis
   }
 
   state[category] = new Date(now).toISOString();
-  await writeNudgeState(dir, state);
-  return true;
+  return writeNudgeState(dir, state);
 }
 
 async function readNudgeState(dir: string): Promise<Record<string, string>> {
@@ -168,8 +181,9 @@ async function readNudgeState(dir: string): Promise<Record<string, string>> {
 }
 
 // Write 0600 to a temp file then atomically rename over the target, mirroring the credentials store,
-// so a concurrent reader never sees a half-written file. Wrapped so a write failure is swallowed.
-async function writeNudgeState(dir: string, state: Record<string, string>): Promise<void> {
+// so a concurrent reader never sees a half-written file. Return false on failure so the caller can
+// suppress an un-throttleable nudge without affecting the command itself.
+async function writeNudgeState(dir: string, state: Record<string, string>): Promise<boolean> {
   try {
     const { mkdir, writeFile, rename } = await import("node:fs/promises");
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -177,8 +191,9 @@ async function writeNudgeState(dir: string, state: Record<string, string>): Prom
     const tmp = `${target}.${process.pid}.tmp`;
     await writeFile(tmp, stringify(state), { mode: 0o600 });
     await rename(tmp, target);
+    return true;
   } catch {
-    // Best-effort: losing a throttle write only risks an extra nudge later, never a failed command.
+    return false;
   }
 }
 
@@ -209,9 +224,10 @@ function shellSingleQuote(value: string): string {
  * admin identifier. Every key here is non-PII operational metadata. */
 function buildContext(inputs: NudgeInputs, trigger: Trigger): Record<string, unknown> {
   const { command, globals, code, error } = inputs;
+  const contextCommand = error?.code === "unknown_command" ? `${command} unknown-command` : command;
 
   const context: Record<string, unknown> = {
-    command: commandSlug(command),
+    command: commandSlug(contextCommand),
     exit_code: code,
   };
   if (error?.code !== undefined) context.error_code = error.code;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type ConfigPaths, configPaths, writeConfig } from "./config.ts";
@@ -125,6 +125,32 @@ describe("feedbackNudge — suppression", () => {
     expect(nudge).toBeNull();
   });
 
+  test.each(["no_time_sheets", "managed_install"])("does not nudge for the %s blocked precondition", async (code) => {
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto timesheet sync",
+        globals: agentFlags,
+        code: ExitCode.Blocked,
+        error: apiError(code),
+      },
+      deps(),
+    );
+    expect(nudge).toBeNull();
+  });
+
+  test("does not nudge when no company UUID is configured", async () => {
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto employee list",
+        globals: agentFlags,
+        code: ExitCode.Validation,
+        error: apiError("no_company_uuid"),
+      },
+      deps(),
+    );
+    expect(nudge).toBeNull();
+  });
+
   test.each([
     ["authentication", ExitCode.Auth, "no_access_token"],
     ["network", ExitCode.Network, "network_error"],
@@ -178,6 +204,61 @@ describe("feedbackNudge — suppression", () => {
 });
 
 describe("feedbackNudge — usage failures are friction (runner-final classification)", () => {
+  test("does not nudge for an unknown command with a did-you-mean correction", async () => {
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto",
+        globals: agentFlags,
+        code: ExitCode.CliUsage,
+        error: {
+          code: "unknown_command",
+          message: "unknown command 'employe' for 'gusto'",
+          attempted_command: "gusto employe",
+          did_you_mean: "employee",
+        },
+      },
+      deps(),
+    );
+    expect(nudge).toBeNull();
+  });
+
+  test("routes a missing command to feature_request with the registered parent in context", async () => {
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto company",
+        globals: agentFlags,
+        code: ExitCode.CliUsage,
+        error: {
+          code: "unknown_command",
+          message: "unknown command 'blork' for 'gusto company'",
+          attempted_command: "gusto company blork",
+        },
+      },
+      deps(),
+    );
+    expect(nudge).toContain("--category feature_request");
+    expect(contextFrom(nudge as string).command).toBe("company-unknown-command");
+  });
+
+  test("does not copy an unknown identifier-shaped token into feedback context", async () => {
+    const identifier = "5e6f7a8b-0000-4111-2222-333344445557";
+    const nudge = await feedbackNudge(
+      {
+        command: "gusto payroll",
+        globals: agentFlags,
+        code: ExitCode.CliUsage,
+        error: {
+          code: "unknown_command",
+          message: `unknown command '${identifier}' for 'gusto payroll'`,
+          attempted_command: `gusto payroll ${identifier}`,
+        },
+      },
+      deps(),
+    );
+    expect(nudge).not.toContain(identifier);
+    expect(contextFrom(nudge as string).command).toBe("payroll-unknown-command");
+  });
+
   test("an unknown_fields usage error nudges as friction/bug with error_code in context", async () => {
     const nudge = await feedbackNudge(
       {
@@ -277,6 +358,35 @@ describe("feedbackNudge — throttle + opt-out", () => {
       deps(),
     );
     expect(nudge).not.toBeNull();
+  });
+
+  test("a malformed config fails closed and suppresses the nudge", async () => {
+    await Bun.write(paths.file, `feedback_nudge = off\n`);
+    expect(await feedbackNudge(frictionInputs, deps())).toBeNull();
+  });
+
+  test.each([
+    ["off", "on", false],
+    ["on", "off", true],
+  ] as const)("GUSTO_CLI_FEEDBACK_NUDGE=%s overrides feedback_nudge=%s", async (envValue, configValue, shouldNudge) => {
+    await writeConfig({ feedback_nudge: configValue }, paths);
+    const previous = process.env.GUSTO_CLI_FEEDBACK_NUDGE;
+    process.env.GUSTO_CLI_FEEDBACK_NUDGE = envValue;
+    try {
+      expect((await feedbackNudge(frictionInputs, deps())) !== null).toBe(shouldNudge);
+    } finally {
+      if (previous === undefined) delete process.env.GUSTO_CLI_FEEDBACK_NUDGE;
+      else process.env.GUSTO_CLI_FEEDBACK_NUDGE = previous;
+    }
+  });
+
+  test("suppresses a nudge when its throttle timestamp cannot be persisted", async () => {
+    chmodSync(scratch, 0o500);
+    try {
+      expect(await feedbackNudge(frictionInputs, deps())).toBeNull();
+    } finally {
+      chmodSync(scratch, 0o700);
+    }
   });
 });
 

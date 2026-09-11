@@ -109,6 +109,9 @@ describe("compiled binary", () => {
       const result = await run(["this-command-does-not-exist"], { XDG_CONFIG_HOME: isolated });
       expect(result.exitCode).toBe(2);
       expect(result.stderr).toContain("gusto feedback");
+      expect(result.stderr).toContain("--category feature_request");
+      expect(nudgeContext(result.stderr).command).toBe("unknown-command");
+      expect(JSON.parse(result.stdout.trim()).error.attempted_command).toBe("gusto this-command-does-not-exist");
     } finally {
       rmSync(isolated, { recursive: true, force: true });
     }
@@ -130,8 +133,10 @@ describe("compiled binary", () => {
   test("parse failures from config stay exempt when a global option consumes a separate value", async () => {
     const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-config-parse-nudge-"));
     try {
-      const result = await run(["--fields", "value", "config", "get"], { XDG_CONFIG_HOME: isolated });
-      expect(result.exitCode).toBe(7);
+      const result = await run(["--fields", "value", "config", "get", "environment", "--not-an-option"], {
+        XDG_CONFIG_HOME: isolated,
+      });
+      expect(result.exitCode).toBe(2);
       expect(result.stderr).not.toContain("gusto feedback");
     } finally {
       rmSync(isolated, { recursive: true, force: true });
@@ -149,7 +154,7 @@ describe("compiled binary", () => {
   test("a parse-time nudge records an explicit sandbox environment", async () => {
     const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-env-nudge-"));
     try {
-      const result = await run(["--env", "sandbox", "employe", "list"], { XDG_CONFIG_HOME: isolated });
+      const result = await run(["--env", "sandbox", "frobnicate", "list"], { XDG_CONFIG_HOME: isolated });
       expect(result.exitCode).toBe(2);
       expect(nudgeContext(result.stderr).environment).toBe("sandbox");
     } finally {
@@ -158,9 +163,9 @@ describe("compiled binary", () => {
   });
 
   test.each([
-    ["environment variable", ["employe", "list"], { GUSTO_ENVIRONMENT: "sandbox" }],
-    ["last repeated flag", ["--env", "production", "--env", "sandbox", "employe", "list"], {}],
-    ["trailing global flag", ["employe", "list", "--env", "sandbox"], {}],
+    ["environment variable", ["frobnicate", "list"], { GUSTO_ENVIRONMENT: "sandbox" }],
+    ["last repeated flag", ["--env", "production", "--env", "sandbox", "frobnicate", "list"], {}],
+    ["trailing global flag", ["frobnicate", "list", "--env", "sandbox"], {}],
   ] as const)("a parse-time nudge honors the %s environment source", async (_source, args, extraEnv) => {
     const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-env-precedence-"));
     try {
@@ -177,7 +182,7 @@ describe("compiled binary", () => {
     try {
       const set = await run(["config", "set", "environment", "sandbox"], { XDG_CONFIG_HOME: isolated });
       expect(set.exitCode).toBe(0);
-      const result = await run(["employe", "list"], { XDG_CONFIG_HOME: isolated });
+      const result = await run(["frobnicate", "list"], { XDG_CONFIG_HOME: isolated });
       expect(result.exitCode).toBe(2);
       expect(nudgeContext(result.stderr).environment).toBe("sandbox");
     } finally {
@@ -480,11 +485,17 @@ describe("usage errors are self-correcting envelopes in agent mode", () => {
   });
 
   test("a typo'd top-level command suggests the nearest match", async () => {
-    const result = await run(["compant"]);
-    expect(result.exitCode).toBe(2);
-    const env = JSON.parse(result.stdout.trim());
-    expect(env.error.code).toBe("unknown_command");
-    expect(env.error.did_you_mean).toBe("company");
+    const isolated = mkdtempSync(path.join(tmpdir(), "gusto-cli-typo-nudge-"));
+    try {
+      const result = await run(["compant"], { XDG_CONFIG_HOME: isolated });
+      expect(result.exitCode).toBe(2);
+      const env = JSON.parse(result.stdout.trim());
+      expect(env.error.code).toBe("unknown_command");
+      expect(env.error.did_you_mean).toBe("company");
+      expect(result.stderr).not.toContain("gusto feedback");
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   test("an unknown option is a structured unknown_option envelope pointing at --help, not the hatch", async () => {

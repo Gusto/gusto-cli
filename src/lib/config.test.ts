@@ -120,11 +120,21 @@ describe("read/write/reset", () => {
     expect(await readConfig(paths)).toEqual({});
   });
 
-  test("feedback_nudge round-trips and rejects invalid values from disk", async () => {
+  test("feedback_nudge round-trips, and an unparseable value reads as off rather than on", async () => {
     await writeConfig({ feedback_nudge: "off" }, paths);
     expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+
+    await Bun.write(paths.file, `feedback_nudge = false\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+    await Bun.write(paths.file, `feedback_nudge = true\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "on" });
+
     await Bun.write(paths.file, `feedback_nudge = "sometimes"\n`);
-    expect(await readConfig(paths)).toEqual({});
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+    await Bun.write(paths.file, `feedback_nudge = "OFF"\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "off" });
+    await Bun.write(paths.file, `feedback_nudge = "  on  "\n`);
+    expect(await readConfig(paths)).toEqual({ feedback_nudge: "on" });
   });
 
   // Unlike every other key here, a value this one can't parse must not fall back to the default:

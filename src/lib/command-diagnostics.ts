@@ -255,6 +255,7 @@ export function usageErrorEnvelope(
       return {
         code: "unknown_command",
         message: `unknown command '${diagnosis.token}' for '${diagnosis.parent}'`,
+        attempted_command: `${diagnosis.parent} ${diagnosis.token}`,
         valid_commands: diagnosis.validCommands,
         ...(diagnosis.didYouMean ? { did_you_mean: diagnosis.didYouMean } : {}),
         hint: API_HATCH_HINT,
