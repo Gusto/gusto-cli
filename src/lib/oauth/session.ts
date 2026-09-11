@@ -100,9 +100,8 @@ async function resolveSessionTokenAttempt(
     return { kind: "ok", token: await refreshAndStore(store, env, http, state.session, state.refreshToken, now()) };
   } catch (err) {
     // Proactive (within-skew) refresh failed while the token is still genuinely valid, so the
-    // failure isn't actionable yet - use it. There is no reactive refresh: a token that turns out
-    // to be dead comes back 401 and is reported as `credential_rejected`, not swapped for a fresh
-    // one. This is the last chance to refresh, so passing it through bets on the token's clock.
+    // failure isn't actionable yet - use it, betting on the token's clock. If it's actually dead,
+    // the 401 that comes back triggers `onUnauthorized`'s reactive refresh instead.
     const expiresAt = state.session.expiresAt;
     if (expiresAt != null && now() < expiresAt) return { kind: "ok", token: state.token };
     if (err instanceof OAuthError) {
