@@ -184,8 +184,10 @@ async function reconcileAfterFailedRefresh(
     case "refreshable":
       try {
         return await refreshAndStore(store, env, http, state.session, state.refreshToken, now());
-      } catch {
-        throw failed();
+      } catch (second) {
+        // This attempt's own failure, not the one that led here - a transient blip on this second
+        // try must not be reported as the first attempt's (possibly unrelated) rejection reason.
+        throw second instanceof OAuthError ? new TokenRefreshFailedError(second, env) : second;
       }
     case "absent":
     case "expired":

@@ -219,6 +219,29 @@ describe("reactiveRefresh", () => {
     expect(refreshCalls).toBe(2);
   });
 
+  test("a second refresh attempt on reconciliation reports its own failure reason, not the first attempt's", async () => {
+    // The first attempt fails as invalid_grant (dead refresh token); the reconciled session's own
+    // refresh then fails as a transient 503 - a different, unrelated reason that must not come back
+    // looking like the first one, or the caller is told to discard a token that's still good.
+    const store = memoryStore({
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
+    });
+    let refreshCalls = 0;
+    const fetchImpl = (async () => {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        await store.save("sandbox", { ...creds, accessToken: "stale2", refreshToken: "rt2", expiresAt: 1_030_000 });
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ error: "temporarily_unavailable" }), { status: 503 });
+    }) as unknown as typeof fetch;
+
+    const result = reactiveRefresh(store, "sandbox", { baseUrl: "https://api.test", fetchImpl }, () => 1_000_000);
+    await expect(result).rejects.toBeInstanceOf(TokenRefreshFailedError);
+    await expect(result).rejects.toMatchObject({ cause: expect.objectContaining({ status: 503 }) });
+    expect(refreshCalls).toBe(2);
+  });
+
   test("the reconciled session having logged out in the meantime still throws, rather than resolving null", async () => {
     const store = memoryStore({
       sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
