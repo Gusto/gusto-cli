@@ -70,6 +70,7 @@ async function send(
 
 function withInstallIdHeader(opts: OAuthHttpOptions, headers: Record<string, string>): Record<string, string> {
   if (opts.installId !== undefined) headers["X-Gusto-CLI-Install-Id"] = opts.installId;
+  if (opts.command !== undefined) headers["X-Gusto-CLI-Command"] = opts.command;
   return headers;
 }
 
