@@ -78,7 +78,7 @@ Every command produces an `AgentEnvelope`:
 Every outbound request carries:
 
 ```
-User-Agent: gusto-cli/<version> (<os>-<arch>)      e.g. gusto-cli/0.2.1 (darwin-arm64)
+User-Agent: gusto-cli/<version> (<os>-<arch>)      e.g. gusto-cli/0.3.0 (darwin-arm64)
 ```
 
 **This format is a stable contract.** Version-adoption reporting groups on it, so changing the grammar - adding a field, reordering, appending free text - silently splits one release across buckets and breaks historical comparisons. Treat it like a wire format: extend only additively and only deliberately.
