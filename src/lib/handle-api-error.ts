@@ -88,7 +88,7 @@ function rejectedCredential(auth: AuthContext | undefined): string {
       // A reactive refresh already ran once this command's original token 401'd - the "stale"
       // framing below is wrong for the replacement it minted, which is seconds old.
       if (auth.refreshed) {
-        return `the ${env} session was refreshed during this command, and the API rejected the replacement token too - the refresh token itself may be revoked, or ${env} may be the wrong environment for this credential. Run \`gusto auth login --env ${env}\` to sign in again.`;
+        return `the ${env} session was refreshed during this command, and the API rejected the replacement token too - it may have been minted for the wrong environment, or for a different audience or scope than this endpoint needs. Run \`gusto auth login --env ${env}\` to sign in again.`;
       }
       return `the stored ${env} session was rejected by the API - its access token is stale or was revoked. Run \`gusto auth login --env ${env}\` to sign in again; that mints a new grant and replaces the refresh token in that slot.`;
     case "env":
