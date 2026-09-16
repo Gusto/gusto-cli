@@ -505,6 +505,7 @@ describe("usage errors are self-correcting envelopes in agent mode", () => {
     expect(env.error.code).toBe("unknown_option");
     expect(env.error.valid_commands).toBeUndefined();
     expect(env.error.hint).toBe("run `gusto --help` for usage");
+    expect(result.stderr).not.toContain("gusto feedback");
   });
 
   test("a missing required argument returns the documented blocked_on envelope (exit 7)", async () => {

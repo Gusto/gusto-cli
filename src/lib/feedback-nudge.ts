@@ -1,5 +1,6 @@
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
+import { USAGE_HELP_HINT } from "./command-diagnostics.ts";
 import {
   FEEDBACK_NUDGE_ENV,
   type ConfigPaths,
@@ -12,11 +13,12 @@ import type { GlobalFlags } from "./global-flags.ts";
 import { type EnvelopeError, outputOptionsFrom } from "./output.ts";
 import { VERSION } from "./version.ts";
 
-/** Two moments worth routing an agent to `gusto feedback`:
+/** Three moments worth routing an agent to `gusto feedback`:
  * - `escape_hatch`: the caller reached for `gusto api request`, the raw REST escape hatch — a signal
  *   that a first-class command was missing (→ feature_request).
+ * - `unknown_command`: an unrecognized command had no close correction (→ feature_request).
  * - `friction`: the command failed in a way that isn't a working guardrail (→ bug). */
-type Trigger = "friction" | "escape_hatch";
+type Trigger = "friction" | "escape_hatch" | "unknown_command";
 
 /** The `gusto feedback --category` value each trigger pre-fills. */
 type NudgeCategory = "bug" | "feature_request";
@@ -24,11 +26,12 @@ type NudgeCategory = "bug" | "feature_request";
 const CATEGORY_FOR: Readonly<Record<Trigger, NudgeCategory>> = {
   friction: "bug",
   escape_hatch: "feature_request",
+  unknown_command: "feature_request",
 };
 
-/** At most one nudge per category per 24h, so a run of failures (or repeated escape-hatch calls)
- * doesn't spam the same suggestion. Keyed per category so a `bug` nudge and a `feature_request`
- * nudge don't throttle each other. */
+/** At most one nudge per trigger per 24h, so a run of failures (or repeated escape-hatch calls)
+ * doesn't spam the same suggestion. Keyed per trigger so the distinct feature-request signals from
+ * raw API use and a missing command don't throttle each other. */
 export const NUDGE_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 /** Throttle bookkeeping lives beside `config.toml` but stays separate from it: this file is
@@ -123,9 +126,13 @@ function classify(inputs: NudgeInputs): Trigger | null {
   // A dry-run previewed a request without running it — nothing happened worth nudging about.
   if (dryRun) return null;
 
+  // Commander usage mistakes already point the caller to --help. They are self-correcting input
+  // errors, not CLI defects worth spending the daily friction nudge on.
+  if (error?.hint === USAGE_HELP_HINT) return null;
+
   // A close typo already has an actionable correction. An unknown command with no suggestion is
   // evidence that a first-class command may be missing, like use of the raw API escape hatch.
-  if (error?.code === "unknown_command") return error.did_you_mean === undefined ? "escape_hatch" : null;
+  if (error?.code === "unknown_command") return error.did_you_mean === undefined ? "unknown_command" : null;
 
   // The raw REST escape hatch signals a missing first-class command, whether it succeeded or failed.
   if (command === "gusto api request") return "escape_hatch";
@@ -141,11 +148,10 @@ function classify(inputs: NudgeInputs): Trigger | null {
   return null;
 }
 
-/** Best-effort per-category throttle. Returns true only after the timestamp is persisted. If state
+/** Best-effort per-trigger throttle. Returns true only after the timestamp is persisted. If state
  * cannot be written, suppress the nudge so an un-throttleable environment never gets unlimited
  * suggestions. */
 async function checkAndRecordThrottle(trigger: Trigger, deps: NudgeDeps): Promise<boolean> {
-  const category = CATEGORY_FOR[trigger];
   const dir = deps.configPaths().dir;
   const now = deps.now();
 
@@ -153,13 +159,13 @@ async function checkAndRecordThrottle(trigger: Trigger, deps: NudgeDeps): Promis
   // invocations inside the same window can both read a stale timestamp and both nudge. That's a
   // harmless double-nudge, never a correctness problem, so it isn't worth a lock.
   const state = await readNudgeState(dir);
-  const last = state[category];
+  const last = state[trigger];
   if (typeof last === "string") {
     const lastMs = Date.parse(last);
     if (!Number.isNaN(lastMs) && now - lastMs < NUDGE_THROTTLE_MS) return false;
   }
 
-  state[category] = new Date(now).toISOString();
+  state[trigger] = new Date(now).toISOString();
   return writeNudgeState(dir, state);
 }
 

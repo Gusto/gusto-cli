@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { USAGE_HELP_HINT } from "./command-diagnostics.ts";
 import { type ConfigPaths, configPaths, writeConfig } from "./config.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { NUDGE_THROTTLE_MS, type NudgeInputs, feedbackNudge } from "./feedback-nudge.ts";
@@ -204,6 +205,22 @@ describe("feedbackNudge — suppression", () => {
 });
 
 describe("feedbackNudge — usage failures are friction (runner-final classification)", () => {
+  test.each(["unknown_option", "excess_arguments", "cli_usage"])(
+    "does not nudge for the self-correcting %s usage error",
+    async (code) => {
+      const nudge = await feedbackNudge(
+        {
+          command: "gusto company show",
+          globals: agentFlags,
+          code: ExitCode.CliUsage,
+          error: { code, message: "invalid CLI usage", hint: USAGE_HELP_HINT },
+        },
+        deps(),
+      );
+      expect(nudge).toBeNull();
+    },
+  );
+
   test("does not nudge for an unknown command with a did-you-mean correction", async () => {
     const nudge = await feedbackNudge(
       {
@@ -240,7 +257,7 @@ describe("feedbackNudge — usage failures are friction (runner-final classifica
     expect(contextFrom(nudge as string).command).toBe("company-unknown-command");
   });
 
-  test("does not copy an unknown identifier-shaped token into feedback context", async () => {
+  test("keeps unknown-command context to the allowlisted keys", async () => {
     const identifier = "5e6f7a8b-0000-4111-2222-333344445557";
     const nudge = await feedbackNudge(
       {
@@ -255,8 +272,12 @@ describe("feedbackNudge — usage failures are friction (runner-final classifica
       },
       deps(),
     );
+    const ctx = contextFrom(nudge as string);
+    expect(Object.keys(ctx).sort()).toEqual(
+      ["cli_version", "command", "environment", "error_code", "exit_code", "trigger"].sort(),
+    );
+    expect(ctx.command).toBe("payroll-unknown-command");
     expect(nudge).not.toContain(identifier);
-    expect(contextFrom(nudge as string).command).toBe("payroll-unknown-command");
   });
 
   test("an unknown_fields usage error nudges as friction/bug with error_code in context", async () => {
@@ -322,7 +343,7 @@ describe("feedbackNudge — throttle + opt-out", () => {
     error: apiError(),
   };
 
-  test("suppresses a second same-category nudge inside 24h, then re-fires after the window", async () => {
+  test("suppresses a second same-trigger nudge inside 24h, then re-fires after the window", async () => {
     const first = await feedbackNudge(frictionInputs, deps(NOW));
     expect(first).not.toBeNull();
 
@@ -333,13 +354,29 @@ describe("feedbackNudge — throttle + opt-out", () => {
     expect(afterWindow).not.toBeNull();
   });
 
-  test("throttles each category independently", async () => {
+  test("throttles triggers independently", async () => {
     const escapeHatch: NudgeInputs = { command: "gusto api request", globals: agentFlags, code: ExitCode.Success };
     expect(await feedbackNudge(frictionInputs, deps(NOW))).not.toBeNull();
-    // A different category is not throttled by the first.
+    // A different trigger/category is not throttled by the first.
     expect(await feedbackNudge(escapeHatch, deps(NOW))).not.toBeNull();
-    // ...but the same category now is.
+    // ...but the same trigger now is.
     expect(await feedbackNudge(frictionInputs, deps(NOW))).toBeNull();
+  });
+
+  test("does not let a raw API nudge throttle a missing-command nudge in the same category", async () => {
+    const escapeHatch: NudgeInputs = { command: "gusto api request", globals: agentFlags, code: ExitCode.Success };
+    const missingCommand: NudgeInputs = {
+      command: "gusto company",
+      globals: agentFlags,
+      code: ExitCode.CliUsage,
+      error: { code: "unknown_command", message: "unknown command 'blork' for 'gusto company'" },
+    };
+
+    expect(await feedbackNudge(escapeHatch, deps(NOW))).not.toBeNull();
+    const nudge = await feedbackNudge(missingCommand, deps(NOW));
+    expect(nudge).not.toBeNull();
+    expect(nudge).toContain("--category feature_request");
+    expect(contextFrom(nudge as string).trigger).toBe("unknown_command");
   });
 
   test("`feedback_nudge = off` disables the nudge entirely", async () => {
