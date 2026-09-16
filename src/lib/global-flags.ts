@@ -14,6 +14,20 @@ export interface GlobalFlags {
   verbose: boolean;
   env?: Environment;
   fields?: FieldSelection;
+  /** The full command path being run (e.g. `"gusto employee list"`). Set by the runner from the
+   * dispatched command, not parsed from CLI options, so it's absent until the runner injects it.
+   * Threaded through to the API client as the per-command `X-Gusto-CLI-Command` request header. */
+  command?: string;
+}
+
+/** Turn a full command path into the compact slug sent as `X-Gusto-CLI-Command`: strip a leading
+ * `"gusto "`, trim, lowercase, and collapse internal whitespace runs to a single `-`. */
+export function commandSlug(command: string): string {
+  return command
+    .replace(/^gusto /, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
 }
 
 /** Resolve commander's `--fields [list]` value into a FieldSelection.

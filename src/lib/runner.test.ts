@@ -275,6 +275,21 @@ describe("runCommand", () => {
     expect(captured.command).toBe("gusto company provision");
     expect(captured.globals?.agent).toBe(true);
   });
+
+  test("threads the command onto the handler's globals so the API client can stamp it", async () => {
+    const captured: { command?: string } = {};
+    await runWithExitCapture("gusto employee list", async (ctx) => {
+      captured.command = ctx.globals.command;
+      return { ok: true, data: undefined };
+    });
+    expect(captured.command).toBe("gusto employee list");
+  });
+
+  test("does not mutate the caller's globals object (command lands only on a fresh copy)", async () => {
+    const original: GlobalFlags = { ...flags };
+    await runWithExitCapture("gusto employee list", async () => ({ ok: true, data: undefined }), original);
+    expect(original.command).toBeUndefined();
+  });
 });
 
 describe("validationFailure", () => {
