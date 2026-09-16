@@ -13,6 +13,6 @@ function sanitize(value: string): string {
   return cleaned.length > 0 ? cleaned : "unknown";
 }
 
-/** e.g. `gusto-cli/0.1.0 (darwin-arm64)`. A stable contract that adoption reporting groups on -
+/** e.g. `gusto-cli/0.3.0 (darwin-arm64)`. A stable contract that adoption reporting groups on -
  * before changing the grammar, read `ARCHITECTURE.md#user-agent`. */
 export const USER_AGENT: string = `gusto-cli/${VERSION} (${sanitize(process.platform)}-${sanitize(process.arch)})`;

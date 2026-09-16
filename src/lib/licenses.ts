@@ -178,24 +178,18 @@ export function licenseText(dir: string): string {
   throw new Error(`No non-empty license file found in ${dir}`);
 }
 
-// release.yml builds the shipped binary, so its Bun version is what NOTICES must
-// document; ci.yml must agree or the audited and released runtimes differ.
-export function parseBunVersion(ciYml: string, releaseYml: string): string {
+// ci.yml builds the shipped binary, so its Bun version is what NOTICES documents.
+export function parseBunVersion(ciYml: string): string {
   const re = /BUN_VERSION:\s*([0-9]+\.[0-9]+\.[0-9]+)/;
   const ci = ciYml.match(re)?.[1];
-  const release = releaseYml.match(re)?.[1];
-  if (!ci || !release) {
-    throw new Error("Could not read BUN_VERSION from the workflow files.");
-  }
-  if (ci !== release) {
-    // release.yml is authoritative (it builds the shipped binary); name it first.
-    throw new Error(`BUN_VERSION mismatch: release.yml has ${release}, ci.yml has ${ci}. Update ci.yml to match.`);
+  if (!ci) {
+    throw new Error("Could not read BUN_VERSION from .github/workflows/ci.yml.");
   }
   return ci;
 }
 
 function bunVersion(): string {
-  return parseBunVersion(readText(".github/workflows/ci.yml"), readText(".github/workflows/release.yml"));
+  return parseBunVersion(readText(".github/workflows/ci.yml"));
 }
 
 function renderNotices(): string {

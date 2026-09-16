@@ -109,35 +109,54 @@ jobs:
   smoke:
     name: Smoke test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: [package, check]
+    needs: [package, check, build]
     strategy:
       fail-fast: false
       matrix:
-        # macos-15-intel covers x86_64 darwin (macos-14 is arm64); macos-13 runners were retired.
-        os: [ubuntu-latest, macos-14, macos-15-intel]
+        include:
+          - os: ubuntu-latest
+            binary: gusto-linux-x64
+          - os: macos-14
+            binary: gusto-darwin-arm64
+          # macos-15-intel covers x86_64 darwin; macos-13 runners were retired.
+          - os: macos-15-intel
+            binary: gusto-darwin-x64
     steps:
       # No checkout: these runners 403 on github.com (see `package`). Source via artifact.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cli-source
       - run: tar -xzf cli-source.tar.gz
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gusto-cli-binaries
+          path: dist
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2, pinned to the SHA on Gusto's org Actions allowlist
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-      - run: bun install --frozen-lockfile
-      - run: bun run test:smoke
+      - name: Prepare CI-built binary
+        env:
+          ARTIFACT_BIN_PATH: dist/${{ matrix.binary }}
+        # The installer gives the platform asset its runtime name; mirror that
+        # installed shape so self-update behavior is covered by smoke tests too.
+        run: |
+          cp "$ARTIFACT_BIN_PATH" dist/gusto
+          chmod +x dist/gusto
+      - name: Ad-hoc sign CI-built macOS binary
+        if: runner.os == 'macOS'
+        # Release-shaped builds omit bun's self-signature so the Developer ID
+        # signature has enough room. An ad-hoc signature makes the downloaded
+        # binary executable for CI before release.yml applies the real signature.
+        run: codesign --force --sign - dist/gusto
+      - name: Smoke test CI-built binary
+        run: bun run test:smoke:only
 
   build:
     name: Build all platform binaries
     # Runs untrusted PR code (bun install), so hosted runner + artifact source, not
     # the internal runner group. Consumes the package artifact (see package).
     runs-on: ubuntu-latest
-    # Gate on check too so smoke/build don't burn runners when lint/tests fail.
+    # Gate on check so builds don't burn runners when lint/tests fail.
     needs: [package, check]
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -153,10 +172,16 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile
-      - run: bun run build:all
+      - name: Build all platform binaries
+        # bun's self-signature on compiled binaries pre-allocates a too-small
+        # LC_CODE_SIGNATURE slot, which corrupts a real Developer ID signature
+        # (oven-sh/bun#29120). Disable it so rcodesign can sign cleanly.
+        env:
+          BUN_NO_CODESIGN_MACHO_BINARY: "1"
+        run: bun run build:all
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gusto-cli-binaries
           path: dist/gusto-*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90

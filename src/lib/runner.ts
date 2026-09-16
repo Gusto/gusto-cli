@@ -111,7 +111,11 @@ async function run<T>(
     code = ExitCode.CliUsage;
   } else {
     try {
-      const result = await handler({ command, globals, sinks });
+      // Carry the dispatched command name on globals so the API client can stamp it as a
+      // per-command request header. A fresh object rather than a mutation, so the caller's globals
+      // stay untouched.
+      const globalsWithCommand: GlobalFlags = { ...globals, command };
+      const result = await handler({ command, globals: globalsWithCommand, sinks });
       if (!result.ok) {
         emittedError = result.error;
         emit(output, { ok: false, error: result.error }, deps.sinks);

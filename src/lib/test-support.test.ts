@@ -37,3 +37,16 @@ describe("pagedRouter", () => {
     expect(res.headers["x-total-pages"]).toBeUndefined();
   });
 });
+
+describe("stubGlobalFetch", () => {
+  test("records request headers for assertions at the API boundary", async () => {
+    const stub = stubGlobalFetch([{ status: 200, body: {} }]);
+    restore = stub.restore;
+
+    await fetch("https://api.example.test/v1/things", {
+      headers: { "X-Test-Header": "recorded" },
+    });
+
+    expect(stub.calls[0]?.headers).toEqual({ "X-Test-Header": "recorded" });
+  });
+});
