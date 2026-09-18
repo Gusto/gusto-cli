@@ -88,7 +88,7 @@ describe("login", () => {
     const store = memoryStore({ sandbox: { clientId: "cid", clientSecret: "sec" } }); // creds present -> no DCR
     // Mock only the api.test calls (code exchange, then token_info). The loopback
     // redirect is hit with the REAL fetch so the local server actually responds.
-    const { fetch: apiFetch } = mockFetch([
+    const { fetch: apiFetch, captured } = mockFetch([
       { status: 200, body: { access_token: "user-at", refresh_token: "rt", expires_in: 7200 } }, // code exchange
       {
         status: 200,
@@ -102,7 +102,7 @@ describe("login", () => {
 
     const info = await login("sandbox", {
       store,
-      http: { baseUrl: "https://api.test", fetchImpl: apiFetch },
+      http: { baseUrl: "https://api.test", fetchImpl: apiFetch, command: "auth-login" },
       browserAvailable: () => true,
       openBrowser: driveCallback().openBrowser,
       print: () => {},
@@ -112,6 +112,8 @@ describe("login", () => {
     expect(store.data.sandbox?.accessToken).toBe("user-at");
     expect(store.data.sandbox?.refreshToken).toBe("rt");
     expect(store.data.sandbox?.companyUuid).toBe("comp-9");
+    const tokenInfoHeaders = captured.inits[1]?.headers as Record<string, string>;
+    expect(tokenInfoHeaders["X-Gusto-CLI-Command"]).toBe("auth-login");
   });
 
   // The only auth failure raised from inside the login flow, and so the only one whose client isn't
