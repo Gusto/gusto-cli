@@ -45,6 +45,12 @@ export function registerConfigCommand(parent: Command): void {
 Examples:
   $ gusto config set environment sandbox
   $ gusto config set format agent
+  $ gusto config set feedback_nudge off
+  $ gusto config set auto_update off
+
+On/off values:
+  feedback_nudge: on, off
+  auto_update: on, off
 `,
     )
     .action((key: string, value: string) =>
