@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { ApiError } from "../api-client.ts";
-import { ExitCode } from "../exit-codes.ts";
-import { NoSessionError, ensureClientCreds, resolveSessionToken, withUserToken } from "./session.ts";
+import { TokenRefreshFailedError } from "./refresh-failure.ts";
+import { ensureClientCreds, reactiveRefresh, resolveSessionToken } from "./session.ts";
 import { memoryStore, mockHttp as http } from "./test-support.ts";
 
 describe("resolveSessionToken", () => {
@@ -147,85 +146,119 @@ describe("ensureClientCreds", () => {
   });
 });
 
-describe("withUserToken", () => {
-  test("throws NoSessionError when not logged in", async () => {
-    await expect(
-      withUserToken(memoryStore(), "sandbox", http({ status: 200 }), () => Promise.resolve("x")),
-    ).rejects.toThrow(NoSessionError);
+describe("reactiveRefresh", () => {
+  const creds = { clientId: "c", clientSecret: "s" };
+
+  test("uses a session another process refreshed while this refresh was rejected", async () => {
+    const store = memoryStore({
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
+    });
+    const fetchImpl = (async (): Promise<Response> => {
+      await store.save("sandbox", { ...creds, accessToken: "new", refreshToken: "rt2", expiresAt: 20_000_000 });
+      return new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const token = await reactiveRefresh(store, "sandbox", { baseUrl: "https://api.test", fetchImpl }, () => 1_000);
+    expect(token).toBe("new");
   });
 
-  test("refreshes once and retries on a 401", async () => {
+  test("re-classifies the other process's session rather than trusting it blindly - one more refresh when it's itself still near-expiry", async () => {
+    // The concurrent write's session is itself still near-expiry, so trusting its token directly
+    // would hand back one that fails again almost immediately.
     const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", refreshToken: "rt", expiresAt: 9_999_999_999 },
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
-    let calls = 0;
-    const result = await withUserToken(
+    let refreshCalls = 0;
+    const fetchImpl = (async () => {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        await store.save("sandbox", { ...creds, accessToken: "stale2", refreshToken: "rt2", expiresAt: 1_030_000 });
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ access_token: "fresh", expires_in: 3600 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const token = await reactiveRefresh(store, "sandbox", { baseUrl: "https://api.test", fetchImpl }, () => 1_000_000);
+    expect(token).toBe("fresh");
+    expect(refreshCalls).toBe(2);
+  });
+
+  test("a rejected refresh with no concurrent change throws TokenRefreshFailedError wrapping the OAuthError", async () => {
+    const store = memoryStore({
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
+    });
+    const result = reactiveRefresh(
       store,
       "sandbox",
-      http({ status: 200, body: { access_token: "refreshed", expires_in: 3600 } }),
-      (token) => {
-        calls += 1;
-        if (calls === 1) {
-          expect(token).toBe("at");
-          throw new ApiError(401, null, ExitCode.Auth, "unauthorized");
-        }
-        expect(token).toBe("refreshed");
-        return Promise.resolve("ok");
-      },
+      http({ status: 400, body: { error: "invalid_grant" } }),
       () => 1_000,
     );
-    expect(result).toBe("ok");
-    expect(calls).toBe(2);
+    await expect(result).rejects.toBeInstanceOf(TokenRefreshFailedError);
+    await expect(result).rejects.toMatchObject({ env: "sandbox", cause: expect.objectContaining({ status: 400 }) });
   });
 
-  test("rethrows a non-401 ApiError without refreshing", async () => {
+  test("a second refresh attempt on reconciliation that also fails still throws TokenRefreshFailedError, not a loop", async () => {
     const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", refreshToken: "rt", expiresAt: 9_999_999_999 },
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
+    let refreshCalls = 0;
+    const fetchImpl = (async () => {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        await store.save("sandbox", { ...creds, accessToken: "stale2", refreshToken: "rt2", expiresAt: 1_030_000 });
+      }
+      return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    }) as unknown as typeof fetch;
+
     await expect(
-      withUserToken(
-        store,
-        "sandbox",
-        http({ status: 200 }),
-        () => {
-          throw new ApiError(500, null, ExitCode.General, "server error");
-        },
-        () => 1_000,
-      ),
-    ).rejects.toThrow("server error");
+      reactiveRefresh(store, "sandbox", { baseUrl: "https://api.test", fetchImpl }, () => 1_000_000),
+    ).rejects.toBeInstanceOf(TokenRefreshFailedError);
+    expect(refreshCalls).toBe(2);
   });
 
-  test("rethrows the 401 when the session has no refresh token", async () => {
+  test("a second refresh attempt on reconciliation reports its own failure reason, not the first attempt's", async () => {
+    // The first attempt fails as invalid_grant (dead refresh token); the reconciled session's own
+    // refresh then fails as a transient 503 - a different, unrelated reason that must not come back
+    // looking like the first one, or the caller is told to discard a token that's still good.
     const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", expiresAt: 9_999_999_999 },
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
-    await expect(
-      withUserToken(
-        store,
-        "sandbox",
-        http({ status: 200 }),
-        () => {
-          throw new ApiError(401, null, ExitCode.Auth, "unauthorized");
-        },
-        () => 1_000,
-      ),
-    ).rejects.toThrow("unauthorized");
+    let refreshCalls = 0;
+    const fetchImpl = (async () => {
+      refreshCalls += 1;
+      if (refreshCalls === 1) {
+        await store.save("sandbox", { ...creds, accessToken: "stale2", refreshToken: "rt2", expiresAt: 1_030_000 });
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ error: "temporarily_unavailable" }), { status: 503 });
+    }) as unknown as typeof fetch;
+
+    const result = reactiveRefresh(store, "sandbox", { baseUrl: "https://api.test", fetchImpl }, () => 1_000_000);
+    await expect(result).rejects.toBeInstanceOf(TokenRefreshFailedError);
+    await expect(result).rejects.toMatchObject({ cause: expect.objectContaining({ status: 503 }) });
+    expect(refreshCalls).toBe(2);
   });
 
-  test("propagates when the post-401 refresh itself fails", async () => {
+  test("the reconciled session having logged out in the meantime still throws, rather than resolving null", async () => {
     const store = memoryStore({
-      sandbox: { clientId: "c", clientSecret: "s", accessToken: "at", refreshToken: "rt", expiresAt: 9_999_999_999 },
+      sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
+    const fetchImpl = (async (): Promise<Response> => {
+      await store.clear("sandbox");
+      return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    }) as unknown as typeof fetch;
+
     await expect(
-      withUserToken(
-        store,
-        "sandbox",
-        http({ status: 400, body: { error: "invalid_grant" } }), // refresh call fails
-        () => {
-          throw new ApiError(401, null, ExitCode.Auth, "unauthorized");
-        },
-        () => 1_000,
-      ),
-    ).rejects.toBeDefined();
+      reactiveRefresh(store, "sandbox", { baseUrl: "https://api.test", fetchImpl }, () => 1_000),
+    ).rejects.toBeInstanceOf(TokenRefreshFailedError);
+  });
+
+  test("null when there is nothing to refresh with, even after a concurrent-change check would apply", async () => {
+    const store = memoryStore({ sandbox: { accessToken: "old" } });
+    const token = await reactiveRefresh(store, "sandbox", http({ status: 200 }), () => 1_000);
+    expect(token).toBeNull();
   });
 });

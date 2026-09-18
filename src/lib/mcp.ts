@@ -4,6 +4,9 @@ import { defaultEnv, resolveMcpBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
 import type { Environment, GlobalFlags } from "./global-flags.ts";
 import { toResult } from "./handle-api-error.ts";
+import { oauthHttp } from "./oauth/context.ts";
+import { reactiveRefresh } from "./oauth/session.ts";
+import { resolveStore } from "./oauth/token-store.ts";
 import type { CommandResult } from "./runner.ts";
 
 export type CallMcpToolOpts = AuthOpts;
@@ -49,6 +52,16 @@ export async function callMcpTool(
     token: resolved.token,
     installId: await resolveInstallIdHeader(),
     auth: { tokenSource: resolved.source, environment },
+    onUnauthorized:
+      resolved.source === "session"
+        ? async () =>
+            reactiveRefresh(
+              opts.store ?? resolveStore(),
+              environment,
+              opts.http ?? (await oauthHttp(globals)),
+              opts.now,
+            )
+        : undefined,
   });
 
   const body = {
