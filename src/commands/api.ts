@@ -65,7 +65,7 @@ Examples:
 `,
     )
     .action((method: string, path: string, opts: ApiRequestOpts) =>
-      runCommand("gusto api request", readGlobalFlags(parent.opts()), apiRequestHandler(method, path, opts)),
+      runCommand("gusto api request", readGlobalFlags(parent.opts(), opts), apiRequestHandler(method, path, opts)),
     );
 }
 

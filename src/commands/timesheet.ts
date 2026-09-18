@@ -319,7 +319,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetCreateOpts) =>
-      runCommand("gusto timesheet create", readGlobalFlags(parent.opts()), timesheetCreateHandler(opts)),
+      runCommand("gusto timesheet create", readGlobalFlags(parent.opts(), opts), timesheetCreateHandler(opts)),
     );
 
   cmd
@@ -337,7 +337,7 @@ export function registerTimesheetCommand(parent: Command): void {
     .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
     .action((opts: TimesheetSyncOpts) =>
-      runCommand("gusto timesheet sync", readGlobalFlags(parent.opts()), timesheetSyncHandler(opts)),
+      runCommand("gusto timesheet sync", readGlobalFlags(parent.opts(), opts), timesheetSyncHandler(opts)),
     );
 
   cmd

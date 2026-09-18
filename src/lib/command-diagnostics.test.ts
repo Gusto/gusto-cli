@@ -3,9 +3,11 @@ import { Command } from "commander";
 import {
   API_HATCH_HINT,
   USAGE_HELP_HINT,
+  commandPathFromArgv,
   diagnoseUnknownCommand,
   levenshtein,
   nearestCommand,
+  optionValueFromArgv,
   usageErrorCode,
   usageErrorEnvelope,
 } from "./command-diagnostics.ts";
@@ -155,6 +157,52 @@ describe("diagnoseUnknownCommand", () => {
   });
 });
 
+describe("commandPathFromArgv", () => {
+  test("resolves registered command names while skipping separate option values", () => {
+    const program = buildTestProgram();
+    program.option("--fields [list]", "fields");
+    expect(commandPathFromArgv(program, ["--fields", "value", "company", "show"])).toBe("gusto company show");
+  });
+
+  test("does not reinterpret an option value as a command", () => {
+    const program = buildTestProgram();
+    program.option("--fields [list]", "fields");
+    expect(commandPathFromArgv(program, ["--fields", "company", "show"])).toBe("gusto");
+  });
+
+  test("handles attached option values without shifting the command walk", () => {
+    const program = buildTestProgram();
+    program.option("--env <env>", "environment");
+    expect(commandPathFromArgv(program, ["--env=sandbox", "company", "show"])).toBe("gusto company show");
+  });
+});
+
+describe("optionValueFromArgv", () => {
+  test("reads separate and attached values for a registered option", () => {
+    expect(optionValueFromArgv(["--env", "sandbox", "company", "show"], "--env")).toBe("sandbox");
+    expect(optionValueFromArgv(["--env=production", "company", "show"], "--env")).toBe("production");
+  });
+
+  test("does not read an option-like next token as a value", () => {
+    expect(optionValueFromArgv(["--env", "--json", "company", "show"], "--env")).toBeUndefined();
+  });
+
+  test("uses the last explicit value, including one after an unresolved positional", () => {
+    expect(optionValueFromArgv(["--env", "production", "--env=sandbox", "employe", "list"], "--env")).toBe("sandbox");
+    expect(optionValueFromArgv(["employe", "list", "--env", "sandbox"], "--env")).toBe("sandbox");
+  });
+
+  test("uses the last value accepted by the caller", () => {
+    const isEnvironment = (value: string): value is "sandbox" | "production" =>
+      value === "sandbox" || value === "production";
+    expect(optionValueFromArgv(["--env", "sandbox", "--env", "invalid"], "--env", isEnvironment)).toBe("sandbox");
+  });
+
+  test("ignores values after the end-of-options marker", () => {
+    expect(optionValueFromArgv(["employe", "--", "--env", "sandbox"], "--env")).toBeUndefined();
+  });
+});
+
 describe("usageErrorCode", () => {
   test("maps known commander codes to snake_case", () => {
     expect(usageErrorCode("commander.unknownCommand")).toBe("unknown_command");
@@ -177,6 +225,7 @@ describe("usageErrorEnvelope", () => {
     ]);
     expect(env.code).toBe("unknown_command");
     expect(env.message).toBe("unknown command 'shwo' for 'gusto payroll'");
+    expect(env.attempted_command).toBe("gusto payroll shwo");
     expect(env.valid_commands).toEqual(["list", "show"]);
     expect(env.did_you_mean).toBe("show");
     expect(env.hint).toBe(API_HATCH_HINT);
@@ -188,6 +237,7 @@ describe("usageErrorEnvelope", () => {
       "blork",
     ]);
     expect(env.code).toBe("unknown_command");
+    expect(env.attempted_command).toBe("gusto company blork");
     expect(env.valid_commands).toEqual(["show", "locations"]);
     expect(env.did_you_mean).toBeUndefined();
   });
@@ -202,6 +252,23 @@ describe("usageErrorEnvelope", () => {
     expect(env.code).toBe("validation");
     expect(env.message).toBe("missing required arguments");
     expect(env.blocked_on).toEqual([{ field: "contractor_uuid", reason: "required" }]);
+    expect(env.hint).toBeUndefined();
+  });
+
+  test("an invalid option choice becomes a validation envelope naming the blocked option", () => {
+    const env = usageErrorEnvelope(
+      "commander.invalidArgument",
+      "error: option '--category <value>' argument 'bugg' is invalid. Allowed choices are bug, feature_request, general, praise.",
+      buildTestProgram(),
+      ["feedback", "--category", "bugg"],
+    );
+    expect(env.code).toBe("validation");
+    expect(env.blocked_on).toEqual([
+      {
+        field: "category",
+        reason: "argument 'bugg' is invalid. Allowed choices are bug, feature_request, general, praise.",
+      },
+    ]);
     expect(env.hint).toBeUndefined();
   });
 

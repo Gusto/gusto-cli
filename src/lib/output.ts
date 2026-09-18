@@ -28,6 +28,8 @@ export interface EnvelopeError {
   valid_commands?: string[];
   /** Nearest valid command to what the caller typed, when close enough to suggest. */
   did_you_mean?: string;
+  /** Command path the caller attempted when an unknown-command error occurred. */
+  attempted_command?: string;
   /** Recovery pointer, e.g. the `gusto api request` escape hatch for reads without a command yet. */
   hint?: string;
   /** Which environment the failing call was made against. Set on auth/company failures, where the

@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import type { StdinReader } from "../lib/api-context.ts";
 import { DRY_RUN_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
@@ -27,12 +27,16 @@ export function registerFeedbackCommand(parent: Command): void {
     .command("feedback")
     .description("Send feedback to Gusto")
     .option("--message <text>", "Feedback message (or pipe it via stdin)")
-    .option("--category <value>", "Optional feedback category")
+    .addOption(
+      new Option("--category <value>", "Optional feedback category: bug, feature_request, general, or praise").choices([
+        ...CATEGORY_CHOICES,
+      ]),
+    )
     .option("--context <json>", "Optional context metadata as a JSON object")
     .option(...DRY_RUN_OPT)
     .option(...TOKEN_STDIN_OPT)
     .action((opts: FeedbackOpts) =>
-      runCommand("gusto feedback", readGlobalFlags(parent.opts()), feedbackHandler(opts)),
+      runCommand("gusto feedback", readGlobalFlags(parent.opts(), opts), feedbackHandler(opts)),
     );
 }
 
