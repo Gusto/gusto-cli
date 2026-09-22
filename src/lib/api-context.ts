@@ -71,8 +71,7 @@ export interface ApiContextOpts extends AuthOpts {
  * 401 name the credential that was refused. A client built without it still classifies a 401 as an
  * auth failure, just without naming the source.
  *
- * `onUnauthorized` is the reactive-refresh hook: only `resolveApiContext` builds one, and only for
- * a session-sourced token - see its call site.
+ * `onUnauthorized` is the reactive-refresh hook, built by `reactiveRefreshHook`.
  *
  * Not routed through: `oauthApiClient` in `oauth/context.ts` (its own bearer client for
  * `token_info` during login) - so `auth login --verbose` won't emit the token_info line. Tracked
@@ -98,6 +97,19 @@ export function buildApiClient(
     auth: opts.auth,
     onUnauthorized: opts.onUnauthorized,
   });
+}
+
+/** The 401 refresh hook, attached only for a session-sourced token - an explicit env/stdin token
+ * has no refresh token to use. */
+export function reactiveRefreshHook(
+  globals: GlobalFlags,
+  opts: AuthOpts,
+  tokenSource: ResolvedTokenSource,
+  environment: Environment,
+): (() => Promise<string | null>) | undefined {
+  if (tokenSource !== "session") return undefined;
+  return async () =>
+    reactiveRefresh(opts.store ?? resolveStore(), environment, opts.http ?? (await oauthHttp(globals)), opts.now);
 }
 
 export type ResolveFailure = "credentials" | "invalid_input";
@@ -264,16 +276,7 @@ export async function resolveApiContext(
     token,
     installId,
     auth: { tokenSource, environment },
-    onUnauthorized:
-      tokenSource === "session"
-        ? async () =>
-            reactiveRefresh(
-              opts.store ?? resolveStore(),
-              environment,
-              opts.http ?? (await oauthHttp(globals)),
-              opts.now,
-            )
-        : undefined,
+    onUnauthorized: reactiveRefreshHook(globals, opts, tokenSource, environment),
   });
 
   if (opts.requireCompany === false) {
