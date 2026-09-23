@@ -787,8 +787,7 @@ describe("ApiClient reactive refresh on a 401", () => {
   });
 
   test("a 401 that arrives after a concurrent refresh already finished retries directly, without a second refresh", async () => {
-    // B's 401 is gated to land only after A's refresh has already finished - the one case the
-    // in-flight-refresh guard alone doesn't cover.
+    // B's 401 lands only after A's refresh finished - the case the in-flight guard alone misses.
     let openGate!: () => void;
     const gate = new Promise<void>((resolve) => {
       openGate = resolve;

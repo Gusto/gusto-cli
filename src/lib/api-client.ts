@@ -13,8 +13,7 @@ export type ResolvedTokenSource = Exclude<TokenSource, "login">;
 export interface AuthContext {
   tokenSource: TokenSource;
   environment: Environment;
-  /** True once a reactive refresh has replaced this request's token - so a later rejection can be
-   * reported as the new token failing too, not as the original one being stale. */
+  /** True once a reactive refresh replaced this token, so a later rejection reads as the new token failing. */
   refreshed?: boolean;
 }
 
@@ -152,8 +151,7 @@ export interface ApiClientOptions {
   /** The credential this client authenticates with, stamped onto any `ApiError` it throws so a 401
    * can name what was refused. Omitted by clients built without a resolved context. */
   auth?: AuthContext;
-  /** Called once on a 401 for a replacement token; `null` leaves the 401 as-is. Omitted for an
-   * explicit env/stdin token, so a rejected one is never silently retried as the stored session. */
+  /** Called once on a 401 for a replacement token; `null` leaves the 401 as-is. */
   onUnauthorized?: () => Promise<string | null>;
 }
 
@@ -326,16 +324,13 @@ export class ApiClient {
       return await this.requestAttempt<T>(method, path, body, opts);
     } catch (err) {
       if (!(err instanceof ApiError) || err.status !== 401 || !this.onUnauthorized) throw err;
-      // this.token may have already moved past `tokenUsed` by the time we get here - a concurrent
-      // request's refresh landed while this one was still in flight. Retry directly with whatever
-      // it is now instead of spending a second, redundant refresh call.
+      // A concurrent request's refresh may have already moved this.token past tokenUsed - retry with
+      // what's there now instead of spending a second, redundant refresh.
       if (this.token === tokenUsed) {
         const refreshed = await this.refreshOnce(this.onUnauthorized);
         if (refreshed === null) throw err;
         this.token = refreshed;
       }
-      // A 401 on this retry is the new token failing, not the original one being stale - the
-      // wording a rejection gets from here on should say so.
       if (this.auth) this.auth = { ...this.auth, refreshed: true };
       return await this.requestAttempt<T>(method, path, body, opts);
     }

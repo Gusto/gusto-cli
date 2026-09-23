@@ -99,9 +99,8 @@ async function resolveSessionTokenAttempt(
   try {
     return { kind: "ok", token: await refreshAndStore(store, env, http, state.session, state.refreshToken, now()) };
   } catch (err) {
-    // Proactive (within-skew) refresh failed while the token is still genuinely valid, so the
-    // failure isn't actionable yet - use it, betting on the token's clock. If it's actually dead,
-    // the 401 that comes back triggers `onUnauthorized`'s reactive refresh instead.
+    // Proactive refresh failed while the token is still valid, so it isn't actionable yet - use it.
+    // If the token is actually dead, the 401 triggers `onUnauthorized`'s reactive refresh.
     const expiresAt = state.session.expiresAt;
     if (expiresAt != null && now() < expiresAt) return { kind: "ok", token: state.token };
     if (err instanceof OAuthError) {
@@ -138,9 +137,8 @@ function sameAuthState(previous: StoredSession, latest: StoredSession | null): b
   );
 }
 
-/** The last refresh chance after a 401, since the proactive one already ran before the request
- * started; throws `TokenRefreshFailedError` (not the raw `OAuthError`) so callers don't need to
- * wrap it themselves. */
+/** The last refresh chance after a 401. Throws `TokenRefreshFailedError` rather than the raw
+ * `OAuthError`, so callers don't wrap it themselves. */
 export async function reactiveRefresh(
   store: TokenStore,
   env: "sandbox" | "production",
@@ -157,8 +155,8 @@ export async function reactiveRefresh(
   }
 }
 
-/** Another `gusto` process may have refreshed this session while ours failed - re-classify what's
- * there instead of trusting it blindly, in case it's still near-expiry too. */
+/** Another `gusto` process may have refreshed while ours failed - re-classify instead of trusting
+ * it, since the token it stored can be near-expiry too. */
 async function reconcileAfterFailedRefresh(
   store: TokenStore,
   env: "sandbox" | "production",
@@ -184,8 +182,7 @@ async function reconcileAfterFailedRefresh(
       try {
         return await refreshAndStore(store, env, http, state.session, state.refreshToken, now());
       } catch (second) {
-        // This attempt's own failure, not the one that led here - a transient blip on this second
-        // try must not be reported as the first attempt's (possibly unrelated) rejection reason.
+        // Report this attempt's own failure - a transient blip here isn't the first attempt's rejection.
         throw second instanceof OAuthError ? new TokenRefreshFailedError(second, env) : second;
       }
     case "absent":

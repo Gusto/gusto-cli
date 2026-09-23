@@ -1043,8 +1043,7 @@ describe("a 401 from a resolved client", () => {
   });
 });
 
-// A stored token can look locally valid (bad/absent expiresAt, clock skew, server-side revocation)
-// and still get rejected; only a session-sourced token has something to refresh and retry with.
+// A stored token can look locally valid and still be rejected; only a session token can be refreshed.
 describe("reactive refresh on a 401", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());
@@ -1083,8 +1082,7 @@ describe("reactive refresh on a 401", () => {
   });
 
   test("a session token with no expiresAt at all still refreshes reactively on a 401", async () => {
-    // classifySession treats an absent expiresAt as "unknown, not expired" and passes the token
-    // through - a 401 is the only thing that can disprove it.
+    // classifySession passes an absent expiresAt through as "unknown" - only a 401 disproves it.
     const s = stubGlobalFetch([{ status: 401 }, { status: 200, body: { ok: true } }]);
     restore = s.restore;
     const store = memoryStore({

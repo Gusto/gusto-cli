@@ -166,8 +166,7 @@ describe("reactiveRefresh", () => {
   });
 
   test("re-classifies the other process's session rather than trusting it blindly - one more refresh when it's itself still near-expiry", async () => {
-    // The concurrent write's session is itself still near-expiry, so trusting its token directly
-    // would hand back one that fails again almost immediately.
+    // The concurrent write's session is near-expiry too, so trusting its token would fail again.
     const store = memoryStore({
       sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
@@ -220,9 +219,8 @@ describe("reactiveRefresh", () => {
   });
 
   test("a second refresh attempt on reconciliation reports its own failure reason, not the first attempt's", async () => {
-    // The first attempt fails as invalid_grant (dead refresh token); the reconciled session's own
-    // refresh then fails as a transient 503 - a different, unrelated reason that must not come back
-    // looking like the first one, or the caller is told to discard a token that's still good.
+    // invalid_grant first, then a transient 503 on the reconciled session's own refresh - reporting
+    // the first reason would tell the caller to discard a refresh token that's still good.
     const store = memoryStore({
       sandbox: { ...creds, accessToken: "old", refreshToken: "rt", expiresAt: 10_000_000 },
     });
