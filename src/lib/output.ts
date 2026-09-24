@@ -14,6 +14,13 @@ export interface BlockedOn {
   reason: string;
 }
 
+export function errorExtras(err: { body: unknown; requestId?: string }): { details?: unknown; request_id?: string } {
+  return {
+    ...(err.body !== undefined && err.body !== null ? { details: err.body } : {}),
+    ...(err.requestId ? { request_id: err.requestId } : {}),
+  };
+}
+
 export interface EnvelopeError {
   code: string;
   message: string;

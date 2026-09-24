@@ -1,4 +1,10 @@
-import { type AuthOpts, type ResolvedTokenSource, buildApiClient, resolveAuthToken } from "./api-context.ts";
+import {
+  type AuthOpts,
+  type ResolvedTokenSource,
+  buildApiClient,
+  reactiveRefreshHook,
+  resolveAuthToken,
+} from "./api-context.ts";
 import { resolveInstallIdHeader } from "./config.ts";
 import { defaultEnv, resolveMcpBaseUrl } from "./env.ts";
 import { ExitCode } from "./exit-codes.ts";
@@ -49,6 +55,7 @@ export async function callMcpTool(
     token: resolved.token,
     installId: await resolveInstallIdHeader(),
     auth: { tokenSource: resolved.source, environment },
+    onUnauthorized: reactiveRefreshHook(globals, opts, resolved.source, environment),
   });
 
   const body = {
