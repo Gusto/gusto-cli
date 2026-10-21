@@ -1,36 +1,41 @@
 import { ApiError, type AuthContext, BlockedDestinationError, NetworkError } from "./api-client.ts";
 import { ExitCode } from "./exit-codes.ts";
 import { OAuthError } from "./oauth/endpoints.ts";
+import { isGrantableScope } from "./oauth/required-scopes.ts";
+import { parseScopes } from "./oauth/scopes.ts";
 import { TokenRefreshFailedError, tokenRefreshFailedResult } from "./oauth/refresh-failure.ts";
-import { errorExtras } from "./output.ts";
+import { errorExtras, type ScopeErrorCategory } from "./output.ts";
 import { isObject } from "./predicates.ts";
 import type { CommandResult } from "./runner.ts";
 
-/** Pull a scope name out of a 403 body when the server names one: RFC 6750's top-level `scope`
- * first, falling back to the `missing_scope_name` Gusto's own `missing_oauth_scopes` error entry
- * carries in its metadata (absent on older API responses). */
-function scopeFromBody(body: unknown): string | undefined {
-  if (!isObject(body)) return undefined;
-  if (typeof body.scope === "string") return body.scope;
-  if (!Array.isArray(body.errors)) return undefined;
-  const scopeError = body.errors.find((e) => isObject(e) && e.category === "missing_oauth_scopes");
-  if (!isObject(scopeError) || !isObject(scopeError.metadata)) return undefined;
-  return typeof scopeError.metadata.missing_scope_name === "string"
-    ? scopeError.metadata.missing_scope_name
-    : undefined;
+/** Every scope name a 403 body gives, in the same precedence `scopeErrorCategory` uses: the
+ * `missing_scope_name` each of Gusto's own `missing_oauth_scopes` error entries carries in its
+ * metadata (absent on older API responses), falling back to RFC 6750's top-level `scope`. */
+function scopesFromBody(body: unknown): string[] {
+  if (!isObject(body)) return [];
+  const names = Array.isArray(body.errors)
+    ? body.errors.filter(isScopeEntry).map((e) => (isObject(e.metadata) ? e.metadata.missing_scope_name : undefined))
+    : [];
+  const gusto = [...new Set(names.filter((n): n is string => typeof n === "string" && n.length > 0))];
+  if (gusto.length > 0) return gusto;
+  return typeof body.scope === "string" ? parseScopes(body.scope) : [];
 }
 
-/** True when a 403 body indicates an OAuth scope problem (vs. a resource ACL).
+function isScopeEntry(e: unknown): e is Record<string, unknown> {
+  return isObject(e) && e.category === "missing_oauth_scopes";
+}
+
+/** Which scope-error shape a 403 body carries, if it indicates an OAuth scope problem (vs. a resource ACL).
  * Detects Gusto's `{ errors: [{ category: "missing_oauth_scopes" }] }` (the shape
  * this API returns, confirmed live) and the RFC 6750 `error: "insufficient_scope"`
  * standard. Deliberately narrow - fuzzier matches (e.g. a regex over a message)
  * risk catching unrelated 403s. */
-function isInsufficientScope(body: unknown): boolean {
-  if (!isObject(body)) return false;
-  if (Array.isArray(body.errors) && body.errors.some((e) => isObject(e) && e.category === "missing_oauth_scopes")) {
-    return true;
+function scopeErrorCategory(body: unknown): ScopeErrorCategory | undefined {
+  if (!isObject(body)) return undefined;
+  if (Array.isArray(body.errors) && body.errors.some(isScopeEntry)) {
+    return "missing_oauth_scopes";
   }
-  return body.error === "insufficient_scope";
+  return body.error === "insufficient_scope" ? "insufficient_scope" : undefined;
 }
 
 /** Collect the human-readable messages out of an API error body, recursing into the nested
@@ -108,42 +113,73 @@ function rejectedCredential(auth: AuthContext | undefined): string {
 
 /** Scope recovery follows the credential source for the same reason a rejected credential does:
  * logging in can replace a stored session, but it cannot change an explicit token that will keep
- * winning on the next command. */
-function insufficientScopeMessage(scope: string | undefined, auth: AuthContext | undefined): string {
-  const needs = scope ? ` (${scope})` : "";
-  const preamble = `your token is missing the OAuth scope${needs} this command needs.`;
-  if (auth === undefined) {
-    return `${preamble} Re-run \`gusto auth login\` and grant it; run \`gusto auth whoami\` to see what you have.`;
-  }
-  switch (auth.tokenSource) {
+ * winning on the next command. For a stored session it also depends on whether each named scope is
+ * in the CLI's grant, since signing in again can't add one that isn't. */
+function insufficientScopeMessage(scopes: readonly string[], auth: AuthContext | undefined): string {
+  const needs = scopes.length > 0 ? ` (${scopes.join(", ")})` : "";
+  const preamble = `your token is missing the OAuth scope${scopes.length > 1 ? "s" : ""}${needs} this command needs.`;
+  const env = auth ? ` --env ${auth.environment}` : "";
+  const feedback = 'you can tell Gusto what you need with `gusto feedback --message "<what you need>"`';
+  switch (auth?.tokenSource) {
+    case undefined:
     case "session":
-    case "login":
-      return `${preamble} Re-run \`gusto auth login --env ${auth.environment}\` and grant it; run \`gusto auth whoami --env ${auth.environment}\` to see what you have.`;
+    case "login": {
+      if (scopes.length === 0) {
+        return `${preamble} Run \`gusto auth whoami${env}\` to see which scopes your session is missing; signing in again with \`gusto auth login${env}\` may add it. If that doesn't help, ${feedback}.`;
+      }
+      const grantable = scopes.filter((s) => isGrantableScope(s));
+      const ungrantable = scopes.filter((s) => !isGrantableScope(s));
+      if (ungrantable.length === 0) {
+        return `${preamble} Re-run \`gusto auth login${env}\` and grant ${pronoun(scopes)}; run \`gusto auth whoami${env}\` to see what you have.`;
+      }
+      const outside = `${ungrantable.join(", ")} ${ungrantable.length > 1 ? "aren't" : "isn't"} part of the CLI's OAuth grant`;
+      if (grantable.length === 0) {
+        return `${preamble} ${outside}, so signing in again won't add ${pronoun(ungrantable)} - ${feedback}.`;
+      }
+      return `${preamble} Signing in again with \`gusto auth login${env}\` can add ${grantable.join(", ")}, but ${outside}, so this command will still fail - ${feedback}.`;
+    }
     case "env":
-      return `${preamble} Replace GUSTO_ACCESS_TOKEN with a token that grants it; run \`gusto auth whoami --env ${auth.environment}\` to inspect the active token.`;
+      return `${preamble} Replace GUSTO_ACCESS_TOKEN with a token that grants ${pronoun(scopes)}; run \`gusto auth whoami${env}\` to inspect the active token.`;
     case "stdin":
-      return `${preamble} Pipe a token that grants it via --token-stdin; pipe the same token to \`gusto auth whoami --token-stdin --env ${auth.environment}\` to inspect it.`;
+      return `${preamble} Pipe a token that grants ${pronoun(scopes)} via --token-stdin; pipe the same token to \`gusto auth whoami --token-stdin${env}\` to inspect it.`;
   }
+}
+
+function pronoun(scopes: readonly string[]): string {
+  return scopes.length > 1 ? "them" : "it";
+}
+
+/** The body minus its scope entries, so an unrelated error sharing the 403 still reaches the caller.
+ * The scope entries' prose is written for partners who own their app's scopes ("reach out to
+ * developer@"), which a CLI user can't act on. */
+function nonScopeDetails(body: unknown): { details?: { errors: unknown[] } } {
+  if (!isObject(body) || !Array.isArray(body.errors)) return {};
+  const others = body.errors.filter((e) => !isScopeEntry(e));
+  return others.length > 0 ? { details: { errors: others } } : {};
 }
 
 export function toResult(err: unknown): CommandResult<never> {
   if (err instanceof TokenRefreshFailedError) return tokenRefreshFailedResult(err.cause, err.env);
   if (err instanceof ApiError) {
     if (err.status === 401) return credentialRejected(err);
-    if (err.status === 403 && isInsufficientScope(err.body)) {
-      const scope = scopeFromBody(err.body);
+    const category = err.status === 403 ? scopeErrorCategory(err.body) : undefined;
+    if (category !== undefined) {
+      const scopes = scopesFromBody(err.body);
       return {
         ok: false,
         exitCode: ExitCode.Auth,
         error: {
           code: "insufficient_scope",
-          message: insufficientScopeMessage(scope, err.auth),
+          message: insufficientScopeMessage(scopes, err.auth),
           // Carried for the same reason every other auth failure carries it: scopes are granted per
           // credential, and the credential is per environment, so "which scopes do I have" has no
           // answer that isn't scoped to one. This case is older than the codes below and predates the
           // field, so it read as the exception to a rule it actually belongs to.
           ...(err.auth ? { environment: err.auth.environment } : {}),
-          ...errorExtras(err),
+          category,
+          ...(scopes.length > 0 ? { missing_scopes: scopes } : {}),
+          ...nonScopeDetails(err.body),
+          ...(err.requestId ? { request_id: err.requestId } : {}),
         },
       };
     }

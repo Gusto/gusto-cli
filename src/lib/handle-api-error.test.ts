@@ -357,7 +357,7 @@ describe("toResult 403 scope handling", () => {
     expect(result.error.message).toContain("gusto auth login");
   });
 
-  test("a Gusto missing_oauth_scopes 403 with metadata.missing_scope_name names the scope", () => {
+  test("a Gusto missing_oauth_scopes 403 with metadata.missing_scope_name and no auth context names the scope", () => {
     // Same shape as the generic body above, plus metadata naming the scope.
     const err = new ApiError(
       403,
@@ -381,7 +381,8 @@ describe("toResult 403 scope handling", () => {
     expect(result.exitCode).toBe(ExitCode.Auth);
     expect(result.error.code).toBe("insufficient_scope");
     expect(result.error.message).toContain("company_benefits:read");
-    expect(result.error.message).toContain("gusto auth login");
+    expect(result.error.message).not.toContain("gusto auth login");
+    expect(result.error.message).toContain("gusto feedback");
   });
 
   test("the scope name is read off the missing_oauth_scopes entry even when it isn't errors[0]", () => {
@@ -427,6 +428,289 @@ describe("toResult 403 scope handling", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error.code).toBe("api_client_error");
+  });
+});
+
+describe("toResult 403 scope recovery", () => {
+  const SUPPORT_EMAIL = "developer@gusto.com";
+
+  function scopeEntry(scope?: string) {
+    return {
+      error_key: "request",
+      category: "missing_oauth_scopes",
+      message: scope
+        ? `You do not have the '${scope}' OAuth scope required for this request. Please reach out to ${SUPPORT_EMAIL} for assistance.`
+        : `You do not have the necessary OAuth scopes for this request. Please reach out to ${SUPPORT_EMAIL} for assistance.`,
+      ...(scope !== undefined ? { metadata: { missing_scope_name: scope } } : {}),
+    };
+  }
+
+  function scopeError(entries: unknown[], auth?: AuthContext, requestId: string | null = "req-scope-1"): ApiError {
+    return new ApiError(403, { errors: entries }, ExitCode.ApiClient, "GET /v1/companies/x/thing -> 403", {
+      ...(requestId ? { requestId } : {}),
+      ...(auth ? { auth } : {}),
+    });
+  }
+
+  const gustoScopeError = (scope: string | undefined, auth?: AuthContext) => scopeError([scopeEntry(scope)], auth);
+
+  function message(err: ApiError): string {
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    return result.error.message;
+  }
+
+  const storedSources = [
+    ["session", { tokenSource: "session", environment: "production" }],
+    ["login", { tokenSource: "login", environment: "production" }],
+  ] as const satisfies readonly (readonly [string, AuthContext])[];
+
+  describe.each(storedSources)("for a %s credential", (_label, auth) => {
+    test.each(["company_benefits:read", "company_bank_accounts:write"])(
+      "a scope outside the CLI's grant (%s) points to feedback instead of signing in again",
+      (scope) => {
+        const text = message(gustoScopeError(scope, auth));
+        expect(text).toContain(`${scope} isn't part of the CLI's OAuth grant, so signing in again won't add it`);
+        expect(text).not.toContain("gusto auth login");
+        expect(text).toContain('gusto feedback --message "<what you need>"');
+      },
+    );
+
+    test("several scopes outside the CLI's grant are named together", () => {
+      const text = message(
+        scopeError([scopeEntry("company_benefits:read"), scopeEntry("company_bank_accounts:write")], auth),
+      );
+      expect(text).toContain("missing the OAuth scopes (company_benefits:read, company_bank_accounts:write)");
+      expect(text).toContain(
+        "company_benefits:read, company_bank_accounts:write aren't part of the CLI's OAuth grant, so signing in again won't add them",
+      );
+    });
+
+    test("several requested scopes get a plural sign-in suggestion", () => {
+      const text = message(scopeError([scopeEntry("payrolls:read"), scopeEntry("employees:read")], auth));
+      expect(text).toContain("missing the OAuth scopes (payrolls:read, employees:read)");
+      expect(text).toContain("Re-run `gusto auth login --env production` and grant them");
+    });
+
+    test("a scope in the CLI's grant still suggests signing in again", () => {
+      const text = message(gustoScopeError("payrolls:read", auth));
+      expect(text).toContain("payrolls:read");
+      expect(text).toContain("Re-run `gusto auth login --env production` and grant it;");
+    });
+
+    test("an unnamed scope suggests whoami and a sign-in without promising either fixes it", () => {
+      const text = message(gustoScopeError(undefined, auth));
+      expect(text).toContain("missing the OAuth scope this command needs");
+      expect(text).toContain("gusto auth whoami --env production");
+      expect(text).toContain("`gusto auth login --env production` may add it. If that doesn't help,");
+      expect(text).toContain("gusto feedback");
+      expect(text).not.toContain("and grant it");
+    });
+  });
+
+  test.each([
+    ["a requested", "payrolls:read"],
+    ["an unnamed", undefined],
+  ])("with no auth context, %s scope's advice carries no --env flag", (_label, scope) => {
+    const text = message(gustoScopeError(scope));
+    expect(text).toContain("gusto auth login");
+    expect(text).not.toContain("--env");
+  });
+
+  const explicitSources = [
+    ["env", "GUSTO_ACCESS_TOKEN"],
+    ["stdin", "--token-stdin"],
+  ] as const;
+
+  describe.each(explicitSources)("an explicit %s token", (tokenSource, named) => {
+    test.each([
+      ["requested", ["payrolls:read"]],
+      ["outside the grant", ["company_benefits:read"]],
+      ["unnamed", [undefined]],
+    ])("keeps its replace-the-token advice for a %s scope", (_label, scopes) => {
+      const result = toResult(scopeError(scopes.map(scopeEntry), { tokenSource, environment: "sandbox" }));
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.message).toContain(named);
+      expect(result.error.message).not.toContain("gusto auth login");
+      expect(JSON.stringify(result.error)).not.toContain(SUPPORT_EMAIL);
+    });
+
+    test("pluralizes the advice for several scopes", () => {
+      const text = message(
+        scopeError([scopeEntry("payrolls:read"), scopeEntry("employees:read")], {
+          tokenSource,
+          environment: "sandbox",
+        }),
+      );
+      expect(text).toContain("a token that grants them");
+    });
+  });
+
+  const session: AuthContext = { tokenSource: "session", environment: "production" };
+
+  test("reports every missing scope the body names", () => {
+    const result = toResult(scopeError([scopeEntry("payrolls:read"), scopeEntry("company_benefits:read")], session));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.missing_scopes).toEqual(["payrolls:read", "company_benefits:read"]);
+  });
+
+  test.each([
+    ["grantable first", ["payrolls:read", "company_benefits:read"]],
+    ["ungrantable first", ["company_benefits:read", "payrolls:read"]],
+  ])("a mix of scopes (%s) says what signing in again adds and that the command still fails", (_label, scopes) => {
+    const text = message(scopeError(scopes.map(scopeEntry), session));
+    expect(text).toContain(
+      "Signing in again with `gusto auth login --env production` can add payrolls:read, but company_benefits:read isn't part of the CLI's OAuth grant, so this command will still fail - ",
+    );
+    expect(text).toContain("gusto feedback");
+  });
+
+  test.each([
+    [
+      "two outside the grant, one in it",
+      ["company_benefits:read", "company_bank_accounts:write", "payrolls:read"],
+      "can add payrolls:read, but company_benefits:read, company_bank_accounts:write aren't part",
+    ],
+    [
+      "one outside the grant, two in it",
+      ["payrolls:read", "company_benefits:read", "employees:read"],
+      "can add payrolls:read, employees:read, but company_benefits:read isn't part",
+    ],
+  ])("a mix with %s lists each side and agrees in number", (_label, scopes, expected) => {
+    expect(message(scopeError(scopes.map(scopeEntry), session))).toContain(expected);
+  });
+
+  test("repeated entries naming the same scope are reported once", () => {
+    const result = toResult(scopeError([scopeEntry("payrolls:read"), scopeEntry("payrolls:read")], session));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.missing_scopes).toEqual(["payrolls:read"]);
+    expect(result.error.message).toContain("(payrolls:read)");
+  });
+
+  test("scope entries win over a top-level scope when a body carries both, matching the category", () => {
+    const err = new ApiError(
+      403,
+      { scope: "payrolls:read", errors: [scopeEntry("company_benefits:read")] },
+      ExitCode.ApiClient,
+      "GET /v1/x -> 403",
+      { auth: session },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.category).toBe("missing_oauth_scopes");
+    expect(result.error.missing_scopes).toEqual(["company_benefits:read"]);
+  });
+
+  test.each([
+    ["whitespace-only", { error: "insufficient_scope", scope: "   " }],
+    ["absent", { error: "insufficient_scope" }],
+  ])("an RFC 6750 body with a %s scope is treated as unnamed", (_label, body) => {
+    const result = toResult(new ApiError(403, body, ExitCode.ApiClient, "GET /v1/x -> 403", { auth: session }));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.category).toBe("insufficient_scope");
+    expect("missing_scopes" in result.error).toBe(false);
+    expect(result.error.message).toContain("gusto auth whoami");
+  });
+
+  test("an empty RFC 6750 scope falls back to the scope entries", () => {
+    const err = new ApiError(
+      403,
+      { scope: "", errors: [scopeEntry("company_benefits:read")] },
+      ExitCode.ApiClient,
+      "GET /v1/x -> 403",
+      { auth: session },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.missing_scopes).toEqual(["company_benefits:read"]);
+  });
+
+  test("a space-separated RFC 6750 scope list is read as separate scopes", () => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read employees:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+      { auth: session },
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.missing_scopes).toEqual(["employees:read", "payrolls:read"]);
+    expect(result.error.message).toContain("gusto auth login");
+    expect("details" in result.error).toBe(false);
+  });
+
+  test("an empty scope name is treated as unnamed", () => {
+    const result = toResult(scopeError([scopeEntry("")], session));
+    if (result.ok) throw new Error("unreachable");
+    expect("missing_scopes" in result.error).toBe(false);
+    expect(result.error.message).toContain("gusto auth whoami");
+    expect(result.error.message).not.toContain("(, ");
+    expect(result.error.message).not.toContain(" isn't part");
+  });
+
+  test.each([
+    ["requested", "payrolls:read"],
+    ["outside the grant", "company_benefits:read"],
+    ["unnamed", undefined],
+  ])("a %s scope's error never mentions the API's support address", (_label, scope) => {
+    const result = toResult(gustoScopeError(scope, session));
+    if (result.ok) throw new Error("unreachable");
+    expect(JSON.stringify(result.error)).not.toContain(SUPPORT_EMAIL);
+  });
+
+  test("keeps the scope names, category, request ID, and environment as their own fields", () => {
+    const result = toResult(gustoScopeError("company_benefits:read", session));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.missing_scopes).toEqual(["company_benefits:read"]);
+    expect(result.error.category).toBe("missing_oauth_scopes");
+    expect(result.error.request_id).toBe("req-scope-1");
+    expect(result.error.environment).toBe("production");
+    expect("details" in result.error).toBe(false);
+  });
+
+  test("leaves out the request ID and scope names when the API supplied neither", () => {
+    const result = toResult(scopeError([scopeEntry(undefined)], session, null));
+    if (result.ok) throw new Error("unreachable");
+    expect("request_id" in result.error).toBe(false);
+    expect("missing_scopes" in result.error).toBe(false);
+  });
+
+  test("an RFC 6750 scope error carries its own category", () => {
+    const err = new ApiError(
+      403,
+      { error: "insufficient_scope", scope: "payrolls:read" },
+      ExitCode.ApiClient,
+      "GET /v1/payrolls -> 403",
+    );
+    const result = toResult(err);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.category).toBe("insufficient_scope");
+    expect(result.error.missing_scopes).toEqual(["payrolls:read"]);
+    expect("details" in result.error).toBe(false);
+  });
+
+  test("unrelated errors in the same body stay in details, without the scope entries", () => {
+    const other = { error_key: "company", category: "forbidden", message: "Company is suspended" };
+    const result = toResult(scopeError([other, scopeEntry("company_benefits:read")], session));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("insufficient_scope");
+    expect(result.error.details).toEqual({ errors: [other] });
+    expect(JSON.stringify(result.error)).not.toContain(SUPPORT_EMAIL);
+  });
+
+  test("a non-scope 403 still passes the full API body through", () => {
+    const body = { errors: [{ error_key: "request", category: "forbidden", message: "nope" }] };
+    const result = toResult(new ApiError(403, body, ExitCode.ApiClient, "GET /v1/companies/x -> 403"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.details).toEqual(body);
+  });
+
+  test("a 5xx still passes the full API body through", () => {
+    const body = { errors: [{ message: "upstream timeout" }] };
+    const result = toResult(new ApiError(503, body, ExitCode.ApiServer, "GET /v1/companies/x -> 503"));
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.details).toEqual(body);
   });
 });
 

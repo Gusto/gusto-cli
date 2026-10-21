@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { ApiError } from "./api-client.ts";
+import { ExitCode } from "./exit-codes.ts";
 import type { GlobalFlags } from "./global-flags.ts";
+import { toResult } from "./handle-api-error.ts";
 import { emit, outputOptionsFrom, resolveColor, resolveOutputMode } from "./output.ts";
 import { captureSinks } from "./test-support.ts";
 
@@ -293,5 +296,42 @@ describe("emit", () => {
     const { sinks, stderr } = captureSinks();
     emit({ mode: "human", color: false, verbose: false }, { ok: true, data: [1] }, sinks);
     expect(stderr.buffer).toBe("");
+  });
+});
+
+describe("emit for a missing-scope 403", () => {
+  const scopeEntry = {
+    error_key: "request",
+    category: "missing_oauth_scopes",
+    message:
+      "You do not have the 'company_benefits:read' OAuth scope required for this request. Please reach out to developer@gusto.com for assistance.",
+    metadata: { missing_scope_name: "company_benefits:read" },
+  };
+
+  function humanStderr(body: unknown): string {
+    const result = toResult(
+      new ApiError(403, body, ExitCode.ApiClient, "GET /v1/x -> 403", {
+        auth: { tokenSource: "session", environment: "production" },
+      }),
+    );
+    if (result.ok) throw new Error("unreachable");
+    const { sinks, stderr } = captureSinks();
+    emit({ mode: "human", color: false, verbose: false }, { ok: false, error: result.error }, sinks);
+    return stderr.buffer;
+  }
+
+  test("prints the CLI's advice and no reason line from the API's prose", () => {
+    const out = humanStderr({ errors: [scopeEntry] });
+    expect(out).toContain("company_benefits:read");
+    expect(out).not.toContain("reason:");
+    expect(out).not.toContain("developer@gusto.com");
+  });
+
+  test("still prints an unrelated error from the same body as the reason", () => {
+    const out = humanStderr({
+      errors: [{ error_key: "company", category: "forbidden", message: "Company is suspended" }, scopeEntry],
+    });
+    expect(out).toContain("reason: Company is suspended");
+    expect(out).not.toContain("developer@gusto.com");
   });
 });

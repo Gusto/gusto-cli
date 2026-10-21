@@ -25,7 +25,8 @@ export interface EnvelopeError {
   code: string;
   message: string;
   blocked_on?: BlockedOn[];
-  /** Raw API response body when the error came from a Gusto API call.
+  /** Raw API response body when the error came from a Gusto API call - except on a missing-scope 403,
+   * where it keeps only the body's unrelated errors, if any.
    * Agents can read this to understand what specifically failed (e.g. field-level validation errors). */
   details?: unknown;
   /** Gusto API request_id from the X-Request-Id header, when present. Useful for support tickets. */
@@ -45,7 +46,13 @@ export interface EnvelopeError {
    * from the outside exactly like a broken credential model. A typed field rather than prose, so an
    * agent branching on the envelope doesn't have to parse the message. */
   environment?: Environment;
+  /** On a missing-scope 403, which scope-error shape the API returned. */
+  category?: ScopeErrorCategory;
+  /** On a missing-scope 403, the scopes the API named, when it named any. */
+  missing_scopes?: string[];
 }
+
+export type ScopeErrorCategory = "missing_oauth_scopes" | "insufficient_scope";
 
 export type AgentEnvelope<T = unknown> = { ok: true; data?: T; next?: string } | { ok: false; error: EnvelopeError };
 
