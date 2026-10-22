@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DROPPED_SCOPES, REQUIRED_SCOPES, findMissingScopes } from "./required-scopes.ts";
+import { DROPPED_SCOPES, REQUIRED_SCOPES, findMissingScopes, isGrantableScope } from "./required-scopes.ts";
 
 describe("REQUIRED_SCOPES", () => {
   test("every entry has a non-empty usedBy list", () => {
@@ -102,5 +102,26 @@ describe("findMissingScopes", () => {
   test("ignores granted scopes outside the required set (extra scopes are not flagged here)", () => {
     const granted = [...REQUIRED_SCOPES.map((r) => r.scope), "company_bank_accounts:write", "something_else:write"];
     expect(findMissingScopes(granted)).toEqual([]);
+  });
+});
+
+describe("isGrantableScope", () => {
+  test.each([
+    "payrolls:read",
+    "employees:manage",
+    "public",
+    "access_token:read",
+    "webhook_subscriptions:read",
+    "webhook_subscriptions:write",
+  ])("%s can be added by signing in again", (scope) => {
+    expect(isGrantableScope(scope)).toBe(true);
+  });
+
+  test.each(["company_bank_accounts:write", "company_benefits:read", ""])("%p can't", (scope) => {
+    expect(isGrantableScope(scope)).toBe(false);
+  });
+
+  test("every dropped scope reads as ungrantable", () => {
+    for (const dropped of DROPPED_SCOPES) expect(isGrantableScope(dropped)).toBe(false);
   });
 });

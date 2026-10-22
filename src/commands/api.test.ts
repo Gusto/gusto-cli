@@ -413,3 +413,33 @@ describe("api request write confirmation gate", () => {
     }
   });
 });
+
+describe("api request missing-scope 403", () => {
+  test("drops the API's support-address text and keeps the scope as a field", async () => {
+    const { restore } = stubGlobalFetch([
+      {
+        status: 403,
+        body: {
+          errors: [
+            {
+              error_key: "request",
+              category: "missing_oauth_scopes",
+              message:
+                "You do not have the 'company_benefits:read' OAuth scope required for this request. Please reach out to developer@gusto.com for assistance.",
+              metadata: { missing_scope_name: "company_benefits:read" },
+            },
+          ],
+        },
+      },
+    ]);
+    try {
+      const result = await apiRequestHandler("GET", "/v1/companies/x/company_benefits", {})(ctx);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.error.code).toBe("insufficient_scope");
+      expect(result.error.missing_scopes).toEqual(["company_benefits:read"]);
+      expect(JSON.stringify(result.error)).not.toContain("developer@gusto.com");
+    } finally {
+      restore();
+    }
+  });
+});

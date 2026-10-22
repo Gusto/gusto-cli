@@ -79,10 +79,10 @@ The CLI doesn't request scopes itself — it inherits whatever the public-beta p
 **When a change needs a scope** (a new command, or a command that starts hitting a new endpoint):
 
 1. Add the scope to `REQUIRED_SCOPES` in `required-scopes.ts` **in the same PR**, with an accurate `usedBy`. Removing the last consumer of a scope? Drop it from the list (and add it to `DROPPED_SCOPES` if it should never come back).
-2. The actual grant is a separate change managed by the Gusto team — note it on the issue/PR for whoever has partner-app access. It does **not** happen automatically on merge. Note: **prod enforces** scopes; **demo** runs scope assertion in bypass/log mode; confirm **staging** before relying on it.
-3. `gusto auth whoami` lists `missing_scopes` (required scopes the token lacks) — the first thing to check when a command returns `insufficient_scope`.
+2. The actual grant is a separate change managed by the Gusto team — note it on the issue/PR for whoever has partner-app access. It does **not** happen automatically on merge, and until it lands a missing-scope error for that scope tells users to sign in again even though that won't add it yet. Note: **prod enforces** scopes; **demo** runs scope assertion in bypass/log mode; confirm **staging** before relying on it.
+3. An `insufficient_scope` error lists the scopes the API named in `error.missing_scopes`. For a stored session, the message says signing in again won't add any scope outside `REQUIRED_SCOPES` and `RETAINED_SCOPES`, and still names any it can add; an explicit token gets replace-the-token advice either way. `gusto auth whoami` reports its own `missing_scopes` - the `REQUIRED_SCOPES` the token lacks - and is the first thing to check when the error names no scope.
 
-Baseline auth scopes (`public`, `access_token:read`) and the retained `webhook_subscriptions:read/write` platform pair are granted but intentionally **not** enumerated in `required-scopes.ts`; don't treat their absence there as a signal to drop them.
+Baseline auth scopes (`public`, `access_token:read`) and the retained `webhook_subscriptions:read/write` platform pair are granted but intentionally kept out of `REQUIRED_SCOPES` - they're listed separately in `RETAINED_SCOPES`. Don't treat their absence from `REQUIRED_SCOPES` as a signal to drop them.
 
 ## Build
 

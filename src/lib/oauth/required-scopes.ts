@@ -3,7 +3,10 @@
  * This file is the canonical reference for what the public-beta OAuth app
  * should grant. The partner OAuth registration for that app is kept in sync with this
  * list; any command added in a future PR that needs a new scope must update
- * this set in the same change so the audit trail stays accurate.
+ * this set in the same change so the audit trail stays accurate. `isGrantableScope` also reads it
+ * at runtime: a missing-scope error only says signing in again will add a named scope when it's
+ * listed here or in `RETAINED_SCOPES`, so drift from the registration now produces wrong advice,
+ * not just audit drift.
  *
  * The set is intentionally narrow. The writes are the per-cycle payroll flow
  * (timesheets, payroll prepare/calculate, pay schedules, reports), the
@@ -20,10 +23,11 @@
  * commands needed them back - live re-grants, not hypothetical ones.
  *
  * This list enumerates scopes that individual CLI commands exercise. Two
- * categories are deliberately NOT listed and remain granted: baseline auth
- * scopes (`public`, `access_token:read`), and `webhook_subscriptions:read/write`,
- * which is retained as a partner platform capability even though no CLI command
- * uses it. Their absence here is not a signal to drop them from the grant. */
+ * categories are deliberately NOT listed here (they're in `RETAINED_SCOPES`)
+ * and remain granted: baseline auth scopes (`public`, `access_token:read`),
+ * and `webhook_subscriptions:read/write`, which is retained as a partner
+ * platform capability even though no CLI command uses it. Their absence here
+ * is not a signal to drop them from the grant. */
 
 export interface ScopeRequirement {
   scope: string;
@@ -129,4 +133,18 @@ export const DROPPED_SCOPES: readonly string[] = [
 export function findMissingScopes(granted: readonly string[]): string[] {
   const grantedSet = new Set(granted);
   return REQUIRED_SCOPES.map((r) => r.scope).filter((s) => !grantedSet.has(s));
+}
+
+/** Granted alongside `REQUIRED_SCOPES` without a command consuming them (see the header). */
+const RETAINED_SCOPES: readonly string[] = [
+  "public",
+  "access_token:read",
+  "webhook_subscriptions:read",
+  "webhook_subscriptions:write",
+];
+
+/** True when signing in again could add `scope`. Built from the CLI's grant because
+ * `DROPPED_SCOPES` can't name every scope that was never in it. */
+export function isGrantableScope(scope: string): boolean {
+  return RETAINED_SCOPES.includes(scope) || REQUIRED_SCOPES.some((r) => r.scope === scope);
 }
