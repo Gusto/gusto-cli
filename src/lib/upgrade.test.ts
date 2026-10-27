@@ -18,7 +18,7 @@ import path from "node:path";
 import { ExitCode } from "./exit-codes.ts";
 import type { CommandResult } from "./runner.ts";
 import {
-  assetBaseUrl,
+  assetBaseUrls,
   BACKGROUND_STAGING_NAME,
   defaultVersionOf,
   ensureInstallDir,
@@ -240,40 +240,114 @@ describe("resolveTargetTag", () => {
     if (result.ok) expect(result.tag).toBeNull();
   });
 
-  test("reads the tag out of the /releases/latest redirect", async () => {
+  test("reads the tag out of the /releases/latest redirect, trying the new repo first", async () => {
     const seen: string[] = [];
     const result = await resolveTargetTag(
       {},
       stubFetch(async (url, init) => {
         seen.push(String(url));
         expect(init?.redirect).toBe("manual");
+        return redirectTo("https://github.com/BuildwithGusto/gusto-cli/releases/tag/v0.2.0");
+      }),
+    );
+    expect(seen).toEqual(["https://github.com/BuildwithGusto/gusto-cli/releases/latest"]);
+    expect(result).toEqual({ ok: true, tag: "v0.2.0", repo: "BuildwithGusto/gusto-cli" });
+  });
+
+  test("falls back to the old repo while the new one doesn't exist yet", async () => {
+    const seen: string[] = [];
+    const result = await resolveTargetTag(
+      {},
+      stubFetch(async (url) => {
+        seen.push(String(url));
+        if (String(url).includes("BuildwithGusto")) return new Response("", { status: 404 });
         return redirectTo("https://github.com/Gusto/gusto-cli/releases/tag/v0.2.0");
       }),
     );
-    expect(seen).toEqual(["https://github.com/Gusto/gusto-cli/releases/latest"]);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.tag).toBe("v0.2.0");
+    expect(seen).toEqual([
+      "https://github.com/BuildwithGusto/gusto-cli/releases/latest",
+      "https://github.com/Gusto/gusto-cli/releases/latest",
+    ]);
+    expect(result).toEqual({ ok: true, tag: "v0.2.0", repo: "Gusto/gusto-cli" });
   });
 
-  test("honors GUSTO_CLI_REPO in the lookup URL", async () => {
+  // The shape GitHub serves for a transferred repo: its own redirect first, then /releases/latest's.
+  test("follows a moved repo's redirect and reports where the release actually lives", async () => {
+    const seen: string[] = [];
+    const result = await resolveTargetTag(
+      { GUSTO_CLI_REPO: "Gusto/gusto-cli" },
+      stubFetch(async (url) => {
+        seen.push(String(url));
+        if (String(url) === "https://github.com/Gusto/gusto-cli/releases/latest") {
+          return new Response("", {
+            status: 301,
+            headers: { location: "https://github.com/BuildwithGusto/gusto-cli/releases/latest" },
+          });
+        }
+        return redirectTo("https://github.com/BuildwithGusto/gusto-cli/releases/tag/v0.5.0");
+      }),
+    );
+    expect(seen).toEqual([
+      "https://github.com/Gusto/gusto-cli/releases/latest",
+      "https://github.com/BuildwithGusto/gusto-cli/releases/latest",
+    ]);
+    expect(result).toEqual({ ok: true, tag: "v0.5.0", repo: "BuildwithGusto/gusto-cli" });
+  });
+
+  test("resolves a relative Location against the URL that sent it", async () => {
+    const result = await resolveTargetTag(
+      { GUSTO_CLI_REPO: "acme/widget" },
+      stubFetch(async () => redirectTo("/acme/widget/releases/tag/v3.0.0")),
+    );
+    expect(result).toEqual({ ok: true, tag: "v3.0.0", repo: "acme/widget" });
+  });
+
+  test("refuses a redirect off https", async () => {
+    const result = await resolveTargetTag(
+      {},
+      stubFetch(async () => redirectTo("http://github.com/BuildwithGusto/gusto-cli/releases/tag/v0.2.0")),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(failure(result).error.code).toBe("insecure_redirect");
+  });
+
+  test("gives up on a redirect loop rather than following it until the timeout", async () => {
+    let calls = 0;
+    const result = await resolveTargetTag(
+      { GUSTO_CLI_REPO: "acme/widget" },
+      stubFetch(async () => {
+        calls++;
+        return redirectTo("https://github.com/acme/widget/releases/latest");
+      }),
+    );
+    expect(calls).toBe(5);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(failure(result).error.message).toContain("more than 5 times");
+  });
+
+  test("honors GUSTO_CLI_REPO as the only repo to look in", async () => {
     const seen: string[] = [];
     await resolveTargetTag(
       { GUSTO_CLI_REPO: "acme/widget" },
       stubFetch(async (url) => {
         seen.push(String(url));
-        return redirectTo("https://github.com/acme/widget/releases/tag/v3.0.0");
+        return new Response("", { status: 404 });
       }),
     );
-    expect(seen[0]).toBe("https://github.com/acme/widget/releases/latest");
+    expect(seen).toEqual(["https://github.com/acme/widget/releases/latest"]);
   });
 
-  test("fails on a network error, as a network exit code", async () => {
+  // The next repo is on the same host; trying it would only spend another full timeout.
+  test("fails on a network error without trying the next repo, as a network exit code", async () => {
+    let calls = 0;
     const result = await resolveTargetTag(
       {},
       stubFetch(async () => {
+        calls++;
         throw new Error("getaddrinfo ENOTFOUND");
       }),
     );
+    expect(calls).toBe(1);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(failure(result).error.code).toBe("release_lookup_failed");
@@ -281,7 +355,7 @@ describe("resolveTargetTag", () => {
     }
   });
 
-  test("fails when the response carries no parseable tag", async () => {
+  test("fails, naming every repo tried, when none carries a parseable tag", async () => {
     const result = await resolveTargetTag(
       {},
       stubFetch(async () => new Response("", { status: 404 })),
@@ -289,6 +363,8 @@ describe("resolveTargetTag", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(failure(result).error.code).toBe("release_lookup_failed");
+      expect(failure(result).error.message).toContain("BuildwithGusto/gusto-cli");
+      expect(failure(result).error.message).toContain("Gusto/gusto-cli/releases/latest");
       expect(failure(result).error.message).toContain("GUSTO_CLI_VERSION");
     }
   });
@@ -299,23 +375,36 @@ function redirectTo(location: string): Response {
   return new Response("", { status: 302, headers: { location } });
 }
 
-describe("assetBaseUrl", () => {
+describe("assetBaseUrls", () => {
   test("pins the resolved tag rather than using /releases/latest/download", () => {
-    expect(assetBaseUrl({}, "v0.2.0")).toBe("https://github.com/Gusto/gusto-cli/releases/download/v0.2.0");
+    expect(assetBaseUrls({}, "v0.2.0", "BuildwithGusto/gusto-cli")).toEqual([
+      "https://github.com/BuildwithGusto/gusto-cli/releases/download/v0.2.0",
+    ]);
+  });
+
+  test("offers every release repo, new first, when no lookup found one", () => {
+    expect(assetBaseUrls({}, "v0.2.0")).toEqual([
+      "https://github.com/BuildwithGusto/gusto-cli/releases/download/v0.2.0",
+      "https://github.com/Gusto/gusto-cli/releases/download/v0.2.0",
+    ]);
   });
 
   test("falls back to /releases/latest/download when the tag is unknown", () => {
-    expect(assetBaseUrl({}, null)).toBe("https://github.com/Gusto/gusto-cli/releases/latest/download");
+    expect(assetBaseUrls({}, null, "BuildwithGusto/gusto-cli")).toEqual([
+      "https://github.com/BuildwithGusto/gusto-cli/releases/latest/download",
+    ]);
   });
 
   test("honors GUSTO_CLI_REPO", () => {
-    expect(assetBaseUrl({ GUSTO_CLI_REPO: "acme/widget" }, "v1.0.0")).toBe(
+    expect(assetBaseUrls({ GUSTO_CLI_REPO: "acme/widget" }, "v1.0.0")).toEqual([
       "https://github.com/acme/widget/releases/download/v1.0.0",
-    );
+    ]);
   });
 
   test("GUSTO_CLI_BASE_URL wins and loses any trailing slash", () => {
-    expect(assetBaseUrl({ GUSTO_CLI_BASE_URL: "http://localhost:8787/" }, "v0.2.0")).toBe("http://localhost:8787");
+    expect(assetBaseUrls({ GUSTO_CLI_BASE_URL: "http://localhost:8787/" }, "v0.2.0")).toEqual([
+      "http://localhost:8787",
+    ]);
   });
 });
 
@@ -678,6 +767,92 @@ describe("stageUpdate", () => {
     // second deletes the other's download. Asserting the basename is what keeps that split honest -
     // without it, dropping the argument that selects this name leaves the suite green.
     expect(path.basename(stagedPath)).toBe(BACKGROUND_STAGING_NAME);
+  });
+
+  /** Serves the release from `home` only, 404ing for every other repo, and records full URLs. */
+  function releaseOnlyAt(home: string) {
+    const hash = createHash("sha256").update(NEW_BINARY).digest("hex");
+    const requested: string[] = [];
+    const fetchImpl = stubFetch(async (url) => {
+      const href = url.toString();
+      requested.push(href);
+      if (!href.startsWith(`https://github.com/${home}/`)) return new Response("not found", { status: 404 });
+      if (href.endsWith("/releases/latest")) return redirectTo(`https://github.com/${home}/releases/tag/v0.2.0`);
+      if (href.endsWith("/SHA256SUMS")) return new Response(`${hash}  gusto-linux-x64\n`);
+      if (href.endsWith("/gusto-linux-x64")) return new Response(NEW_BINARY);
+      return new Response("not found", { status: 404 });
+    });
+    return { fetchImpl, requested };
+  }
+
+  test("a pinned version falls back to the old repo's downloads, checksum included", async () => {
+    const dir = tmpDir("gusto-cli-stage-pin-fallback-");
+    writeFileSync(path.join(dir, "gusto"), '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const { fetchImpl, requested } = releaseOnlyAt("Gusto/gusto-cli");
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(requested).toEqual([
+      "https://github.com/BuildwithGusto/gusto-cli/releases/download/v0.2.0/gusto-linux-x64",
+      "https://github.com/Gusto/gusto-cli/releases/download/v0.2.0/gusto-linux-x64",
+      "https://github.com/Gusto/gusto-cli/releases/download/v0.2.0/SHA256SUMS",
+    ]);
+  });
+
+  test("downloads from the repo the lookup found, and nowhere else", async () => {
+    const dir = tmpDir("gusto-cli-stage-found-repo-");
+    writeFileSync(path.join(dir, "gusto"), '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const { fetchImpl, requested } = releaseOnlyAt("Gusto/gusto-cli");
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl,
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(requested).toEqual([
+      "https://github.com/BuildwithGusto/gusto-cli/releases/latest",
+      "https://github.com/Gusto/gusto-cli/releases/latest",
+      "https://github.com/Gusto/gusto-cli/releases/download/v0.2.0/gusto-linux-x64",
+      "https://github.com/Gusto/gusto-cli/releases/download/v0.2.0/SHA256SUMS",
+    ]);
+  });
+
+  test("a network failure on the download doesn't move on to the next repo", async () => {
+    const dir = tmpDir("gusto-cli-stage-pin-network-");
+    writeFileSync(path.join(dir, "gusto"), '#!/bin/sh\necho "0.1.0"\n', { mode: 0o755 });
+    const requested: string[] = [];
+
+    const result = await stageUpdate({
+      log: () => {},
+      env: { GUSTO_INSTALL_DIR: dir, GUSTO_CLI_VERSION: "v0.2.0" },
+      currentVersion: "0.1.0",
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: stubFetch(async (url) => {
+        requested.push(url.toString());
+        throw new Error("getaddrinfo ENOTFOUND");
+      }),
+      versionOf: versionOfStub,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("download_failed");
+    expect(requested).toHaveLength(1);
   });
 
   test("reports up_to_date and downloads nothing when already current", async () => {

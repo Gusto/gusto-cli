@@ -12,8 +12,18 @@ import { VERSION } from "./version.ts";
  * `ARCHITECTURE.md` under `lib/upgrade.ts`. `upgrade.test.ts` pins the asset names against
  * `install.sh` so the two can't drift. */
 
-const DEFAULT_REPO = "Gusto/gusto-cli";
+/** Where releases are published, tried in order. The repo is moving to `BuildwithGusto`, and the
+ * old path's redirects only last for a while after the move, so a binary in the field must find
+ * releases whichever side of the move - and of the redirects lapsing - it runs on. New first, so
+ * once the move lands nothing depends on a redirect; the old one covers the time before it. Drop
+ * `Gusto/gusto-cli` once every supported release looks under the new name first. */
+const DEFAULT_REPOS: readonly string[] = ["BuildwithGusto/gusto-cli", "Gusto/gusto-cli"];
 const BINARY_NAME = "gusto";
+
+function releaseRepos(env: EnvSource): readonly string[] {
+  const override = env.GUSTO_CLI_REPO;
+  return override !== undefined && override.length > 0 ? [override] : DEFAULT_REPOS;
+}
 
 /** Set on the exec-check child `defaultVersionOf` spawns, and nowhere else. That child is a real
  * `gusto` build, so `--version` runs its `main()` for real - and without this it would act on the
@@ -91,6 +101,10 @@ const LOOKUP_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 600_000;
 const EXEC_CHECK_TIMEOUT_MS = 30_000;
 const QUARANTINE_TIMEOUT_MS = 10_000;
+
+/** A moved repo adds one hop ahead of `/releases/latest`'s own; this leaves room for a rename on
+ * top of a move without letting a redirect loop run until the timeout. */
+const MAX_LOOKUP_HOPS = 5;
 
 /** How long after the group kill to keep waiting for the version the probe may already have
  * printed, before giving up on a write end nothing is going to close. */
@@ -220,8 +234,97 @@ export function tagToVersion(tag: string): string {
   return tag.startsWith("v") ? tag.slice(1) : tag;
 }
 
-/** The release tag to install, or null when a `GUSTO_CLI_BASE_URL` override leaves nothing to
- * resolve (the caller then installs unconditionally).
+/** The tag a Location names, and the repo that published it - which after a move is the new name,
+ * not the one we asked. */
+function releaseTagIn(location: URL): { tag: string; repo: string } | null {
+  const match = /^\/([^/]+\/[^/]+)\/releases\/tag\/([^/?#]+)$/.exec(location.pathname);
+  return match?.[1] === undefined || match[2] === undefined
+    ? null
+    : { repo: match[1], tag: decodeURIComponent(match[2]) };
+}
+
+/** `miss` marks the failures where the next repo might still answer. A network error or a timeout
+ * isn't one: the next repo is on the same host, so it would only double the wait. */
+type LookupFailed = Failed & { miss: boolean };
+
+/** Follows redirects by hand rather than with `redirect: "follow"`, because the answer is a hop's
+ * Location, not the page at the end: stopping there saves fetching the release page, and it's the
+ * only way to know which repo the release lives in. A moved repo puts its own redirect ahead of
+ * `/releases/latest`'s, which is why reading the first Location alone isn't enough. */
+async function lookupLatestRelease(
+  repo: string,
+  fetchImpl: typeof fetch,
+): Promise<{ ok: true; tag: string; repo: string } | LookupFailed> {
+  const start = `https://github.com/${repo}/releases/latest`;
+  let url = new URL(start);
+  for (let hop = 0; hop < MAX_LOOKUP_HOPS; hop++) {
+    let res: Response;
+    try {
+      res = await fetchImpl(url.href, { redirect: "manual", signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) });
+    } catch (err) {
+      if (isTimeout(err)) {
+        return {
+          ...fail(
+            "release_lookup_timed_out",
+            `${url.href} did not respond within ${LOOKUP_TIMEOUT_MS}ms`,
+            ExitCode.Timeout,
+            REINSTALL_HINT,
+          ),
+          miss: false,
+        };
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        ...fail("release_lookup_failed", `could not reach ${url.href}: ${detail}`, ExitCode.Network, REINSTALL_HINT),
+        miss: false,
+      };
+    }
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    if (location === null) {
+      return {
+        ...fail(
+          "release_lookup_failed",
+          `could not determine the latest release from ${start} (HTTP ${res.status})`,
+          ExitCode.Network,
+          REINSTALL_HINT,
+        ),
+        miss: true,
+      };
+    }
+    let next: URL;
+    try {
+      next = new URL(location, url);
+    } catch {
+      return {
+        ...fail("release_lookup_failed", `${url.href} redirected to an invalid URL`, ExitCode.Network, REINSTALL_HINT),
+        miss: true,
+      };
+    }
+    // The same https-only rule the download holds a redirect to.
+    if (next.protocol !== "https:") {
+      return {
+        ...fail("insecure_redirect", `${url.href} redirected to ${next.href}, which is not https`, ExitCode.General),
+        miss: false,
+      };
+    }
+    const found = releaseTagIn(next);
+    if (found !== null) return { ok: true, ...found };
+    url = next;
+  }
+  return {
+    ...fail(
+      "release_lookup_failed",
+      `${start} redirected more than ${MAX_LOOKUP_HOPS} times without naming a release`,
+      ExitCode.Network,
+      REINSTALL_HINT,
+    ),
+    miss: true,
+  };
+}
+
+/** The release tag to install, plus the repo it was found in. `tag` is null when a
+ * `GUSTO_CLI_BASE_URL` override leaves nothing to resolve (the caller then installs
+ * unconditionally); `repo` is null whenever there was no lookup to find one.
  *
  * The tag comes from the `/releases/latest` redirect's Location header rather than
  * `api.github.com`: no auth, and no 60-requests-per-hour cap to start failing behind a busy NAT.
@@ -229,51 +332,45 @@ export function tagToVersion(tag: string): string {
 export async function resolveTargetTag(
   env: EnvSource,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ ok: true; tag: string | null } | Failed> {
+): Promise<{ ok: true; tag: string | null; repo: string | null } | Failed> {
   const pinned = pinnedVersion(env);
-  if (pinned !== null) return { ok: true, tag: pinned };
-  if (env.GUSTO_CLI_BASE_URL !== undefined && env.GUSTO_CLI_BASE_URL.length > 0) return { ok: true, tag: null };
+  if (pinned !== null) return { ok: true, tag: pinned, repo: null };
+  if (env.GUSTO_CLI_BASE_URL !== undefined && env.GUSTO_CLI_BASE_URL.length > 0) {
+    return { ok: true, tag: null, repo: null };
+  }
 
-  const repo = env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0 ? env.GUSTO_CLI_REPO : DEFAULT_REPO;
-  const url = `https://github.com/${repo}/releases/latest`;
-  let res: Response;
-  try {
-    res = await fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) });
-  } catch (err) {
-    if (isTimeout(err)) {
-      return fail(
-        "release_lookup_timed_out",
-        `${url} did not respond within ${LOOKUP_TIMEOUT_MS}ms`,
-        ExitCode.Timeout,
-        REINSTALL_HINT,
-      );
-    }
-    const detail = err instanceof Error ? err.message : String(err);
-    return fail("release_lookup_failed", `could not reach ${url}: ${detail}`, ExitCode.Network, REINSTALL_HINT);
+  const repos = releaseRepos(env);
+  const misses: string[] = [];
+  for (const repo of repos) {
+    const found = await lookupLatestRelease(repo, fetchImpl);
+    if (found.ok) return found;
+    if (!found.miss) return { ok: false, result: found.result };
+    if (!found.result.ok) misses.push(found.result.error.message);
   }
-  const location = res.headers.get("location");
-  const tag = location === null ? null : /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
-  if (tag === null || tag === undefined) {
-    return fail(
-      "release_lookup_failed",
-      `could not determine the latest release from ${url} (HTTP ${res.status}). ` +
-        `Pin a version with GUSTO_CLI_VERSION=v0.0.0 to bypass the lookup.`,
-      ExitCode.Network,
-      REINSTALL_HINT,
-    );
-  }
-  return { ok: true, tag: decodeURIComponent(tag) };
+  return fail(
+    "release_lookup_failed",
+    `${misses.join("; ")}. Pin a version with GUSTO_CLI_VERSION=v0.0.0 to bypass the lookup.`,
+    ExitCode.Network,
+    REINSTALL_HINT,
+  );
 }
 
-/** A known tag uses the explicit `/releases/download/$tag/` form rather than install.sh's
+/** Where to download from, in the order to try. A repo the lookup found is the only candidate - the
+ * asset sits next to the tag it named. Without one (a pin) every release repo is a candidate, for
+ * the same reason the lookup tries them all.
+ *
+ * A known tag uses the explicit `/releases/download/$tag/` form rather than install.sh's
  * `/releases/latest/download/`, so a release cut between the lookup and the download can't leave us
  * installing one version while reporting another. */
-export function assetBaseUrl(env: EnvSource, tag: string | null): string {
+export function assetBaseUrls(env: EnvSource, tag: string | null, repo: string | null = null): string[] {
   const override = env.GUSTO_CLI_BASE_URL;
-  if (override !== undefined && override.length > 0) return override.replace(/\/+$/, "");
-  const repo = env.GUSTO_CLI_REPO !== undefined && env.GUSTO_CLI_REPO.length > 0 ? env.GUSTO_CLI_REPO : DEFAULT_REPO;
-  if (tag === null) return `https://github.com/${repo}/releases/latest/download`;
-  return `https://github.com/${repo}/releases/download/${tag}`;
+  if (override !== undefined && override.length > 0) return [override.replace(/\/+$/, "")];
+  const repos = repo === null ? releaseRepos(env) : [repo];
+  return repos.map((r) =>
+    tag === null
+      ? `https://github.com/${r}/releases/latest/download`
+      : `https://github.com/${r}/releases/download/${tag}`,
+  );
 }
 
 /** Matches the whole second field, like install.sh's `awk '$2 == a'`, so a sibling asset whose name
@@ -700,13 +797,19 @@ function redirectedToPlaintext(requested: string, final: string): boolean {
  * here, not at the headers, and outside the try that lands as `internal_error` with a raw
  * "socket connection was closed" - a wifi drop reported as a bug in the CLI, and invisible to an
  * agent watching for the network exit code. */
-async function download(fetchImpl: typeof fetch, url: string): Promise<{ ok: true; bytes: Uint8Array } | Failed> {
+async function download(
+  fetchImpl: typeof fetch,
+  url: string,
+): Promise<{ ok: true; bytes: Uint8Array } | (Failed & { httpStatus?: number })> {
   let res: Response;
   let bytes: Uint8Array;
   try {
     res = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (!res.ok) {
-      return fail("download_failed", `could not download ${url}: HTTP ${res.status}`, ExitCode.Network, REINSTALL_HINT);
+      return {
+        ...fail("download_failed", `could not download ${url}: HTTP ${res.status}`, ExitCode.Network, REINSTALL_HINT),
+        httpStatus: res.status,
+      };
     }
     if (redirectedToPlaintext(url, res.url)) {
       return fail(
@@ -737,6 +840,8 @@ interface UpgradeTarget {
   targetPath: string;
   from: string | null;
   tag: string | null;
+  /** The repo the lookup found the release in, or null when nothing was looked up. */
+  repo: string | null;
   base: { from: string | null; to: string | null; asset: string; install_path: string };
 }
 
@@ -768,7 +873,7 @@ async function resolveUpgradeTarget(
 
   const tagResult = await resolveTargetTag(env, fetchImpl);
   if (!tagResult.ok) return { done: tagResult.result };
-  const { tag } = tagResult;
+  const { tag, repo } = tagResult;
   const targetVersion = tag === null ? null : tagToVersion(tag);
 
   // Only when the target is us can VERSION stand in for it (see `isSelf`), which also keeps the
@@ -794,7 +899,7 @@ async function resolveUpgradeTarget(
     };
   }
 
-  return { target: { asset, targetPath, from, tag, base } };
+  return { target: { asset, targetPath, from, tag, repo, base } };
 }
 
 /** What happens to the staged file once it's downloaded, checksummed, written, and exec-verified:
@@ -814,7 +919,7 @@ async function stageAndFinalize(
   stagingName: string = STAGING_NAME,
 ): Promise<CommandResult<UpgradeResult>> {
   const { log, env, fetchImpl, versionOf, stripQuarantine } = deps;
-  const { asset, targetPath, tag } = target;
+  const { asset, targetPath, tag, repo } = target;
 
   // First mutation of the run, and deliberately the first thing past the gate (or, for
   // `stageUpdate`, the first thing at all - it has no gate to be past).
@@ -832,10 +937,20 @@ async function stageAndFinalize(
   const stagingPreflight = await preflightStagingPath(staged);
   if (!stagingPreflight.ok) return stagingPreflight.result;
 
-  const baseUrl = assetBaseUrl(env, tag);
+  // Only an HTTP answer moves on to the next candidate - that repo doesn't have the release. A
+  // network failure would fail the same way against the next one, after another full timeout.
+  const bases = assetBaseUrls(env, tag, repo);
+  let baseUrl = bases[0]!;
   log(`downloading ${asset} from ${baseUrl}`);
-  const binary = await download(fetchImpl, `${baseUrl}/${asset}`);
+  let binary = await download(fetchImpl, `${baseUrl}/${asset}`);
+  for (const candidate of bases.slice(1)) {
+    if (binary.ok || binary.httpStatus === undefined) break;
+    log(`${asset} unavailable from ${baseUrl} (HTTP ${binary.httpStatus}); trying ${candidate}`);
+    baseUrl = candidate;
+    binary = await download(fetchImpl, `${baseUrl}/${asset}`);
+  }
   if (!binary.ok) return binary.result;
+  // From the same base as the binary, so the checksum always describes the bytes it's checked against.
   const sums = await download(fetchImpl, `${baseUrl}/SHA256SUMS`);
   if (!sums.ok) return sums.result;
 
