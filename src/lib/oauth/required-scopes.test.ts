@@ -20,10 +20,12 @@ describe("REQUIRED_SCOPES", () => {
     }
   });
 
-  test("payrolls:run is required for payroll calculate (granted to the CLI partner app)", () => {
-    expect(DROPPED_SCOPES).not.toContain("payrolls:run");
-    const entry = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:run");
-    expect(entry?.usedBy).toContain("payroll calculate");
+  test("payroll prep needs no money-movement scope", () => {
+    expect(DROPPED_SCOPES).toContain("payrolls:run");
+    const write = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:write");
+    expect(write?.usedBy).toEqual(expect.arrayContaining(["payroll prepare", "payroll update", "payroll calculate"]));
+    const read = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:read");
+    expect(read?.usedBy).toContain("payroll blockers");
   });
 
   test("employee address updates require the verified write scopes, moved out of DROPPED", () => {
