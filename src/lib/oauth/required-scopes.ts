@@ -71,6 +71,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
       "payroll list",
       "payroll show",
       "payroll receipt",
+      "payroll blockers",
       "ledger show",
       "pay-schedule periods",
       "pay-schedule termination-periods",
@@ -89,11 +90,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   // Writes: the per-cycle payroll flow, plus the employee-offboarding and work-state paths and address updates.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
-  { scope: "payrolls:write", usedBy: ["payroll prepare"] },
-  // `payroll blockers` reads, but the API files its action under the run scope rather than
-  // payrolls:read - a grant narrowed to reads 403s on it, which is worth knowing before
-  // anyone trims this list on the assumption that read commands only need read scopes.
-  { scope: "payrolls:run", usedBy: ["payroll calculate", "payroll blockers"] },
+  { scope: "payrolls:write", usedBy: ["payroll prepare", "payroll update", "payroll calculate"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)", "report run"] },
   { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
@@ -125,6 +122,7 @@ export const DROPPED_SCOPES: readonly string[] = [
   "employee_state_taxes:write",
   "employee_federal_taxes:read",
   "employee_state_taxes:read",
+  "payrolls:run",
 ] as const;
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to
