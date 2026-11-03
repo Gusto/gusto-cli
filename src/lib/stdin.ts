@@ -33,9 +33,17 @@ async function collectStdin(input: AsyncIterable<Buffer | string>, maxBytes?: nu
  * null instead; this is an automation-first CLI. Piped/redirected stdin is not a
  * TTY, so the normal read path runs there.
  */
-export async function readTokenFromStdin(
-  input: AsyncIterable<Buffer | string> = process.stdin,
-): Promise<string | null> {
+export async function readTokenFromStdin(input?: AsyncIterable<Buffer | string>): Promise<string | null> {
+  if (input !== undefined) return parseToken(input);
+  // A command can resolve auth more than once (a write, then a diagnosis of its failure), and the
+  // pipe only holds the token until the first read drains it.
+  processStdinToken ??= parseToken(process.stdin);
+  return processStdinToken;
+}
+
+let processStdinToken: Promise<string | null> | undefined;
+
+async function parseToken(input: AsyncIterable<Buffer | string>): Promise<string | null> {
   const raw = await collectStdin(input, MAX_TOKEN_BYTES);
   if (raw === null) return null;
   const firstLine = raw.trim().split(/\r?\n/, 1)[0] ?? "";

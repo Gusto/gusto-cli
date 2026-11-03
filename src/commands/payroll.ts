@@ -10,7 +10,7 @@ import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
 import { employeeIsMultiLocation, multiLocationRefusal } from "../lib/multi-location.ts";
-import type { BlockedOn } from "../lib/output.ts";
+import type { BlockedOn, EnvelopeError } from "../lib/output.ts";
 import { withPageParams } from "../lib/pagination.ts";
 import {
   isValidIsoDate,
@@ -31,6 +31,7 @@ import {
   runReadCommand,
   validationFailure,
 } from "../lib/runner.ts";
+import { clarifyVersionConflict } from "../lib/versioning.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -1255,13 +1256,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** The API rejects the whole update, with an error that names no one, when it carries hours for an
- * employee who works at more than one location. Only run after a rejected write, so a clean update
- * costs no extra reads; if a lookup fails, the API's own error is returned unchanged. */
+ * employee who works at more than one location. */
 async function multiLocationHoursRefusal(
   globals: GlobalFlags,
   opts: { tokenStdin?: boolean },
   body: PayrollUpdateBody,
-  details: unknown,
+  apiError: EnvelopeError,
 ): Promise<CommandResult<never> | undefined> {
   const withHours = body.employee_compensations
     .filter((ec) => (ec.hourly_compensations ?? []).length > 0)
@@ -1280,8 +1280,9 @@ async function multiLocationHoursRefusal(
     multi,
     `nothing was saved: ${multi.length === 1 ? "employee" : "employees"} ${multi.join(", ")} ` +
       `${multi.length === 1 ? "works" : "work"} at more than one location, and the CLI can't say which ` +
-      "location hours are for yet. Remove their rows and re-run, then enter their hours in the Gusto app.",
-    details,
+      "location hours are for yet. Remove their rows and re-run, then enter their hours in the Gusto app. " +
+      `The API said: ${apiError.message}`,
+    apiError,
   );
 }
 
@@ -1325,9 +1326,9 @@ export function payrollUpdateHandler(
       if (!injected.ok) return injected;
     }
 
-    const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
+    const result = clarifyVersionConflict(await putPayrollResource(globals, payrollUuid, "", built.body, opts));
     if (!result.ok && result.exitCode === ExitCode.ApiClient) {
-      const refusal = await multiLocationHoursRefusal(globals, opts, built.body, result.error.details);
+      const refusal = await multiLocationHoursRefusal(globals, opts, built.body, result.error);
       if (refusal) return refusal;
     }
 

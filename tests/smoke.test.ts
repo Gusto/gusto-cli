@@ -1304,6 +1304,46 @@ describe("token-stdin authentication", () => {
     expect(envelope.data.note).toBeUndefined();
   });
 
+  test("a piped token is still there when a command resolves auth a second time", async () => {
+    // payroll update re-resolves auth to diagnose a rejected write, after the PUT already read stdin.
+    const authHeaders: (string | null)[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        authHeaders.push(req.headers.get("authorization"));
+        if (req.method === "PUT") {
+          return Response.json(
+            { errors: [{ category: "invalid_attribute_value", message: "unable to save" }] },
+            { status: 422 },
+          );
+        }
+        return Response.json([{ active: true }, { active: true }]);
+      },
+    });
+    const work = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-stdin-"));
+    const csv = path.join(work, "in.csv");
+    writeFileSync(csv, `employee_uuid,job_uuid,regular_hours\n${EMPLOYEE_UUID},${TIME_SHEET_UUID},8\n`);
+    try {
+      const result = await run(
+        ["payroll", "update", PAYROLL_UUID, "--input", csv, "--token-stdin", "--confirm"],
+        {
+          GUSTO_COMPANY_UUID: COMPANY_UUID,
+          GUSTO_API_BASE_URL: `http://localhost:${server.port}`,
+          GUSTO_ALLOW_HTTP: "1",
+        },
+        "piped-secret-token\n",
+      );
+      const envelope = JSON.parse(result.stdout.trim());
+      expect(envelope.error.code).toBe("multi_location_not_supported");
+      expect(result.exitCode).toBe(8);
+      expect(authHeaders.length).toBe(2);
+      expect(authHeaders.every((h) => h === "Bearer piped-secret-token")).toBe(true);
+    } finally {
+      server.stop(true);
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
   test("without --token-stdin (and no session/env) the same dry-run reports token not required", async () => {
     // Mirror of the above with no token source: auth fails, so the dry-run falls back to
     // the placeholder path and the explanatory note - confirming stdin wasn't read.

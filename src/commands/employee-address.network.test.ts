@@ -113,6 +113,29 @@ describe("updateWorkAddressHandler for employees who work at more than one locat
     expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
   });
 
+  test("a failed read of the address says nothing was written and keeps the API's exit code", async () => {
+    const s = routeFetch([{ match: `/v1/work_addresses/${WA_UUID}`, status: 404, body: { errors: [] } }]);
+    restore = s.restore;
+    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.ApiClient);
+    expect(result.error.message).toContain(`reading GET /v1/work_addresses/${WA_UUID} failed, so nothing was written`);
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("an address that names no employee is a malformed response, and nothing is PUT", async () => {
+    const s = routeFetch([
+      { match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: { uuid: WA_UUID, version: "v1" } },
+    ]);
+    restore = s.restore;
+    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("malformed_response");
+    expect(s.calls.some((c) => c.method === "PUT" || c.url.includes("/v1/employees/"))).toBe(false);
+  });
+
   test("--dry-run still needs no auth or reads", async () => {
     const s = routes([address, { ...address, uuid: "wa-2" }]);
     const d = okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", dryRun: true })(ctx));

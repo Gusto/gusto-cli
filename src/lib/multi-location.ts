@@ -1,12 +1,11 @@
-/** Employees paid at more than one work location have one active work address per location, and the
- * endpoints these commands write through can't say which location a change is for yet. A write could
- * land on the wrong location (or be refused with an error that doesn't say why), so the affected
- * commands refuse up front and send the operator to the Gusto app. */
+/** An employee paid at more than one work location has one active work address per location, and the
+ * write endpoints can't yet say which location a change is for. */
 
 import type { ApiClient } from "./api-client.ts";
 import { fetchAtPath } from "./api-context.ts";
 import { malformedResponse } from "./errors.ts";
 import { ExitCode } from "./exit-codes.ts";
+import type { EnvelopeError } from "./output.ts";
 import { isObject } from "./predicates.ts";
 import { readString } from "./read-string.ts";
 import type { CommandResult } from "./runner.ts";
@@ -25,7 +24,7 @@ export function isMultiLocation(workAddresses: readonly unknown[]): boolean {
 export function multiLocationRefusal(
   employeeUuids: readonly string[],
   message: string,
-  details?: unknown,
+  apiError?: Pick<EnvelopeError, "details" | "request_id">,
 ): CommandResult<never> {
   return {
     ok: false,
@@ -34,7 +33,8 @@ export function multiLocationRefusal(
       code: MULTI_LOCATION_NOT_SUPPORTED,
       message,
       employee_uuids: [...employeeUuids],
-      ...(details !== undefined ? { details } : {}),
+      ...(apiError?.details !== undefined ? { details: apiError.details } : {}),
+      ...(apiError?.request_id ? { request_id: apiError.request_id } : {}),
     },
   };
 }

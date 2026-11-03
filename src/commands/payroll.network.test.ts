@@ -356,6 +356,7 @@ describe("payrollUpdateHandler", () => {
       expect(result.error.code).toBe("multi_location_not_supported");
       expect(result.error.employee_uuids).toEqual(["ee-1"]);
       expect(result.error.message).toContain("nothing was saved");
+      expect(result.error.message).toContain("The API said: unable to save this payroll");
       expect(result.error.details).toEqual(generic422);
       expect(s.calls.some((c) => c.url.includes("/employees/ee-3/"))).toBe(false);
     });
@@ -375,6 +376,31 @@ describe("payrollUpdateHandler", () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
       expect(result.error.code).toBe("api_client_error");
+    });
+
+    test("a version conflict keeps its own code and reads no work addresses", async () => {
+      const conflict = { errors: [{ category: "invalid_resource_version", message: "stale" }] };
+      const s = stub((u) => {
+        if (u.includes("/payrolls/pay-1")) return { status: 409, body: conflict };
+        return { status: 200, body: [{ active: true }, { active: true }] };
+      });
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.error.code).toBe("version_conflict");
+      expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
+    });
+
+    test("a server error reads no work addresses", async () => {
+      const s = stub((u) => {
+        if (u.includes("/payrolls/pay-1")) return { status: 500, body: {} };
+        return { status: 200, body: [{ active: true }, { active: true }] };
+      });
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.error.code).toBe("api_server_error");
+      expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
     });
 
     test("a successful update reads no work addresses", async () => {

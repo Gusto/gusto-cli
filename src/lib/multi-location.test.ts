@@ -21,9 +21,10 @@ describe("multiLocationRefusal", () => {
     });
   });
 
-  test("carries the API body when there is one", () => {
-    const result = multiLocationRefusal(["ee-1"], "refused.", { errors: [] });
+  test("carries the API body and request id when there are some", () => {
+    const result = multiLocationRefusal(["ee-1"], "refused.", { details: { errors: [] }, request_id: "req-1" });
     if (result.ok) throw new Error("unreachable");
     expect(result.error.details).toEqual({ errors: [] });
+    expect(result.error.request_id).toBe("req-1");
   });
 });

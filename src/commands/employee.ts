@@ -341,7 +341,8 @@ turn into months of missed filings. Already working from --work-state is a no-op
 
 An employee with more than one active work address works at more than one location. This
 command can't say which one to change, so it refuses with \`multi_location_not_supported\`
-(exit 8) and nothing is written. Make that change in the Gusto app.
+(exit 8) and nothing is written, even when one of those addresses is already in --work-state.
+Make that change in the Gusto app.
 
 Mirrors PUT /v1/work_addresses/{work_address_uuid}. In agent mode this write is gated:
 preview it with --dry-run, then re-run with --confirm once the operator approves.
@@ -705,7 +706,8 @@ const workAddressPath = (workAddressUuid: string): string =>
  * the specific work-address uuid (not known yet). On success, a best-effort GET of the new
  * state's tax_requirements is shaped into a `compliance` nudge (see buildComplianceNudge);
  * its failure doesn't undo or fail the already-successful write. Already being in
- * --work-state is a no-op - no location lookup, no write, no nudge. */
+ * --work-state is a no-op - no location lookup, no write, no nudge - unless the employee works at
+ * more than one location, which is refused first. */
 export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdateOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
