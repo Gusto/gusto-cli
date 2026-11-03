@@ -73,7 +73,8 @@ export function clarifyVersionReadFailure(result: CommandResult, path: string): 
  *
  * The message covers both ways to earn one, because this also wraps plain `api request` writes: the
  * `version` sent was stale (the record moved under an auto-fetched version), or none was sent at all
- * (a versioned endpoint compares against nil and rejects - omitting the field is never a bypass). */
+ * (a versioned endpoint compares against nil and rejects - omitting the field is never a bypass).
+ * `recovery` replaces the default next step for surfaces where a plain GET doesn't return the version. */
 export function clarifyVersionConflict(
   result: CommandResult,
   recovery = "GET the record for its current `version` and retry with that value.",

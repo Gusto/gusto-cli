@@ -390,8 +390,27 @@ describe("payrollUpdateHandler", () => {
       if (result.ok) throw new Error("expected failure");
       expect(result.exitCode).toBe(ExitCode.Blocked);
       expect(result.error.code).toBe("version_conflict");
-      expect(result.error.message).toContain("Re-run `gusto payroll prepare`");
+      expect(result.error.message).toContain("Re-run `gusto payroll prepare pay-1 --confirm`");
+      expect(result.error.message).not.toContain("GET the record");
       expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
+    });
+
+    test("clearing a multi-location employee's hours keeps their other inputs and skips them in the check", async () => {
+      const cleared = "employee_uuid,job_uuid,regular_hours,bonus\nee-1,job-1,,250\nee-2,job-2,8,";
+      const s = stub(router({ "ee-1": twoLocations, "ee-2": oneLocation }));
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(cleared))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.error.code).toBe("api_client_error");
+      const put = s.calls.find((c) => c.method === "PUT");
+      expect(put?.body).toMatchObject({
+        employee_compensations: [{ employee_uuid: "ee-1", fixed_compensations: [{ name: "Bonus", amount: 250 }] }, {}],
+      });
+      expect(
+        (put?.body as { employee_compensations: { hourly_compensations?: unknown }[] }).employee_compensations[0]
+          ?.hourly_compensations,
+      ).toBeUndefined();
+      expect(s.calls.some((c) => c.url.includes("/employees/ee-1/"))).toBe(false);
     });
 
     test("a server error reads no work addresses", async () => {

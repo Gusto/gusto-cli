@@ -1008,7 +1008,7 @@ overtime_hours/double_overtime_hours use
 the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a
 reviewable draft.
 
-A stale 'version' returns \`version_conflict\` (exit 8) and nothing is saved: re-run
+A stale or missing 'version' returns \`version_conflict\` (exit 8) and nothing is saved: re-run
 'payroll prepare' for fresh versions, then retry.
 
 Hours can't be entered here yet for an employee who works at more than one location. The API
@@ -1285,7 +1285,7 @@ async function multiLocationHoursRefusal(
     `nothing was saved: ${multi.length === 1 ? "employee" : "employees"} ${multi.join(", ")} ` +
       `${multi.length === 1 ? "works" : "work"} at more than one location, and the CLI can't say which ` +
       "location hours are for yet. Enter their hours in the Gusto app. To save everyone else's changes, " +
-      "clear their hours cells and re-run once the user approves. " +
+      "clear their hours cells and re-run. " +
       `The API said: ${apiError.message}`,
     apiError,
   );
@@ -1333,7 +1333,8 @@ export function payrollUpdateHandler(
 
     const result = clarifyVersionConflict(
       await putPayrollResource(globals, payrollUuid, "", built.body, opts),
-      "Re-run `gusto payroll prepare` and use each employee's `employee_compensations[].version` from it.",
+      `Re-run \`gusto payroll prepare ${payrollUuid} --confirm\` and use each employee's ` +
+        "`employee_compensations[].version` from it in the CSV's `version` column.",
     );
     if (!result.ok && result.exitCode === ExitCode.ApiClient) {
       const refusal = await multiLocationHoursRefusal(globals, opts, built.body, result.error);
