@@ -759,6 +759,34 @@ describe("authWhoamiHandler", () => {
     expect((result.data as { missing_scopes?: string[] }).missing_scopes).toBeUndefined();
   });
 
+  test("warns when the token still holds a money-movement scope", async () => {
+    const tokenInfo = {
+      scope: "payrolls:read payrolls:write payrolls:run public",
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const data = result.data as { money_movement_scopes?: string[]; warning?: string };
+    expect(data.money_movement_scopes).toEqual(["payrolls:run"]);
+    expect(data.warning).toContain("gusto auth login");
+  });
+
+  test("omits the money-movement warning for a narrowed token", async () => {
+    const tokenInfo = {
+      scope: REQUIRED_SCOPES.map((r) => r.scope).join(" "),
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({})(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const data = result.data as { money_movement_scopes?: string[]; warning?: string };
+    expect(data.money_movement_scopes).toBeUndefined();
+    expect(data.warning).toBeUndefined();
+  });
+
   test("propagates a token_info error and skips the capabilities summary", async () => {
     // A 401 on token_info means the credential itself was refused, so it reports as the auth failure
     // it is rather than an ordinary 4xx. TEST_GLOBALS pins sandbox and the ambient GUSTO_ACCESS_TOKEN

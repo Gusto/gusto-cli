@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { DROPPED_SCOPES, REQUIRED_SCOPES, findMissingScopes, isGrantableScope } from "./required-scopes.ts";
+import {
+  DROPPED_SCOPES,
+  MONEY_MOVEMENT_SCOPES,
+  REQUIRED_SCOPES,
+  findMissingScopes,
+  findMoneyMovementScopes,
+  isGrantableScope,
+} from "./required-scopes.ts";
 
 describe("REQUIRED_SCOPES", () => {
   test("every entry has a non-empty usedBy list", () => {
@@ -20,12 +27,17 @@ describe("REQUIRED_SCOPES", () => {
     }
   });
 
-  test("payroll prep needs no money-movement scope", () => {
-    expect(DROPPED_SCOPES).toContain("payrolls:run");
+  test("no money-movement scope is required or retained", () => {
+    for (const scope of MONEY_MOVEMENT_SCOPES) {
+      expect(isGrantableScope(scope)).toBe(false);
+    }
+  });
+
+  test("payroll prep runs on the read and write scopes", () => {
     const write = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:write");
     expect(write?.usedBy).toEqual(expect.arrayContaining(["payroll prepare", "payroll update", "payroll calculate"]));
     const read = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:read");
-    expect(read?.usedBy).toContain("payroll blockers");
+    expect(read?.usedBy).toEqual(expect.arrayContaining(["payroll blockers", "payroll calculate (poll)"]));
   });
 
   test("employee address updates require the verified write scopes, moved out of DROPPED", () => {
@@ -125,5 +137,17 @@ describe("isGrantableScope", () => {
 
   test("every dropped scope reads as ungrantable", () => {
     for (const dropped of DROPPED_SCOPES) expect(isGrantableScope(dropped)).toBe(false);
+  });
+});
+
+describe("findMoneyMovementScopes", () => {
+  test("returns only the money-movement scopes a token holds", () => {
+    expect(findMoneyMovementScopes(["payrolls:read", "payrolls:write", "payrolls:run", "public"])).toEqual([
+      "payrolls:run",
+    ]);
+  });
+
+  test("returns nothing for a narrowed grant", () => {
+    expect(findMoneyMovementScopes(REQUIRED_SCOPES.map((r) => r.scope))).toEqual([]);
   });
 });

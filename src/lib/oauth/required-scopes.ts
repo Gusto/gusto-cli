@@ -72,6 +72,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
       "payroll show",
       "payroll receipt",
       "payroll blockers",
+      "payroll calculate (poll)",
       "ledger show",
       "pay-schedule periods",
       "pay-schedule termination-periods",
@@ -124,6 +125,22 @@ export const DROPPED_SCOPES: readonly string[] = [
   "employee_state_taxes:read",
   "payrolls:run",
 ] as const;
+
+/** Scopes that move money or change where it's paid out. The CLI must never need one, and
+ * `gusto auth whoami` flags a token that still holds any. */
+export const MONEY_MOVEMENT_SCOPES: readonly string[] = [
+  "payrolls:run",
+  "partner_disbursements:write",
+  "company_bank_accounts:write",
+  "employee_bank_accounts:write",
+  "employee_payment_methods:write",
+  "contractor_payment_methods:write",
+] as const;
+
+/** Money-movement scopes the granted token holds, which a fresh login would drop. */
+export function findMoneyMovementScopes(granted: readonly string[]): string[] {
+  return MONEY_MOVEMENT_SCOPES.filter((s) => granted.includes(s));
+}
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to
  * surface a debuggable list inline when a token's grant is narrower than the

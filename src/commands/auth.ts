@@ -9,7 +9,7 @@ import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/glob
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp } from "../lib/oauth/context.ts";
 import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
-import { findMissingScopes } from "../lib/oauth/required-scopes.ts";
+import { findMissingScopes, findMoneyMovementScopes } from "../lib/oauth/required-scopes.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
@@ -391,6 +391,7 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
     if (!result.ok) return result;
     const granted = parseScopes(result.data?.scope);
     const missing = findMissingScopes(granted);
+    const moneyMovement = findMoneyMovementScopes(granted);
     return {
       ok: true,
       data: {
@@ -403,6 +404,13 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
         capabilities: summarizeGrantedScopes(granted),
         ...(missing.length > 0 ? { missing_scopes: missing } : {}),
+        // Sessions from before the grant was narrowed keep refreshing these until the user signs in again.
+        ...(moneyMovement.length > 0
+          ? {
+              money_movement_scopes: moneyMovement,
+              warning: `this token holds ${moneyMovement.join(", ")}, which can move money and no CLI command needs. Run \`gusto auth login\` to get a token without ${moneyMovement.length === 1 ? "it" : "them"}.`,
+            }
+          : {}),
       },
     };
   };
