@@ -74,7 +74,10 @@ export function clarifyVersionReadFailure(result: CommandResult, path: string): 
  * The message covers both ways to earn one, because this also wraps plain `api request` writes: the
  * `version` sent was stale (the record moved under an auto-fetched version), or none was sent at all
  * (a versioned endpoint compares against nil and rejects - omitting the field is never a bypass). */
-export function clarifyVersionConflict(result: CommandResult): CommandResult {
+export function clarifyVersionConflict(
+  result: CommandResult,
+  recovery = "GET the record for its current `version` and retry with that value.",
+): CommandResult {
   if (result.ok || result.exitCode !== ExitCode.ApiClient) return result;
 
   // `details` is the raw server body, so `errors` can be any shape - a hash on a non-standard error
@@ -93,8 +96,7 @@ export function clarifyVersionConflict(result: CommandResult): CommandResult {
       code: "version_conflict",
       message:
         "the `version` sent with this update did not match the record's current version, or none was " +
-        "sent, so the write was rejected and nothing was saved. GET the record for its current " +
-        "`version` and retry with that value.",
+        `sent, so the write was rejected and nothing was saved. ${recovery}`,
       ...(result.error.details !== undefined ? { details: result.error.details } : {}),
       ...(result.error.request_id ? { request_id: result.error.request_id } : {}),
     },

@@ -356,6 +356,7 @@ describe("payrollUpdateHandler", () => {
       expect(result.error.code).toBe("multi_location_not_supported");
       expect(result.error.employee_uuids).toEqual(["ee-1"]);
       expect(result.error.message).toContain("nothing was saved");
+      expect(result.error.message).toContain("clear their hours cells");
       expect(result.error.message).toContain("The API said: unable to save this payroll");
       expect(result.error.details).toEqual(generic422);
       expect(s.calls.some((c) => c.url.includes("/employees/ee-3/"))).toBe(false);
@@ -387,7 +388,9 @@ describe("payrollUpdateHandler", () => {
       const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
       expect(result.error.code).toBe("version_conflict");
+      expect(result.error.message).toContain("Re-run `gusto payroll prepare`");
       expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
     });
 

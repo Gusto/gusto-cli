@@ -1008,9 +1008,13 @@ overtime_hours/double_overtime_hours use
 the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a
 reviewable draft.
 
+A stale 'version' returns \`version_conflict\` (exit 8) and nothing is saved: re-run
+'payroll prepare' for fresh versions, then retry.
+
 Hours can't be entered here yet for an employee who works at more than one location. The API
 rejects the whole file, and the CLI reports \`multi_location_not_supported\` (exit 8) with those
-employees in \`error.employee_uuids\`. Remove their rows, re-run, and enter their hours in the Gusto app.
+employees in \`error.employee_uuids\`. Enter their hours in the Gusto app; to save everyone else's
+changes, clear those employees' hours cells and re-run.
 
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
@@ -1256,7 +1260,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** The API rejects the whole update, with an error that names no one, when it carries hours for an
- * employee who works at more than one location. */
+ * employee who works at more than one location. Undefined means the caller keeps the API's error. */
 async function multiLocationHoursRefusal(
   globals: GlobalFlags,
   opts: { tokenStdin?: boolean },
@@ -1280,7 +1284,8 @@ async function multiLocationHoursRefusal(
     multi,
     `nothing was saved: ${multi.length === 1 ? "employee" : "employees"} ${multi.join(", ")} ` +
       `${multi.length === 1 ? "works" : "work"} at more than one location, and the CLI can't say which ` +
-      "location hours are for yet. Remove their rows and re-run, then enter their hours in the Gusto app. " +
+      "location hours are for yet. Enter their hours in the Gusto app. To save everyone else's changes, " +
+      "clear their hours cells and re-run once the user approves. " +
       `The API said: ${apiError.message}`,
     apiError,
   );
@@ -1326,7 +1331,10 @@ export function payrollUpdateHandler(
       if (!injected.ok) return injected;
     }
 
-    const result = clarifyVersionConflict(await putPayrollResource(globals, payrollUuid, "", built.body, opts));
+    const result = clarifyVersionConflict(
+      await putPayrollResource(globals, payrollUuid, "", built.body, opts),
+      "Re-run `gusto payroll prepare` and use each employee's `employee_compensations[].version` from it.",
+    );
     if (!result.ok && result.exitCode === ExitCode.ApiClient) {
       const refusal = await multiLocationHoursRefusal(globals, opts, built.body, result.error);
       if (refusal) return refusal;
