@@ -31,6 +31,8 @@ The command shapes below are a guide, not a spec. Confirm exact flags with `gust
 
 3. **Gather the workers.** `gusto employee list` (employees) and `gusto contractor list` (contractors) give the entity UUIDs. For each employee you need a **`job_uuid`**: read it off the employee's record (`gusto employee show <employee_uuid>` -> the `jobs` array). Employee time sheets _require_ a job; contractor time sheets must _not_ carry one. If `jobs` has **more than one entry**, there's no safe default - **pause and ask the user which job the hours were worked under**. Attaching hours to the wrong `job_uuid` silently mis-routes them.
 
+   **Check for employees who work at more than one location.** Run `gusto employee addresses <employee_uuid> --fields work_addresses`. More than one entry with `active: true` means the employee works at more than one location. Time sheets can't say which location the hours were worked at, so don't create one for that employee: tell the user to record their hours in the Gusto app, and carry on with everyone else.
+
 4. **Confirm the hours with the user.** For each worker, get real `--regular` (and any `--overtime` / `--double-overtime`) hours, plus the shift window and time zone. Don't invent hours or shift times.
 
 5. **Create the time sheets.** One `gusto timesheet create` per shift. Preview with `--dry-run` first. A write run by an agent is blocked until you re-run it with `--confirm`, so create each sheet only **after** the user has approved the hours (pause points below) - then add `--confirm` to send.

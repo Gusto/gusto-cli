@@ -9,6 +9,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
+import { employeeIsMultiLocation, multiLocationRefusal } from "../lib/multi-location.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { withPageParams } from "../lib/pagination.ts";
 import {
@@ -1006,6 +1007,10 @@ overtime_hours/double_overtime_hours use
 the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a
 reviewable draft.
 
+Hours can't be entered here yet for an employee who works at more than one location. The API
+rejects the whole file, and the CLI reports \`multi_location_not_supported\` (exit 8) with those
+employees in \`error.employee_uuids\`. Remove their rows, re-run, and enter their hours in the Gusto app.
+
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
   $ gusto payroll update 1a2b... --input inputs.csv --dry-run
@@ -1249,6 +1254,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The API rejects the whole update, with an error that names no one, when it carries hours for an
+ * employee who works at more than one location. Only run after a rejected write, so a clean update
+ * costs no extra reads; if a lookup fails, the API's own error is returned unchanged. */
+async function multiLocationHoursRefusal(
+  globals: GlobalFlags,
+  opts: { tokenStdin?: boolean },
+  body: PayrollUpdateBody,
+  details: unknown,
+): Promise<CommandResult<never> | undefined> {
+  const withHours = body.employee_compensations
+    .filter((ec) => (ec.hourly_compensations ?? []).length > 0)
+    .map((ec) => ec.employee_uuid);
+  if (withHours.length === 0) return undefined;
+  const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
+  if (!resolved.ok) return undefined;
+  const checks = await Promise.all(withHours.map((uuid) => employeeIsMultiLocation(resolved.ctx.client, uuid)));
+  if (checks.some((c) => !c.ok)) return undefined;
+  const multi = withHours.filter((_, i) => {
+    const check = checks[i];
+    return check?.ok === true && check.data;
+  });
+  if (multi.length === 0) return undefined;
+  return multiLocationRefusal(
+    multi,
+    `nothing was saved: ${multi.length === 1 ? "employee" : "employees"} ${multi.join(", ")} ` +
+      `${multi.length === 1 ? "works" : "work"} at more than one location, and the CLI can't say which ` +
+      "location hours are for yet. Remove their rows and re-run, then enter their hours in the Gusto app.",
+    details,
+  );
+}
+
 /** `readFile` is injected so tests can drive the handler without touching the filesystem; it
  * defaults to Bun's native file read (the same seam company provision uses). */
 export function payrollUpdateHandler(
@@ -1290,6 +1326,10 @@ export function payrollUpdateHandler(
     }
 
     const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
+    if (!result.ok && result.exitCode === ExitCode.ApiClient) {
+      const refusal = await multiLocationHoursRefusal(globals, opts, built.body, result.error.details);
+      if (refusal) return refusal;
+    }
 
     if (result.ok && isRecord(result.data)) {
       const extras: Record<string, unknown> = {};

@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { updateHomeAddressHandler, updateWorkAddressHandler } from "./employee.ts";
-import { TEST_CONTEXT as ctx, blockedFields, okData } from "../lib/test-support.ts";
+import { ExitCode } from "../lib/exit-codes.ts";
+import { TEST_CONTEXT as ctx, blockedFields, okData, routeFetch } from "../lib/test-support.ts";
 
 // The address uuid is validated before the body is built, so these have to be well-formed.
 const HA_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
@@ -65,5 +66,57 @@ describe("updateWorkAddressHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(7);
     expect(blockedFields(result)).toContain("fields");
+  });
+});
+
+describe("updateWorkAddressHandler for employees who work at more than one location", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  const EMP_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
+  const address = { uuid: WA_UUID, employee_uuid: EMP_UUID, version: "v1", active: true };
+
+  function routes(employeeAddresses: unknown[]) {
+    const s = routeFetch([
+      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: employeeAddresses },
+      { match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: address },
+    ]);
+    restore = s.restore;
+    return s;
+  }
+
+  test("more than one active work address is refused and nothing is PUT", async () => {
+    const s = routes([address, { ...address, uuid: "wa-2" }]);
+    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("multi_location_not_supported");
+    expect(result.error.employee_uuids).toEqual([EMP_UUID]);
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("one active work address goes through to the PUT", async () => {
+    const s = routes([address, { ...address, uuid: "wa-old", active: false }]);
+    okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx));
+    const put = s.calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ location_uuid: "loc-1", version: "v1" });
+  });
+
+  test("a failed employee lookup says nothing was written", async () => {
+    const s = routeFetch([{ match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: address }]);
+    restore = s.restore;
+    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("nothing was written");
+    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  test("--dry-run still needs no auth or reads", async () => {
+    const s = routes([address, { ...address, uuid: "wa-2" }]);
+    const d = okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", dryRun: true })(ctx));
+    expect(d.method).toBe("PUT");
+    expect(s.calls).toHaveLength(0);
   });
 });

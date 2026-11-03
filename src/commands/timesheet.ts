@@ -318,6 +318,14 @@ export function registerTimesheetCommand(parent: Command): void {
     .option("--dry-run", "Build the request without sending")
     .option(...CONFIRM_OPT)
     .option("--example", "Print a canned sample payload without calling the API")
+    .addHelpText(
+      "after",
+      `
+Time sheets are tracked per job, not per work location, so they aren't supported for an employee
+who works at more than one location (more than one active work address). Record that employee's
+hours in the Gusto app.
+`,
+    )
     .action((opts: TimesheetCreateOpts) =>
       runCommand("gusto timesheet create", readGlobalFlags(parent.opts(), opts), timesheetCreateHandler(opts)),
     );

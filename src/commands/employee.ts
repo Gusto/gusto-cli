@@ -32,6 +32,7 @@ import { partialFailure } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
+import { isMultiLocation, multiLocationRefusal, workAddressMultiLocationCheck } from "../lib/multi-location.ts";
 import { isValidIsoDate, isValidStateCode, isValidUuid } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import {
@@ -290,6 +291,9 @@ If the record changes before the write, nothing is saved and you get a \`version
 --record-version, re-running re-sends the same stale token: read the record again with
 \`gusto employee work-address <address_uuid>\` and pass its new \`version\`.
 
+If the employee has more than one active work address, they work at more than one location and
+the write is refused with \`multi_location_not_supported\` (exit 8). Make that change in the Gusto app.
+
 Examples:
   $ gusto employee update-work-address <address_uuid> --location-uuid <company_location_uuid>
   $ gusto employee update-work-address <address_uuid> --effective-date 2026-08-01 --dry-run
@@ -334,6 +338,10 @@ the location first if none exists yet. On success the response includes a \`comp
 block naming that state's outstanding tax requirements, so a silent PA-to-MD move doesn't
 turn into months of missed filings. Already working from --work-state is a no-op
 (\`changed: false\`); no location lookup or write is attempted.
+
+An employee with more than one active work address works at more than one location. This
+command can't say which one to change, so it refuses with \`multi_location_not_supported\`
+(exit 8) and nothing is written. Make that change in the Gusto app.
 
 Mirrors PUT /v1/work_addresses/{work_address_uuid}. In agent mode this write is gated:
 preview it with --dry-run, then re-run with --confirm once the operator approves.
@@ -599,10 +607,12 @@ export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressU
     if (!isValidUuid(addressUuid)) return invalidUuid("address_uuid", addressUuid, ADDRESS_UUID_HINT);
     const validated = buildWorkAddressUpdate(opts);
     if (!validated.ok) return validationFailure(validated.message, validated.blocked);
-    return putResourceWithVersion(globals, `/v1/work_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
+    const path = workAddressPath(addressUuid);
+    return putResourceWithVersion(globals, path, validated.body, {
       tokenStdin: opts.tokenStdin,
       dryRun: opts.dryRun,
       confirm: opts.confirm,
+      precheck: (client) => workAddressMultiLocationCheck(client, path),
     });
   };
 }
@@ -748,6 +758,13 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
         if (!addressesRes.ok) return addressesRes;
         if (!Array.isArray(addressesRes.data)) {
           return malformedResponse(`${addressesPath} returned a non-array body`);
+        }
+        if (isMultiLocation(addressesRes.data)) {
+          return multiLocationRefusal(
+            [employeeUuid],
+            `employee ${employeeUuid} works at more than one location, and the CLI can't say which location a ` +
+              "work-state change is for yet. Make this change in the Gusto app instead.",
+          );
         }
         // Strict `=== true`, unlike findLocationForState's permissive `!== false` - picking
         // the wrong address to overwrite is worse than failing to find one.

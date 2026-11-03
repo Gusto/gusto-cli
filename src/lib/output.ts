@@ -50,6 +50,8 @@ export interface EnvelopeError {
   category?: ScopeErrorCategory;
   /** On a missing-scope 403, the scopes the API named, when it named any. */
   missing_scopes?: string[];
+  /** On `multi_location_not_supported`, the employees the write was refused for. */
+  employee_uuids?: string[];
 }
 
 export type ScopeErrorCategory = "missing_oauth_scopes" | "insufficient_scope";

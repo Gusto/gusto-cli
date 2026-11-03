@@ -325,6 +325,67 @@ describe("payrollUpdateHandler", () => {
     expect(result.error.details).toMatchObject({ errors: [{ category: "invalid_attribute_value" }] });
   });
 
+  describe("employees who work at more than one location", () => {
+    const MIXED_CSV = "employee_uuid,job_uuid,regular_hours,bonus\nee-1,job-1,8,\nee-2,job-2,8,\nee-3,job-3,,50";
+    const generic422 = { errors: [{ category: "invalid_attribute_value", message: "unable to save this payroll" }] };
+    const oneLocation = [
+      { uuid: "wa-a", active: true },
+      { uuid: "wa-old", active: false },
+    ];
+    const twoLocations = [
+      { uuid: "wa-b", active: true },
+      { uuid: "wa-c", active: true },
+    ];
+
+    function router(addresses: Record<string, unknown>) {
+      return (u: string): MockResponse => {
+        if (u.includes("/payrolls/pay-1")) return { status: 422, body: generic422 };
+        for (const [uuid, body] of Object.entries(addresses)) {
+          if (u.includes(`/employees/${uuid}/work_addresses`)) return { status: 200, body };
+        }
+        return { status: 404 };
+      };
+    }
+
+    test("a rejected update names the multi-location employees with hours and keeps the API body", async () => {
+      const s = stub(router({ "ee-1": twoLocations, "ee-2": oneLocation }));
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.exitCode).toBe(ExitCode.Blocked);
+      expect(result.error.code).toBe("multi_location_not_supported");
+      expect(result.error.employee_uuids).toEqual(["ee-1"]);
+      expect(result.error.message).toContain("nothing was saved");
+      expect(result.error.details).toEqual(generic422);
+      expect(s.calls.some((c) => c.url.includes("/employees/ee-3/"))).toBe(false);
+    });
+
+    test("a rejection with no multi-location employee in the file keeps the API's error", async () => {
+      stub(router({ "ee-1": oneLocation, "ee-2": oneLocation }));
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.exitCode).toBe(ExitCode.ApiClient);
+      expect(result.error.code).toBe("api_client_error");
+    });
+
+    test("a failed work-address lookup keeps the API's error rather than guessing", async () => {
+      stub(router({ "ee-1": twoLocations }));
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.error.code).toBe("api_client_error");
+    });
+
+    test("a successful update reads no work addresses", async () => {
+      const s = stub((u) =>
+        u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 },
+      );
+      data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx));
+      expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
+    });
+  });
+
   test("dry-run describes the PUT and its body, and sends nothing", async () => {
     const s = stub(() => ({ status: 500 }));
     const d = data(

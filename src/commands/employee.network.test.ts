@@ -526,6 +526,33 @@ describe("employeeUpdateHandler", () => {
     expect(result.error.code).toBe("no_active_work_address");
   });
 
+  test("more than one active work address is refused before any location lookup or write", async () => {
+    const s = routeFetch([
+      {
+        match: `/v1/employees/${EMP_UUID}/work_addresses`,
+        status: 200,
+        body: [activeAddress, { ...activeAddress, uuid: "wa-2", state: "NY" }],
+      },
+    ]);
+    restore = s.restore;
+    const result = await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.exitCode).toBe(ExitCode.Blocked);
+    expect(result.error.code).toBe("multi_location_not_supported");
+    expect(result.error.employee_uuids).toEqual([EMP_UUID]);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("an inactive second work address doesn't count as a second location", async () => {
+    const s = happyPathRoutes({
+      addresses: { status: 200, body: [activeAddress, { ...activeAddress, uuid: "wa-old", active: false }] },
+    });
+    restore = s.restore;
+    const d = okData(await employeeUpdateHandler(EMP_UUID, { ...auth, workState: "MD", confirm: true })(ctx));
+    expect(d.changed).toBe(true);
+  });
+
   test("already working from the target state is a no-op and never queries locations or tax requirements", async () => {
     const s = routeFetch([
       { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: [{ ...activeAddress, state: "PA" }] },

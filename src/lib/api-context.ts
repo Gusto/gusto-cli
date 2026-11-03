@@ -443,6 +443,12 @@ export interface ResourceWriteOpts {
   now?: () => number;
 }
 
+export interface VersionedWriteOpts extends ResourceWriteOpts {
+  /** Runs with the resolved client before the version read; a failure it returns is sent back in
+   * place of the write. Skipped on --dry-run, which needs no auth. */
+  precheck?: (client: ApiClient) => Promise<CommandResult<never> | undefined>;
+}
+
 /** Send a write to a fully-resolved resource path - the resource UUID is already in `path`, so no
  * company context is needed. The employee-scoped counterpart to createCompanyResource: it applies
  * the agent-mode confirmation gate, honors --dry-run (echoes the request without sending or even
@@ -496,7 +502,7 @@ export async function putResourceWithVersion(
   globals: GlobalFlags,
   path: string,
   body: Record<string, unknown>,
-  opts: ResourceWriteOpts,
+  opts: VersionedWriteOpts,
 ): Promise<CommandResult> {
   // Gate before resolving auth so an agent learns it must confirm without first needing a valid
   // token. --dry-run and human/TTY mode pass through (see confirmationGate).
@@ -530,6 +536,11 @@ export async function putResourceWithVersion(
     now: opts.now,
   });
   if (!resolved.ok) return resolved.result;
+
+  if (opts.precheck) {
+    const refused = await opts.precheck(resolved.ctx.client);
+    if (refused) return refused;
+  }
 
   // Each leg of the dance gets its own catch, so a failed version read, a lost version race, and a
   // plain rejected write stay distinguishable instead of collapsing into one api_client_error.
