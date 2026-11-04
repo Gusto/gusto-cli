@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { updateHomeAddressHandler, updateWorkAddressHandler } from "./employee.ts";
-import { ExitCode } from "../lib/exit-codes.ts";
 import { TEST_CONTEXT as ctx, blockedFields, okData, routeFetch } from "../lib/test-support.ts";
 
 // The address uuid is validated before the body is built, so these have to be well-formed.
@@ -73,73 +72,12 @@ describe("updateWorkAddressHandler for employees who work at more than one locat
   let restore: () => void = () => {};
   afterEach(() => restore());
 
-  const EMP_UUID = "3f2a8c1d-0000-4111-2222-333344445555";
-  const address = { uuid: WA_UUID, employee_uuid: EMP_UUID, version: "v1", active: true };
-
-  function routes(employeeAddresses: unknown[]) {
-    const s = routeFetch([
-      { match: `/v1/employees/${EMP_UUID}/work_addresses`, status: 200, body: employeeAddresses },
-      { match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: address },
-    ]);
-    restore = s.restore;
-    return s;
-  }
-
-  test("more than one active work address is refused and nothing is PUT", async () => {
-    const s = routes([address, { ...address, uuid: "wa-2" }]);
-    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.exitCode).toBe(ExitCode.Blocked);
-    expect(result.error.code).toBe("multi_location_not_supported");
-    expect(result.error.employee_uuids).toEqual([EMP_UUID]);
-    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
-  });
-
-  test("one active work address goes through to the PUT", async () => {
-    const s = routes([address, { ...address, uuid: "wa-old", active: false }]);
-    okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx));
-    const put = s.calls.find((c) => c.method === "PUT");
-    expect(put?.body).toEqual({ location_uuid: "loc-1", version: "v1" });
-  });
-
-  test("a failed employee lookup says nothing was written", async () => {
+  test("writes the address it names without checking the employee's other locations", async () => {
+    const address = { uuid: WA_UUID, employee_uuid: "3f2a8c1d-0000-4111-2222-333344445555", version: "v1" };
     const s = routeFetch([{ match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: address }]);
     restore = s.restore;
-    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.message).toContain("nothing was written");
-    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
-  });
-
-  test("a failed read of the address says nothing was written and keeps the API's exit code", async () => {
-    const s = routeFetch([{ match: `/v1/work_addresses/${WA_UUID}`, status: 404, body: { errors: [] } }]);
-    restore = s.restore;
-    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.exitCode).toBe(ExitCode.ApiClient);
-    expect(result.error.message).toContain(`reading GET /v1/work_addresses/${WA_UUID} failed, so nothing was written`);
-    expect(s.calls.some((c) => c.method === "PUT")).toBe(false);
-  });
-
-  test("an address that names no employee is a malformed response, and nothing is PUT", async () => {
-    const s = routeFetch([
-      { match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: { uuid: WA_UUID, version: "v1" } },
-    ]);
-    restore = s.restore;
-    const result = await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.code).toBe("malformed_response");
-    expect(s.calls.some((c) => c.method === "PUT" || c.url.includes("/v1/employees/"))).toBe(false);
-  });
-
-  test("--dry-run still needs no auth or reads", async () => {
-    const s = routes([address, { ...address, uuid: "wa-2" }]);
-    const d = okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", dryRun: true })(ctx));
-    expect(d.method).toBe("PUT");
-    expect(s.calls).toHaveLength(0);
+    okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx));
+    expect(s.calls.map((c) => c.method)).toEqual(["GET", "PUT"]);
+    expect(s.calls.some((c) => c.url.includes("/v1/employees/"))).toBe(false);
   });
 });

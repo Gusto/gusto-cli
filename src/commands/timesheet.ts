@@ -1,10 +1,12 @@
 import { type Command, Option } from "commander";
 import { createCompanyResource, fetchResource, invalidCompanyUuid } from "../lib/api-context.ts";
 import { CONFIRM_OPT, TOKEN_STDIN_OPT } from "../lib/cli-options.ts";
+import { confirmationGate } from "../lib/confirm.ts";
 import { defaultEnv, getCompanyUuid } from "../lib/env.ts";
 import { ExitCode } from "../lib/exit-codes.ts";
 import { readGlobalFlags } from "../lib/global-flags.ts";
 import { callMcpTool } from "../lib/mcp.ts";
+import { multiLocationHoursPrecheck } from "../lib/multi-location.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { isValidIso8601, isValidIsoDate, isValidUuid, parsePositiveNumber, pushUuidBlockedOn } from "../lib/parse.ts";
 import {
@@ -322,8 +324,9 @@ export function registerTimesheetCommand(parent: Command): void {
       "after",
       `
 Time sheets are tracked per job, not per work location, so they aren't supported for an employee
-who works at more than one location (more than one active work address). Record that employee's
-hours in the Gusto app.
+who works at more than one location (more than one active work address). Before sending, the CLI
+checks the employee and refuses with \`multi_location_not_supported\` (exit 8); record that
+employee's hours in the Gusto app. --dry-run runs the same check when credentials are available.
 `,
     )
     .action((opts: TimesheetCreateOpts) =>
@@ -397,6 +400,21 @@ export function timesheetCreateHandler(opts: TimesheetCreateOpts): CommandHandle
 
     const validation = validateTimesheetCreate(opts);
     if (!validation.ok) return validationFailure(validation.message, validation.blocked);
+
+    const gate = confirmationGate(globals, "POST", "/v1/companies/{company_uuid}/time_tracking/time_sheets", {
+      confirm: opts.confirm,
+      dryRun: opts.dryRun,
+    });
+    if (gate) return gate;
+    if (validation.body.entity_type === "Employee") {
+      const refused = await multiLocationHoursPrecheck(
+        globals,
+        opts,
+        [validation.body.entity_uuid],
+        "Record their hours in the Gusto app.",
+      );
+      if (refused) return refused;
+    }
 
     return createCompanyResource(globals, "time_tracking/time_sheets", validation.body, {
       tokenStdin: opts.tokenStdin,

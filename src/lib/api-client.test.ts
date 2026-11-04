@@ -629,6 +629,22 @@ describe("ApiClient response headers", () => {
     expect(res.headers["x-total-pages"]).toBe("3");
     expect(res.headers["x-page"]).toBe("1");
   });
+
+  test("a 429 carries the wait its Retry-After asked for", async () => {
+    const rejectWith = (headers: Record<string, string>) =>
+      makeClient((async () => new Response("{}", { status: 429, headers })) as unknown as typeof fetch);
+    const waitOf = async (client: ApiClient) => {
+      try {
+        await client.get("/v1/things");
+      } catch (err) {
+        return (err as ApiError).retryAfterMs;
+      }
+      throw new Error("expected a 429");
+    };
+    expect(await waitOf(rejectWith({ "Retry-After": "2" }))).toBe(2000);
+    expect(await waitOf(rejectWith({ "Retry-After": "soon" }))).toBeUndefined();
+    expect(await waitOf(rejectWith({}))).toBeUndefined();
+  });
 });
 
 describe("ApiClient RequestObserver", () => {

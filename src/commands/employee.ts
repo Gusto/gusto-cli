@@ -32,7 +32,12 @@ import { partialFailure } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
-import { isMultiLocation, multiLocationRefusal, workAddressMultiLocationCheck } from "../lib/multi-location.ts";
+import {
+  employeeWorkAddressesPath,
+  fetchWorkAddresses,
+  isMultiLocation,
+  multiLocationRefusal,
+} from "../lib/multi-location.ts";
 import { isValidIsoDate, isValidStateCode, isValidUuid } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import {
@@ -291,9 +296,6 @@ If the record changes before the write, nothing is saved and you get a \`version
 --record-version, re-running re-sends the same stale token: read the record again with
 \`gusto employee work-address <address_uuid>\` and pass its new \`version\`.
 
-If the employee has more than one active work address, they work at more than one location and
-the write is refused with \`multi_location_not_supported\` (exit 8). Make that change in the Gusto app.
-
 Examples:
   $ gusto employee update-work-address <address_uuid> --location-uuid <company_location_uuid>
   $ gusto employee update-work-address <address_uuid> --effective-date 2026-08-01 --dry-run
@@ -528,7 +530,7 @@ export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeSho
     if (!resolved.ok) return resolved.result;
 
     const [work, home] = await Promise.all([
-      fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`),
+      fetchAtPath(resolved.ctx.client, employeeWorkAddressesPath(employeeUuid)),
       fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/home_addresses`),
     ]);
     if (!work.ok) {
@@ -608,12 +610,10 @@ export function updateWorkAddressHandler(addressUuid: string, opts: WorkAddressU
     if (!isValidUuid(addressUuid)) return invalidUuid("address_uuid", addressUuid, ADDRESS_UUID_HINT);
     const validated = buildWorkAddressUpdate(opts);
     if (!validated.ok) return validationFailure(validated.message, validated.blocked);
-    const path = workAddressPath(addressUuid);
-    return putResourceWithVersion(globals, path, validated.body, {
+    return putResourceWithVersion(globals, `/v1/work_addresses/${encodeURIComponent(addressUuid)}`, validated.body, {
       tokenStdin: opts.tokenStdin,
       dryRun: opts.dryRun,
       confirm: opts.confirm,
-      precheck: (client) => workAddressMultiLocationCheck(client, path),
     });
   };
 }
@@ -755,12 +755,8 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       async (companyCtx) => {
-        const addressesPath = `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`;
-        const addressesRes = await fetchAtPath<WorkAddressRecord[]>(companyCtx.client, addressesPath);
+        const addressesRes = await fetchWorkAddresses<WorkAddressRecord>(companyCtx.client, employeeUuid);
         if (!addressesRes.ok) return addressesRes;
-        if (!Array.isArray(addressesRes.data)) {
-          return malformedResponse(`${addressesPath} returned a non-array body`);
-        }
         if (isMultiLocation(addressesRes.data)) {
           return multiLocationRefusal(
             [employeeUuid],

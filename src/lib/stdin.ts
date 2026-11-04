@@ -45,6 +45,11 @@ export async function readTokenFromStdin(input?: AsyncIterable<Buffer | string>)
   return processStdinToken;
 }
 
+/** Forget the cached process-stdin token. For tests, which share one module instance across files. */
+export function resetStdinTokenCache(): void {
+  processStdinToken = undefined;
+}
+
 async function parseToken(input: AsyncIterable<Buffer | string>): Promise<string | null> {
   const raw = await collectStdin(input, MAX_TOKEN_BYTES);
   if (raw === null) return null;

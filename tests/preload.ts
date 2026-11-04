@@ -10,9 +10,11 @@
 // Tests that exercise precedence directly (api-context.test.ts, env.test.ts) clear
 // these vars in their own setup, and store/config tests override XDG_CONFIG_HOME
 // per-test, so this default never leaks into them.
+import { beforeEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resetStdinTokenCache } from "../src/lib/stdin.ts";
 
 // Drop every ambient GUSTO_* var first. Developers commonly export variables from their shell profile.
 // This is the in-process counterpart to stripGustoEnv in tests/smoke.test.ts, which does this for the spawned
@@ -23,3 +25,7 @@ for (const key of Object.keys(process.env)) {
 
 process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "gusto-cli-unit-"));
 process.env.GUSTO_ACCESS_TOKEN = "unit-test-token";
+
+// The piped-token cache is module state, so without this the first test to read real stdin
+// decides the token for every later one.
+beforeEach(resetStdinTokenCache);

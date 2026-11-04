@@ -9,8 +9,8 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
-import { employeeIsMultiLocation, multiLocationRefusal } from "../lib/multi-location.ts";
-import type { BlockedOn, EnvelopeError } from "../lib/output.ts";
+import { multiLocationHoursPrecheck } from "../lib/multi-location.ts";
+import type { BlockedOn } from "../lib/output.ts";
 import { withPageParams } from "../lib/pagination.ts";
 import {
   isValidIsoDate,
@@ -1011,10 +1011,12 @@ reviewable draft.
 A stale or missing 'version' returns \`version_conflict\` (exit 8) and nothing is saved: re-run
 'payroll prepare' for fresh versions, then retry.
 
-Hours can't be entered here yet for an employee who works at more than one location. The API
-rejects the whole file, and the CLI reports \`multi_location_not_supported\` (exit 8) with those
-employees in \`error.employee_uuids\`. Enter their hours in the Gusto app; to save everyone else's
-changes, clear those employees' hours cells and re-run.
+Hours can't be entered here yet for an employee who works at more than one location (more than
+one active work address). Before sending, the CLI checks each employee with hours; if any work at
+more than one location, nothing is saved and it reports \`multi_location_not_supported\` (exit 8)
+with them in \`error.employee_uuids\`. Enter their hours in the Gusto app; to save everyone else's
+changes, clear those employees' hours cells and re-run. --dry-run runs the same check when
+credentials are available, and skips it when they aren't.
 
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
@@ -1259,38 +1261,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The API rejects the whole update, with an error that names no one, when it carries hours for an
- * employee who works at more than one location. Undefined means the caller keeps the API's error. */
-async function multiLocationHoursRefusal(
-  globals: GlobalFlags,
-  opts: { tokenStdin?: boolean },
-  body: PayrollUpdateBody,
-  apiError: EnvelopeError,
-): Promise<CommandResult<never> | undefined> {
-  const withHours = body.employee_compensations
-    .filter((ec) => (ec.hourly_compensations ?? []).length > 0)
-    .map((ec) => ec.employee_uuid);
-  if (withHours.length === 0) return undefined;
-  const resolved = await resolveApiContext(globals, { tokenStdin: opts.tokenStdin, requireCompany: false });
-  if (!resolved.ok) return undefined;
-  const checks = await Promise.all(withHours.map((uuid) => employeeIsMultiLocation(resolved.ctx.client, uuid)));
-  if (checks.some((c) => !c.ok)) return undefined;
-  const multi = withHours.filter((_, i) => {
-    const check = checks[i];
-    return check?.ok === true && check.data;
-  });
-  if (multi.length === 0) return undefined;
-  return multiLocationRefusal(
-    multi,
-    `nothing was saved: ${multi.length === 1 ? "employee" : "employees"} ${multi.join(", ")} ` +
-      `${multi.length === 1 ? "works" : "work"} at more than one location, and the CLI can't say which ` +
-      "location hours are for yet. Enter their hours in the Gusto app. To save everyone else's changes, " +
-      "clear their hours cells and re-run. " +
-      `The API said: ${apiError.message}`,
-    apiError,
-  );
-}
-
 /** `readFile` is injected so tests can drive the handler without touching the filesystem; it
  * defaults to Bun's native file read (the same seam company provision uses). */
 export function payrollUpdateHandler(
@@ -1331,15 +1301,29 @@ export function payrollUpdateHandler(
       if (!injected.ok) return injected;
     }
 
+    const gate = confirmationGate(
+      globals,
+      "PUT",
+      `/v1/companies/{company_uuid}/payrolls/${encodeURIComponent(payrollUuid)}`,
+      { confirm: opts.confirm, dryRun: opts.dryRun },
+    );
+    if (gate) return gate;
+    // The API accepts these hours and puts them all on the employee's primary location.
+    const refused = await multiLocationHoursPrecheck(
+      globals,
+      opts,
+      built.body.employee_compensations
+        .filter((ec) => (ec.hourly_compensations ?? []).length > 0)
+        .map((ec) => ec.employee_uuid),
+      "Enter their hours in the Gusto app. To save everyone else's changes, clear their hours cells and re-run.",
+    );
+    if (refused) return refused;
+
     const result = clarifyVersionConflict(
       await putPayrollResource(globals, payrollUuid, "", built.body, opts),
       `Re-run \`gusto payroll prepare ${payrollUuid} --confirm\` and use each employee's ` +
         "`employee_compensations[].version` from it in the CSV's `version` column.",
     );
-    if (!result.ok && result.exitCode === ExitCode.ApiClient) {
-      const refusal = await multiLocationHoursRefusal(globals, opts, built.body, result.error);
-      if (refusal) return refusal;
-    }
 
     if (result.ok && isRecord(result.data)) {
       const extras: Record<string, unknown> = {};

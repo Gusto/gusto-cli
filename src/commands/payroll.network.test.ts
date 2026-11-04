@@ -327,7 +327,6 @@ describe("payrollUpdateHandler", () => {
 
   describe("employees who work at more than one location", () => {
     const MIXED_CSV = "employee_uuid,job_uuid,regular_hours,bonus\nee-1,job-1,8,\nee-2,job-2,8,\nee-3,job-3,,50";
-    const generic422 = { errors: [{ category: "invalid_attribute_value", message: "unable to save this payroll" }] };
     const oneLocation = [
       { uuid: "wa-a", active: true },
       { uuid: "wa-old", active: false },
@@ -337,18 +336,22 @@ describe("payrollUpdateHandler", () => {
       { uuid: "wa-c", active: true },
     ];
 
-    function router(addresses: Record<string, unknown>) {
+    function router(
+      addresses: Record<string, MockResponse>,
+      payroll: MockResponse = { status: 200, body: { uuid: "pay-1" } },
+    ) {
       return (u: string): MockResponse => {
-        if (u.includes("/payrolls/pay-1")) return { status: 422, body: generic422 };
-        for (const [uuid, body] of Object.entries(addresses)) {
-          if (u.includes(`/employees/${uuid}/work_addresses`)) return { status: 200, body };
+        if (u.includes("/payrolls/pay-1")) return payroll;
+        for (const [uuid, response] of Object.entries(addresses)) {
+          if (u.includes(`/employees/${uuid}/work_addresses`)) return response;
         }
-        return { status: 404 };
+        return { status: 200, body: oneLocation };
       };
     }
+    const puts = <C extends { method: string }>(s: { calls: C[] }) => s.calls.filter((c) => c.method === "PUT");
 
-    test("a rejected update names the multi-location employees with hours and keeps the API body", async () => {
-      const s = stub(router({ "ee-1": twoLocations, "ee-2": oneLocation }));
+    test("refuses before sending when an employee with hours works at more than one location", async () => {
+      const s = stub(router({ "ee-1": { status: 200, body: twoLocations } }));
       const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
@@ -357,34 +360,52 @@ describe("payrollUpdateHandler", () => {
       expect(result.error.employee_uuids).toEqual(["ee-1"]);
       expect(result.error.message).toContain("nothing was saved");
       expect(result.error.message).toContain("clear their hours cells");
-      expect(result.error.message).toContain("The API said: unable to save this payroll");
-      expect(result.error.details).toEqual(generic422);
+      expect(puts(s)).toHaveLength(0);
       expect(s.calls.some((c) => c.url.includes("/employees/ee-3/"))).toBe(false);
     });
 
-    test("a rejection with no multi-location employee in the file keeps the API's error", async () => {
-      stub(router({ "ee-1": oneLocation, "ee-2": oneLocation }));
+    test("sends the update once every employee with hours has one location", async () => {
+      const s = stub(router({}));
+      data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx));
+      const looked = s.calls.filter((c) => c.url.includes("/work_addresses")).map((c) => c.url);
+      expect(looked).toHaveLength(2);
+      expect(puts(s)).toHaveLength(1);
+    });
+
+    test("an API rejection passes through as the API's own error", async () => {
+      const rejected = { errors: [{ category: "invalid_attribute_value", message: "bad pay type" }] };
+      stub(router({}, { status: 422, body: rejected }));
       const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
       expect(result.exitCode).toBe(ExitCode.ApiClient);
       expect(result.error.code).toBe("api_client_error");
+      expect(result.error.details).toEqual(rejected);
     });
 
-    test("a failed work-address lookup keeps the API's error rather than guessing", async () => {
-      stub(router({ "ee-1": twoLocations }));
+    test("a failed lookup saves nothing and says who couldn't be checked", async () => {
+      const s = stub(router({ "ee-2": { status: 403, body: {} } }));
+      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.error.message).toContain(
+        "checking the work locations of employee ee-2 failed, so nothing was saved",
+      );
+      expect(puts(s)).toHaveLength(0);
+    });
+
+    test("an employee the API doesn't know is left for the update to report", async () => {
+      const s = stub(router({ "ee-2": { status: 404, body: {} } }, { status: 404, body: { errors: [] } }));
       const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
       expect(result.error.code).toBe("api_client_error");
+      expect(puts(s)).toHaveLength(1);
     });
 
-    test("a version conflict keeps its own code and reads no work addresses", async () => {
+    test("a version conflict keeps its own code", async () => {
       const conflict = { errors: [{ category: "invalid_resource_version", message: "stale" }] };
-      const s = stub((u) => {
-        if (u.includes("/payrolls/pay-1")) return { status: 409, body: conflict };
-        return { status: 200, body: [{ active: true }, { active: true }] };
-      });
+      stub(router({}, { status: 409, body: conflict }));
       const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
@@ -392,57 +413,52 @@ describe("payrollUpdateHandler", () => {
       expect(result.error.code).toBe("version_conflict");
       expect(result.error.message).toContain("Re-run `gusto payroll prepare pay-1 --confirm`");
       expect(result.error.message).not.toContain("GET the record");
-      expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
     });
 
     test("clearing a multi-location employee's hours keeps their other inputs and skips them in the check", async () => {
       const cleared = "employee_uuid,job_uuid,regular_hours,bonus\nee-1,job-1,,250\nee-2,job-2,8,";
-      const s = stub(router({ "ee-1": twoLocations, "ee-2": oneLocation }));
-      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(cleared))(ctx);
-      expect(result.ok).toBe(false);
-      if (result.ok) throw new Error("expected failure");
-      expect(result.error.code).toBe("api_client_error");
-      const put = s.calls.find((c) => c.method === "PUT");
-      expect(put?.body).toMatchObject({
+      const s = stub(router({ "ee-1": { status: 200, body: twoLocations } }));
+      data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(cleared))(ctx));
+      expect(puts(s)[0]?.body).toMatchObject({
         employee_compensations: [{ employee_uuid: "ee-1", fixed_compensations: [{ name: "Bonus", amount: 250 }] }, {}],
       });
-      expect(
-        (put?.body as { employee_compensations: { hourly_compensations?: unknown }[] }).employee_compensations[0]
-          ?.hourly_compensations,
-      ).toBeUndefined();
       expect(s.calls.some((c) => c.url.includes("/employees/ee-1/"))).toBe(false);
     });
 
-    test("a server error reads no work addresses", async () => {
-      const s = stub((u) => {
-        if (u.includes("/payrolls/pay-1")) return { status: 500, body: {} };
-        return { status: 200, body: [{ active: true }, { active: true }] };
-      });
-      const result = await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+    test("dry-run runs the same check and sends no write", async () => {
+      const s = stub(router({ "ee-1": { status: 200, body: twoLocations } }));
+      const result = await payrollUpdateHandler(
+        "pay-1",
+        { ...auth, input: "in.csv", dryRun: true },
+        readingCsv(MIXED_CSV),
+      )(ctx);
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected failure");
-      expect(result.error.code).toBe("api_server_error");
-      expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
+      expect(result.error.code).toBe("multi_location_not_supported");
+      expect(s.calls.every((c) => c.method === "GET")).toBe(true);
     });
 
-    test("a successful update reads no work addresses", async () => {
-      const s = stub((u) =>
-        u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 },
-      );
-      data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx));
-      expect(s.calls.some((c) => c.url.includes("/work_addresses"))).toBe(false);
+    test("an agent-mode update without --confirm is blocked before any lookup", async () => {
+      const s = stub(router({}));
+      const result = await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv" }, readingCsv(MIXED_CSV))(ctx);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.error.code).toBe("confirmation_required");
+      expect(s.calls).toHaveLength(0);
     });
   });
 
-  test("dry-run describes the PUT and its body, and sends nothing", async () => {
-    const s = stub(() => ({ status: 500 }));
+  test("dry-run describes the PUT and its body, and sends no write", async () => {
+    const s = stub((u) =>
+      u.includes("/work_addresses") ? { status: 200, body: [{ active: true }] } : { status: 500 },
+    );
     const d = data(
       await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(CSV))(ctx),
     );
     expect(d.method).toBe("PUT");
     expect(d.path).toBe(`/v1/companies/${TEST_COMPANY_UUID}/payrolls/pay-1`);
     expect(d.body).toMatchObject({ employee_compensations: [{ employee_uuid: "ee-1" }] });
-    expect(s.calls).toHaveLength(0);
+    expect(s.calls.map((c) => c.url)).toEqual([expect.stringContaining("/v1/employees/ee-1/work_addresses")]);
   });
 
   test("percent-encodes the UUID so a stray '/' or '?' can't retarget the PUT", async () => {
@@ -559,12 +575,14 @@ describe("payrollUpdateHandler", () => {
     const s = stub((u) => (u.includes("/payrolls/pay-1") ? { status: 200, body: { uuid: "pay-1" } } : { status: 404 }));
     await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(CSV))(ctx);
 
-    expect(s.calls.filter((c) => c.method === "GET")).toHaveLength(0);
+    expect(s.calls.filter((c) => c.url.includes("/jobs"))).toHaveLength(0);
     expect(s.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
   });
 
   test("dry-run with missing job_uuid skips the inference fetch and flags the drift in inferred_at_send", async () => {
-    const s = stub(() => ({ status: 500 }));
+    const s = stub((u) =>
+      u.includes("/work_addresses") ? { status: 200, body: [{ active: true }] } : { status: 500 },
+    );
     const csv = "employee_uuid,regular_hours\nee-1,40\nee-2,20";
     const d = data(
       await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(csv))(ctx),
@@ -574,11 +592,11 @@ describe("payrollUpdateHandler", () => {
       .employee_compensations[0];
     expect(firstRow?.hourly_compensations[0]?.job_uuid).toBeUndefined();
     expect(d.inferred_at_send).toEqual(["ee-1", "ee-2"]);
-    expect(s.calls).toHaveLength(0);
+    expect(s.calls.filter((c) => !c.url.includes("/work_addresses"))).toHaveLength(0);
   });
 
   test("dry-run omits inferred_at_send when every row already carries a job_uuid", async () => {
-    stub(() => ({ status: 500 }));
+    stub((u) => (u.includes("/work_addresses") ? { status: 200, body: [{ active: true }] } : { status: 500 }));
     const d = data(
       await payrollUpdateHandler("pay-1", { ...auth, input: "in.csv", dryRun: true }, readingCsv(CSV))(ctx),
     );
@@ -612,7 +630,7 @@ describe("payrollUpdateHandler", () => {
     const d = data(await payrollUpdateHandler("pay-1", { ...approved, input: "in.csv" }, readingCsv(csv))(ctx));
     expect(d.uuid).toBe("pay-1");
 
-    const gets = s.calls.filter((c) => c.method === "GET");
+    const gets = s.calls.filter((c) => c.method === "GET" && c.url.includes("/jobs"));
     expect(gets.map((c) => c.url).sort()).toEqual([
       expect.stringContaining("/v1/employees/ee-1/jobs"),
       expect.stringContaining("/v1/employees/ee-2/jobs"),
