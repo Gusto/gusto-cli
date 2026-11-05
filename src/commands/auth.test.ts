@@ -18,6 +18,7 @@ import {
   buildSignInUrlEmitter,
   loginResultData,
   maybeInstallSkillsAfterLogin,
+  moneyMovementWarning,
   noToolDetectedWarning,
   parseAutoInstallAnswer,
   performLogout,
@@ -759,7 +760,7 @@ describe("authWhoamiHandler", () => {
     expect((result.data as { missing_scopes?: string[] }).missing_scopes).toBeUndefined();
   });
 
-  test("warns when the token still holds a money-movement scope", async () => {
+  test("points an env token at GUSTO_ACCESS_TOKEN when it holds a money-movement scope", async () => {
     const tokenInfo = {
       scope: "payrolls:read payrolls:write payrolls:run public",
       resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
@@ -770,7 +771,22 @@ describe("authWhoamiHandler", () => {
     if (!result.ok) throw new Error("unreachable");
     const data = result.data as { money_movement_scopes?: string[]; warning?: string };
     expect(data.money_movement_scopes).toEqual(["payrolls:run"]);
-    expect(data.warning).toContain("gusto auth login");
+    expect(data.warning).toContain("Replace GUSTO_ACCESS_TOKEN");
+    expect(data.warning).not.toContain("gusto auth login");
+  });
+
+  test("points a piped token at --token-stdin, not a fresh login", async () => {
+    const tokenInfo = {
+      scope: "payrolls:read payrolls:write payrolls:run public",
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const result = await authWhoamiHandler({ tokenStdin: true }, () => Promise.resolve("piped-tok"))(ctx);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const data = result.data as { warning?: string };
+    expect(data.warning).toContain("--token-stdin");
+    expect(data.warning).not.toContain("gusto auth login");
   });
 
   test("omits the money-movement warning for a narrowed token", async () => {
@@ -839,6 +855,25 @@ describe("authWhoamiHandler", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect((result.data as Record<string, unknown>).credential_source).toBe("--token-stdin");
+  });
+});
+
+describe("moneyMovementWarning", () => {
+  test("tells a stored session to sign in again under its own environment", () => {
+    expect(moneyMovementWarning(["payrolls:run"], "session", "sandbox")).toContain(
+      "Run `gusto auth login --env sandbox` to get a token without it.",
+    );
+  });
+
+  test("tells an explicit token to swap the token instead", () => {
+    expect(moneyMovementWarning(["payrolls:run"], "env", "production")).toContain("Replace GUSTO_ACCESS_TOKEN");
+    expect(moneyMovementWarning(["payrolls:run"], "stdin", "production")).toContain("via --token-stdin");
+  });
+
+  test("names every scope it found", () => {
+    expect(moneyMovementWarning(["payrolls:run", "company_bank_accounts:write"], "session", "production")).toContain(
+      "holds payrolls:run, company_bank_accounts:write",
+    );
   });
 });
 

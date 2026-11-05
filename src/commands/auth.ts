@@ -377,6 +377,25 @@ export const CREDENTIAL_SOURCE_LABEL: Record<ResolvedTokenSource, string> = {
   session: "stored session",
 };
 
+/** Signing in again only replaces a stored session; an explicit token keeps winning until the caller
+ * swaps it, the same split the missing-scope message makes. */
+export function moneyMovementWarning(
+  scopes: readonly string[],
+  source: ResolvedTokenSource,
+  environment: Environment,
+): string {
+  const it = scopes.length === 1 ? "it" : "them";
+  const holds = `this token holds ${scopes.join(", ")}, which can move money and no CLI command needs.`;
+  switch (source) {
+    case "session":
+      return `${holds} Run \`gusto auth login --env ${environment}\` to get a token without ${it}.`;
+    case "env":
+      return `${holds} Replace GUSTO_ACCESS_TOKEN with a token that doesn't grant ${it}.`;
+    case "stdin":
+      return `${holds} Pipe a token that doesn't grant ${it} via --token-stdin.`;
+  }
+}
+
 export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): CommandHandler {
   return async ({ globals }) => {
     // Resolve the context ourselves (rather than going through `fetchResource`) so the
@@ -408,7 +427,7 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
         ...(moneyMovement.length > 0
           ? {
               money_movement_scopes: moneyMovement,
-              warning: `this token holds ${moneyMovement.join(", ")}, which can move money and no CLI command needs. Run \`gusto auth login\` to get a token without ${moneyMovement.length === 1 ? "it" : "them"}.`,
+              warning: moneyMovementWarning(moneyMovement, resolved.ctx.tokenSource, defaultEnv(globals.env)),
             }
           : {}),
       },
