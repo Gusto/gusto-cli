@@ -29,6 +29,7 @@ const TIME_SHEET_UUID = "7a6b5c4d-0000-4111-2222-333344445555";
 const COMPANY_UUID = "3c2b1a09-0000-4111-2222-333344445555";
 const PAY_SCHEDULE_UUID = "1a2b3c4d-0000-4111-2222-333344445556";
 const PAYROLL_UUID = "5e6f7a8b-0000-4111-2222-333344445557";
+const JOB_UUID = "2b3c4d5e-0000-4111-2222-333344445558";
 
 // Isolate the credential store so smoke runs never read the developer's real
 // ~/.config/gusto (and so token-dependent commands stay deterministic).
@@ -1302,6 +1303,43 @@ describe("token-stdin authentication", () => {
     expect(envelope.ok).toBe(true);
     expect(envelope.data.path).toBe(`/v1/companies/${COMPANY_UUID}/pay_schedules`);
     expect(envelope.data.note).toBeUndefined();
+  });
+
+  test("a piped token is still there when a command resolves auth a second time", async () => {
+    const requests: { method: string; path: string; auth: string | null }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        requests.push({ method: req.method, path: new URL(req.url).pathname, auth: req.headers.get("authorization") });
+        if (req.method === "PUT") return Response.json({ uuid: PAYROLL_UUID });
+        return Response.json([{ active: true }]);
+      },
+    });
+    const work = mkdtempSync(path.join(tmpdir(), "gusto-cli-smoke-stdin-"));
+    const csv = path.join(work, "in.csv");
+    writeFileSync(csv, `employee_uuid,job_uuid,regular_hours\n${EMPLOYEE_UUID},${JOB_UUID},8\n`);
+    try {
+      const result = await run(
+        ["payroll", "update", PAYROLL_UUID, "--input", csv, "--token-stdin", "--confirm"],
+        {
+          GUSTO_COMPANY_UUID: COMPANY_UUID,
+          GUSTO_API_BASE_URL: `http://localhost:${server.port}`,
+          GUSTO_ALLOW_HTTP: "1",
+        },
+        "piped-secret-token\n",
+      );
+      const envelope = JSON.parse(result.stdout.trim());
+      expect(envelope.data.uuid).toBe(PAYROLL_UUID);
+      expect(result.exitCode).toBe(0);
+      const auth = "Bearer piped-secret-token";
+      expect(requests).toEqual([
+        { method: "GET", path: `/v1/employees/${EMPLOYEE_UUID}/work_addresses`, auth },
+        { method: "PUT", path: `/v1/companies/${COMPANY_UUID}/payrolls/${PAYROLL_UUID}`, auth },
+      ]);
+    } finally {
+      server.stop(true);
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 
   test("without --token-stdin (and no session/env) the same dry-run reports token not required", async () => {

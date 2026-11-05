@@ -9,6 +9,7 @@ import { ExitCode } from "../lib/exit-codes.ts";
 import { type GlobalFlags, readGlobalFlags } from "../lib/global-flags.ts";
 import { toResult } from "../lib/handle-api-error.ts";
 import { kvLines, table } from "../lib/human.ts";
+import { multiLocationHoursPrecheck } from "../lib/multi-location.ts";
 import type { BlockedOn } from "../lib/output.ts";
 import { withPageParams } from "../lib/pagination.ts";
 import {
@@ -30,6 +31,7 @@ import {
   runReadCommand,
   validationFailure,
 } from "../lib/runner.ts";
+import { clarifyVersionConflict } from "../lib/versioning.ts";
 
 export interface PayrollListOpts {
   processingStatus?: string;
@@ -1006,6 +1008,16 @@ overtime_hours/double_overtime_hours use
 the default 'Overtime'/'Double overtime' pay types. After updating, run 'payroll prepare' to get a
 reviewable draft.
 
+A stale or missing 'version' returns \`version_conflict\` (exit 8) and nothing is saved: re-run
+'payroll prepare' for fresh versions, then retry.
+
+Hours can't be entered here yet for an employee who works at more than one location (more than
+one active work address). Before sending, the CLI checks each employee with hours; if any work at
+more than one location, nothing is saved and it reports \`multi_location_not_supported\` (exit 8)
+with them in \`error.employee_uuids\`. Enter their hours in the Gusto app; to save everyone else's
+changes, clear those employees' hours cells and re-run. --dry-run runs the same check when
+credentials are available, and skips it when they aren't.
+
 Examples:
   $ gusto payroll update 1a2b3c4d-0000-1111-2222-333344445555 --input inputs.csv
   $ gusto payroll update 1a2b... --input inputs.csv --dry-run
@@ -1289,7 +1301,29 @@ export function payrollUpdateHandler(
       if (!injected.ok) return injected;
     }
 
-    const result = await putPayrollResource(globals, payrollUuid, "", built.body, opts);
+    const gate = confirmationGate(
+      globals,
+      "PUT",
+      `/v1/companies/{company_uuid}/payrolls/${encodeURIComponent(payrollUuid)}`,
+      { confirm: opts.confirm, dryRun: opts.dryRun },
+    );
+    if (gate) return gate;
+    // The API accepts these hours and puts them all on the employee's primary location.
+    const refused = await multiLocationHoursPrecheck(
+      globals,
+      opts,
+      built.body.employee_compensations
+        .filter((ec) => (ec.hourly_compensations ?? []).length > 0)
+        .map((ec) => ec.employee_uuid),
+      "Enter their hours in the Gusto app. To save everyone else's changes, clear their hours cells and re-run.",
+    );
+    if (refused) return refused;
+
+    const result = clarifyVersionConflict(
+      await putPayrollResource(globals, payrollUuid, "", built.body, opts),
+      `Re-run \`gusto payroll prepare ${payrollUuid} --confirm\` and use each employee's ` +
+        "`employee_compensations[].version` from it in the CSV's `version` column.",
+    );
 
     if (result.ok && isRecord(result.data)) {
       const extras: Record<string, unknown> = {};

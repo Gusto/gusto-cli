@@ -26,6 +26,8 @@ export class ApiError extends Error {
    * what lets every `toResult` caller report a 401 the same way, including the ones several frames
    * from a resolved context, which could not otherwise name what was refused. */
   readonly auth?: AuthContext;
+  /** The wait a 429's `Retry-After` header asked for, when it sent one we could read. */
+  readonly retryAfterMs?: number;
 
   /** The optional context rides in one object rather than as trailing positional params: both are
    * `string | undefined`-ish at the call site, and the four required args are already the limit of
@@ -35,7 +37,7 @@ export class ApiError extends Error {
     body: unknown,
     exitCode: ExitCodeValue,
     message: string,
-    context: { requestId?: string; auth?: AuthContext } = {},
+    context: { requestId?: string; auth?: AuthContext; retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -44,6 +46,7 @@ export class ApiError extends Error {
     this.exitCode = exitCode;
     this.requestId = context.requestId;
     this.auth = context.auth;
+    this.retryAfterMs = context.retryAfterMs;
   }
 }
 
@@ -470,9 +473,11 @@ export class ApiClient {
     }
 
     const exitCode = response.status >= 500 ? ExitCode.ApiServer : ExitCode.ApiClient;
+    const retryAfterMs = response.status === 429 ? parseRetryAfter(responseHeaders["retry-after"]) : undefined;
     throw new ApiError(response.status, parsed, exitCode, `${method} ${url} -> ${response.status}`, {
       requestId,
       auth: this.auth,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -492,6 +497,14 @@ export class ApiClient {
       // (`gusto ... --verbose 2>&1 | head`). Swallow and continue.
     }
   }
+}
+
+/** `Retry-After` is either delay-seconds or an HTTP date (RFC 9110 §10.2.3). */
+function parseRetryAfter(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (/^\d+$/.test(value.trim())) return Number(value.trim()) * 1000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
 /** Default `--verbose` formatter: one line per attempt to `stderr`. `> ` prefix keeps it visually

@@ -32,6 +32,12 @@ import { partialFailure } from "../lib/handle-api-error.ts";
 import { fetchCompanyLocations, findLocationForState } from "../lib/locations.ts";
 import { parsePaginationFlags } from "../lib/pagination.ts";
 import { malformedResponse } from "../lib/errors.ts";
+import {
+  employeeWorkAddressesPath,
+  fetchWorkAddresses,
+  isMultiLocation,
+  multiLocationRefusal,
+} from "../lib/multi-location.ts";
 import { isValidIsoDate, isValidStateCode, isValidUuid } from "../lib/parse.ts";
 import { isObject } from "../lib/predicates.ts";
 import {
@@ -335,6 +341,11 @@ block naming that state's outstanding tax requirements, so a silent PA-to-MD mov
 turn into months of missed filings. Already working from --work-state is a no-op
 (\`changed: false\`); no location lookup or write is attempted.
 
+An employee with more than one active work address works at more than one location. This
+command can't say which one to change, so it refuses with \`multi_location_not_supported\`
+(exit 8) and nothing is written, even when one of those addresses is already in --work-state.
+Make that change in the Gusto app.
+
 Mirrors PUT /v1/work_addresses/{work_address_uuid}. In agent mode this write is gated:
 preview it with --dry-run, then re-run with --confirm once the operator approves.
 `,
@@ -519,7 +530,7 @@ export function employeeAddressesHandler(employeeUuid: string, opts: EmployeeSho
     if (!resolved.ok) return resolved.result;
 
     const [work, home] = await Promise.all([
-      fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`),
+      fetchAtPath(resolved.ctx.client, employeeWorkAddressesPath(employeeUuid)),
       fetchAtPath(resolved.ctx.client, `/v1/employees/${encodeURIComponent(employeeUuid)}/home_addresses`),
     ]);
     if (!work.ok) {
@@ -695,7 +706,8 @@ const workAddressPath = (workAddressUuid: string): string =>
  * the specific work-address uuid (not known yet). On success, a best-effort GET of the new
  * state's tax_requirements is shaped into a `compliance` nudge (see buildComplianceNudge);
  * its failure doesn't undo or fail the already-successful write. Already being in
- * --work-state is a no-op - no location lookup, no write, no nudge. */
+ * --work-state is a no-op - no location lookup, no write, no nudge - unless the employee works at
+ * more than one location, which is refused first. */
 export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdateOpts): CommandHandler {
   return async ({ globals }) => {
     if (opts.example) {
@@ -743,11 +755,14 @@ export function employeeUpdateHandler(employeeUuid: string, opts: EmployeeUpdate
       globals,
       { tokenStdin: opts.tokenStdin, companyUuid: opts.companyUuid },
       async (companyCtx) => {
-        const addressesPath = `/v1/employees/${encodeURIComponent(employeeUuid)}/work_addresses`;
-        const addressesRes = await fetchAtPath<WorkAddressRecord[]>(companyCtx.client, addressesPath);
+        const addressesRes = await fetchWorkAddresses<WorkAddressRecord>(companyCtx.client, employeeUuid);
         if (!addressesRes.ok) return addressesRes;
-        if (!Array.isArray(addressesRes.data)) {
-          return malformedResponse(`${addressesPath} returned a non-array body`);
+        if (isMultiLocation(addressesRes.data)) {
+          return multiLocationRefusal(
+            [employeeUuid],
+            `employee ${employeeUuid} works at more than one location, and the CLI can't say which location a ` +
+              "work-state change is for yet. Make this change in the Gusto app instead.",
+          );
         }
         // Strict `=== true`, unlike findLocationForState's permissive `!== false` - picking
         // the wrong address to overwrite is worse than failing to find one.

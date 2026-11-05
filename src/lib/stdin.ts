@@ -1,5 +1,7 @@
 const MAX_TOKEN_BYTES = 65536;
 
+let processStdinToken: Promise<string | null> | undefined;
+
 async function collectStdin(input: AsyncIterable<Buffer | string>, maxBytes?: number): Promise<string | null> {
   if ((input as { isTTY?: boolean }).isTTY) return null;
   const chunks: Buffer[] = [];
@@ -32,10 +34,23 @@ async function collectStdin(input: AsyncIterable<Buffer | string>, maxBytes?: nu
  * stdin until EOF (Ctrl-D), a hang the command runner can't catch. Fast-fail to
  * null instead; this is an automation-first CLI. Piped/redirected stdin is not a
  * TTY, so the normal read path runs there.
+ *
+ * With no `input`, process stdin is read once and the result (null included) is
+ * returned to every later call: a command can resolve auth more than once, and
+ * the pipe is empty after the first read. An injected `input` is always read fresh.
  */
-export async function readTokenFromStdin(
-  input: AsyncIterable<Buffer | string> = process.stdin,
-): Promise<string | null> {
+export async function readTokenFromStdin(input?: AsyncIterable<Buffer | string>): Promise<string | null> {
+  if (input !== undefined) return parseToken(input);
+  processStdinToken ??= parseToken(process.stdin);
+  return processStdinToken;
+}
+
+/** Forget the cached process-stdin token. For tests, which share one module instance across files. */
+export function resetStdinTokenCache(): void {
+  processStdinToken = undefined;
+}
+
+async function parseToken(input: AsyncIterable<Buffer | string>): Promise<string | null> {
   const raw = await collectStdin(input, MAX_TOKEN_BYTES);
   if (raw === null) return null;
   const firstLine = raw.trim().split(/\r?\n/, 1)[0] ?? "";

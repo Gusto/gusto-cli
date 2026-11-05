@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { updateHomeAddressHandler, updateWorkAddressHandler } from "./employee.ts";
-import { TEST_CONTEXT as ctx, blockedFields, okData } from "../lib/test-support.ts";
+import { TEST_CONTEXT as ctx, blockedFields, okData, routeFetch } from "../lib/test-support.ts";
 
 // The address uuid is validated before the body is built, so these have to be well-formed.
 const HA_UUID = "1a2b3c4d-0000-4111-2222-333344445555";
@@ -65,5 +65,19 @@ describe("updateWorkAddressHandler", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.exitCode).toBe(7);
     expect(blockedFields(result)).toContain("fields");
+  });
+});
+
+describe("updateWorkAddressHandler for employees who work at more than one location", () => {
+  let restore: () => void = () => {};
+  afterEach(() => restore());
+
+  test("writes the address it names without checking the employee's other locations", async () => {
+    const address = { uuid: WA_UUID, employee_uuid: "3f2a8c1d-0000-4111-2222-333344445555", version: "v1" };
+    const s = routeFetch([{ match: `/v1/work_addresses/${WA_UUID}`, status: 200, body: address }]);
+    restore = s.restore;
+    okData(await updateWorkAddressHandler(WA_UUID, { locationUuid: "loc-1", confirm: true })(ctx));
+    expect(s.calls.map((c) => c.method)).toEqual(["GET", "PUT"]);
+    expect(s.calls.some((c) => c.url.includes("/v1/employees/"))).toBe(false);
   });
 });

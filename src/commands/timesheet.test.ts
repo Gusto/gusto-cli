@@ -396,6 +396,7 @@ describe("timesheetCreateHandler", () => {
   });
 
   test("--dry-run builds the POST body from the flags", async () => {
+    const { restore } = stubGlobalFetch(() => ({ status: 200, body: [{ active: true }] }));
     const data = okData(
       await timesheetCreateHandler({
         ...auth,
@@ -414,6 +415,7 @@ describe("timesheetCreateHandler", () => {
       job_uuid: JOB_UUID,
       entries: [{ hours_worked: 8, pay_classification: "Regular" }],
     });
+    restore();
   });
 
   test("invalid args short-circuit to a validation failure (exit 7) before any request", async () => {
@@ -458,6 +460,54 @@ describe("timesheetCreateHandler", () => {
     } finally {
       restore();
     }
+  });
+
+  describe("an employee who works at more than one location", () => {
+    const twoLocations = [{ active: true }, { active: true }];
+
+    test("is refused before the time sheet is created", async () => {
+      const { calls, restore } = stubGlobalFetch((u) =>
+        u.includes(`/employees/${EMPLOYEE_UUID}/work_addresses`)
+          ? { status: 200, body: twoLocations }
+          : { status: 201 },
+      );
+      try {
+        const result = await timesheetCreateHandler({ ...validCreate, confirm: true })(ctx);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.exitCode).toBe(ExitCode.Blocked);
+        expect(result.error.code).toBe("multi_location_not_supported");
+        expect(result.error.employee_uuids).toEqual([EMPLOYEE_UUID]);
+        expect(result.error.message).toContain("Record their hours in the Gusto app.");
+        expect(calls.some((c) => c.method === "POST")).toBe(false);
+      } finally {
+        restore();
+      }
+    });
+
+    test("is refused on --dry-run too", async () => {
+      const { calls, restore } = stubGlobalFetch(() => ({ status: 200, body: twoLocations }));
+      try {
+        const result = await timesheetCreateHandler({ ...validCreate, dryRun: true })(ctx);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("unreachable");
+        expect(result.error.code).toBe("multi_location_not_supported");
+        expect(calls.every((c) => c.method === "GET")).toBe(true);
+      } finally {
+        restore();
+      }
+    });
+
+    test("doesn't apply to a contractor, who has no work addresses to check", async () => {
+      const { calls, restore } = stubGlobalFetch(() => ({ status: 201, body: { uuid: TIME_SHEET_UUID } }));
+      try {
+        const { employeeUuid: _e, jobUuid: _j, ...rest } = validCreate;
+        okData(await timesheetCreateHandler({ ...rest, contractorUuid: CONTRACTOR_UUID, confirm: true })(ctx));
+        expect(calls.map((c) => c.method)).toEqual(["POST"]);
+      } finally {
+        restore();
+      }
+    });
   });
 });
 
