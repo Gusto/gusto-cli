@@ -611,6 +611,37 @@ describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
   });
 });
 
+describe("authLoginHandler - money-movement scope in a fresh grant", () => {
+  const loginWith = (scope: string) => () =>
+    Promise.resolve({
+      resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+      resource: { type: "Company" as const, uuid: "co-1" },
+      scope,
+    });
+  const skipSkills = async () => undefined;
+
+  test("warns that signing in again won't drop it", async () => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler(
+      {},
+      { login: loginWith("payrolls:read payrolls:run"), installSkills: skipSkills },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).toContain("warning: this sign-in was granted payrolls:run");
+    expect(stderr.buffer).toContain("Signing in again won't drop it");
+  });
+
+  test("stays quiet for a narrowed grant", async () => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler(
+      {},
+      { login: loginWith("payrolls:read payrolls:write"), installSkills: skipSkills },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).not.toContain("sign-in was granted");
+  });
+});
+
 describe("authLoginHandler - environment passed to login", () => {
   const skipSkills = async () => undefined;
   const tokenInfo = {
@@ -766,13 +797,16 @@ describe("authWhoamiHandler", () => {
       resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
     };
     restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
-    const result = await authWhoamiHandler({})(ctx);
+    const { sinks, stderr } = captureSinks();
+    const result = await authWhoamiHandler({})({ ...ctx, sinks });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    const data = result.data as { money_movement_scopes?: string[]; warning?: string };
+    const data = result.data as Record<string, unknown>;
     expect(data.money_movement_scopes).toEqual(["payrolls:run"]);
-    expect(data.warning).toContain("Replace GUSTO_ACCESS_TOKEN");
-    expect(data.warning).not.toContain("gusto auth login");
+    expect(data.warning).toBeUndefined();
+    expect(stderr.buffer).toContain("warning: this token holds payrolls:run");
+    expect(stderr.buffer).toContain("Replace GUSTO_ACCESS_TOKEN");
+    expect(stderr.buffer).not.toContain("gusto auth login");
   });
 
   test("points a piped token at --token-stdin, not a fresh login", async () => {
@@ -781,12 +815,11 @@ describe("authWhoamiHandler", () => {
       resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
     };
     restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
-    const result = await authWhoamiHandler({ tokenStdin: true }, () => Promise.resolve("piped-tok"))(ctx);
+    const { sinks, stderr } = captureSinks();
+    const result = await authWhoamiHandler({ tokenStdin: true }, () => Promise.resolve("piped-tok"))({ ...ctx, sinks });
     expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    const data = result.data as { warning?: string };
-    expect(data.warning).toContain("--token-stdin");
-    expect(data.warning).not.toContain("gusto auth login");
+    expect(stderr.buffer).toContain("via --token-stdin");
+    expect(stderr.buffer).not.toContain("gusto auth login");
   });
 
   test("omits the money-movement warning for a narrowed token", async () => {
@@ -795,12 +828,12 @@ describe("authWhoamiHandler", () => {
       resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
     };
     restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
-    const result = await authWhoamiHandler({})(ctx);
+    const { sinks, stderr } = captureSinks();
+    const result = await authWhoamiHandler({})({ ...ctx, sinks });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
-    const data = result.data as { money_movement_scopes?: string[]; warning?: string };
-    expect(data.money_movement_scopes).toBeUndefined();
-    expect(data.warning).toBeUndefined();
+    expect((result.data as Record<string, unknown>).money_movement_scopes).toBeUndefined();
+    expect(stderr.buffer).toBe("");
   });
 
   test("propagates a token_info error and skips the capabilities summary", async () => {

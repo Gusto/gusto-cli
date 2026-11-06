@@ -33,6 +33,10 @@ describe("REQUIRED_SCOPES", () => {
     }
   });
 
+  test("every money-movement scope is recorded as dropped", () => {
+    for (const scope of MONEY_MOVEMENT_SCOPES) expect(DROPPED_SCOPES).toContain(scope);
+  });
+
   test("payroll prep runs on the read and write scopes", () => {
     const write = REQUIRED_SCOPES.find((r) => r.scope === "payrolls:write");
     expect(write?.usedBy).toEqual(expect.arrayContaining(["payroll prepare", "payroll update", "payroll calculate"]));
