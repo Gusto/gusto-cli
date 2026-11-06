@@ -18,6 +18,7 @@ import {
   buildSignInUrlEmitter,
   loginResultData,
   maybeInstallSkillsAfterLogin,
+  moneyMovementWarning,
   noToolDetectedWarning,
   parseAutoInstallAnswer,
   performLogout,
@@ -610,6 +611,37 @@ describe("authLoginHandler - GUSTO_ACCESS_TOKEN override warning", () => {
   });
 });
 
+describe("authLoginHandler - money-movement scope in a fresh grant", () => {
+  const loginWith = (scope: string) => () =>
+    Promise.resolve({
+      resource_owner: { type: "CompanyAdmin" as const, uuid: "u-1" },
+      resource: { type: "Company" as const, uuid: "co-1" },
+      scope,
+    });
+  const skipSkills = async () => undefined;
+
+  test("warns that signing in again won't drop it", async () => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler(
+      {},
+      { login: loginWith("payrolls:read payrolls:run"), installSkills: skipSkills },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).toContain("warning: this sign-in was granted payrolls:run");
+    expect(stderr.buffer).toContain("Signing in again won't drop it");
+  });
+
+  test("stays quiet for a narrowed grant", async () => {
+    const { sinks, stderr } = captureSinks();
+    const result = await authLoginHandler(
+      {},
+      { login: loginWith("payrolls:read payrolls:write"), installSkills: skipSkills },
+    )({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).not.toContain("sign-in was granted");
+  });
+});
+
 describe("authLoginHandler - environment passed to login", () => {
   const skipSkills = async () => undefined;
   const tokenInfo = {
@@ -759,6 +791,51 @@ describe("authWhoamiHandler", () => {
     expect((result.data as { missing_scopes?: string[] }).missing_scopes).toBeUndefined();
   });
 
+  test("points an env token at GUSTO_ACCESS_TOKEN when it holds a money-movement scope", async () => {
+    const tokenInfo = {
+      scope: "payrolls:read payrolls:write payrolls:run public",
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const { sinks, stderr } = captureSinks();
+    const result = await authWhoamiHandler({})({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const data = result.data as Record<string, unknown>;
+    expect(data.money_movement_scopes).toEqual(["payrolls:run"]);
+    expect(data.warning).toBeUndefined();
+    expect(stderr.buffer).toContain("warning: this token holds payrolls:run");
+    expect(stderr.buffer).toContain("Replace GUSTO_ACCESS_TOKEN");
+    expect(stderr.buffer).not.toContain("gusto auth login");
+  });
+
+  test("points a piped token at --token-stdin, not a fresh login", async () => {
+    const tokenInfo = {
+      scope: "payrolls:read payrolls:write payrolls:run public",
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const { sinks, stderr } = captureSinks();
+    const result = await authWhoamiHandler({ tokenStdin: true }, () => Promise.resolve("piped-tok"))({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    expect(stderr.buffer).toContain("via --token-stdin");
+    expect(stderr.buffer).not.toContain("gusto auth login");
+  });
+
+  test("omits the money-movement warning for a narrowed token", async () => {
+    const tokenInfo = {
+      scope: REQUIRED_SCOPES.map((r) => r.scope).join(" "),
+      resource_owner: { type: "CompanyAdmin", uuid: "u-1" },
+    };
+    restore = stubGlobalFetch([{ status: 200, body: tokenInfo }]).restore;
+    const { sinks, stderr } = captureSinks();
+    const result = await authWhoamiHandler({})({ ...ctx, sinks });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect((result.data as Record<string, unknown>).money_movement_scopes).toBeUndefined();
+    expect(stderr.buffer).toBe("");
+  });
+
   test("propagates a token_info error and skips the capabilities summary", async () => {
     // A 401 on token_info means the credential itself was refused, so it reports as the auth failure
     // it is rather than an ordinary 4xx. TEST_GLOBALS pins sandbox and the ambient GUSTO_ACCESS_TOKEN
@@ -811,6 +888,25 @@ describe("authWhoamiHandler", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect((result.data as Record<string, unknown>).credential_source).toBe("--token-stdin");
+  });
+});
+
+describe("moneyMovementWarning", () => {
+  test("tells a stored session to sign in again under its own environment", () => {
+    expect(moneyMovementWarning(["payrolls:run"], "session", "sandbox")).toContain(
+      "Run `gusto auth login --env sandbox` to get a token without it.",
+    );
+  });
+
+  test("tells an explicit token to swap the token instead", () => {
+    expect(moneyMovementWarning(["payrolls:run"], "env", "production")).toContain("Replace GUSTO_ACCESS_TOKEN");
+    expect(moneyMovementWarning(["payrolls:run"], "stdin", "production")).toContain("via --token-stdin");
+  });
+
+  test("names every scope it found", () => {
+    expect(moneyMovementWarning(["payrolls:run", "company_bank_accounts:write"], "session", "production")).toContain(
+      "holds payrolls:run, company_bank_accounts:write",
+    );
   });
 });
 

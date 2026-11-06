@@ -71,6 +71,8 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
       "payroll list",
       "payroll show",
       "payroll receipt",
+      "payroll blockers",
+      "payroll calculate (poll)",
       "ledger show",
       "pay-schedule periods",
       "pay-schedule termination-periods",
@@ -89,11 +91,7 @@ export const REQUIRED_SCOPES: readonly ScopeRequirement[] = [
   // Writes: the per-cycle payroll flow, plus the employee-offboarding and work-state paths and address updates.
   { scope: "time_sheet:write", usedBy: ["timesheet create"] },
   { scope: "payroll_syncs:write", usedBy: ["timesheet sync"] },
-  { scope: "payrolls:write", usedBy: ["payroll prepare"] },
-  // `payroll blockers` reads, but the API files its action under the run scope rather than
-  // payrolls:read - a grant narrowed to reads 403s on it, which is worth knowing before
-  // anyone trims this list on the assumption that read commands only need read scopes.
-  { scope: "payrolls:run", usedBy: ["payroll calculate", "payroll blockers"] },
+  { scope: "payrolls:write", usedBy: ["payroll prepare", "payroll update", "payroll calculate"] },
   { scope: "pay_schedules:write", usedBy: ["pay-schedule create"] },
   { scope: "company_reports:write", usedBy: ["ledger show (report generate)", "report run"] },
   { scope: "employments:write", usedBy: ["employee terminate", "employee cancel-termination"] },
@@ -125,7 +123,27 @@ export const DROPPED_SCOPES: readonly string[] = [
   "employee_state_taxes:write",
   "employee_federal_taxes:read",
   "employee_state_taxes:read",
+  "payrolls:run",
+  "partner_disbursements:write",
+  "contractor_payment_methods:write",
 ] as const;
+
+/** Scopes that move money or change where it's paid out. The CLI must never need one, so each is
+ * also in `DROPPED_SCOPES`, and `gusto auth login` and `gusto auth whoami` warn when a token holds any. */
+export const MONEY_MOVEMENT_SCOPES: readonly string[] = [
+  "payrolls:run",
+  "partner_disbursements:write",
+  "company_bank_accounts:write",
+  "employee_bank_accounts:write",
+  "employee_payment_methods:write",
+  "contractor_payment_methods:write",
+] as const;
+
+/** Money-movement scopes the granted token holds, which no CLI command needs. */
+export function findMoneyMovementScopes(granted: readonly string[]): string[] {
+  const grantedSet = new Set(granted);
+  return MONEY_MOVEMENT_SCOPES.filter((s) => grantedSet.has(s));
+}
 
 /** Required scopes the granted token is missing. Used by `gusto auth whoami` to
  * surface a debuggable list inline when a token's grant is narrower than the
