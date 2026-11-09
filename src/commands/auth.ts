@@ -9,7 +9,7 @@ import { type Environment, type GlobalFlags, readGlobalFlags } from "../lib/glob
 import { toResult } from "../lib/handle-api-error.ts";
 import { oauthHttp } from "../lib/oauth/context.ts";
 import { type SignInUrlEvent, type TokenInfo, companyUuidFromTokenInfo, login } from "../lib/oauth/login.ts";
-import { findMissingScopes } from "../lib/oauth/required-scopes.ts";
+import { findMissingScopes, findMoneyMovementScopes } from "../lib/oauth/required-scopes.ts";
 import { parseScopes, summarizeGrantedScopes } from "../lib/oauth/scopes.ts";
 import { type StreamSinks, resolveOutputMode } from "../lib/output.ts";
 import { type TokenStore, resolveStore } from "../lib/oauth/token-store.ts";
@@ -317,6 +317,14 @@ export function authLoginHandler(
     } catch (err) {
       return toResult(err);
     }
+    // The grant comes from the OAuth app registration, so a fresh token holding one of these means the
+    // registration drifted, and signing in again would get it right back.
+    const moneyMovement = findMoneyMovementScopes(parseScopes(data.scope));
+    if (moneyMovement.length > 0) {
+      sinks.stderr.write(
+        `warning: this sign-in was granted ${moneyMovement.join(", ")}, which can move money and no CLI command needs. Signing in again won't drop ${moneyMovement.length === 1 ? "it" : "them"}. Report it with \`gusto feedback\`.\n`,
+      );
+    }
     // Login succeeded and the token is persisted; the bundled-skills install is a
     // best-effort side-effect. An fs error, prompt EOF/Ctrl+C, or readonly config
     // dir mustn't flip a successful login into an error envelope - the user is
@@ -377,8 +385,27 @@ export const CREDENTIAL_SOURCE_LABEL: Record<ResolvedTokenSource, string> = {
   session: "stored session",
 };
 
+/** Signing in again only replaces a stored session; an explicit token keeps winning until the caller
+ * swaps it, the same split the missing-scope message makes. */
+export function moneyMovementWarning(
+  scopes: readonly string[],
+  source: ResolvedTokenSource,
+  environment: Environment,
+): string {
+  const it = scopes.length === 1 ? "it" : "them";
+  const holds = `this token holds ${scopes.join(", ")}, which can move money and no CLI command needs.`;
+  switch (source) {
+    case "session":
+      return `${holds} Run \`gusto auth login --env ${environment}\` to get a token without ${it}.`;
+    case "env":
+      return `${holds} Replace GUSTO_ACCESS_TOKEN with a token that doesn't grant ${it}.`;
+    case "stdin":
+      return `${holds} Pipe a token that doesn't grant ${it} via --token-stdin.`;
+  }
+}
+
 export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): CommandHandler {
-  return async ({ globals }) => {
+  return async ({ globals, sinks }) => {
     // Resolve the context ourselves (rather than going through `fetchResource`) so the
     // response body can be decorated with the `tokenSource` that won.
     const resolved = await resolveApiContext(globals, {
@@ -391,6 +418,13 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
     if (!result.ok) return result;
     const granted = parseScopes(result.data?.scope);
     const missing = findMissingScopes(granted);
+    const moneyMovement = findMoneyMovementScopes(granted);
+    // Sessions from before the grant was narrowed keep refreshing these until the user signs in again.
+    if (moneyMovement.length > 0) {
+      sinks.stderr.write(
+        `warning: ${moneyMovementWarning(moneyMovement, resolved.ctx.tokenSource, defaultEnv(globals.env))}\n`,
+      );
+    }
     return {
       ok: true,
       data: {
@@ -403,6 +437,7 @@ export function authWhoamiHandler(opts: AuthOpts, readStdin?: StdinReader): Comm
         credential_source: CREDENTIAL_SOURCE_LABEL[resolved.ctx.tokenSource],
         capabilities: summarizeGrantedScopes(granted),
         ...(missing.length > 0 ? { missing_scopes: missing } : {}),
+        ...(moneyMovement.length > 0 ? { money_movement_scopes: moneyMovement } : {}),
       },
     };
   };
